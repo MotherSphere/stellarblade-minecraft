@@ -39,6 +39,7 @@ public final class StellarBridge implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        CapturePreview.initialize();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             if (environment != CommandManager.RegistrationEnvironment.INTEGRATED) return;
             dispatcher.register(CommandManager.literal("stellar")

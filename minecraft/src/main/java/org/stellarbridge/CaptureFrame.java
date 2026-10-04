@@ -1,0 +1,174 @@
+package org.stellarbridge;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.regex.Pattern;
+
+/** A bounded one-shot native capture; no packet is executable. */
+final class CaptureFrame {
+    private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+    private static final long MAX_INTEGER = 9007199254740991L;
+    private static final Pattern DECIMAL = Pattern.compile("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?");
+    record Metadata(String id, long time, double fov, int colorBytes, int maskBytes, int depthBytes) { }
+    record Loaded(Metadata metadata, byte[] descriptor, byte[] color, byte[] mask) { }
+
+    static Metadata parse(byte[] bytes) {
+        require(bytes.length > 0 && bytes.length <= 2048, "Capture descriptor exceeds limits");
+        for (byte value : bytes)
+            require(value == '\n' || value >= 32 && value <= 126, "Capture descriptor must be ASCII with LF endings");
+        String[] lines = new String(bytes, StandardCharsets.US_ASCII).split("\n", -1);
+        require(lines.length == 11 && lines[10].isEmpty(), "Capture descriptor must have exactly ten lines");
+        String[] header = fields(lines[0], "SBMC_FRAME", 4);
+        require(header[1].equals("1") && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
+        String id = header[2];
+        long time = integer(header[3], 0, MAX_INTEGER);
+        String[] sequence = id.split("-", -1);
+        require(integer(sequence[0], 0, MAX_INTEGER) == time, "Capture ID timestamp mismatch");
+        integer(sequence[1], 1, MAX_INTEGER);
+        require(lines[1].equals("SIZE 320 180"), "Only 320 by 180 captures are supported");
+        String[] camera = fields(lines[2], "CAMERA", 8);
+        for (int i = 1; i < camera.length; i++) decimal(camera[i]);
+        double fov = decimal(camera[7]);
+        require(fov > 0 && fov < 180, "Invalid capture FOV");
+        String[] pawn = fields(lines[3], "PAWN", 5);
+        for (int i = 1; i < pawn.length; i++) decimal(pawn[i]);
+        require(decimal(pawn[4]) > 0, "Invalid capsule height");
+        String[] context = fields(lines[4], "CONTEXT", 3);
+        integer(context[1], 1, MAX_INTEGER); integer(context[2], 1, MAX_INTEGER);
+        String[] link = fields(lines[5], "LINK", 7);
+        boolean unlinked = link[1].equals("none");
+        require(unlinked || link[1].matches("[0-9a-f]{32}"), "Invalid bridge session");
+        long ack = integer(link[2], unlinked ? 0 : 1, Integer.MAX_VALUE);
+        require(decimal(link[3]) > 0, "Invalid capture scale");
+        double x = decimal(link[4]), y = decimal(link[5]), z = decimal(link[6]);
+        require(!unlinked || ack == 0 && x == 0 && y == 0 && z == 0, "Unlinked capture has bridge coordinates");
+        int color = imageLine(lines[6], "COLOR", id, "color.png");
+        int mask = imageLine(lines[7], "MASK", id, "mask.png");
+        int depth = imageLine(lines[8], "DEPTH", id, "depth.hdr");
+        require(fields(lines[9], "END", 2)[1].equals(id), "Capture footer mismatch");
+        return new Metadata(id, time, fov, color, mask, depth);
+    }
+
+    static boolean fresh(long time, long now) {
+        return time >= 0 && time <= MAX_INTEGER && now >= 0 && now <= MAX_INTEGER && now - time >= -2 && now - time <= 30;
+    }
+
+    static int previewAlpha(int inverseAlpha) {
+        int alpha = 255 - inverseAlpha;
+        return alpha >= 128 ? alpha : 0;
+    }
+
+    static Loaded read(Path directory, long now) throws IOException {
+        byte[] descriptor = readFile(directory, "eve-frame.txt", 2048);
+        Metadata metadata = parse(descriptor);
+        require(fresh(metadata.time, now), "Capture is older than 30 seconds or has a future timestamp");
+        String prefix = "eve-frame-" + metadata.id + "-";
+        byte[] color = readFile(directory, prefix + "color.png", MAX_IMAGE_BYTES);
+        byte[] mask = readFile(directory, prefix + "mask.png", MAX_IMAGE_BYTES);
+        byte[] depth = readFile(directory, prefix + "depth.hdr", MAX_IMAGE_BYTES);
+        require(color.length == metadata.colorBytes && mask.length == metadata.maskBytes && depth.length == metadata.depthBytes,
+                "Capture image size does not match its descriptor");
+        validatePng(color); validatePng(mask); validateDepth(depth);
+        verifyUnchanged(directory, descriptor);
+        return new Loaded(metadata, descriptor, color, mask);
+    }
+
+    static void verifyUnchanged(Path directory, byte[] descriptor) throws IOException {
+        require(Arrays.equals(descriptor, readFile(directory, "eve-frame.txt", 2048)), "Capture changed during loading; retry");
+    }
+
+    private static byte[] readFile(Path directory, String name, int limit) throws IOException {
+        directory = directory.toAbsolutePath().normalize();
+        for (Path current = directory; current != null; current = current.getParent()) {
+            if (Files.isSymbolicLink(current) || !Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS))
+                throw new IOException("Capture directory must not contain symlinks or non-directories");
+        }
+        Path file = directory.resolve(name);
+        if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("Capture is unavailable or is not a regular file");
+        try (var input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] data = input.readNBytes(limit + 1);
+            require(data.length <= limit, "Capture file exceeds limits");
+            return data;
+        }
+    }
+
+    private static void validatePng(byte[] bytes) {
+        require(bytes.length >= 45, "Truncated capture PNG");
+        ByteBuffer input = ByteBuffer.wrap(bytes);
+        require(input.getLong() == 0x89504e470d0a1a0aL && input.getInt() == 13 && input.getInt() == 0x49484452,
+                "Invalid capture PNG header");
+        require(input.getInt() == 320 && input.getInt() == 180 && input.get() == 8 && input.get() == 6,
+                "Capture PNG must be 320 by 180 RGBA8");
+        boolean pixels = false, ended = false;
+        input.position(8);
+        while (input.remaining() >= 12) {
+            int length = input.getInt(), type = input.getInt();
+            require(length >= 0 && length <= input.remaining() - 4, "Truncated capture PNG chunk");
+            input.position(input.position() + length + 4);
+            if (type == 0x49444154) pixels = true;
+            if (type == 0x49454e44) {
+                require(length == 0 && input.remaining() == 0, "Invalid PNG ending");
+                ended = true;
+                break;
+            }
+        }
+        require(pixels && ended, "Incomplete capture PNG");
+    }
+
+    private static void validateDepth(byte[] bytes) {
+        // The native probe exports this bounded Radiance RLE format. Preview does not interpret its depth values.
+        byte[] header = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 180 +X 320\n".getBytes(StandardCharsets.US_ASCII);
+        require(bytes.length >= header.length && Arrays.equals(header, Arrays.copyOf(bytes, header.length)), "Invalid native depth header");
+        int offset = header.length;
+        for (int y = 0; y < 180; y++) {
+            require(offset + 4 <= bytes.length && bytes[offset] == 2 && bytes[offset + 1] == 2
+                    && bytes[offset + 2] == 1 && bytes[offset + 3] == 64, "Invalid depth scanline");
+            offset += 4;
+            for (int channel = 0; channel < 4; channel++) {
+                int width = 0;
+                while (width < 320) {
+                    require(offset < bytes.length, "Truncated depth scanline");
+                    int code = bytes[offset++] & 255;
+                    require(code != 0, "Invalid depth run");
+                    width += code > 128 ? code - 128 : code;
+                    offset += code > 128 ? 1 : code;
+                    require(width <= 320 && offset <= bytes.length, "Depth run exceeds scanline");
+                }
+            }
+        }
+        require(offset == bytes.length, "Unexpected depth trailing bytes");
+    }
+
+    private static int imageLine(String line, String tag, String id, String suffix) {
+        String[] values = fields(line, tag, 3);
+        require(values[1].equals("eve-frame-" + id + "-" + suffix), "Capture filename does not match its generation");
+        return (int) integer(values[2], 1, MAX_IMAGE_BYTES);
+    }
+    private static String[] fields(String line, String tag, int count) {
+        String[] values = line.split(" ", -1);
+        require(values.length == count && values[0].equals(tag), "Invalid " + tag + " line");
+        for (String value : values) require(!value.isEmpty(), "Empty capture field");
+        return values;
+    }
+    private static long integer(String text, long minimum, long maximum) {
+        require(text.matches("[0-9]+"), "Invalid capture integer");
+        long value = Long.parseLong(text);
+        require(value >= minimum && value <= maximum, "Capture integer exceeds limits");
+        return value;
+    }
+    private static double decimal(String text) {
+        require(DECIMAL.matcher(text).matches(), "Invalid capture number");
+        double value = Double.parseDouble(text);
+        require(Double.isFinite(value), "Capture number must be finite");
+        return value;
+    }
+    private static void require(boolean condition, String message) {
+        if (!condition) throw new IllegalArgumentException(message);
+    }
+}

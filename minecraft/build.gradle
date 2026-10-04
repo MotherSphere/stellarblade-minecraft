@@ -50,3 +50,11 @@ tasks.register('terrainGeometryTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn terrainGeometryTest
+
+tasks.register('captureFrameTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.CaptureFrameTest'
+    jvmArgs '-ea'
+}
+check.dependsOn captureFrameTest
