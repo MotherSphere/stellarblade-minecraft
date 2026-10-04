@@ -75,9 +75,21 @@ final class CaptureFrame {
     }
 
     static Loaded read(Path directory, long now) throws IOException {
+        return readIfNew(directory, now, null);
+    }
+
+    static boolean newer(String id, String previous) {
+        if (previous == null) return true;
+        String[] next = id.split("-"), before = previous.split("-");
+        long time = Long.parseLong(next[0]), previousTime = Long.parseLong(before[0]);
+        return time > previousTime || time == previousTime && Long.parseLong(next[1]) > Long.parseLong(before[1]);
+    }
+
+    static Loaded readIfNew(Path directory, long now, String previousId) throws IOException {
         byte[] descriptor = readFile(directory, "eve-frame.txt", 2048);
         Metadata metadata = parse(descriptor);
         require(fresh(metadata.time, now), "Capture is older than 30 seconds or has a future timestamp");
+        if (!newer(metadata.id, previousId)) return null;
         String prefix = "eve-frame-" + metadata.id + "-";
         byte[] color = readFile(directory, prefix + "color.png", MAX_IMAGE_BYTES);
         byte[] mask = readFile(directory, prefix + "mask.png", MAX_IMAGE_BYTES);

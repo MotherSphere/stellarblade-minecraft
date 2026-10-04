@@ -2,7 +2,7 @@
 
 An experimental bridge project for playing EVE with her native movement and combat in a live Minecraft Java world on Linux, with Stellar Blade running through Proton.
 
-The current build includes an experimental **local Minecraft terrain and position link**, native EVE capture, and a still-image composition experiment. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. Continuous rendering, cross-game combat and general world streaming are not implemented yet.
+The current build includes an experimental **local Minecraft terrain and position link**, native EVE capture, still-image composition and an opt-in bounded animated preview. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. Playable rendering performance, cross-game combat and general world streaming are not established yet.
 
 ## Minecraft terrain link
 
@@ -42,7 +42,7 @@ Transport uses bounded versioned text snapshots with session IDs, revisions, tim
 
 ## Native image capture experiment
 
-With bridge configuration installed, **F4** (`sbmc frame`) requests a paired 320×180 capture through temporary Unreal scene-capture actors showing EVE's components. Display color, inverse-opacity mask and scene depth use the same camera snapshot within one game-thread call. This probe does not move EVE, hide the original level or continuously capture frames. It releases the temporary actors and render targets after each request; `sbmc capturecleanup` retries cleanup if the log reports a failure.
+With bridge configuration installed, **F4** (`sbmc frame`) requests a paired 320×180 capture through temporary Unreal scene-capture actors showing EVE's components. Display color, inverse-opacity mask and scene depth use the same camera snapshot within one game-thread call. A manual request takes one frame without moving EVE or hiding the original level. It releases the temporary actors and render targets after each request; `sbmc capturecleanup` retries cleanup if the log reports a failure. Stop the animated preview before taking manual captures.
 
 `eve-frame.txt` in the private bridge directory names three generation-specific PNG/HDR files and records the camera, projection and context. It is published only after all exports and cleanup succeed. A failed capture preserves the previous complete frame. Files from the preceding frame of the same Lua lifetime are removed after replacement; old files from earlier launches can be removed while both games are closed.
 
@@ -57,6 +57,20 @@ After starting the terrain link and entering it with EVE, press F4 and run **`/s
 The view requires the same active private creative session and exactly the captured terrain revision. It stops on block revisions, stale captures, link loss, world changes or unsupported effects. Use Fast/Fancy graphics without Iris, and a calm player without status effects. Camera roll, full translucency and other renderer replacements are unsupported. The window may use a different aspect ratio: the EVE layer covers the matching portion of Minecraft's projection instead of stretching.
 
 The rendering branch corrects the provisional coordinate basis to **Unreal `(X,Y,Z)` → Minecraft `(X,Z,Y)`**, with the configured units-per-block conversion. Both collision import and exported feet use this basis. The native image is not mirrored, preserving EVE's visible handedness. Update both mods together and start a fresh session; do not mix the earlier negative-horizontal-axis build with this renderer.
+
+### Bounded animated preview
+
+The animated preview reuses the same 320×180 color, mask, depth and camera bundle. It requests at most one capture per 200 ms bridge callback, with no catch-up queue. Synchronous native exports and temporary capture allocation can cause stutters; this first diagnostic is limited to 300 published frames or 60 seconds, whichever comes first. It does not establish a playable frame rate.
+
+1. Start the terrain link with `/stellar start`, then use F5 and F8 in Stellar Blade to import and enter the lab.
+2. Press **F1** in Stellar Blade to start capture (`sbmc live`). F1 toggles it off; `sbmc liveoff` also stops it.
+3. Run **`/stellarview live`** in Minecraft. Keep Stellar Blade focused for EVE's native controls, with Minecraft visible alongside it when possible. No keyboard or mouse forwarding is installed.
+4. Use **`/stellarview status`** to inspect the number of accepted frames and observed rate. This is the transfer rate, not Minecraft's rendering FPS.
+5. Use **`/stellarview off`** to restore the normal Minecraft camera. F11 in Stellar Blade stops capture, returns EVE and removes the lab.
+
+Minecraft reads and decodes frames on a single background worker and keeps at most one pending decoded frame. Texture uploads and the coherent camera/color/depth swap happen on the render thread. A terrain revision temporarily hides the old image until a matching frame arrives. Session or world changes stop the preview. After startup, two seconds without a fresh generation also stop it; receiving the same frame again does not extend that deadline. Starting the reader without a producer times out after five seconds.
+
+Stopping native capture invalidates its published frame and cleans up the images owned by that Lua session. It never restarts automatically after an error or cleanup failure. The still commands retain their separate 30-second lifetime. Hair, transparency, independent accessories and lighting retain the limitations of the still experiment.
 
 ## Collision probe
 
@@ -102,6 +116,7 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 
 | Keys | Console equivalent | Action |
 |---|---|---|
+| F1 | `sbmc live` / `sbmc liveoff` | Toggle the bounded animated capture while EVE is in the linked lab |
 | F5 | `sbmc mirror` | Import the active Minecraft terrain when bridge configuration is installed |
 | F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
 | F7 | `sbmc create` | Create the fixture 600 Unreal units above the current player position |
@@ -126,9 +141,11 @@ lua tests/terrain_test.lua
 lua tests/protocol_test.lua
 lua tests/bridge_test.lua
 lua tests/capture_test.lua
+lua tests/capture_stream_test.lua
+lua tests/capture_stream_main_test.lua
 python -m unittest discover -s tests -p 'test_*.py' -v
 luac -p stellar/Mods/StellarCollisionProbe/Scripts/*.lua
 cd minecraft && ./gradlew build
 ```
 
-The Lua tests use a small engine boundary substitute to exercise scene ownership, transactional replacement, failed creation/return, changed worlds and cleanup retries. Java checks cover real file publication, pose gating, collision merging and the shared protocol fixtures. Engine API availability, graphics, collision responses, movement interception and controller behavior require in-game validation.
+The Lua tests use a small engine boundary substitute to exercise scene ownership, transactional replacement, failed creation/return, changed worlds, cleanup retries and bounded capture scheduling. Java checks cover real file publication, pose gating, collision merging, shared protocol fixtures, worker cancellation and image decoding. Engine API availability, graphics, collision responses, movement interception and controller behavior require in-game validation.

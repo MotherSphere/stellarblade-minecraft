@@ -72,6 +72,14 @@ public final class CaptureFrameTest {
             Files.write(directory.resolve("eve-frame-" + ID + "-depth.hdr"), depth);
             CaptureFrame.Loaded loaded = CaptureFrame.read(directory, 1791110000);
             assert Arrays.equals(loaded.color(), color) && Arrays.equals(loaded.mask(), color);
+            Files.delete(colorPath);
+            assert CaptureFrame.readIfNew(directory, 1791110000, ID) == null
+                    : "An unchanged generation must not read retired image files";
+            assert CaptureFrame.readIfNew(directory, 1791110000, "1791110000-2") == null
+                    : "A regressed generation must not refresh live capture";
+            Files.write(colorPath, color);
+            assert CaptureFrame.newer("1791110000-10", "1791110000-9") : "Sequence ordering must be numeric";
+            assert CaptureFrame.newer("1791110001-1", "1791110000-10");
             rejects(() -> CaptureFrame.read(directory, 1791110031));
             Files.write(colorPath, Arrays.copyOf(color, color.length - 1));
             rejects(() -> CaptureFrame.read(directory, 1791110000));

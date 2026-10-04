@@ -86,11 +86,15 @@ local probe = Probe.new(engine)
 local active = probe
 local bridge
 local capture
+local stream
 local configured,config = pcall(require,'bridge_config')
 if configured then
     local Terrain = require('terrain')
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
     capture = require('capture').new(require('capture_adapter').new(),config.directory)
+    stream = require('capture_stream').new(capture,function()
+        return active==bridge and bridge.pose() or nil
+    end,config.scale)
 end
 local function show_markers()
     local pawn = player()
@@ -122,8 +126,22 @@ local function status()
     show_markers()
 end
 local actions = {
+    live=function()
+        assert(stream,'Install with --bridge-dir to enable native live capture.')
+        return stream.start()
+    end,
+    liveoff=function()
+        assert(stream,'Native live capture is not configured.')
+        return stream.stop()
+    end,
+    livetoggle=function()
+        assert(stream,'Install with --bridge-dir to enable native live capture.')
+        if stream.active() then return stream.stop() end
+        return stream.start()
+    end,
     frame=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
+        assert(not stream.active(),'Stop native live capture before requesting a still.')
         local pose=active==bridge and bridge.pose() or nil
         local link
         if pose and pose.state=='entered' then
@@ -134,15 +152,17 @@ local actions = {
     end,
     capture=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
+        assert(not stream.active(),'Stop native live capture before requesting a still.')
         return capture.capture('color')
     end,
     depth=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
+        assert(not stream.active(),'Stop native live capture before requesting a still.')
         return capture.capture('depth')
     end,
     capturecleanup=function()
         assert(capture,'Capture is not configured.')
-        return capture.cleanup()
+        return stream.stop('cleanup requested')
     end,
     create=function()
         assert(active.status()=='idle','Return and clean up the current scene first.')
@@ -160,14 +180,24 @@ local actions = {
         assert(active==probe,'Edit Minecraft blocks to update a linked scene.')
         return probe.toggle()
     end,
-    restore=function() return active.restore() end,
+    restore=function()
+        local cleaned,cleanup_message=true,nil
+        if stream then
+            local ran,ok,message=pcall(stream.stop,'return requested')
+            cleaned=ran and ok
+            cleanup_message=ran and message or tostring(ok)
+        end
+        -- A capture cleanup failure must never prevent EVE's guarded return.
+        local returned,message=active.restore()
+        return returned and cleaned,message..(cleaned and '' or '; '..tostring(cleanup_message))
+    end,
 }
 local function dispatch(name)
     ExecuteInGameThread(function()
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, frame, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, live, liveoff, frame, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -175,6 +205,7 @@ local function dispatch(name)
         if not ok then log('STOP: '..tostring(err)) end
     end)
 end
+RegisterKeyBind(Key.F1,function() dispatch('livetoggle') end)
 RegisterKeyBind(Key.F2,function() dispatch('depth') end)
 RegisterKeyBind(Key.F4,function() dispatch('frame') end)
 RegisterKeyBind(Key.F5,function() dispatch('mirror') end)
@@ -189,17 +220,37 @@ RegisterConsoleCommandHandler('sbmc',function(_,parameters)
 end)
 if bridge then
     local pending=false
+    local last_stream_message
+    local function report_stream(success,message)
+        if message and message~=last_stream_message then
+            log((success and 'OK: ' or 'STOP: ')..message)
+            last_stream_message=message
+        elseif not message then last_stream_message=nil end
+    end
     LoopAsync(200,function()
         if pending then return false end
         pending=true
         local read_ok,packet=pcall(bridge.read)
+        if not read_ok then stream.cancel('bridge snapshot read failed: '..tostring(packet)) end
         local scheduled,err=pcall(ExecuteInGameThread,function()
-            local ok,why=pcall(function() bridge.tick(read_ok and packet or nil) end)
+            local ok,why=pcall(function()
+                local updated,update_error=pcall(bridge.tick,read_ok and packet or nil)
+                if updated then report_stream(stream.tick())
+                else report_stream(stream.stop('bridge tick failed: '..tostring(update_error))) end
+            end)
+            -- Keep one pending callback until native export and cleanup have finished.
             pending=false
-            if not ok then log('Bridge tick stopped: '..tostring(why)) end
+            if not ok then
+                stream.cancel('game-thread callback failed')
+                log('Bridge/capture callback failed: '..tostring(why))
+            end
         end)
-        if not scheduled then pending=false; log('Bridge schedule failed: '..tostring(err)) end
+        if not scheduled then
+            stream.cancel('game-thread scheduling failed')
+            pending=false
+            log('Bridge schedule failed: '..tostring(err))
+        end
         return false
     end)
 end
-log('Loaded revision 8; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F2 depth still, F4 paired frame, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
+log('Loaded revision 9; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

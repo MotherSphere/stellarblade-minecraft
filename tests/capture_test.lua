@@ -157,6 +157,51 @@ check('invalid frame links fail before native allocation',function()
     assert(not c.frame({session='../bad',ack=1,scale=100,position={x=0,y=0,z=0}}))
     assert(b.spawned==0 and b.camera_reads==0)
 end)
+check('clear invalidates the descriptor and removes only owned paired images',function()
+    local b=backend(); local c=Capture.new(b,directory); assert(c.frame()); track_frame(b)
+    assert(type(c.clear)=='function','Explicit paired-frame invalidation is missing')
+    write(directory..'/eve-capture-color.txt','preserved')
+    assert(c.clear()); assert(c.status()=='idle' and not read(directory..'/eve-frame.txt'))
+    for _,name in ipairs(b.files) do assert(not read(directory..'/'..name)) end
+    assert(read(directory..'/eve-capture-color.txt')=='preserved')
+end)
+check('clear retains descriptor and image deletion obligations for retry',function()
+    local b=backend(); local c=Capture.new(b,directory); assert(c.frame()); track_frame(b)
+    local remove=os.remove
+    os.remove=function(path)
+        if path==directory..'/eve-frame.txt' or path==directory..'/'..b.files[1] then return nil,'locked',13 end
+        return remove(path)
+    end
+    local ran,ok=pcall(c.clear)
+    os.remove=remove
+    assert(ran and not ok and c.status()=='cleanup-required')
+    for _,name in ipairs(b.files) do
+        assert(read(directory..'/'..name),'A descriptor that cannot be invalidated must retain its complete image generation')
+    end
+    local spawned=b.spawned; assert(not c.frame()); assert(b.spawned==spawned)
+    assert(c.clear()); assert(not read(directory..'/eve-frame.txt'))
+    for _,name in ipairs(b.files) do assert(not read(directory..'/'..name)) end
+end)
+check('repeated frames keep only one complete generation and bounded native handles',function()
+    local b=backend(); local c=Capture.new(b,directory)
+    local export=b.export
+    function b.export(...)
+        assert(b.actors<=3 and b.targets<=3)
+        export(...)
+        local present=0
+        for _,name in ipairs(b.files) do if read(directory..'/'..name) then present=present+1 end end
+        assert(present<=6,'Replacement retains at most two generations')
+    end
+    local previous
+    for _=1,30 do
+        assert(c.frame()); track_frame(b)
+        local descriptor=read(directory..'/eve-frame.txt'); assert(descriptor~=previous); previous=descriptor
+        local present=0
+        for _,name in ipairs(b.files) do if read(directory..'/'..name) then present=present+1 end end
+        assert(present==3 and b.actors==0 and b.targets==0)
+    end
+    assert(c.clear())
+end)
 for name in pairs(frame_files) do os.remove(directory..'/'..name) end
 for _,name in ipairs({'eve-frame.txt','eve-frame.txt.tmp','eve-frame.txt.previous'}) do os.remove(directory..'/'..name) end
 for _,name in ipairs({'eve-capture-color.png','eve-capture-color.txt','eve-capture-color.txt.tmp','eve-capture-depth.hdr','eve-capture-depth.txt'}) do os.remove(directory..'/'..name) end

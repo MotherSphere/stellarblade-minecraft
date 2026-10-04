@@ -9,6 +9,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.CoreShaderRegistrationCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
@@ -35,11 +36,13 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.slf4j.LoggerFactory;
 
-/** A manually loaded, depth-tested still. Native EVE movement remains owned by the existing bridge. */
+/** Opt-in depth composition. Native EVE movement remains owned by the existing bridge. */
 public final class CaptureView {
     private static ShaderProgram shader;
     private static View active;
     private static View rendering; // One immutable choice for camera, FOV and composition of a Minecraft frame.
+    private static CaptureStream stream;
+    private static Binding liveBinding;
 
     static void initialize() {
         CoreShaderRegistrationCallback.EVENT.register(context -> context.register(
@@ -47,20 +50,29 @@ public final class CaptureView {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registry) -> dispatcher.register(
                 ClientCommandManager.literal("stellarview")
                     .then(ClientCommandManager.literal("load").executes(context -> load(context.getSource())))
+                    .then(ClientCommandManager.literal("live").executes(context -> live(context.getSource())))
+                    .then(ClientCommandManager.literal("status").executes(context -> {
+                        context.getSource().sendFeedback(Text.literal(stream == null ? "EVE live diagnostic has not run."
+                                : stream.mailbox.status(System.nanoTime())));
+                        return 1;
+                    }))
                     .then(ClientCommandManager.literal("off").executes(context -> {
                         off();
-                        context.getSource().sendFeedback(Text.literal("EVE still view closed; normal camera restored."));
+                        context.getSource().sendFeedback(Text.literal("EVE view closed; normal camera restored."));
                         return 1;
                     }))));
         WorldRenderEvents.END.register(CaptureView::composite);
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            if (active != null && !valid(active)) off();
-        });
+        ClientTickEvents.END_CLIENT_TICK.register(client -> update());
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(CaptureView::off));
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
+            off();
+            if (stream != null) stream.close();
+        });
     }
 
     public static void beginFrame() {
-        if (active != null && !valid(active)) off();
+        update();
+        if (liveBinding != null) adopt();
         rendering = active;
     }
     public static void endFrame() { rendering = null; }
@@ -78,7 +90,83 @@ public final class CaptureView {
         var context = StellarBridge.renderingContext();
         return supported(client) && context != null && client.world == view.world && context.owner().equals(view.owner)
                 && context.dimension().equals(view.dimension) && context.origin().equals(view.origin)
-                && CaptureProjection.matches(view.metadata, context.session(), context.revision(), now());
+                && CaptureProjection.matches(view.metadata, context.session(), context.revision(), now())
+                && (!view.live || CaptureStream.fresh(view.metadata.time(), now()));
+    }
+
+    private static Path directory() {
+        return Path.of(System.getProperty("stellarbridge.directory",
+                Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
+    }
+
+    private static int live(FabricClientCommandSource source) {
+        off();
+        MinecraftClient client = source.getClient();
+        var context = StellarBridge.renderingContext();
+        if (context == null || !supported(client)) {
+            source.sendError(Text.literal("Enter the linked private creative terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
+            return 0;
+        }
+        if (stream == null) stream = new CaptureStream(directory());
+        liveBinding = new Binding(client.world, context.session(), context.owner(), context.dimension(), context.origin());
+        stream.mailbox.start(context.session(), context.revision(), context.origin(), System.nanoTime());
+        source.sendFeedback(Text.literal("EVE live diagnostic waiting for native capture. /stellarview off restores the camera; /stellarview status shows observed cadence."));
+        return 1;
+    }
+
+    private static void update() {
+        if (liveBinding != null) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            var context = StellarBridge.renderingContext();
+            if (!supported(client) || context == null || !liveBinding.matches(client.world, context)) {
+                stopLive("bridge binding or supported render state changed", true);
+                return;
+            }
+            var request = stream.mailbox.request();
+            if (request == null) {
+                stopLive(stream.mailbox.reason(), true);
+                return;
+            }
+            if (request.revision() != context.revision()) {
+                stream.mailbox.revision(context.revision());
+                clearView();
+            }
+            if (stream.mailbox.expired(System.nanoTime())) {
+                stopLive("no complete fresh generation before the deadline", true);
+                return;
+            }
+            if (active != null && !valid(active)) clearView();
+        } else if (active != null && !valid(active)) clearView();
+    }
+
+    private static void adopt() {
+        CaptureStream.Prepared frame = stream.mailbox.take();
+        if (frame == null) return;
+        NativeImageBackedTexture texture = null;
+        int depthTexture = 0;
+        int previousTexture = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+        try (frame) {
+            if (!stream.mailbox.current(frame) || !CaptureStream.fresh(frame.metadata.time(), now())) return;
+            texture = new NativeImageBackedTexture(frame.color);
+            frame.color = null; // Ownership passes only after the texture constructor succeeds.
+            depthTexture = uploadDepth(frame.depth);
+            View next = new View(frame.metadata, frame.camera, liveBinding.world, liveBinding.owner,
+                    liveBinding.dimension, liveBinding.origin, texture, depthTexture, true);
+            if (!stream.mailbox.current(frame) || !valid(next)) return;
+            View previous = active;
+            active = next;
+            texture = null;
+            depthTexture = 0;
+            stream.mailbox.accepted(frame);
+            close(previous);
+        } catch (RuntimeException failure) {
+            stopLive("texture upload failed", true);
+            LoggerFactory.getLogger("stellar_bridge").error("EVE live upload stopped", failure);
+        } finally {
+            if (texture != null) texture.close();
+            if (depthTexture != 0) GlStateManager._deleteTexture(depthTexture);
+            RenderSystem.bindTexture(previousTexture == 0 || GL11.glIsTexture(previousTexture) ? previousTexture : 0);
+        }
     }
 
     private static int load(FabricClientCommandSource source) {
@@ -93,28 +181,17 @@ public final class CaptureView {
         NativeImageBackedTexture texture = null;
         int depthTexture = 0;
         try {
-            Path directory = Path.of(System.getProperty("stellarbridge.directory",
-                    Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
+            Path directory = directory();
             var loaded = CaptureFrame.read(directory, now());
             if (!CaptureProjection.matches(loaded.metadata(), context.session(), context.revision(), now()))
                 throw new IOException("Capture LINK does not match the active terrain session and revision");
             var camera = CaptureProjection.camera(loaded.metadata(), context.origin());
-            color = CaptureImages.decode(loaded.color());
-            try (NativeImage mask = CaptureImages.decode(loaded.mask())) {
-                if (color.getWidth() != 320 || color.getHeight() != 180 || mask.getWidth() != 320 || mask.getHeight() != 180)
-                    throw new IOException("Decoded capture dimensions differ from the descriptor");
-                for (int y = 0; y < 180; y++) {
-                    for (int x = 0; x < 320; x++) {
-                        int alpha = CaptureFrame.previewAlpha(mask.getOpacity(x, y) & 255);
-                        color.setColor(x, y, color.getColor(x, y) & 0x00ffffff | alpha << 24);
-                    }
-                }
-            }
+            color = CaptureImages.decodeMasked(loaded.color(), loaded.mask());
             CaptureFrame.verifyUnchanged(directory, loaded.descriptor());
             texture = new NativeImageBackedTexture(color);
             color = null;
             depthTexture = uploadDepth(loaded.depth());
-            var next = new View(loaded.metadata(), camera, client.world, context.owner(), context.dimension(), context.origin(), texture, depthTexture);
+            var next = new View(loaded.metadata(), camera, client.world, context.owner(), context.dimension(), context.origin(), texture, depthTexture, false);
             if (!valid(next)) throw new IOException("The active bridge changed while loading");
             active = next;
             texture = null;
@@ -151,12 +228,33 @@ public final class CaptureView {
     }
 
     private static void off() {
+        stopLive("off", false);
+    }
+
+    private static void stopLive(String reason, boolean notify) {
+        boolean wasLive = liveBinding != null;
+        liveBinding = null;
+        if (stream != null) stream.mailbox.stop(reason);
+        clearView();
+        if (wasLive) {
+            LoggerFactory.getLogger("stellar_bridge").info("{}", stream.mailbox.status(System.nanoTime()));
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (notify && client.player != null)
+                client.player.sendMessage(Text.literal("EVE live diagnostic stopped: " + reason + "; normal camera restored."), false);
+        }
+    }
+
+    private static void clearView() {
         View previous = active;
         active = null;
         rendering = null;
-        if (previous != null) {
-            previous.color.close();
-            GlStateManager._deleteTexture(previous.depthTexture);
+        close(previous);
+    }
+
+    private static void close(View view) {
+        if (view != null) {
+            view.color.close();
+            GlStateManager._deleteTexture(view.depthTexture);
         }
     }
 
@@ -168,8 +266,8 @@ public final class CaptureView {
             draw(view, context);
         } catch (RuntimeException failure) {
             off();
-            LoggerFactory.getLogger("stellar_bridge").error("EVE still compositor stopped", failure);
-            MinecraftClient.getInstance().player.sendMessage(Text.literal("EVE still compositor stopped; normal camera restored."), false);
+            LoggerFactory.getLogger("stellar_bridge").error("EVE compositor stopped", failure);
+            MinecraftClient.getInstance().player.sendMessage(Text.literal("EVE compositor stopped; normal camera restored."), false);
         }
     }
 
@@ -233,5 +331,11 @@ public final class CaptureView {
 
     private static long now() { return System.currentTimeMillis() / 1000; }
     private record View(CaptureFrame.Metadata metadata, CaptureProjection.CameraPose camera, ClientWorld world, UUID owner,
-                        String dimension, CaptureFrame.Position origin, NativeImageBackedTexture color, int depthTexture) { }
+                        String dimension, CaptureFrame.Position origin, NativeImageBackedTexture color, int depthTexture, boolean live) { }
+    private record Binding(ClientWorld world, String session, UUID owner, String dimension, CaptureFrame.Position origin) {
+        boolean matches(ClientWorld currentWorld, StellarBridge.RenderingContext context) {
+            return world == currentWorld && session.equals(context.session()) && owner.equals(context.owner())
+                    && dimension.equals(context.dimension()) && origin.equals(context.origin());
+        }
+    }
 }

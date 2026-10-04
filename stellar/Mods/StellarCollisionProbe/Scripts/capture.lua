@@ -7,7 +7,7 @@
 -- FILE <fixedImageBasename> <byteLength>
 -- END <captureId>
 -- Coordinates use Stellar Blade world units; color alpha is unverified inverse opacity.
--- Paired still metadata v1: ten ASCII LF lines, with a trailing LF.
+-- Paired frame metadata v1: ten ASCII LF lines, with a trailing LF.
 -- SBMC_FRAME 1 <unixSeconds-counter> <unixSeconds>
 -- SIZE 320 180
 -- CAMERA <x> <y> <z> <pitch> <yaw> <roll> <horizontalFovDegrees>
@@ -19,7 +19,7 @@
 -- DEPTH eve-frame-<id>-depth.hdr <byteLength>
 -- END <id>
 -- Color is Source2/RGBA8, inverse-opacity mask Source0/RGBA8, depth Source4/RGBA16f.
--- A frame uses one camera snapshot in one game-thread call; this is not live transport.
+-- A frame uses one camera snapshot in one game-thread call.
 local Capture = {}
 local frame_counter=0
 local modes = {
@@ -151,6 +151,11 @@ function Capture.new(engine,directory)
     local next_id=0
     local previous_files={}
     local function purge_files()
+        -- Invalidate the published descriptor before deleting its image generation.
+        if retired['eve-frame.txt'] then
+            local removed,_,code=os.remove(directory..'/eve-frame.txt')
+            if removed or code==2 then retired['eve-frame.txt']=nil else return end
+        end
         for name in pairs(retired) do
             local removed,_,code=os.remove(directory..'/'..name)
             if removed or code==2 then retired[name]=nil end
@@ -177,8 +182,17 @@ function Capture.new(engine,directory)
             if not handle.actor and not handle.target then table.remove(owned,i) end
         end
         purge_files()
+        if next(retired) then failures[#failures+1]='capture files could not be removed' end
         if api.status()~='idle' then return false,'Capture cleanup failed: '..table.concat(failures,'; ') end
         return true,'Capture resources released.'
+    end
+    function api.clear()
+        retired['eve-frame.txt']=true
+        retired['eve-frame.txt.tmp']=true
+        for _,layer in ipairs(previous_files) do retired[layer.file]=true end
+        previous_files={}
+        purge_files()
+        return api.cleanup()
     end
     local function capture_layer(camera,mode,kind)
         local handle={}

@@ -5,6 +5,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Random;
+import java.util.concurrent.Executors;
 import javax.imageio.ImageIO;
 import net.minecraft.client.texture.NativeImage;
 
@@ -33,6 +34,25 @@ public final class CaptureImagesTest {
         try (NativeImage ignored = CaptureImages.decode(new byte[] {1, 2, 3})) {
             throw new AssertionError("Invalid PNG must fail decoding");
         } catch (IOException expectedFailure) { }
+        BufferedImage mask = new BufferedImage(320, 180, BufferedImage.TYPE_INT_ARGB);
+        mask.setRGB(137, 89, 0x7f000000);
+        mask.setRGB(138, 89, 0x80000000);
+        ByteArrayOutputStream maskOutput = new ByteArrayOutputStream();
+        ImageIO.write(mask, "PNG", maskOutput);
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            worker.submit(() -> {
+                assert !RenderSystem.isOnRenderThread();
+                try (NativeImage decoded = CaptureImages.decodeMasked(png, maskOutput.toByteArray())) {
+                    assert (decoded.getColor(137, 89) >>> 24) == 128;
+                    assert (decoded.getColor(138, 89) >>> 24) == 0;
+                    int pixel = decoded.getColor(137, 89); // ABGR; component helpers require the render thread.
+                    assert (pixel & 255) == (expected >>> 16 & 255);
+                    assert (pixel >>> 8 & 255) == (expected >>> 8 & 255);
+                    assert (pixel >>> 16 & 255) == (expected & 255);
+                }
+                return null;
+            }).get();
+        }
         System.out.println("Capture native PNG tests passed: " + png.length + " bytes decoded through real STB");
     }
 }
