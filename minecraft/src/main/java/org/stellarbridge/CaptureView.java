@@ -99,8 +99,8 @@ public final class CaptureView {
             if (!CaptureProjection.matches(loaded.metadata(), context.session(), context.revision(), now()))
                 throw new IOException("Capture LINK does not match the active terrain session and revision");
             var camera = CaptureProjection.camera(loaded.metadata(), context.origin());
-            color = NativeImage.read(loaded.color());
-            try (NativeImage mask = NativeImage.read(loaded.mask())) {
+            color = CaptureImages.decode(loaded.color());
+            try (NativeImage mask = CaptureImages.decode(loaded.mask())) {
                 if (color.getWidth() != 320 || color.getHeight() != 180 || mask.getWidth() != 320 || mask.getHeight() != 180)
                     throw new IOException("Decoded capture dimensions differ from the descriptor");
                 for (int y = 0; y < 180; y++) {

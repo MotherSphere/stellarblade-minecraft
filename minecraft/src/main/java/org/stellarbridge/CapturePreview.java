@@ -66,8 +66,8 @@ final class CapturePreview {
             Path directory = Path.of(System.getProperty("stellarbridge.directory",
                     Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
             CaptureFrame.Loaded loaded = CaptureFrame.read(directory, now());
-            color = NativeImage.read(loaded.color());
-            mask = NativeImage.read(loaded.mask());
+            color = CaptureImages.decode(loaded.color());
+            mask = CaptureImages.decode(loaded.mask());
             if (color.getWidth() != 320 || color.getHeight() != 180 || mask.getWidth() != 320 || mask.getHeight() != 180)
                 throw new IOException("Decoded capture dimensions differ from the descriptor");
             for (int y = 0; y < 180; y++) {
