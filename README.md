@@ -8,6 +8,8 @@ The current build includes a Stellar Blade collision probe and an experimental *
 
 Use **Minecraft Java 1.21.1**, **Fabric Loader 0.19.5**, **Fabric API 0.116.17+1.21.1**, and **Java 21**. This experiment accepts only a private creative singleplayer world, without LAN players, fluids or vehicles. Start with a separate flat test world. Disable `pauseOnLostFocus` in this instance's `options.txt` so its integrated server keeps publishing while Stellar Blade has focus. Keep Minecraft in the world, rather than its pause menu.
 
+If Minecraft still opens its pause menu when switching games, return to the world and use **F3+P** to toggle automatic pausing off in the running game. A file edit alone does not change an already running instance's options. Check that terrain timestamps keep advancing after switching to Stellar Blade.
+
 Build with the included Gradle wrapper (Loom 1.11.8, Yarn 1.21.1+build.3):
 
 ```sh
@@ -50,6 +52,8 @@ Optional cube visuals use the game's `/Engine/BasicShapes/Cube.Cube` asset if pr
 
 The collision fixture has been exercised with Stellar Blade Steam build `24463856`, the installed game-specific UE4SS `v3.0.1 Beta #0` (`08a0733`), and Proton `proton-cachyos-11.0-20260703-slr-x86_64_v3`. EVE can stand on the added floor and is blocked by the added obstacles with her native controller. The obstacle can be removed/recreated, and return/cleanup restores the original position before removing the floor.
 
+The local Fabric baseline above has also been exercised with a creative flat world: real terrain was imported, Minecraft reported active EVE position control, and block edits reached Stellar Blade with matching revision acknowledgements. A placed full block blocked EVE, supported native climbing/jumping onto it, and became traversable after removal. Expiring the Minecraft heartbeat returned EVE to the original level and removed the temporary scene. This validates the bounded experiment, not rendering, combat integration, general terrain streaming or playable latency.
+
 Stellar Blade extends `Actor.SetActorEnableCollision` with an additional `inFastUpdate` boolean. This prototype uses that game-specific signature. Other game or loader versions need their own compatibility check.
 
 ## Install and remove
@@ -76,8 +80,8 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 
 | Keys | Console equivalent | Action |
 |---|---|---|
-| F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
 | F5 | `sbmc mirror` | Import the active Minecraft terrain when bridge configuration is installed |
+| F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
 | F7 | `sbmc create` | Create the fixture 600 Unreal units above the current player position |
 | F8 | `sbmc enter` | Move EVE to the fixture once; native controls then take over |
 | F9 | `sbmc toggle` | Remove or recreate only the obstacle |
