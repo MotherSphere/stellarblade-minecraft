@@ -72,6 +72,10 @@ The collision fixture has been exercised with Stellar Blade Steam build `2446385
 
 The local Fabric baseline above has also been exercised with a creative flat world: real terrain was imported, Minecraft reported active EVE position control, and block edits reached Stellar Blade with matching revision acknowledgements. A placed full block blocked EVE, supported native climbing/jumping onto it, and became traversable after removal. Expiring the Minecraft heartbeat returned EVE to the original level and removed the temporary scene. This validates the bounded experiment, not rendering, combat integration, general terrain streaming or playable latency.
 
+The native still renderer has been exercised in the same setup. EVE's complete cutout was captured independently of the block, then Minecraft's world depth correctly hid her lower body behind that block. The captured camera and projection placed her in the Minecraft world, without the vanilla avatar. `/stellarview off` restored the normal camera, and F11 returned EVE and removed the lab. The test used 320×180 frames; continuous animation, higher-resolution performance, complete hair/transparency, independent accessories and matched lighting remain unverified.
+
+PNG decoding uses Minecraft's stream API rather than its byte-array overload, which allocates compressed data on a small native thread stack. A real capture larger than 64 KiB exposed that limit. The corrected path passed a generated 230,802-byte PNG regression through the actual native decoder, then loaded the larger game capture successfully.
+
 Stellar Blade extends `Actor.SetActorEnableCollision` with an additional `inFastUpdate` boolean. This prototype uses that game-specific signature. Other game or loader versions need their own compatibility check.
 
 ## Install and remove
