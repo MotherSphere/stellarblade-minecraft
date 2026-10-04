@@ -12,6 +12,12 @@ The probe uses Unreal's `TriggerBox` and reflected collision APIs through the ex
 
 Optional cube visuals use the game's `/Engine/BasicShapes/Cube.Cube` asset if present. Debug outlines are also requested, but shipping builds may omit them. Missing visuals do not establish missing collision, and visible cubes do not establish working collision.
 
+## Tested configuration
+
+The collision fixture has been exercised with Stellar Blade Steam build `24463856`, the installed game-specific UE4SS `v3.0.1 Beta #0` (`08a0733`), and Proton `proton-cachyos-11.0-20260703-slr-x86_64_v3`. EVE can stand on the added floor and is blocked by the added obstacles with her native controller. The obstacle can be removed/recreated, and return/cleanup restores the original position before removing the floor.
+
+Stellar Blade extends `Actor.SetActorEnableCollision` with an additional `inFastUpdate` boolean. This prototype uses that game-specific signature. Other game or loader versions need their own compatibility check.
+
 ## Install and remove
 
 Requirements: Stellar Blade PC, its compatible UE4SS installation, and Python 3 for deployment. The source can be syntax-checked and its lifecycle tested with Lua without launching either game.
