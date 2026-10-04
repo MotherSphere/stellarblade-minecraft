@@ -37,7 +37,7 @@ local function add_visual(world, spec, handle)
     assert(valid(component), 'Optional visual has no StaticMeshComponent.')
     component:SetMobility(2)
     component:SetCollisionEnabled(0)
-    visual:SetActorEnableCollision(false)
+    visual:SetActorEnableCollision(false,false)
     assert(component:SetStaticMesh(mesh), 'Optional cube visual could not be set.')
     visual:SetActorScale3D({X=spec.extent.X/50,Y=spec.extent.Y/50,Z=spec.extent.Z/50})
     visual:SetActorHiddenInGame(false)
@@ -61,7 +61,8 @@ function engine.configure(handle, spec)
     box:SetCollisionObjectType(1) -- WorldDynamic; bilateral response must be tested in game.
     box:SetCollisionResponseToAllChannels(2) -- Block
     box:SetCollisionEnabled(3) -- QueryAndPhysics
-    actor:SetActorEnableCollision(true)
+    -- Stellar Blade adds inFastUpdate; use the non-fast path for this experiment.
+    actor:SetActorEnableCollision(true,false)
     assert(box:GetCollisionEnabled()==3, 'Collision mode was not accepted.')
     local shown, why = pcall(add_visual,actor:GetWorld(),spec,handle)
     if not shown then log('Optional cube visual unavailable: '..tostring(why)) end
@@ -134,4 +135,4 @@ RegisterConsoleCommandHandler('sbmc',function(_,parameters)
     dispatch(parameters[1] or 'status')
     return true
 end)
-log('Loaded revision 2; idle. Ctrl+F6 status, Ctrl+F7 create, Ctrl+F8 enter, Ctrl+F9 obstacle, Ctrl+F10 return/cleanup. No geometry created at startup.')
+log('Loaded revision 3; idle. Ctrl+F6 status, Ctrl+F7 create, Ctrl+F8 enter, Ctrl+F9 obstacle, Ctrl+F10 return/cleanup. No geometry created at startup.')

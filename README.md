@@ -52,6 +52,7 @@ A real pass requires EVE to be supported only by the added floor, to collide wit
 
 ```sh
 lua tests/probe_test.lua
+lua tests/adapter_test.lua
 python -m unittest discover -s tests -p 'test_*.py' -v
 luac -p stellar/Mods/StellarCollisionProbe/Scripts/main.lua
 luac -p stellar/Mods/StellarCollisionProbe/Scripts/probe.lua
