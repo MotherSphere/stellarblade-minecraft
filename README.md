@@ -36,11 +36,13 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 
 | Keys | Console equivalent | Action |
 |---|---|---|
-| Ctrl+F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
-| Ctrl+F7 | `sbmc create` | Create the fixture 600 Unreal units above the current player position |
-| Ctrl+F8 | `sbmc enter` | Move EVE to the fixture once; native controls then take over |
-| Ctrl+F9 | `sbmc toggle` | Remove or recreate only the obstacle |
-| Ctrl+F10 | `sbmc restore` | Return EVE to her original position and remove the fixture |
+| F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
+| F7 | `sbmc create` | Create the fixture 600 Unreal units above the current player position |
+| F8 | `sbmc enter` | Move EVE to the fixture once; native controls then take over |
+| F9 | `sbmc toggle` | Remove or recreate only the obstacle |
+| F11 | `sbmc restore` | Return EVE to her original position and remove the fixture |
+
+These shortcuts do not hold Ctrl, which can activate aiming in Stellar Blade. F10 is left to the existing console binding.
 
 Read `SB/Binaries/Win64/ue4ss/UE4SS.log` for lines prefixed `[StellarCollisionProbe]`. Unsupported APIs stop the action with a diagnostic. If a return fails, the supporting floor stays in place so the return can be retried.
 
