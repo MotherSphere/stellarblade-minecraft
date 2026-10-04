@@ -29,11 +29,13 @@ package.loaded.UEHelpers={GetPlayer=function()return pawn end}
 package.loaded.probe={new=function(engine) captured=engine; return {} end}
 StaticFindObject=function(path) return path=='/Script/Engine.TriggerBox' and world or null end
 LoadAsset=function() return null end
-RegisterKeyBind=function(key,callback)
-    assert(type(callback)=='function', 'Probe keys must not include gameplay modifiers such as Ctrl')
+RegisterKeyBind=function(key,modifiers,callback)
+    if callback then
+        assert(key==Key.F7 and #modifiers==1 and modifiers[1]==ModifierKey.SHIFT,'Only the explicit Shift+F7 texture shortcut has a modifier')
+    else assert(type(modifiers)=='function','Bare probe keys must retain their callbacks') end
 end
 RegisterConsoleCommandHandler=function()end
-Key={F1=9,F2=8,F4=7,F5=0,F6=1,F7=2,F8=3,F9=4,F10=5,F11=6}; ModifierKey={CONTROL=1}
+Key={F1=9,F2=8,F4=7,F5=0,F6=1,F7=2,F8=3,F9=4,F10=5,F11=6}; ModifierKey={CONTROL=1,SHIFT=2}
 dofile('stellar/Mods/StellarCollisionProbe/Scripts/main.lua')
 local spec={role='floor',center={X=0,Y=0,Z=600},extent={X=800,Y=800,Z=25}}
 local handle=captured.spawn(spec)

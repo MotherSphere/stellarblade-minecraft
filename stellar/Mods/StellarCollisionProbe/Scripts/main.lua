@@ -87,11 +87,13 @@ local active = probe
 local bridge
 local capture
 local stream
+local visual
 local configured,config = pcall(require,'bridge_config')
 if configured then
     local Terrain = require('terrain')
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
     capture = require('capture').new(require('capture_adapter').new(),config.directory)
+    visual = require('visual_probe').new(require('visual_probe_adapter').new(),config.directory)
     stream = require('capture_stream').new(capture,function()
         return active==bridge and bridge.pose() or nil
     end,config.scale)
@@ -112,6 +114,16 @@ local function status()
     local s = engine.snapshot()
     log(string.format('state=%s pawn=%s world=%s pos=(%.2f,%.2f,%.2f) capsule=(radius %.2f,half-height %.2f)',
         active.status(),pawn:GetFullName(),world:GetFullName(),s.position.X,s.position.Y,s.position.Z,s.radius,s.half_height))
+    local timed,timing=pcall(function()
+        local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+        local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
+        assert(valid(system) and valid(gameplay),'native timing libraries are unavailable')
+        local frames,seconds=system:GetFrameCount(),gameplay:GetRealTimeSeconds(world)
+        assert(type(frames)=='number' and frames>=0 and type(seconds)=='number' and seconds>=0 and seconds<1e15,
+            'native timing counters are unavailable')
+        return string.format('native_frame_count=%d native_real_seconds=%.6f',frames,seconds)
+    end)
+    log(timed and timing or 'Native timing unavailable: '..tostring(timing))
     -- A short downward trace can identify support, but cannot prove native traversal by itself.
     local hit = {}
     local ok, was_hit = pcall(function()
@@ -126,6 +138,10 @@ local function status()
     show_markers()
 end
 local actions = {
+    texture=function()
+        assert(visual,'Install with --bridge-dir to enable the native texture probe.')
+        return visual.toggle()
+    end,
     live=function()
         assert(stream,'Install with --bridge-dir to enable native live capture.')
         return stream.start()
@@ -181,15 +197,19 @@ local actions = {
         return probe.toggle()
     end,
     restore=function()
-        local cleaned,cleanup_message=true,nil
-        if stream then
-            local ran,ok,message=pcall(stream.stop,'return requested')
-            cleaned=ran and ok
-            cleanup_message=ran and message or tostring(ok)
+        local success,messages=true,{}
+        local function attempt(label,action,idle_return)
+            local ran,ok,message=pcall(action)
+            if ran and not ok and idle_return then ok=true; message='No active scene requires a return.' end
+            success=success and ran and ok
+            messages[#messages+1]=label..': '..tostring(ran and message or ok)
         end
-        -- A capture cleanup failure must never prevent EVE's guarded return.
-        local returned,message=active.restore()
-        return returned and cleaned,message..(cleaned and '' or '; '..tostring(cleanup_message))
+        if visual then attempt('Texture',visual.clear) end
+        if stream then attempt('Capture',function() return stream.stop('return requested') end) end
+        -- Each optional cleanup is independent of EVE's guarded return.
+        local inspected,state=pcall(active.status)
+        attempt('Return',active.restore,inspected and state=='idle')
+        return success,table.concat(messages,'; ')
     end,
 }
 local function dispatch(name)
@@ -197,7 +217,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, live, liveoff, frame, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, live, liveoff, frame, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -211,6 +231,7 @@ RegisterKeyBind(Key.F4,function() dispatch('frame') end)
 RegisterKeyBind(Key.F5,function() dispatch('mirror') end)
 RegisterKeyBind(Key.F6,function() dispatch('status') end)
 RegisterKeyBind(Key.F7,function() dispatch('create') end)
+RegisterKeyBind(Key.F7,{ModifierKey.SHIFT},function() dispatch('texture') end)
 RegisterKeyBind(Key.F8,function() dispatch('enter') end)
 RegisterKeyBind(Key.F9,function() dispatch('toggle') end)
 RegisterKeyBind(Key.F11,function() dispatch('restore') end)
@@ -220,12 +241,12 @@ RegisterConsoleCommandHandler('sbmc',function(_,parameters)
 end)
 if bridge then
     local pending=false
-    local last_stream_message
-    local function report_stream(success,message)
-        if message and message~=last_stream_message then
+    local last_messages={}
+    local function report_result(kind,success,message)
+        if message and message~=last_messages[kind] then
             log((success and 'OK: ' or 'STOP: ')..message)
-            last_stream_message=message
-        elseif not message then last_stream_message=nil end
+            last_messages[kind]=message
+        elseif not message then last_messages[kind]=nil end
     end
     LoopAsync(200,function()
         if pending then return false end
@@ -234,9 +255,10 @@ if bridge then
         if not read_ok then stream.cancel('bridge snapshot read failed: '..tostring(packet)) end
         local scheduled,err=pcall(ExecuteInGameThread,function()
             local ok,why=pcall(function()
+                report_result('texture',visual.tick())
                 local updated,update_error=pcall(bridge.tick,read_ok and packet or nil)
-                if updated then report_stream(stream.tick())
-                else report_stream(stream.stop('bridge tick failed: '..tostring(update_error))) end
+                if updated then report_result('capture',stream.tick())
+                else report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error))) end
             end)
             -- Keep one pending callback until native export and cleanup have finished.
             pending=false
@@ -253,4 +275,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 9; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
+log('Loaded revision 10; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

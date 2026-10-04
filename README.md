@@ -72,6 +72,29 @@ Minecraft reads and decodes frames on a single background worker and keeps at mo
 
 Stopping native capture invalidates its published frame and cleans up the images owned by that Lua session. It never restarts automatically after an error or cleanup failure. The still commands retain their separate 30-second lifetime. Hair, transparency, independent accessories and lighting retain the limitations of the still experiment.
 
+## Native textured-block probe
+
+This probe evaluates the alternative rendering direction: drawing Minecraft terrain inside Stellar Blade so EVE stays in the game's normal renderer. Her image is not captured or transferred in this mode. The first capability check shows one temporary stone-textured cube; it does not yet import the Minecraft world's visual geometry.
+
+Provide the vanilla 16×16 stone texture from your own Minecraft 1.21.1 installation as `minecraft-stone.png` in the private bridge directory. No Minecraft assets are included with this project. For example, with both games closed, replace the client JAR path below:
+
+```sh
+python - <<'PY'
+from pathlib import Path
+from zipfile import ZipFile
+
+with ZipFile('/path/to/minecraft-1.21.1-client.jar') as client:
+    texture = client.read('assets/minecraft/textures/block/stone.png')
+destination = Path.home() / '.local/share/stellar-blade-minecraft/bridge/minecraft-stone.png'
+with destination.open('xb') as output:
+    output.write(texture)
+PY
+```
+
+Load EVE in a clear outdoor area and press **Shift+F7** (`sbmc texture`). A one-block cube appears approximately 2.5 blocks ahead of her. It has no collision and does not move EVE. The command toggles the cube off; **F11** also removes it while performing the usual capture cleanup and guarded return. Changed pawn/world context triggers cleanup. Failed cleanup retains ownership and blocks replacement until it succeeds.
+
+Only the temporary cube receives a new material instance and imported texture. The game’s shared material is unchanged. An opaque widget material supplies the initial texture-sampling test, so lighting and shading are not claimed to match Minecraft. Missing native APIs or a suitable material stop the probe with a diagnostic. Successful parameter assignment is not proof of correct pixels; inspect the actual cube while rotating the camera.
+
 ## Collision probe
 
 The UE4SS Lua mod creates seven temporary collision volumes: an elevated floor, four boundary walls, a low step and a removable obstacle. EVE's native movement is left unchanged. Creation does not move her; entering the fixture is a separate command. Returning restores her original position before deleting the supporting floor.
@@ -116,6 +139,7 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 
 | Keys | Console equivalent | Action |
 |---|---|---|
+| Shift+F7 | `sbmc texture` | Toggle the non-colliding native stone-texture probe |
 | F1 | `sbmc live` / `sbmc liveoff` | Toggle the bounded animated capture while EVE is in the linked lab |
 | F5 | `sbmc mirror` | Import the active Minecraft terrain when bridge configuration is installed |
 | F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
@@ -143,6 +167,8 @@ lua tests/bridge_test.lua
 lua tests/capture_test.lua
 lua tests/capture_stream_test.lua
 lua tests/capture_stream_main_test.lua
+lua tests/visual_probe_test.lua
+lua tests/visual_probe_adapter_test.lua
 python -m unittest discover -s tests -p 'test_*.py' -v
 luac -p stellar/Mods/StellarCollisionProbe/Scripts/*.lua
 cd minecraft && ./gradlew build
