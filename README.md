@@ -40,6 +40,12 @@ The sampled patch is nine blocks wide, six blocks high and nine blocks deep, fix
 
 Transport uses bounded versioned text snapshots with session IDs, revisions, timestamps and complete-message footers. Java publishes terrain with atomic replacement; Lua alternates two EVE files because the Windows C runtime cannot rename over an existing destination. Missing or stale EVE packets release Minecraft's position override. No network service or additional native transport DLL is used.
 
+## Native image capture experiment
+
+With bridge configuration installed, **F4** (`sbmc capture`) requests a single 320×180 image through a temporary Unreal scene-capture actor showing EVE's components. **F2** (`sbmc depth`) requests a separate depth HDR. This probe does not move EVE, hide the original level or continuously capture frames. It releases the temporary actor and render target after each request; `sbmc capturecleanup` retries cleanup if the log reports a failure.
+
+Outputs are `eve-capture-color.png` and `eve-capture-depth.hdr` in the private bridge directory, each with a corresponding `.txt` descriptor containing camera, projection and context metadata. Descriptors are published only after export and cleanup succeed. Repeating a capture replaces that mode's previous output. The color source requests inverse opacity in alpha; actual pixels and depth must be inspected before claiming isolation or correct Minecraft composition. Independently attached weapons, the drone and effects may require additional capture membership. These are manual stills, not synchronized color/depth pairs or a live rendering bridge.
+
 ## Collision probe
 
 The UE4SS Lua mod creates seven temporary collision volumes: an elevated floor, four boundary walls, a low step and a removable obstacle. EVE's native movement is left unchanged. Creation does not move her; entering the fixture is a separate command. Returning restores her original position before deleting the supporting floor.
@@ -103,6 +109,7 @@ lua tests/adapter_test.lua
 lua tests/terrain_test.lua
 lua tests/protocol_test.lua
 lua tests/bridge_test.lua
+lua tests/capture_test.lua
 python -m unittest discover -s tests -p 'test_*.py' -v
 luac -p stellar/Mods/StellarCollisionProbe/Scripts/*.lua
 cd minecraft && ./gradlew build

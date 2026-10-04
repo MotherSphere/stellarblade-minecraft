@@ -85,10 +85,12 @@ end
 local probe = Probe.new(engine)
 local active = probe
 local bridge
+local capture
 local configured,config = pcall(require,'bridge_config')
 if configured then
     local Terrain = require('terrain')
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
+    capture = require('capture').new(require('capture_adapter').new(),config.directory)
 end
 local function show_markers()
     local pawn = player()
@@ -120,6 +122,18 @@ local function status()
     show_markers()
 end
 local actions = {
+    capture=function()
+        assert(capture,'Install with --bridge-dir to enable native image capture.')
+        return capture.capture('color')
+    end,
+    depth=function()
+        assert(capture,'Install with --bridge-dir to enable native image capture.')
+        return capture.capture('depth')
+    end,
+    capturecleanup=function()
+        assert(capture,'Capture is not configured.')
+        return capture.cleanup()
+    end,
     create=function()
         assert(active.status()=='idle','Return and clean up the current scene first.')
         active=probe
@@ -143,14 +157,16 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle or restore.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
-            if success and name~='restore' then show_markers() end
+            if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
         end)
         if not ok then log('STOP: '..tostring(err)) end
     end)
 end
+RegisterKeyBind(Key.F2,function() dispatch('depth') end)
+RegisterKeyBind(Key.F4,function() dispatch('capture') end)
 RegisterKeyBind(Key.F5,function() dispatch('mirror') end)
 RegisterKeyBind(Key.F6,function() dispatch('status') end)
 RegisterKeyBind(Key.F7,function() dispatch('create') end)
@@ -176,4 +192,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 5; idle. F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry created at startup.')
+log('Loaded revision 6; idle. F2 depth still, F4 color still, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
