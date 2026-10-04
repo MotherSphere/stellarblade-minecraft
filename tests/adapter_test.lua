@@ -1,5 +1,6 @@
 -- Target-game API contract: Stellar Blade extends Actor.SetActorEnableCollision.
 -- This fixture validates our call shape, not Unreal's collision simulation.
+package.path='stellar/Mods/StellarCollisionProbe/Scripts/?.lua;'..package.path
 local captured
 local null = {IsValid=function() return false end}
 local box = {IsValid=function() return true end, IsA=function() return true end}
@@ -32,7 +33,7 @@ RegisterKeyBind=function(key,callback)
     assert(type(callback)=='function', 'Probe keys must not include gameplay modifiers such as Ctrl')
 end
 RegisterConsoleCommandHandler=function()end
-Key={F6=1,F7=2,F8=3,F9=4,F10=5,F11=6}; ModifierKey={CONTROL=1}
+Key={F5=0,F6=1,F7=2,F8=3,F9=4,F10=5,F11=6}; ModifierKey={CONTROL=1}
 dofile('stellar/Mods/StellarCollisionProbe/Scripts/main.lua')
 local spec={role='floor',center={X=0,Y=0,Z=600},extent={X=800,Y=800,Z=25}}
 local handle=captured.spawn(spec)

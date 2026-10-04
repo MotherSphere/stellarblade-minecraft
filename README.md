@@ -2,7 +2,41 @@
 
 An experimental bridge project for playing EVE with her native movement and combat in a live Minecraft Java world on Linux, with Stellar Blade running through Proton.
 
-The current deliverable is **only a Stellar Blade collision probe**. There is no Minecraft integration yet. Automated checks cover fixture lifecycle and deployment; they do not prove that the installed game supports these collisions.
+The current build includes a Stellar Blade collision probe and an experimental **local Minecraft terrain and position link**. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. EVE rendering, camera composition, cross-game combat and general world streaming are not implemented yet.
+
+## Minecraft terrain link
+
+Use **Minecraft Java 1.21.1**, **Fabric Loader 0.19.5**, **Fabric API 0.116.17+1.21.1**, and **Java 21**. This experiment accepts only a private creative singleplayer world, without LAN players, fluids or vehicles. Start with a separate flat test world. Disable `pauseOnLostFocus` in this instance's `options.txt` so its integrated server keeps publishing while Stellar Blade has focus. Keep Minecraft in the world, rather than its pause menu.
+
+Build with the included Gradle wrapper (Loom 1.11.8, Yarn 1.21.1+build.3):
+
+```sh
+cd minecraft
+./gradlew build
+```
+
+Copy `minecraft/build/libs/stellar-bridge-0.1.0.jar` and the matching Fabric API jar into that instance's `minecraft/mods/` directory while Minecraft is closed. The mod starts inactive.
+
+On Linux, the shared directory defaults to `~/.local/share/stellar-blade-minecraft/bridge`. The Minecraft mod creates it with private permissions. To prepare it before installing the Stellar Blade side:
+
+```sh
+mkdir -p "$HOME/.local/share/stellar-blade-minecraft/bridge"
+chmod 700 "$HOME/.local/share/stellar-blade-minecraft/bridge"
+python tools/deploy.py install --mods-dir '/path/to/StellarBlade/SB/Binaries/Win64/ue4ss/Mods' \
+  --bridge-dir "$HOME/.local/share/stellar-blade-minecraft/bridge"
+```
+
+The installer generates a machine-specific Lua configuration, including the Proton `Z:` path, and records it in the ownership manifest. It is not part of the source. A custom Minecraft location can be set with `-Dstellarbridge.directory=/absolute/path`; both games must use the same directory.
+
+1. Stand on a full block in the creative test world and run `/stellar start`. `/stellar status` reports the revision and position link. `/stellar stop` ends the session.
+2. In Stellar Blade, load a backed-up save in a clear outdoor location. Press **F5** (`sbmc mirror`) to import the terrain. Check that the elevated scene is clear of the game's existing geometry.
+3. Press **F8** to enter once. EVE's native controller owns movement. Minecraft's local player follows her feet position; Minecraft mouse look remains available for block editing during this phase.
+4. Edit blocks in the fixed patch to test collision updates. A new block intersecting EVE is deferred until she moves away. Imported replacement collision is prepared before the old collision is removed.
+5. Press **F11** to return EVE and remove the temporary scene. Stop the Minecraft session before closing either game. If the connection expires, the mod attempts a guarded return and retains support if that return fails.
+
+The sampled patch is nine blocks wide, six blocks high and nine blocks deep, fixed around the initial Minecraft anchor. At most 256 merged collision boxes are accepted. The provisional scale is 100 Unreal units per block. Separate lab guards contain EVE at the patch boundary; they are additional experimental geometry, not Minecraft blocks. Visible cubes are diagnostic visuals from Stellar Blade, not Minecraft textures or a finished passthrough renderer.
+
+Transport uses bounded versioned text snapshots with session IDs, revisions, timestamps and complete-message footers. Java publishes terrain with atomic replacement; Lua alternates two EVE files because the Windows C runtime cannot rename over an existing destination. Missing or stale EVE packets release Minecraft's position override. No network service or additional native transport DLL is used.
 
 ## Collision probe
 
@@ -43,6 +77,7 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 | Keys | Console equivalent | Action |
 |---|---|---|
 | F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
+| F5 | `sbmc mirror` | Import the active Minecraft terrain when bridge configuration is installed |
 | F7 | `sbmc create` | Create the fixture 600 Unreal units above the current player position |
 | F8 | `sbmc enter` | Move EVE to the fixture once; native controls then take over |
 | F9 | `sbmc toggle` | Remove or recreate only the obstacle |
@@ -61,9 +96,12 @@ A real pass requires EVE to be supported only by the added floor, to collide wit
 ```sh
 lua tests/probe_test.lua
 lua tests/adapter_test.lua
+lua tests/terrain_test.lua
+lua tests/protocol_test.lua
+lua tests/bridge_test.lua
 python -m unittest discover -s tests -p 'test_*.py' -v
-luac -p stellar/Mods/StellarCollisionProbe/Scripts/main.lua
-luac -p stellar/Mods/StellarCollisionProbe/Scripts/probe.lua
+luac -p stellar/Mods/StellarCollisionProbe/Scripts/*.lua
+cd minecraft && ./gradlew build
 ```
 
-The Lua tests use a small engine boundary substitute to exercise the real fixture lifecycle, including failed creation, failed return, changed worlds and cleanup retries. Engine API availability, graphics, collision responses and controller behavior require in-game validation.
+The Lua tests use a small engine boundary substitute to exercise scene ownership, transactional replacement, failed creation/return, changed worlds and cleanup retries. Java checks cover real file publication, pose gating, collision merging and the shared protocol fixtures. Engine API availability, graphics, collision responses, movement interception and controller behavior require in-game validation.

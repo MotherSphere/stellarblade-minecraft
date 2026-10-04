@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "stellar_bridge",
+  "version": "${version}",
+  "name": "Stellar Bridge",
+  "description": "A bounded local collision and position bridge for Stellar Blade experiments.",
+  "environment": "client",
+  "entrypoints": { "client": ["org.stellarbridge.StellarBridge"] },
+  "mixins": ["stellar_bridge.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "1.21.1",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

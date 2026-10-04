@@ -83,10 +83,17 @@ function engine.move(position, rotation)
 end
 
 local probe = Probe.new(engine)
+local active = probe
+local bridge
+local configured,config = pcall(require,'bridge_config')
+if configured then
+    local Terrain = require('terrain')
+    bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
+end
 local function show_markers()
     local pawn = player()
     local kismet = UE.GetKismetSystemLibrary()
-    for _,spec in ipairs(probe.shapes()) do
+    for _,spec in ipairs(active.shapes()) do
         local ok, err = pcall(function()
             kismet:DrawDebugBox(pawn,spec.center,spec.extent,
                 {R=0.1,G=1.0,B=0.4,A=1.0},{Pitch=0,Yaw=0,Roll=0},30.0,3.0)
@@ -98,7 +105,7 @@ local function status()
     local pawn,world = player()
     local s = engine.snapshot()
     log(string.format('state=%s pawn=%s world=%s pos=(%.2f,%.2f,%.2f) capsule=(radius %.2f,half-height %.2f)',
-        probe.status(),pawn:GetFullName(),world:GetFullName(),s.position.X,s.position.Y,s.position.Z,s.radius,s.half_height))
+        active.status(),pawn:GetFullName(),world:GetFullName(),s.position.X,s.position.Y,s.position.Z,s.radius,s.half_height))
     -- A short downward trace can identify support, but cannot prove native traversal by itself.
     local hit = {}
     local ok, was_hit = pcall(function()
@@ -112,13 +119,31 @@ local function status()
     end
     show_markers()
 end
-local actions = {create=probe.create,enter=probe.enter,toggle=probe.toggle,restore=probe.restore}
+local actions = {
+    create=function()
+        assert(active.status()=='idle','Return and clean up the current scene first.')
+        active=probe
+        return probe.create()
+    end,
+    mirror=function()
+        assert(bridge,'Install with --bridge-dir to enable the Minecraft link.')
+        assert(active.status()=='idle','Return and clean up the current scene first.')
+        active=bridge
+        return bridge.create()
+    end,
+    enter=function() return active.enter() end,
+    toggle=function()
+        assert(active==probe,'Edit Minecraft blocks to update a linked scene.')
+        return probe.toggle()
+    end,
+    restore=function() return active.restore() end,
+}
 local function dispatch(name)
     ExecuteInGameThread(function()
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, enter, toggle or restore.')
+            assert(action, 'Use status, create, mirror, enter, toggle or restore.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and name~='restore' then show_markers() end
@@ -126,6 +151,7 @@ local function dispatch(name)
         if not ok then log('STOP: '..tostring(err)) end
     end)
 end
+RegisterKeyBind(Key.F5,function() dispatch('mirror') end)
 RegisterKeyBind(Key.F6,function() dispatch('status') end)
 RegisterKeyBind(Key.F7,function() dispatch('create') end)
 RegisterKeyBind(Key.F8,function() dispatch('enter') end)
@@ -135,4 +161,19 @@ RegisterConsoleCommandHandler('sbmc',function(_,parameters)
     dispatch(parameters[1] or 'status')
     return true
 end)
-log('Loaded revision 4; idle. F6 status, F7 create, F8 enter, F9 obstacle, F11 return/cleanup. No geometry created at startup.')
+if bridge then
+    local pending=false
+    LoopAsync(200,function()
+        if pending then return false end
+        pending=true
+        local read_ok,packet=pcall(bridge.read)
+        local scheduled,err=pcall(ExecuteInGameThread,function()
+            local ok,why=pcall(function() bridge.tick(read_ok and packet or nil) end)
+            pending=false
+            if not ok then log('Bridge tick stopped: '..tostring(why)) end
+        end)
+        if not scheduled then pending=false; log('Bridge schedule failed: '..tostring(err)) end
+        return false
+    end)
+end
+log('Loaded revision 5; idle. F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry created at startup.')

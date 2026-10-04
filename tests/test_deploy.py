@@ -29,9 +29,9 @@ class DeployTests(unittest.TestCase):
         (self.mods / "mods.txt").write_text("OtherMod : 1\n")
         self.destination = self.mods / "StellarCollisionProbe"
 
-    def run_cli(self, command, succeeds=True):
+    def run_cli(self, command, succeeds=True, extra=()):
         result = subprocess.run(
-            [sys.executable, str(self.script), command, "--mods-dir", str(self.mods)],
+            [sys.executable, str(self.script), command, "--mods-dir", str(self.mods), *extra],
             capture_output=True,
             text=True,
         )
@@ -137,6 +137,33 @@ class DeployTests(unittest.TestCase):
                 deployment.install(self.mods)
         self.assertFalse(self.destination.exists())
         self.assertEqual((self.mods / "mods.txt").read_text(), "OtherMod : 1\n")
+
+    def test_bridge_configuration_is_owned_and_lua_quoted(self):
+        bridge = self.root / "bridge 'quoted'"
+        bridge.mkdir(mode=0o700)
+        self.run_cli("install", extra=("--bridge-dir", str(bridge)))
+        config = self.destination / "Scripts/bridge_config.lua"
+        result = subprocess.run(["lua", "-", str(config)],
+                                 input="local c=dofile(arg[1]); io.write(c.directory)",
+                                 capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "Z:" + str(bridge))
+        manifest = json.loads((self.destination / ".deployment.json").read_text())
+        self.assertEqual(manifest["files"]["Scripts/bridge_config.lua"],
+                         hashlib.sha256(config.read_bytes()).hexdigest())
+        self.run_cli("remove")
+        self.assertTrue(bridge.is_dir())
+
+    def test_bridge_configuration_refuses_symlink_or_shared_directory(self):
+        bridge = self.root / "bridge"
+        bridge.mkdir(mode=0o755)
+        self.run_cli("install", succeeds=False, extra=("--bridge-dir", str(bridge)))
+        self.assertFalse(self.destination.exists())
+        bridge.chmod(0o700)
+        alias = self.root / "alias"
+        alias.symlink_to(bridge, target_is_directory=True)
+        self.run_cli("install", succeeds=False, extra=("--bridge-dir", str(alias)))
+        self.assertFalse(self.destination.exists())
 
 
 if __name__ == "__main__":
