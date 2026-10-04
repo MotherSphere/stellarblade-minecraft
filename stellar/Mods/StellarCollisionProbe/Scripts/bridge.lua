@@ -5,6 +5,10 @@ function Bridge.new(terrain,directory,log,clock)
     clock=clock or os.time
     local current,sequence,last_message,alive_time,stopping=nil,0,nil,0,false
     local api={status=terrain.status,shapes=terrain.shapes}
+    function api.pose()
+        if not current or stopping or not Protocol.fresh(alive_time,clock()) then return nil end
+        return terrain.pose()
+    end
     local function report(message)
         if message~=last_message then log(message); last_message=message end
     end

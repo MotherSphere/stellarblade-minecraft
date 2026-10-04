@@ -122,6 +122,16 @@ local function status()
     show_markers()
 end
 local actions = {
+    frame=function()
+        assert(capture,'Install with --bridge-dir to enable native image capture.')
+        local pose=active==bridge and bridge.pose() or nil
+        local link
+        if pose and pose.state=='entered' then
+            link={session=pose.session,ack=pose.ack,scale=config.scale,position=pose.position}
+        end
+        log('Native frame capture started.')
+        return capture.frame(link)
+    end,
     capture=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
         return capture.capture('color')
@@ -157,7 +167,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, frame, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -166,7 +176,7 @@ local function dispatch(name)
     end)
 end
 RegisterKeyBind(Key.F2,function() dispatch('depth') end)
-RegisterKeyBind(Key.F4,function() dispatch('capture') end)
+RegisterKeyBind(Key.F4,function() dispatch('frame') end)
 RegisterKeyBind(Key.F5,function() dispatch('mirror') end)
 RegisterKeyBind(Key.F6,function() dispatch('status') end)
 RegisterKeyBind(Key.F7,function() dispatch('create') end)
@@ -192,4 +202,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 6; idle. F2 depth still, F4 color still, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
+log('Loaded revision 7; idle. F2 depth still, F4 paired frame, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

@@ -7,8 +7,21 @@
 -- FILE <fixedImageBasename> <byteLength>
 -- END <captureId>
 -- Coordinates use Stellar Blade world units; color alpha is unverified inverse opacity.
--- Fixed filenames are for manual stills only; continuous capture needs paired frame slots.
+-- Paired still metadata v1: ten ASCII LF lines, with a trailing LF.
+-- SBMC_FRAME 1 <unixSeconds-counter> <unixSeconds>
+-- SIZE 320 180
+-- CAMERA <x> <y> <z> <pitch> <yaw> <roll> <horizontalFovDegrees>
+-- PAWN <x> <y> <z> <capsuleHalfHeight>
+-- CONTEXT <pawnAddress> <worldAddress>
+-- LINK <none|32lowerHexSession> <terrainAck> <scale> <relativeFeetX> <relativeFeetY> <relativeFeetZ>
+-- COLOR eve-frame-<id>-color.png <byteLength>
+-- MASK eve-frame-<id>-mask.png <byteLength>
+-- DEPTH eve-frame-<id>-depth.hdr <byteLength>
+-- END <id>
+-- Color is Source2/RGBA8, inverse-opacity mask Source0/RGBA8, depth Source4/RGBA16f.
+-- A frame uses one camera snapshot in one game-thread call; this is not live transport.
 local Capture = {}
+local frame_counter=0
 local modes = {
     color={width=320,height=180,source=0,format=2,file='eve-capture-color.png'},
     depth={width=320,height=180,source=4,format=6,file='eve-capture-depth.hdr'},
@@ -34,10 +47,41 @@ local function image_size(path,kind,mode)
     local data=file:read(4*1024*1024+1); file:close()
     assert(data and #data>32 and #data<=4*1024*1024,'Capture image size is outside the diagnostic limit.')
     if kind=='color' then
-        assert(data:sub(1,8)=='\137PNG\13\10\26\10' and data:sub(13,16)=='IHDR','Capture export is not a PNG.')
-        local width,height=string.unpack('>I4I4',data,17)
-        assert(width==mode.width and height==mode.height,'PNG dimensions differ from the capture.')
-        assert(data:sub(-12)=='\0\0\0\0IEND\174\66\96\130','PNG export is incomplete.')
+        assert(data:sub(1,8)=='\137PNG\13\10\26\10','Capture export is not a PNG.')
+        local offset,has_pixels,image_end=9,false,nil
+        while offset+11<=#data do
+            local length=string.unpack('>I4',data,offset)
+            local chunk_end=offset+length+11
+            assert(chunk_end<=#data,'PNG chunk is truncated.')
+            local chunk=data:sub(offset+4,offset+7)
+            if offset==9 then
+                assert(chunk=='IHDR' and length==13,'PNG has no valid initial IHDR.')
+                local width,height=string.unpack('>I4I4',data,offset+8)
+                assert(width==mode.width and height==mode.height,'PNG dimensions differ from the capture.')
+                assert(data:sub(offset+16,offset+20)=='\8\6\0\0\0','Capture PNG is not noninterlaced RGBA8.')
+            elseif chunk=='IHDR' then
+                error('PNG contains a duplicate IHDR.')
+            elseif chunk=='IDAT' then
+                has_pixels=has_pixels or length>0
+            elseif chunk=='IEND' then
+                assert(length==0 and data:sub(offset,chunk_end)=='\0\0\0\0IEND\174\66\96\130',
+                    'PNG has no valid IEND marker.')
+                assert(has_pixels,'PNG has no image data.')
+                image_end=chunk_end
+                break
+            end
+            offset=chunk_end+1
+        end
+        assert(image_end,'PNG export is incomplete.')
+        if image_end<#data then
+            -- The native exporter can append buffer padding. Publish only complete PNG chunks;
+            -- never search for an IEND byte sequence inside compressed image data.
+            data=data:sub(1,image_end)
+            local normalized=assert(io.open(path,'wb'),'Could not normalize the native PNG export.')
+            local written,write_error=normalized:write(data)
+            local closed,close_error=normalized:close()
+            assert(written,write_error); assert(closed,close_error)
+        end
     else
         local header=data:sub(1,1024)
         assert(header:match('^#%?RADIANCE\r?\n') or header:match('^#%?RGBE\r?\n'),'Capture export is not Radiance HDR.')
@@ -56,61 +100,155 @@ local function metadata(kind,id,epoch,mode,camera,size)
         p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll,camera.fov,e.X,e.Y,e.Z,camera.half_height,
         camera.pawn_id,camera.world_id,mode.file,size,id)
 end
+local function write_file(path,data)
+    local file=assert(io.open(path,'wb'))
+    local written,write_error=file:write(data)
+    local closed,close_error=file:close()
+    assert(written,write_error); assert(closed,close_error)
+end
+local function publish(path,data)
+    assert(#data<=2048,'Capture metadata exceeds its size limit.')
+    local temporary=path..'.tmp'
+    local previous
+    local old=io.open(path,'rb')
+    if old then previous=old:read(2049); old:close(); assert(#previous<=2048,'Previous capture metadata exceeds its size limit.') end
+    local ok,why=pcall(function()
+        remove_existing(temporary)
+        write_file(temporary,data)
+        remove_existing(path)
+        local renamed,rename_error=os.rename(temporary,path)
+        if not renamed then
+            -- Windows rename cannot replace a destination. Restore the preceding descriptor
+            -- if publication fails after removing it; readers reject incomplete descriptors.
+            if previous then write_file(path,previous) end
+            error(rename_error)
+        end
+    end)
+    if not ok then os.remove(temporary); error(why) end
+end
+local function check_link(link)
+    if not link then return 'LINK none 0 100 0 0 0\n' end
+    assert(type(link)=='table' and type(link.session)=='string' and #link.session==32
+        and link.session:match('^[0-9a-f]+$'),'Frame link has an invalid session.')
+    assert(finite(link.ack) and link.ack%1==0 and link.ack>=1 and link.ack<=2147483647,'Frame link has an invalid terrain revision.')
+    assert(finite(link.scale) and link.scale>0,'Frame link has an invalid scale.')
+    local p=link.position
+    assert(type(p)=='table' and finite(p.x) and finite(p.y) and finite(p.z),'Frame link has an invalid relative position.')
+    return string.format('LINK %s %d %.9g %.9g %.9g %.9g\n',link.session,link.ack,link.scale,p.x,p.y,p.z)
+end
+local function frame_metadata(id,epoch,camera,link_line,layers)
+    local p,r,e=camera.position,camera.rotation,camera.pawn_position
+    return string.format('SBMC_FRAME 1 %s %d\nSIZE 320 180\n'
+        ..'CAMERA %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n'
+        ..'PAWN %.9g %.9g %.9g %.9g\nCONTEXT %d %d\n',
+        id,epoch,p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll,camera.fov,e.X,e.Y,e.Z,camera.half_height,camera.pawn_id,camera.world_id)
+        ..link_line..string.format('COLOR %s %d\nMASK %s %d\nDEPTH %s %d\nEND %s\n',
+        layers[1].file,layers[1].size,layers[2].file,layers[2].size,layers[3].file,layers[3].size,id)
+end
 function Capture.new(engine,directory)
     assert(type(directory)=='string' and directory~='','Capture directory is required.')
-    local api,owned={},{}
+    local api,owned,retired={},{},{}
     local next_id=0
-    function api.status() return (owned.actor or owned.target) and 'cleanup-required' or 'idle' end
+    local previous_files={}
+    local function purge_files()
+        for name in pairs(retired) do
+            local removed,_,code=os.remove(directory..'/'..name)
+            if removed or code==2 then retired[name]=nil end
+        end
+    end
+    local function retire_files(files)
+        for _,layer in ipairs(files) do retired[layer.file]=true end
+        purge_files()
+    end
+    function api.status() return (#owned>0 or next(retired)) and 'cleanup-required' or 'idle' end
     function api.cleanup()
-        if owned.actor then
-            local ok,why=pcall(engine.destroy,owned.actor)
-            if not ok then return false,'Capture actor cleanup failed: '..tostring(why) end
-            owned.actor=nil
+        local failures={}
+        for i=#owned,1,-1 do
+            local handle=owned[i]
+            if handle.actor then
+                local ok,why=pcall(engine.destroy,handle.actor)
+                if ok then handle.actor=nil else failures[#failures+1]='actor: '..tostring(why) end
+            end
+            -- A still-bound target stays owned until its capture actor has stopped rendering.
+            if not handle.actor and handle.target then
+                local ok,why=pcall(engine.release,handle.target)
+                if ok then handle.target=nil else failures[#failures+1]='target: '..tostring(why) end
+            end
+            if not handle.actor and not handle.target then table.remove(owned,i) end
         end
-        -- A still-bound target stays owned until its capture actor has stopped rendering.
-        if owned.target then
-            local ok,why=pcall(engine.release,owned.target)
-            if not ok then return false,'Capture target cleanup failed: '..tostring(why) end
-            owned.target=nil
-        end
+        purge_files()
+        if api.status()~='idle' then return false,'Capture cleanup failed: '..table.concat(failures,'; ') end
         return true,'Capture resources released.'
+    end
+    local function capture_layer(camera,mode,kind)
+        local handle={}
+        owned[#owned+1]=handle
+        handle.actor=assert(engine.spawn(camera),'Capture actor was not created.')
+        engine.configure(handle.actor,camera,mode)
+        handle.target=assert(engine.create_target(camera,mode),'Capture target was not created.')
+        engine.bind(handle.actor,handle.target)
+        engine.capture(handle.actor)
+        engine.export(handle.actor,handle.target,directory,mode.file)
+        return image_size(directory..'/'..mode.file,kind,mode)
     end
     function api.capture(kind)
         local mode=modes[kind]
         if not mode then return false,'Capture mode must be color or depth.' end
         if api.status()~='idle' then return false,'Capture cleanup is required before another still.' end
         local descriptor=directory..'/eve-capture-'..kind..'.txt'
-        local temporary=descriptor..'.tmp'
         local result
         local ok,why=pcall(function()
             remove_existing(descriptor)
-            remove_existing(temporary)
             remove_existing(directory..'/'..mode.file)
             local camera=engine.camera()
             check_camera(camera)
             next_id=next_id+1
             local epoch=os.time()
-            owned.actor=assert(engine.spawn(camera),'Capture actor was not created.')
-            engine.configure(owned.actor,camera,mode)
-            owned.target=assert(engine.create_target(camera,mode),'Capture target was not created.')
-            engine.bind(owned.actor,owned.target)
-            engine.capture(owned.actor)
-            engine.export(owned.actor,owned.target,directory,mode.file)
-            local size=image_size(directory..'/'..mode.file,kind,mode)
-            result=metadata(kind,next_id,epoch,mode,camera,size)
+            result=metadata(kind,next_id,epoch,mode,camera,capture_layer(camera,mode,kind))
         end)
         local cleaned,cleanup_message=api.cleanup()
         if not ok then return false,tostring(why)..(cleaned and '' or '; '..cleanup_message) end
         if not cleaned then return false,cleanup_message end
-        local published,publish_error=pcall(function()
-            local file=assert(io.open(temporary,'wb'))
-            local written,write_error=file:write(result)
-            local closed,close_error=file:close()
-            assert(written,write_error); assert(closed,close_error)
-            assert(os.rename(temporary,descriptor))
-        end)
-        if not published then os.remove(temporary); return false,'Capture metadata publication failed: '..tostring(publish_error) end
+        local published,publish_error=pcall(publish,descriptor,result)
+        if not published then return false,'Capture metadata publication failed: '..tostring(publish_error) end
         return true,'Exported '..mode.file..' and paired metadata; isolated pixels still require inspection.'
+    end
+    function api.frame(link)
+        if api.status()~='idle' then return false,'Capture cleanup is required before another frame.' end
+        local layers={}
+        local result,id
+        local ok,why=pcall(function()
+            local link_line=check_link(link)
+            local camera=engine.camera()
+            check_camera(camera)
+            local epoch=os.time()
+            -- Also avoid identifiers left by a same-second Lua reload.
+            local available
+            repeat
+                frame_counter=frame_counter+1; id=string.format('%d-%d',epoch,frame_counter)
+                available=true
+                for _,suffix in ipairs({'color.png','mask.png','depth.hdr'}) do
+                    local file=io.open(directory..'/eve-frame-'..id..'-'..suffix,'rb')
+                    if file then file:close(); available=false end
+                end
+            until available
+            for _,spec in ipairs({{'color',2,2,'png'},{'mask',0,2,'png'},{'depth',4,6,'hdr'}}) do
+                local layer={width=320,height=180,source=spec[2],format=spec[3],file='eve-frame-'..id..'-'..spec[1]..'.'..spec[4]}
+                layers[#layers+1]=layer
+                layer.size=capture_layer(camera,layer,spec[1]=='depth' and 'depth' or 'color')
+            end
+            result=frame_metadata(id,epoch,camera,link_line,layers)
+        end)
+        local cleaned,cleanup_message=api.cleanup()
+        if not ok or not cleaned then
+            retire_files(layers)
+            return false,(not ok and tostring(why)..'; ' or '')..(not cleaned and cleanup_message or 'Frame was not published.')
+        end
+        local published,publish_error=pcall(publish,directory..'/eve-frame.txt',result)
+        if not published then retire_files(layers); return false,'Frame publication failed: '..tostring(publish_error) end
+        retire_files(previous_files)
+        previous_files=layers
+        return true,'Exported paired EVE frame '..id..'; display color, inverse-opacity mask and depth require visual validation.'
     end
     return api
 end
