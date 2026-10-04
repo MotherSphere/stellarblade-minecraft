@@ -22,6 +22,7 @@ function Probe.new(engine)
                 errors[#errors+1] = tostring(err)
             end
         end
+        fixture.complete = false
         fixture.actors = remaining
         if #remaining == 0 then fixture = nil end
         return #errors == 0, table.concat(errors, '; ')
@@ -32,6 +33,13 @@ function Probe.new(engine)
             if not ok then return false, tostring(value) end
             return true, value
         end
+    end
+    local function spawn_owned(spec)
+        local actor = engine.spawn(spec)
+        assert(actor, 'spawn returned no actor')
+        fixture.actors[#fixture.actors+1] = {actor=actor,spec=spec}
+        fixture.complete = false
+        engine.configure(actor,spec)
     end
     api.create = protected(function()
         assert(not fixture, 'A fixture already exists; return and clean up first.')
@@ -50,32 +58,35 @@ function Probe.new(engine)
             box('step',-50,300,45,120,120,20),
             box('obstacle',200,0,125,60,180,100),
         }
-        fixture = {origin=origin, actors={}, entered=false,
+        fixture = {origin=origin, actors={}, entered=false, complete=false,
             entry={X=x-500,Y=y,Z=z+25+origin.half_height+5}, obstacle=specs[#specs]}
         for _,spec in ipairs(specs) do
-            local ok, actor = pcall(engine.spawn, spec)
-            if not ok or not actor then
-                local reason = tostring(actor or 'spawn returned no actor')
+            local ok, err = pcall(spawn_owned, spec)
+            if not ok then
+                local reason = tostring(err)
                 local cleaned, err = cleanup()
                 error(reason .. (cleaned and '; creation rolled back' or '; cleanup must be retried: '..err))
             end
-            fixture.actors[#fixture.actors+1] = {actor=actor,spec=spec}
         end
+        fixture.complete = true
         return 'Fixture ready. Entry is separate; confirm the area above EVE is clear first.'
     end)
     api.enter = protected(function()
         assert(fixture, 'Create the fixture first.')
+        assert(fixture.complete, 'Fixture incomplete; only cleanup is allowed.')
         same_context()
         assert(not fixture.entered, 'Already entered; native movement is in control.')
         for _,item in ipairs(fixture.actors) do
             assert(engine.valid(item.actor), 'A fixture actor is missing; do not enter.')
         end
-        assert(engine.move(fixture.entry,fixture.origin.rotation), 'Entry teleport failed; fixture retained.')
+        -- Even a failed verification can follow a real relocation: retain the return obligation.
         fixture.entered = true
+        assert(engine.move(fixture.entry,fixture.origin.rotation), 'Entry teleport failed; return/cleanup is required.')
         return 'Entered once. Native movement remains unchanged. Return before saving or changing levels.'
     end)
     api.toggle = protected(function()
         assert(fixture, 'Create the fixture first.')
+        assert(fixture.complete, 'Fixture incomplete; only cleanup is allowed.')
         local now = same_context()
         for i,item in ipairs(fixture.actors) do
             if item.spec.role == 'obstacle' then
@@ -90,9 +101,8 @@ function Probe.new(engine)
             and math.abs(p.Y-c.Y) <= e.Y+now.radius
             and math.abs(p.Z-c.Z) <= e.Z+now.half_height
         assert(not overlaps, 'Move away from the obstacle location before recreating it.')
-        local actor = engine.spawn(spec)
-        assert(actor, 'Obstacle recreation failed.')
-        fixture.actors[#fixture.actors+1] = {actor=actor,spec=spec}
+        spawn_owned(spec)
+        fixture.complete = true
         return 'Obstacle recreated.'
     end)
     api.restore = protected(function()
@@ -108,7 +118,9 @@ function Probe.new(engine)
         return 'Returned and removed owned fixture actors.'
     end)
     function api.status()
-        return fixture and (fixture.entered and 'entered' or 'ready') or 'idle'
+        if not fixture then return 'idle' end
+        if not fixture.complete then return 'cleanup-required' end
+        return fixture.entered and 'entered' or 'ready'
     end
     function api.shapes()
         local specs = {}

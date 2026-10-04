@@ -48,28 +48,25 @@ function engine.spawn(spec)
     assert(valid(class), 'TriggerBox class unavailable in this game build.')
     local actor = world:SpawnActor(class,spec.center,{Pitch=0,Yaw=0,Roll=0})
     assert(valid(actor), 'TriggerBox could not be spawned.')
-    local ok, err = pcall(function()
-        local box = actor.CollisionComponent
-        assert(valid(box) and box:IsA('/Script/Engine.BoxComponent'), 'TriggerBox has no BoxComponent.')
-        box:SetMobility(2)
-        box:SetGenerateOverlapEvents(false)
-        box:SetBoxExtent(spec.extent,true)
-        box:SetCollisionObjectType(1) -- WorldDynamic; bilateral response must be tested in game.
-        box:SetCollisionResponseToAllChannels(2) -- Block
-        box:SetCollisionEnabled(3) -- QueryAndPhysics
-        actor:SetActorEnableCollision(true)
-        assert(box:GetCollisionEnabled()==3, 'Collision mode was not accepted.')
-    end)
-    if not ok then
-        actor:K2_DestroyActor()
-        error(err)
-    end
-    local handle = {actor=actor}
-    local shown, why = pcall(add_visual,world,spec,handle)
+    -- Register ownership in the lifecycle before any fallible component setup.
+    return {actor=actor}
+end
+function engine.configure(handle, spec)
+    local actor = handle.actor
+    local box = actor.CollisionComponent
+    assert(valid(box) and box:IsA('/Script/Engine.BoxComponent'), 'TriggerBox has no BoxComponent.')
+    box:SetMobility(2)
+    box:SetGenerateOverlapEvents(false)
+    box:SetBoxExtent(spec.extent,true)
+    box:SetCollisionObjectType(1) -- WorldDynamic; bilateral response must be tested in game.
+    box:SetCollisionResponseToAllChannels(2) -- Block
+    box:SetCollisionEnabled(3) -- QueryAndPhysics
+    actor:SetActorEnableCollision(true)
+    assert(box:GetCollisionEnabled()==3, 'Collision mode was not accepted.')
+    local shown, why = pcall(add_visual,actor:GetWorld(),spec,handle)
     if not shown then log('Optional cube visual unavailable: '..tostring(why)) end
     log(string.format('Spawned %s at %.1f %.1f %.1f, half-extents %.1f %.1f %.1f',
         spec.role,spec.center.X,spec.center.Y,spec.center.Z,spec.extent.X,spec.extent.Y,spec.extent.Z))
-    return handle
 end
 function engine.destroy(handle)
     if valid(handle.visual) then handle.visual:K2_DestroyActor() end
@@ -137,4 +134,4 @@ RegisterConsoleCommandHandler('sbmc',function(_,parameters)
     dispatch(parameters[1] or 'status')
     return true
 end)
-log('Loaded; idle. Ctrl+F6 status, Ctrl+F7 create, Ctrl+F8 enter, Ctrl+F9 obstacle, Ctrl+F10 return/cleanup. No geometry created at startup.')
+log('Loaded revision 2; idle. Ctrl+F6 status, Ctrl+F7 create, Ctrl+F8 enter, Ctrl+F9 obstacle, Ctrl+F10 return/cleanup. No geometry created at startup.')

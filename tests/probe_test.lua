@@ -21,6 +21,9 @@ local function backend()
         b.live[a.id] = a
         return a
     end
+    function b.configure(a)
+        if b.fail_configure == a.id then error("configuration failed") end
+    end
     function b.destroy(a)
         if b.fail_destroy == a.id then error('destroy failed') end
         b.live[a.id] = nil
@@ -30,7 +33,7 @@ local function backend()
         if b.fail_move then return false end
         b.position = {X=position.X, Y=position.Y, Z=position.Z}
         b.moves = b.moves + 1
-        return true
+        return not b.fail_after_move
     end
     function b.count()
         local n = 0
@@ -85,6 +88,27 @@ check('cleanup failure retains ownership for retry', function()
     local b=backend(); local p=Probe.new(b)
     assert(p.create()); b.fail_destroy=2
     assert(not p.restore()); assert(b.count()==1)
+    b.fail_destroy=nil; assert(p.restore()); assert(b.count()==0)
+end)
+check('incomplete rollback is cleanup-only and cannot teleport or add obstacles', function()
+    local b=backend(); b.fail_at=3; b.fail_destroy=2; local p=Probe.new(b)
+    assert(not p.create()); assert(b.count()==1)
+    assert(not p.enter()); assert(b.moves==0)
+    assert(not p.toggle()); assert(b.count()==1)
+    assert(p.status()=='cleanup-required')
+    b.fail_destroy=nil; assert(p.restore()); assert(b.count()==0)
+end)
+check('a relocated player is returned even when entry verification fails', function()
+    local b=backend(); local p=Probe.new(b)
+    assert(p.create()); b.fail_after_move=true
+    assert(not p.enter()); assert(b.position.Z>100)
+    b.fail_after_move=false; assert(p.restore())
+    assert(b.position.X==10 and b.position.Z==100 and b.count()==0)
+end)
+check('failed configuration keeps ownership when actor destruction also fails', function()
+    local b=backend(); b.fail_configure=1; b.fail_destroy=1; local p=Probe.new(b)
+    assert(not p.create()); assert(b.count()==1)
+    assert(not p.enter()); assert(p.status()=='cleanup-required')
     b.fail_destroy=nil; assert(p.restore()); assert(b.count()==0)
 end)
 check('missing support prevents entry', function()
