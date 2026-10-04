@@ -14,8 +14,14 @@ final class CaptureFrame {
     private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
     private static final long MAX_INTEGER = 9007199254740991L;
     private static final Pattern DECIMAL = Pattern.compile("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?");
-    record Metadata(String id, long time, double fov, int colorBytes, int maskBytes, int depthBytes) { }
-    record Loaded(Metadata metadata, byte[] descriptor, byte[] color, byte[] mask) { }
+    record Position(double x, double y, double z) { }
+    record Camera(Position position, double pitch, double yaw, double roll) { }
+    record Pawn(Position position, double halfHeight) { }
+    record Context(long pawn, long world) { }
+    record Link(String session, int ack, double scale, Position feet) { }
+    record Metadata(String id, long time, double fov, int colorBytes, int maskBytes, int depthBytes,
+                    Camera camera, Pawn pawn, Context context, Link link) { }
+    record Loaded(Metadata metadata, byte[] descriptor, byte[] color, byte[] mask, float[] depth) { }
 
     static Metadata parse(byte[] bytes) {
         require(bytes.length > 0 && bytes.length <= 2048, "Capture descriptor exceeds limits");
@@ -51,7 +57,12 @@ final class CaptureFrame {
         int mask = imageLine(lines[7], "MASK", id, "mask.png");
         int depth = imageLine(lines[8], "DEPTH", id, "depth.hdr");
         require(fields(lines[9], "END", 2)[1].equals(id), "Capture footer mismatch");
-        return new Metadata(id, time, fov, color, mask, depth);
+        return new Metadata(id, time, fov, color, mask, depth,
+                new Camera(new Position(decimal(camera[1]), decimal(camera[2]), decimal(camera[3])),
+                        decimal(camera[4]), decimal(camera[5]), decimal(camera[6])),
+                new Pawn(new Position(decimal(pawn[1]), decimal(pawn[2]), decimal(pawn[3])), decimal(pawn[4])),
+                new Context(integer(context[1], 1, MAX_INTEGER), integer(context[2], 1, MAX_INTEGER)),
+                new Link(link[1], (int) ack, decimal(link[3]), new Position(x, y, z)));
     }
 
     static boolean fresh(long time, long now) {
@@ -73,9 +84,10 @@ final class CaptureFrame {
         byte[] depth = readFile(directory, prefix + "depth.hdr", MAX_IMAGE_BYTES);
         require(color.length == metadata.colorBytes && mask.length == metadata.maskBytes && depth.length == metadata.depthBytes,
                 "Capture image size does not match its descriptor");
-        validatePng(color); validatePng(mask); validateDepth(depth);
+        validatePng(color); validatePng(mask);
+        float[] decodedDepth = decodeDepth(depth);
         verifyUnchanged(directory, descriptor);
-        return new Loaded(metadata, descriptor, color, mask);
+        return new Loaded(metadata, descriptor, color, mask, decodedDepth);
     }
 
     static void verifyUnchanged(Path directory, byte[] descriptor) throws IOException {
@@ -121,11 +133,13 @@ final class CaptureFrame {
         require(pixels && ended, "Incomplete capture PNG");
     }
 
-    private static void validateDepth(byte[] bytes) {
-        // The native probe exports this bounded Radiance RLE format. Preview does not interpret its depth values.
+    static float[] decodeDepth(byte[] bytes) {
+        require(bytes.length <= MAX_IMAGE_BYTES, "Depth image exceeds limits");
         byte[] header = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 180 +X 320\n".getBytes(StandardCharsets.US_ASCII);
         require(bytes.length >= header.length && Arrays.equals(header, Arrays.copyOf(bytes, header.length)), "Invalid native depth header");
         int offset = header.length;
+        float[] depth = new float[320 * 180];
+        byte[][] scanline = new byte[4][320];
         for (int y = 0; y < 180; y++) {
             require(offset + 4 <= bytes.length && bytes[offset] == 2 && bytes[offset + 1] == 2
                     && bytes[offset + 2] == 1 && bytes[offset + 3] == 64, "Invalid depth scanline");
@@ -136,13 +150,23 @@ final class CaptureFrame {
                     require(offset < bytes.length, "Truncated depth scanline");
                     int code = bytes[offset++] & 255;
                     require(code != 0, "Invalid depth run");
-                    width += code > 128 ? code - 128 : code;
-                    offset += code > 128 ? 1 : code;
-                    require(width <= 320 && offset <= bytes.length, "Depth run exceeds scanline");
+                    int count = code > 128 ? code - 128 : code;
+                    require(width + count <= 320 && offset + (code > 128 ? 1 : count) <= bytes.length, "Depth run exceeds scanline");
+                    if (code > 128) Arrays.fill(scanline[channel], width, width + count, bytes[offset++]);
+                    else { System.arraycopy(bytes, offset, scanline[channel], width, count); offset += count; }
+                    width += count;
                 }
+            }
+            for (int x = 0; x < 320; x++) {
+                int exponent = scanline[3][x] & 255;
+                // SceneDepth is in R, not luminance; G and B are zero in the native export.
+                float value = exponent == 0 ? 0 : (scanline[0][x] & 255) * Math.scalb(1.0f, exponent - 136);
+                require(Float.isFinite(value) && value >= 0 && value <= 65504, "Depth exceeds the native half-float capture range");
+                depth[y * 320 + x] = value;
             }
         }
         require(offset == bytes.length, "Unexpected depth trailing bytes");
+        return depth;
     }
 
     private static int imageLine(String line, String tag, String id, String suffix) {

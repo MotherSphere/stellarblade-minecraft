@@ -202,4 +202,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 7; idle. F2 depth still, F4 paired frame, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
+log('Loaded revision 8; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F2 depth still, F4 paired frame, F5 Minecraft import, F6 status, F7 diagnostic fixture, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

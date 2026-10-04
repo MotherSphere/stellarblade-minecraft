@@ -61,12 +61,24 @@ check('explicit entry maps Minecraft axes and exports EVE feet',function()
     assert(floor.center.X==10 and floor.center.Y==20 and floor.center.Z==650)
     assert(floor.extent.X==450 and floor.extent.Y==450 and floor.extent.Z==50)
     assert(t.enter()); assert(b.position.Z==795 and b.moves==1)
-    b.position={X=210,Y=-280,Z=890}
+    b.position={X=210,Y=320,Z=890}
     local p=assert(t.pose())
     assert(p.state=='entered' and p.ack==1)
     assert(p.position.x==2 and p.position.y==1 and p.position.z==3)
     assert(t.restore()); assert(b.position.X==10 and b.position.Y==20 and b.position.Z==100)
     assert(b.count()==0 and t.status()=='idle' and t.pose()==nil)
+end)
+
+check('an asymmetric Minecraft box and EVE feet use the same positive horizontal basis',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet(1,{{1,0,2,2,1,4}})))
+    local spec=imported(b).spec
+    assert(spec.center.X==160 and spec.center.Y==320 and spec.center.Z==750)
+    assert(spec.extent.X==50 and spec.extent.Y==100 and spec.extent.Z==50)
+    b.position={X=160,Y=320,Z=790}
+    local pose=t.pose()
+    assert(pose.position.x==1.5 and pose.position.y==0 and pose.position.z==3)
+    assert(t.restore())
 end)
 
 check('entry refuses an imported block intersecting the capsule',function()
@@ -134,7 +146,7 @@ check('new body overlap is deferred while floor contact and unchanged geometry a
     assert(b.count()==count and t.pose().ack==1)
     assert(t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
     assert(t.pose().ack==2)
-    b.position={X=260,Y=-230,Z=790} -- Existing block contact may overlap the conservative actor geometry.
+    b.position={X=260,Y=270,Z=790} -- Existing block contact may overlap the conservative actor geometry.
     assert(t.update(packet(3,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3},{-3,0,-3,-2,1,-2}})))
     assert(t.restore())
 end)

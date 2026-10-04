@@ -58,3 +58,11 @@ tasks.register('captureFrameTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn captureFrameTest
+
+tasks.register('captureProjectionTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.CaptureProjectionTest'
+    jvmArgs '-ea'
+}
+check.dependsOn captureProjectionTest

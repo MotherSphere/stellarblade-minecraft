@@ -40,6 +40,7 @@ public final class StellarBridge implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         CapturePreview.initialize();
+        CaptureView.initialize();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             if (environment != CommandManager.RegistrationEnvironment.INTEGRATED) return;
             dispatcher.register(CommandManager.literal("stellar")
@@ -134,7 +135,9 @@ public final class StellarBridge implements ClientModInitializer {
             }
             Vec3d position = current.origin.add(eve.x(), eve.y(), eve.z());
             control = new Control(current.server, current.player, current.world.getRegistryKey().getValue().toString(),
-                    position, eve.time(), System.nanoTime());
+                    position, eve.time(), System.nanoTime(), new RenderingContext(current.id, current.revision,
+                            new CaptureFrame.Position(current.origin.x, current.origin.y, current.origin.z),
+                            current.world.getRegistryKey().getValue().toString(), current.player.getUuid()));
             move(current.player, position);
         } catch (IOException | IllegalArgumentException exception) {
             stop(exception.getMessage());
@@ -148,6 +151,15 @@ public final class StellarBridge implements ClientModInitializer {
     }
 
     public static boolean overrides(ClientPlayerEntity player) { return permits(player, control); }
+
+    /** Immutable server publication; no live Session or entity is exposed to the renderer. */
+    static RenderingContext renderingContext() {
+        Control current = control;
+        MinecraftClient client = MinecraftClient.getInstance();
+        return client.player != null && permits(client.player, current) && client.player.isCreative()
+                && client.player.isAlive() && !client.player.hasVehicle()
+                && current.server.getPlayerManager().getCurrentPlayerCount() == 1 ? current.rendering : null;
+    }
 
     private static boolean permits(ClientPlayerEntity player, Control current) {
         MinecraftClient client = MinecraftClient.getInstance();
@@ -184,7 +196,9 @@ public final class StellarBridge implements ClientModInitializer {
     private static long now() { return System.currentTimeMillis() / 1000; }
 
     private record Control(IntegratedServer server, ServerPlayerEntity owner, String dimension,
-                           Vec3d position, long packetTime, long updatedNanos) { }
+                           Vec3d position, long packetTime, long updatedNanos, RenderingContext rendering) { }
+
+    record RenderingContext(String session, int revision, CaptureFrame.Position origin, String dimension, UUID owner) { }
 
     private static final class Session {
         final IntegratedServer server;

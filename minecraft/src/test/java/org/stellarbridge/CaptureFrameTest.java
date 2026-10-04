@@ -20,6 +20,8 @@ public final class CaptureFrameTest {
         CaptureFrame.Metadata frame = CaptureFrame.parse(FRAME.getBytes(StandardCharsets.US_ASCII));
         assert frame != null : "A complete native frame must parse";
         assert frame.id().equals(ID) && frame.time() == 1791110000 && frame.fov() == 75;
+        assert frame.camera().position().x() == 1 && frame.camera().pitch() == 4 && frame.pawn().halfHeight() == 95;
+        assert frame.context().pawn() == 11 && frame.link().session().equals("none") && frame.link().scale() == 100;
         assert CaptureFrame.fresh(frame.time(), 1791110030) && !CaptureFrame.fresh(frame.time(), 1791110031);
         assert CaptureFrame.fresh(frame.time(), 1791109998) && !CaptureFrame.fresh(frame.time(), 1791109997);
         CaptureFrame.parse(FRAME.replace("LINK none 0", "LINK 0123456789abcdef0123456789abcdef 4").getBytes(StandardCharsets.US_ASCII));
@@ -47,6 +49,16 @@ public final class CaptureFrameTest {
             ByteArrayOutputStream png = new ByteArrayOutputStream();
             ImageIO.write(new BufferedImage(320, 180, BufferedImage.TYPE_INT_ARGB), "PNG", png);
             byte[] color = png.toByteArray(), depth = depthFixture();
+            float[] values = CaptureFrame.decodeDepth(depth);
+            assert values.length == 57600 && values[0] == 0;
+            byte[] one = depth.clone();
+            int firstScanline = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 180 +X 320\n".length();
+            one[firstScanline + 5] = (byte) 128; // R = 128 for the first 127 pixels.
+            one[firstScanline + 23] = (byte) 129; // E = 129, so R * 2^(129-136) = 1.
+            values = CaptureFrame.decodeDepth(one);
+            assert values[0] == 1 && values[126] == 1 && values[127] == 0;
+            one[firstScanline + 23] = (byte) 255;
+            rejects(() -> CaptureFrame.decodeDepth(one));
             String metadata = FRAME.replace("-color.png 1000", "-color.png " + color.length)
                     .replace("-mask.png 1000", "-mask.png " + color.length)
                     .replace("-depth.hdr 1000", "-depth.hdr " + depth.length);

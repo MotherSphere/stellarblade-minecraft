@@ -86,7 +86,8 @@ function Terrain.new(engine,scale)
         local a=fixture.anchor
         return {role=role,center={
             X=a.X+(box[1]+box[4])*scale/2,
-            Y=a.Y-(box[3]+box[6])*scale/2,
+            -- Swapping the up axes preserves the native camera's visible handedness.
+            Y=a.Y+(box[3]+box[6])*scale/2,
             Z=a.Z+(box[2]+box[5])*scale/2},
             extent={X=(box[4]-box[1])*scale/2,Y=(box[6]-box[3])*scale/2,
                 Z=(box[5]-box[2])*scale/2}}
@@ -236,7 +237,7 @@ function Terrain.new(engine,scale)
         return {session=fixture.packet.session,ack=fixture.packet.seq,
             state=fixture.complete and (fixture.entered and 'entered' or 'ready') or 'idle',
             position={x=(now.position.X-a.X)/scale,
-                y=(now.position.Z-now.half_height-a.Z)/scale,z=-(now.position.Y-a.Y)/scale}}
+                y=(now.position.Z-now.half_height-a.Z)/scale,z=(now.position.Y-a.Y)/scale}}
     end
     return api
 end

@@ -2,7 +2,7 @@
 
 An experimental bridge project for playing EVE with her native movement and combat in a live Minecraft Java world on Linux, with Stellar Blade running through Proton.
 
-The current build includes a Stellar Blade collision probe and an experimental **local Minecraft terrain and position link**. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. EVE rendering, camera composition, cross-game combat and general world streaming are not implemented yet.
+The current build includes an experimental **local Minecraft terrain and position link**, native EVE capture, and a still-image composition experiment. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. Continuous rendering, cross-game combat and general world streaming are not implemented yet.
 
 ## Minecraft terrain link
 
@@ -49,6 +49,14 @@ With bridge configuration installed, **F4** (`sbmc frame`) requests a paired 320
 In a private Minecraft singleplayer world, run **`/stellarpreview load`** within 30 seconds of F4 to inspect the capture in a diagnostic inset. **`/stellarpreview off`** closes it. The preview uses the display-color image and the separate inverse-opacity mask, rejecting low-coverage sky/haze pixels. Partial hair and translucency remain unsupported. The texture expires 30 seconds after capture and is removed on world change or disconnect. This is an opt-in still preview, not a live renderer, world-camera override or depth-tested composition.
 
 The original independent probes remain available: `sbmc capture` writes `eve-capture-color.png` (raw HDR scene color clamped to RGBA8), while **F2** (`sbmc depth`) writes `eve-capture-depth.hdr`. Their descriptors are separate and do not establish a matching pair. Native tests confirmed inverse opacity in the PNG and a readable depth HDR. The PNG exporter adds trailing padding, which the publisher removes after parsing the actual IEND chunk. Independently attached weapons, the drone and effects may require additional capture membership.
+
+### World composition experiment
+
+After starting the terrain link and entering it with EVE, press F4 and run **`/stellarview load`** in Minecraft within 30 seconds. This selects the captured camera and projection and draws EVE with her captured scene depth against Minecraft's world depth. **`/stellarview off`** restores the vanilla camera. This is a frozen view; it does not refresh as EVE moves. Capture again before loading a new view.
+
+The view requires the same active private creative session and exactly the captured terrain revision. It stops on block revisions, stale captures, link loss, world changes or unsupported effects. Use Fast/Fancy graphics without Iris, and a calm player without status effects. Camera roll, full translucency and other renderer replacements are unsupported. The window may use a different aspect ratio: the EVE layer covers the matching portion of Minecraft's projection instead of stretching.
+
+The rendering branch corrects the provisional coordinate basis to **Unreal `(X,Y,Z)` → Minecraft `(X,Z,Y)`**, with the configured units-per-block conversion. Both collision import and exported feet use this basis. The native image is not mirrored, preserving EVE's visible handedness. Update both mods together and start a fresh session; do not mix the earlier negative-horizontal-axis build with this renderer.
 
 ## Collision probe
 
