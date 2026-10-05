@@ -89,7 +89,6 @@ local probe = Probe.new(engine)
 local active = probe
 local bridge
 local capture
-local exporttest
 local stream
 local visual
 local scene
@@ -98,7 +97,6 @@ if configured then
     local Terrain = require('terrain')
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
     capture = require('capture').new(require('capture_adapter').new(),config.directory,log)
-    exporttest = require('export_test').new(require('capture_adapter').new(),config.directory,log)
     visual = require('visual_probe').new(require('visual_probe_adapter').new(),config.directory)
     scene = require('native_scene').new(require('scene_adapter').new(log),bridge,config.directory,config.scale)
     stream = require('capture_stream').new(capture,function()
@@ -149,7 +147,6 @@ local function paired_still(profile)
     assert(capture,'Install with --bridge-dir to enable native image capture.')
     assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
     assert(not stream.active(),'Stop native live capture before requesting a still.')
-    assert(exporttest.status()=='idle','Finish or clean up the export test before capturing.')
     local pose=active==bridge and bridge.pose() or nil
     local link
     if pose and pose.state=='entered' then
@@ -159,17 +156,10 @@ local function paired_still(profile)
     return capture.frame(link,profile)
 end
 local actions = {
-    exporttest=function()
-        assert(exporttest,'Install with --bridge-dir to enable the export test.')
-        assert(not scene.enabled() and scene.status()=='idle','Disable native scene visuals before testing exports.')
-        assert(not stream.active() and capture.status()=='idle','Stop and clean up production capture before testing exports.')
-        assert(exporttest.status()=='idle','Finish or clean up the existing export test first.')
-        return exporttest.start()
-    end,
+    exporttest=function() return false,'Async export test is disabled after a native loader crash. Use F4 for the supported still capture.' end,
     visuals=function()
         assert(scene,'Install with --bridge-dir to enable native Minecraft visuals.')
         if scene.enabled() or scene.status()=='cleanup-required' then return scene.clear() end
-        assert(exporttest.status()=='idle','Finish or clean up the export test before enabling native visuals.')
         assert(active==bridge,'Import and enter the Minecraft collision link first.')
         local stopped,why=stream.stop('native scene rendering requested')
         if not stopped then return false,why end
@@ -182,7 +172,6 @@ local actions = {
     live=function()
         assert(stream,'Install with --bridge-dir to enable native live capture.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
-        assert(exporttest.status()=='idle','Finish or clean up the export test before capturing.')
         return stream.start()
     end,
     liveoff=function()
@@ -192,7 +181,6 @@ local actions = {
     livetoggle=function()
         assert(stream,'Install with --bridge-dir to enable native live capture.')
         if stream.active() then return stream.stop() end
-        assert(exporttest.status()=='idle','Finish or clean up the export test before capturing.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
         return stream.start()
     end,
@@ -202,14 +190,12 @@ local actions = {
         assert(capture,'Install with --bridge-dir to enable native image capture.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
         assert(not stream.active(),'Stop native live capture before requesting a still.')
-        assert(exporttest.status()=='idle','Finish or clean up the export test before capturing.')
         return capture.capture('color')
     end,
     depth=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
         assert(not stream.active(),'Stop native live capture before requesting a still.')
-        assert(exporttest.status()=='idle','Finish or clean up the export test before capturing.')
         return capture.capture('depth')
     end,
     capturecleanup=function()
@@ -242,7 +228,6 @@ local actions = {
         end
         if scene then attempt('Scene',scene.clear) end
         if visual then attempt('Texture',visual.clear) end
-        if exporttest then attempt('Export test',exporttest.clear) end
         if stream then attempt('Capture',function() return stream.stop('return requested') end) end
         -- Each optional cleanup is independent of EVE's guarded return.
         local inspected,state=pcall(active.status)
@@ -255,7 +240,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, exporttest, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -299,7 +284,6 @@ if bridge then
         end
         local scheduled,err=pcall(ExecuteInGameThread,function()
             local ok,why=pcall(function()
-                report_result('export test',exporttest.tick())
                 report_result('texture',visual.tick())
                 local updated,update_error=pcall(bridge.tick,read_ok and packet or nil)
                 if updated then
@@ -326,4 +310,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 16; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc exporttest compares bounded image exports. No geometry or capture created at startup.')
+log('Loaded revision 17; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

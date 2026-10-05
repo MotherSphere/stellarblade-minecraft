@@ -91,9 +91,6 @@ local function image_size(path,kind,mode)
     end
     return #data
 end
-function Capture.validate_png(path,width,height)
-    return image_size(path,'color',{width=width,height=height})
-end
 local function metadata(kind,id,epoch,mode,camera,size)
     local p,r,e=camera.position,camera.rotation,camera.pawn_position
     return string.format('SBMC_CAPTURE 1 %s %d %d\nSIZE %d %d %d %d\n'

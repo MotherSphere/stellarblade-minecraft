@@ -73,7 +73,7 @@ The console command **`sbmc frame`** retains the **320×180** baseline through t
 
 HD captures log start/end boundaries for native allocation, capture, export, validation, cleanup and publication. Minecraft logs CPU read/depth decoding, PNG/mask decoding and texture-upload submission times when a still is accepted. Submission time does not measure GPU completion. These diagnostics help identify the next transport improvement without claiming asynchronous readback or a playable frame rate.
 
-With EVE loaded and production capture stopped, **`sbmc exporttest`** compares the existing PNG exporter with Unreal's asynchronous image-writing queue on one owned 1280×720 color target. It writes `eve-exporttest-kismet.png` and `eve-exporttest-async.png` for inspection and logs call and completion boundaries. It leaves the paired-frame protocol unchanged. This is a capability and timing test, not a faster gameplay stream. Cleanup waits for the native completion callback; F11 can request cancellation and still return EVE, but a pending writer retains its resources until completion. Do not reload Lua while a write is pending.
+The `sbmc exporttest` command is disabled: its experimental asynchronous call crashed the tested UE4SS build. F4 retains the supported synchronous still path. No asynchronous image export is enabled.
 
 `eve-frame.txt` in the private bridge directory names three generation-specific PNG/HDR files and records the camera, projection and context. It is published only after all exports and cleanup succeed. A failed capture preserves the previous complete frame. Files from the preceding frame of the same Lua lifetime are removed after replacement; old files from earlier launches can be removed while both games are closed.
 
@@ -200,8 +200,6 @@ lua tests/bridge_test.lua
 lua tests/capture_test.lua
 lua tests/capture_stream_test.lua
 lua tests/capture_stream_main_test.lua
-lua tests/export_adapter_test.lua
-lua tests/export_test_test.lua
 lua tests/visual_probe_test.lua
 lua tests/visual_probe_adapter_test.lua
 lua tests/scene_protocol_test.lua

@@ -57,12 +57,6 @@ package.loaded.terrain={new=function()return {} end}
 package.loaded.bridge={new=function()return bridge end}
 package.loaded.capture={new=function(_,directory,logger) assert(directory=='/unused' and type(logger)=='function'); return capture end}
 package.loaded.capture_adapter={new=function()return {} end}
-local export_starts,export_clears,export_ticks,export_busy,export_clear_error=0,0,0,false,false
-local exporttest={status=function()return export_busy and 'pending' or 'idle' end}
-function exporttest.start() export_starts=export_starts+1; export_busy=true; return true,'export comparison submitted' end
-function exporttest.clear() export_clears=export_clears+1; if export_clear_error then error('async completion still pending') end; export_busy=false; return true,'export comparison cleared' end
-function exporttest.tick() export_ticks=export_ticks+1; return true end
-package.loaded.export_test={new=function(_,directory,logger) assert(directory=='/unused' and type(logger)=='function'); return exporttest end}
 local visual_toggles,visual_clears,visual_ticks,visual_error=0,0,0,false
 local visual={}
 function visual.toggle() visual_toggles=visual_toggles+1; return true,'texture toggled' end
@@ -94,6 +88,10 @@ LoopAsync=function(milliseconds,callback) assert(milliseconds==200); loop=callba
 dofile('stellar/Mods/StellarCollisionProbe/Scripts/main.lua')
 local function drain() while #queued>0 do table.remove(queued,1)() end end
 local function command(name) console(nil,{name}); drain() end
+command('exporttest')
+assert(logs[#logs]:find('Async export test is disabled',1,true),
+    'The unsupported async export command must fail without calling native export')
+assert(frames==0 and stills==0 and clears==0,'Disabled export must not touch capture resources')
 assert(keys['Shift+F7'],'The explicit Shift+F7 texture binding is missing')
 assert(keys['Shift+F8'],'The explicit Shift+F8 native scene binding is missing')
 assert(keys.F4 and not keys['Shift+F4'],'HD capture must not require Shift, which triggers native dodge')
@@ -162,17 +160,3 @@ assert(frames==6 and profiles[1]=='default' and profiles[2]=='default' and profi
     and profiles[4]=='hd' and profiles[5]=='hd' and profiles[6]=='default',
     'Bare F4 and framehd must request HD; frame and live frames must retain default dimensions')
 print('PASS HD still/live/texture commands, F11 cleanup independence, native F6 counters, and pending gate through capture')
-local prior_frames,prior_stills=frames,stills
-command('exporttest'); assert(export_starts==1 and export_busy,'Explicit export test must start without modifying paired capture')
-command('exporttest'); command('frame'); command('framehd'); command('capture'); command('depth'); command('live'); keys.F1(); drain(); command('visuals')
-assert(export_starts==1 and frames==prior_frames and stills==prior_stills and not scene_enabled,
-    'A pending export test must exclude repeated export, other capture and native visual activation')
-loop(); drain(); assert(export_ticks>0 and frames==prior_frames,'The existing tick must service async completion')
-export_clear_error=true; local prior_returns=returns; keys.F11(); drain()
-assert(returns==prior_returns+1 and logs[#logs]:find('async completion still pending',1,true),'F11 must still return when export cleanup cannot finish')
-export_clear_error=false; keys.F11(); drain(); assert(not export_busy and export_clears>0)
-command('frame'); assert(frames==prior_frames+1,'Normal capture must work after export cleanup')
-command('mirror'); command('enter'); command('live'); command('exporttest')
-assert(export_starts==1,'A live capture must exclude the export test'); command('liveoff')
-command('visuals'); command('exporttest'); assert(export_starts==1,'Native scene rendering must exclude the export test'); command('visuals')
-print('PASS explicit export comparison, mutual capture exclusion, completion ticks and independent F11 return')

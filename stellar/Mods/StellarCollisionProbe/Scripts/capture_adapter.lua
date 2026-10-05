@@ -61,38 +61,6 @@ function Adapter.new()
     function engine.export(actor,target,directory,filename)
         library():ExportRenderTarget(actor,target,directory,filename)
     end
-    function engine.prepare_async(handle,completed)
-        local writer=StaticFindObject('/Script/ImageWriteQueue.Default__ImageWriteBlueprintLibrary')
-        assert(valid(writer),'ImageWriteQueue is unavailable in this game build.')
-        assert(type(RegisterHook)=='function' and type(UnregisterHook)=='function','Native completion hooks are unavailable.')
-        local watch={writer=writer,address=handle.actor:GetAddress(),armed=false}
-        handle.watch=watch
-        watch.pre,watch.post=RegisterHook('/Script/Engine.Actor:SetActorHiddenInGame',function(context,value)
-            if not watch.armed then return end
-            local object=context:get()
-            if not valid(object) or object:GetAddress()~=watch.address then return end
-            local success=value
-            if type(value)~='boolean' then success=value:get() end
-            if type(success)~='boolean' then return end
-            watch.armed=false
-            -- This ordinary bool UFunction is the owned actor's completion sink.
-            -- Only mark completion here; the controller cleans up on a later tick.
-            completed(success)
-        end)
-    end
-    function engine.export_async(handle,path)
-        local watch=assert(handle.watch,'Async completion is not prepared.')
-        watch.armed=true
-        watch.writer:ExportToDisk(handle.target,path,{Format=0,CompressionQuality=0,bOverwriteFile=false,bAsync=true,
-            OnComplete={Object=handle.actor,FunctionName=FName('SetActorHiddenInGame')}})
-    end
-    function engine.unwatch(handle)
-        local watch=handle.watch
-        if not watch then return end
-        watch.armed=false
-        if watch.pre then UnregisterHook('/Script/Engine.Actor:SetActorHiddenInGame',watch.pre,watch.post) end
-        handle.watch=nil
-    end
     function engine.destroy(actor)
         if not valid(actor) then return end
         local capture=actor.CaptureComponent2D
