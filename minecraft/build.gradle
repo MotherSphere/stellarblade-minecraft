@@ -27,140 +27,32 @@ processResources {
     filesMatching('fabric.mod.json') { expand(version: project.version) }
 }
 
-tasks.register('bridgeRuntimeTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.BridgeRuntimeTest'
-    jvmArgs '-ea'
+// Keep every named executable suite available for focused local checks.
+[
+    bridgeRuntimeTest: 'BridgeRuntimeTest',
+    protocolTest: 'BridgeProtocolTest',
+    terrainGeometryTest: 'TerrainGeometryTest',
+    captureFrameTest: 'CaptureFrameTest',
+    captureProjectionTest: 'CaptureProjectionTest',
+    captureImagesTest: 'CaptureImagesTest',
+    captureStreamTest: 'CaptureStreamTest',
+    nativeSceneTest: 'NativeSceneTest',
+    nativeSceneFilesTest: 'NativeSceneFilesTest',
+    bridgePauseTest: 'BridgePauseTest',
+    captureHdTest: 'CaptureHdTest',
+    captureBmpTest: 'CaptureBmpTest',
+    captureAsyncTest: 'CaptureAsyncTest',
+    captureContinuousTest: 'CaptureContinuousTest',
+    controlStateTest: 'ControlStateTest',
+    controlHooksTest: 'ControlHooksTest',
+    rawFrameBusTest: 'RawFrameBusTest',
+].each { taskName, testClass ->
+    def suite = tasks.register(taskName, JavaExec) {
+        dependsOn testClasses
+        classpath = sourceSets.test.runtimeClasspath
+        mainClass = "org.stellarbridge.${testClass}"
+        workingDir projectDir.parentFile
+        jvmArgs '-ea'
+    }
+    check.dependsOn suite
 }
-check.dependsOn bridgeRuntimeTest
-
-tasks.register('protocolTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.BridgeProtocolTest'
-    workingDir projectDir.parentFile
-    jvmArgs '-ea'
-}
-check.dependsOn protocolTest
-
-tasks.register('terrainGeometryTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.TerrainGeometryTest'
-    jvmArgs '-ea'
-}
-check.dependsOn terrainGeometryTest
-
-tasks.register('captureFrameTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureFrameTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureFrameTest
-
-tasks.register('captureProjectionTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureProjectionTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureProjectionTest
-
-tasks.register('captureImagesTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureImagesTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureImagesTest
-
-tasks.register('captureStreamTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureStreamTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureStreamTest
-
-tasks.register('nativeSceneTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.NativeSceneTest'
-    workingDir projectDir.parentFile
-    jvmArgs '-ea'
-}
-check.dependsOn nativeSceneTest
-
-tasks.register('nativeSceneFilesTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.NativeSceneFilesTest'
-    jvmArgs '-ea'
-}
-check.dependsOn nativeSceneFilesTest
-
-tasks.register('bridgePauseTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.BridgePauseTest'
-    jvmArgs '-ea'
-}
-check.dependsOn bridgePauseTest
-
-tasks.register('captureHdTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureHdTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureHdTest
-
-tasks.register('captureBmpTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureBmpTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureBmpTest
-
-tasks.register('captureAsyncTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureAsyncTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureAsyncTest
-
-tasks.register('captureContinuousTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.CaptureContinuousTest'
-    jvmArgs '-ea'
-}
-check.dependsOn captureContinuousTest
-
-tasks.register('controlStateTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.ControlStateTest'
-    jvmArgs '-ea'
-}
-check.dependsOn controlStateTest
-
-tasks.register('controlHooksTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.ControlHooksTest'
-    jvmArgs '-ea'
-}
-check.dependsOn controlHooksTest
-
-tasks.register('rawFrameBusTest', JavaExec) {
-    dependsOn testClasses
-    classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'org.stellarbridge.RawFrameBusTest'
-    jvmArgs '-ea'
-}
-check.dependsOn rawFrameBusTest

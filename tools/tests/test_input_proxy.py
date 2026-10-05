@@ -10,7 +10,7 @@ from unittest import mock
 
 class InputProxyTests(unittest.TestCase):
     def setUp(self):
-        source = Path(__file__).resolve().parents[1] / 'tools/input_proxy.py'
+        source = Path(__file__).resolve().parents[1] / 'input_proxy.py'
         self.assertTrue(source.is_file(), 'The input proxy installer is missing')
         spec = importlib.util.spec_from_file_location('input_proxy', source)
         self.proxy = importlib.util.module_from_spec(spec)

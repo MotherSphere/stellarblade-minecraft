@@ -16,7 +16,7 @@ class DeployTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.script = self.root / "tools/deploy.py"
-        implementation = Path(__file__).resolve().parents[1] / "tools/deploy.py"
+        implementation = Path(__file__).resolve().parents[1] / "deploy.py"
         self.assertTrue(implementation.is_file(), "Deployment helper is not implemented")
         self.script.parent.mkdir()
         shutil.copyfile(implementation, self.script)
