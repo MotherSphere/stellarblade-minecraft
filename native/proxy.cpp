@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "input.hpp"
+#include "raw_capture.hpp"
 #include <array>
 #include <bcrypt.h>
 #include <intrin.h>
@@ -216,6 +217,9 @@ void worker() {
           published = std::move(key);
       }
     }
+    auto capture_request =
+        read_file(directory + L"eve-stream.txt", 512).value_or("");
+    stellar_raw::poll_raw_capture(capture_request, wall_ms());
     Sleep(20);
   }
 }
@@ -243,6 +247,11 @@ void initialize() {
     return;
   // Keep the DLL and its sole worker alive until process termination.
   verified = true;
+  try {
+    stellar_raw::initialize_raw_capture(GetModuleHandleW(nullptr), directory);
+  } catch (...) {
+    // Raw capture is optional; failure must not break the verified input path.
+  }
   try {
     std::thread(worker).detach();
   } catch (...) {
@@ -286,12 +295,11 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
 }
 } // namespace
 // The return address MUST be captured in the exported entry, before any helper.
-extern "C" DWORD WINAPI
-XInputGetState(DWORD index, XINPUT_STATE *state) {
+extern "C" DWORD WINAPI XInputGetState(DWORD index, XINPUT_STATE *state) {
   return get_state(index, state, _ReturnAddress());
 }
-extern "C" DWORD WINAPI
-XInputSetState(DWORD index, XINPUT_VIBRATION *vibration) {
+extern "C" DWORD WINAPI XInputSetState(DWORD index,
+                                       XINPUT_VIBRATION *vibration) {
   std::call_once(initialize_once, initialize);
   if (!vibration)
     return ERROR_BAD_ARGUMENTS;
