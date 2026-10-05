@@ -3,7 +3,7 @@
 #endif
 // This isolated executable includes the actual handler, so synthetic task
 // injection adds no fixture identity or alternate addresses to the shipped DLL.
-#include "raw_capture.cpp"
+#include "../src/raw_capture.cpp"
 #include <cassert>
 #include <fstream>
 #include <future>

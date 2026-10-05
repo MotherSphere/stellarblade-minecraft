@@ -71,40 +71,52 @@ static std::filesystem::path create(const std::filesystem::path &dir,
 }
 static void all_half_depths(const std::filesystem::path &dir) {
   auto now = now_ms();
-  Request r{std::string(32, '5'), std::string(32, 'b'), 256, 256,
+  Request r{std::string(32, '5'), std::string(32, 'b'), 512, 512,
             now / 1000, true};
   auto path = create(dir, r, now);
   Producer producer;
   assert(producer.open(dir.wstring(), r, 123, now));
-  assert(producer.begin(metadata(r, 1), 1));
-  constexpr size_t count = 65536;
+  constexpr size_t count = 4 * 65536;
+  constexpr uint8_t coverage[] = {0, 1, 127, 255};
+  constexpr int orders[][3] = {
+      {0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+      {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
   std::vector<uint8_t> color(count * 4, 32), mask(count * 4, 127);
   std::vector<uint16_t> depth(count * 4, 0x7c00);
   for (size_t i = 0; i < count; i++) depth[4 * i] = uint16_t(i);
-  assert(producer.plane(0, color.data(), color.size(), 256, 256));
-  assert(producer.plane(1, mask.data(), mask.size(), 256, 256));
-  assert(producer.plane(2, depth.data(), depth.size() * sizeof(uint16_t),
-                        256, 256));
-  assert(read<uint64_t>(path, 216) == 1);
-  auto slot = 4096 + (read<uint32_t>(path, 128) & 3u) * read<uint32_t>(path, 24);
   std::vector<uint8_t> result(count * 8);
-  std::ifstream file(path, std::ios::binary);
-  file.seekg(slot + 4096);
-  file.read(reinterpret_cast<char *>(result.data()), result.size());
-  assert(file);
-  for (size_t i = 0; i < count; i++) {
-    // Independent numerical reference: positive finite binary16 values survive;
-    // negative values, signed zero, infinities and every NaN lose coverage.
-    unsigned exponent = (i >> 10) & 31, fraction = i & 1023;
-    float expected = 0;
-    if (!(i & 0x8000) && exponent != 31)
-      expected = float(exponent ? std::ldexp(1.0 + fraction / 1024.0,
-                                             int(exponent) - 15)
-                                : std::ldexp(double(fraction), -24));
-    assert(std::memcmp(result.data() + count * 4 + i * 4, &expected, 4) == 0);
-    assert(result[i * 4 + 3] == (expected > 0 ? 128 : 0));
-    assert(result[i * 4] == 32 && result[i * 4 + 1] == 32 &&
-           result[i * 4 + 2] == 32);
+  for (uint64_t seq = 1; seq <= 6; seq++) {
+    // Change coverage between reused slots; either plane may arrive last.
+    for (size_t i = 0; i < count; i++)
+      mask[4 * i + 3] = 255 - coverage[(i / 65536 + seq) % 4];
+    assert(producer.begin(metadata(r, seq), seq));
+    for (auto kind : orders[seq - 1]) {
+      const void *data = kind == 0   ? static_cast<const void *>(color.data())
+                         : kind == 1 ? static_cast<const void *>(mask.data())
+                                     : static_cast<const void *>(depth.data());
+      assert(producer.plane(kind, data, count * (kind == 2 ? 8 : 4),
+                            r.width, r.height));
+    }
+    assert(read<uint64_t>(path, 216) == seq);
+    auto slot = 4096 + (read<uint32_t>(path, 128) & 3u) * read<uint32_t>(path, 24);
+    std::ifstream file(path, std::ios::binary);
+    file.seekg(slot + 4096);
+    file.read(reinterpret_cast<char *>(result.data()), result.size());
+    assert(file);
+    for (size_t i = 0; i < count; i++) {
+      // Independent numerical reference: positive finite binary16 values survive;
+      // negative values, signed zero, infinities and every NaN lose coverage.
+      unsigned bits = i % 65536, exponent = (bits >> 10) & 31, fraction = bits & 1023;
+      float expected = 0;
+      if (!(bits & 0x8000) && exponent != 31)
+        expected = float(exponent ? std::ldexp(1.0 + fraction / 1024.0,
+                                               int(exponent) - 15)
+                                  : std::ldexp(double(fraction), -24));
+      assert(std::memcmp(result.data() + count * 4 + i * 4, &expected, 4) == 0);
+      assert(result[i * 4 + 3] == (expected > 0 ? coverage[(i / 65536 + seq) % 4] : 0));
+      assert(result[i * 4] == 32 && result[i * 4 + 1] == 32 &&
+             result[i * 4 + 2] == 32);
+    }
   }
   producer.stop();
 }
@@ -246,5 +258,5 @@ int main() {
   all_half_depths(dir);
   std::filesystem::remove_all(dir);
   std::cout << "PASS raw frame contract: request bounds, exclusive claim, "
-               "ordered assembly, all 65536 half depths, duplicate failure and lease\n";
+               "all 6 orders and 65536 half depths at 4 coverages, duplicate failure and lease\n";
 }

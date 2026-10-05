@@ -402,24 +402,28 @@ bool Producer::plane(int kind, const void *pixels, size_t bytes, uint32_t width,
   auto *rgba = slot + Header;
   auto *depth = rgba + self.dimensions.plane;
   auto *input = static_cast<const uint8_t *>(pixels);
+  const bool have_mask = (self.seen & 2u) != 0, have_depth = (self.seen & 4u) != 0;
   for (size_t i = 0; i < self.dimensions.pixels; i++) {
     if (kind == 0) {
       rgba[4 * i] = input[4 * i + 2];
       rgba[4 * i + 1] = input[4 * i + 1];
       rgba[4 * i + 2] = input[4 * i];
-    } else if (kind == 1)
-      rgba[4 * i + 3] = 255 - input[4 * i + 3];
-    else {
+    } else if (kind == 1) {
+      // Whichever coverage/depth plane arrives second clears invalid pixels.
+      rgba[4 * i + 3] = have_depth && plain<float>(depth, 4 * i) <= 0
+                            ? 0
+                            : 255 - input[4 * i + 3];
+    } else {
       auto value = half_float(plain<uint16_t>(input, 8 * i));
-      put(depth, 4 * i, std::isfinite(value) && value > 0 ? value : 0.0f);
+      value = std::isfinite(value) && value > 0 ? value : 0.0f;
+      put(depth, 4 * i, value);
+      if (have_mask && value <= 0)
+        rgba[4 * i + 3] = 0;
     }
   }
   self.seen |= 1u << kind;
   if (self.seen != 7)
     return true;
-  for (size_t i = 0; i < self.dimensions.pixels; i++)
-    if (plain<float>(depth, 4 * i) <= 0)
-      rgba[4 * i + 3] = 0;
   put(slot, 8, wall_now());
   // Adapted from SkyCraft's MIT-licensed overlay triple buffer: publish a
   // private back slot and take only the previous middle, never the held front.
