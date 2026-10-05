@@ -1,6 +1,7 @@
 package org.stellarbridge;
 
 import java.nio.charset.StandardCharsets;
+import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
@@ -15,6 +16,18 @@ public final class CaptureProjectionTest {
         // Native feet=(1000,2000,3000), camera offset=(100,200,300) UU, LINK=(1,2,3).
         near(camera.x(), 102); near(camera.y(), 69); near(camera.z(), -95);
         near(camera.yaw(), -90); near(camera.pitch(), -10);
+        var eyes = new Vec3d(0, 1.6, 0);
+        var behind = new CaptureProjection.CameraPose(0, 1.6, -4, 0, 0, 60);
+        var end = CaptureTarget.rayEnd(behind, eyes, 5);
+        near(end.x, 0); near(end.y, 1.6); near(end.z, 5);
+        assert CaptureTarget.withinReach(eyes, new Vec3d(0, 1.6, 4.9), 5);
+        assert !CaptureTarget.withinReach(eyes, new Vec3d(0, 1.6, -8), 5)
+                : "Camera proximity must not extend the player's interaction reach";
+        assert CaptureTarget.rayEnd(new CaptureProjection.CameraPose(1000, 0, 0, 0, 0, 60), eyes, 5) == null
+                : "An extreme camera offset must not cause an unbounded world raycast";
+        assert CaptureTarget.rayEnd(behind, eyes, Double.NaN) == null;
+        var down = CaptureTarget.rayEnd(new CaptureProjection.CameraPose(0, 5, 0, 0, 90, 60), eyes, 5);
+        near(down.x, 0); near(down.y, -3.4); near(down.z, 0);
         near(CaptureProjection.camera(frame(90, 0, 0), new CaptureFrame.Position(0, 0, 0)).yaw(), 0);
         near(CaptureProjection.camera(frame(180, 0, 0), new CaptureFrame.Position(0, 0, 0)).yaw(), 90);
         near(camera.verticalFov(), Math.toDegrees(2 * Math.atan(0.5625)));

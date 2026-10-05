@@ -7,6 +7,7 @@ function Stream.new(capture,pose,scale,clock)
     local live,clearing,session,started,last_time,frames=false,false,nil,nil,0,0
     local reason='explicit stop'
     function api.active() return live end
+    function api.busy() return live or clearing end
     function api.cancel(message)
         live=false
         clearing=true
@@ -26,6 +27,7 @@ function Stream.new(capture,pose,scale,clock)
         return ok,string.format('Native live capture stopped: %s; %d frames in %g wall seconds. %s',reason,frames,elapsed,tostring(why))
     end
     function api.start()
+        if capture.stream_busy and capture.stream_busy() then return false,'Continuous HD still owns capture output.' end
         if live then return false,'Native live capture is already active; stop it before restarting.' end
         local ran,current=pcall(pose)
         if not ran or not current or current.state~='entered' then

@@ -1,10 +1,12 @@
 -- Exercise the real command and scheduling integration without invoking Unreal.
 package.path='stellar/Mods/StellarCollisionProbe/Scripts/?.lua;'..package.path
 local queued,keys={},{}
-local loop,console,frame_hook
+local loop,hd_loop,console,frame_hook
 local frames,stills,clears,returns=0,0,0,0
 local bmp_exports=0
 local async_exports,async_frames,async_link=0,0,nil
+local hd_active,hd_pending,hd_ticks,hd_stops,hd_cancels=false,false,0,0,0
+local hd_error=false
 local profiles={}
 local state='idle'
 local tick_error,schedule_error,clear_error,read_error=false,false,false,false
@@ -16,7 +18,7 @@ print=function(message)
     logs[#logs+1]=message
     print_message(message)
 end
-local capture={status=function()return 'idle' end}
+local capture={status=function()return 'idle' end,stream_busy=function()return hd_active or hd_pending end}
 function capture.frame(_,profile) frames=frames+1; profiles[frames]=profile or 'default'; if frame_hook then frame_hook() end; return true,'frame' end
 function capture.capture() stills=stills+1; return true,'still' end
 function capture.frameasync(link) async_frames=async_frames+1; async_link=link; return true,'pending async frame' end
@@ -62,6 +64,15 @@ package.loaded.terrain={new=function()return {} end}
 package.loaded.bridge={new=function()return bridge end}
 package.loaded.capture={new=function(_,directory,logger) assert(directory=='/unused' and type(logger)=='function'); return capture end}
 package.loaded.capture_adapter={new=function()return {} end}
+package.loaded.capture_session={new=function(received,pose,directory,scale,allowed)
+    assert(received==capture and directory=='/unused' and scale==100)
+    return {active=function()return hd_active end,busy=function()return hd_active or hd_pending end,
+        read=function()return {} end,
+        tick=function() hd_ticks=hd_ticks+1; if hd_error then error('HD tick failed') end; return true end,
+        stop=function()hd_stops=hd_stops+1; hd_active=false; return true,'HD stopped' end,
+        cancel=function()hd_cancels=hd_cancels+1; hd_active=false end}
+end}
+
 local visual_toggles,visual_clears,visual_ticks,visual_error=0,0,0,false
 local visual={}
 function visual.toggle() visual_toggles=visual_toggles+1; return true,'texture toggled' end
@@ -89,7 +100,9 @@ ExecuteInGameThread=function(callback)
     if schedule_error then error('schedule failed') end
     queued[#queued+1]=callback
 end
-LoopAsync=function(milliseconds,callback) assert(milliseconds==200); loop=callback end
+LoopAsync=function(milliseconds,callback)
+    if milliseconds==200 then loop=callback elseif milliseconds==50 then hd_loop=callback else error('Unexpected polling interval') end
+end
 dofile('stellar/Mods/StellarCollisionProbe/Scripts/main.lua')
 local function drain() while #queued>0 do table.remove(queued,1)() end end
 local function command(name) console(nil,{name}); drain() end
@@ -172,3 +185,18 @@ command('exportasync'); assert(async_exports==1 and frames==7 and stills==2,'Asy
 
 command('frameasync'); assert(async_frames==1 and async_link.session==string.rep('a',32) and async_link.ack==1 and async_link.scale==100)
 keys.F11(); drain(); command('frameasync'); assert(async_frames==2 and async_link==nil,'Unlinked async still must preserve the ordinary camera context gate')
+
+assert(hd_loop and hd_ticks==0,'The continuous loop is separate from the unchanged terrain interval')
+hd_loop(); hd_loop(); assert(#queued==1,'The HD loop can own only one pending game-thread callback'); drain(); assert(hd_ticks==1)
+local old_hd_cancels=hd_cancels
+hd_error=true; hd_loop(); drain(); hd_error=false; assert(hd_cancels==old_hd_cancels+1)
+hd_loop(); drain(); assert(hd_ticks==3,'An HD exception must release the game-thread scheduling gate')
+schedule_error=true; hd_loop(); schedule_error=false; assert(hd_cancels==old_hd_cancels+2)
+hd_loop(); drain(); assert(hd_ticks==4)
+hd_pending=true
+local before_bmp,old_texture,old_scene=bmp_exports,visual_toggles,scene_enabled
+command('exportbmp'); command('texture'); command('visuals'); command('live')
+assert(bmp_exports==before_bmp and visual_toggles==old_texture and scene_enabled==old_scene and not hd_active,
+    'Pending HD output must exclude diagnostic capture, legacy live and native visuals')
+local old_hd_stops=hd_stops; keys.F11(); drain(); assert(hd_stops==old_hd_stops+1 and hd_pending,'F11 must stop HD without discarding pending output')
+hd_pending=false

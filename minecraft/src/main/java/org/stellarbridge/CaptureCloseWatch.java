@@ -22,7 +22,7 @@ final class CaptureCloseWatch implements AutoCloseable {
             CREATE = 0x100, DELETE = 0x200, DELETE_SELF = 0x400, MOVE_SELF = 0x800,
             UNMOUNT = 0x2000, OVERFLOW = 0x4000, IGNORED = 0x8000, ISDIR = 0x40000000;
     private static final int INVALIDATION = DELETE_SELF | MOVE_SELF | UNMOUNT | OVERFLOW | IGNORED;
-    private static final Pattern NAME = Pattern.compile("eve-frame-[0-9]{1,16}-[0-9]{1,16}-(?:color\\.bmp|mask\\.png|depth\\.hdr)");
+    private static final Pattern NAME = Pattern.compile("eve-frame-([0-9]{1,16}-[0-9]{1,16})-(?:color\\.bmp|mask\\.png|depth\\.hdr)");
     private enum State { PENDING, READY, INVALID }
     private final Path directory;
     private final Map<String, State> names = new HashMap<>();
@@ -30,6 +30,7 @@ final class CaptureCloseWatch implements AutoCloseable {
     private Memory buffer;
     private int fd = -1, watch;
     private String failure;
+    private String retiredThrough;
 
     CaptureCloseWatch(Path directory) throws IOException {
         this.directory = directory.toAbsolutePath().normalize();
@@ -53,15 +54,30 @@ final class CaptureCloseWatch implements AutoCloseable {
         }
     }
 
-    synchronized void requireReady(Path directory, String id) throws IOException {
+    synchronized void available(Path directory) throws IOException {
         if (!this.directory.equals(directory.toAbsolutePath().normalize()))
             throw new IOException("Capture directory differs from its close-observation epoch");
         drain();
+    }
+
+    synchronized void requireReady(Path directory, String id) throws IOException {
+        available(directory);
         for (String suffix : new String[] {"color.bmp", "mask.png", "depth.hdr"}) {
             String name = "eve-frame-" + id + "-" + suffix;
             if (names.get(name) != State.READY)
                 throw new IOException("Asynchronous capture has no immutable close observation for " + suffix);
         }
+    }
+
+    synchronized void retire(Path directory, String id) throws IOException {
+        requireReady(directory, id);
+        if (retiredThrough != null && !CaptureFrame.newer(id, retiredThrough))
+            throw new IOException("Capture generation was already retired");
+        retiredThrough = id;
+        names.keySet().removeIf(name -> {
+            var match = NAME.matcher(name);
+            return match.matches() && !CaptureFrame.newer(match.group(1), retiredThrough);
+        });
     }
 
     synchronized void drain() throws IOException {
@@ -117,7 +133,8 @@ final class CaptureCloseWatch implements AutoCloseable {
             invalidate("Capture close observations were lost; restart Minecraft before a new capture");
             return;
         }
-        if (!NAME.matcher(name).matches()) return;
+        var match = NAME.matcher(name);
+        if (!match.matches() || retiredThrough != null && !CaptureFrame.newer(match.group(1), retiredThrough)) return;
         State previous = names.get(name);
         if ((mask & (DELETE | MOVED_FROM | MOVED_TO | ISDIR)) != 0 || previous == State.READY || previous == State.INVALID)
             remember(name, State.INVALID);

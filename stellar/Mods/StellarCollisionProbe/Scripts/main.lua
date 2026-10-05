@@ -90,6 +90,7 @@ local active = probe
 local bridge
 local capture
 local stream
+local hd_session
 local visual
 local scene
 local configured,config = pcall(require,'bridge_config')
@@ -102,6 +103,11 @@ if configured then
     stream = require('capture_stream').new(capture,function()
         return active==bridge and bridge.pose() or nil
     end,config.scale)
+    hd_session=require('capture_session').new(capture,function()
+        return active==bridge and bridge.pose() or nil
+    end,config.directory,config.scale,function()
+        return not stream.busy() and not scene.enabled() and scene.status()=='idle' and visual.status()=='idle'
+    end)
 end
 local function show_markers()
     if scene and scene.enabled() then return end
@@ -143,10 +149,14 @@ local function status()
     end
     show_markers()
 end
-local function paired_still(profile)
+local function require_still()
     assert(capture,'Install with --bridge-dir to enable native image capture.')
+    assert(not capture.stream_busy(),'Continuous HD still owns capture output.')
     assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
     assert(not stream.active(),'Stop native live capture before requesting a still.')
+end
+local function paired_still(profile)
+    require_still()
     local pose=active==bridge and bridge.pose() or nil
     local link
     if pose and pose.state=='entered' then
@@ -161,20 +171,17 @@ end
 local actions = {
     exporttest=function() return false,'Async export test is disabled after a native loader crash. Use F4 for the supported still capture.' end,
     exportasync=function()
-        assert(capture,'Install with --bridge-dir to enable native image capture.')
-        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before testing exports.')
-        assert(not stream.active(),'Stop native live capture before testing exports.')
+        require_still()
         return capture.exportasync()
     end,
     exportbmp=function()
-        assert(capture,'Install with --bridge-dir to enable native image capture.')
-        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before testing exports.')
-        assert(not stream.active(),'Stop native live capture before testing exports.')
+        require_still()
         return capture.exportbmp()
     end,
     visuals=function()
         assert(scene,'Install with --bridge-dir to enable native Minecraft visuals.')
         if scene.enabled() or scene.status()=='cleanup-required' then return scene.clear() end
+        assert(not capture.stream_busy(),'Continuous HD still owns capture output.')
         assert(active==bridge,'Import and enter the Minecraft collision link first.')
         local stopped,why=stream.stop('native scene rendering requested')
         if not stopped then return false,why end
@@ -182,6 +189,7 @@ local actions = {
     end,
     texture=function()
         assert(visual,'Install with --bridge-dir to enable the native texture probe.')
+        assert(not capture.stream_busy(),'Continuous HD still owns capture output.')
         return visual.toggle()
     end,
     live=function()
@@ -191,6 +199,7 @@ local actions = {
     end,
     liveoff=function()
         assert(stream,'Native live capture is not configured.')
+        if hd_session.busy() then return hd_session.stop('native stop requested') end
         return stream.stop()
     end,
     livetoggle=function()
@@ -204,20 +213,18 @@ local actions = {
     framehd=function() return paired_still('hd') end,
     framehdpng=function() return paired_still('hd-png') end,
     capture=function()
-        assert(capture,'Install with --bridge-dir to enable native image capture.')
-        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
-        assert(not stream.active(),'Stop native live capture before requesting a still.')
+        require_still()
         return capture.capture('color')
     end,
     depth=function()
-        assert(capture,'Install with --bridge-dir to enable native image capture.')
-        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
-        assert(not stream.active(),'Stop native live capture before requesting a still.')
+        require_still()
         return capture.capture('depth')
     end,
     capturecleanup=function()
         assert(capture,'Capture is not configured.')
-        return stream.stop('cleanup requested')
+        local ok,why=hd_session.stop('cleanup requested')
+        local old_ok,old_why=stream.stop('cleanup requested')
+        return ok and old_ok,tostring(why)..'; '..tostring(old_why)
     end,
     create=function()
         assert(active.status()=='idle','Return and clean up the current scene first.')
@@ -245,6 +252,7 @@ local actions = {
         end
         if scene then attempt('Scene',scene.clear) end
         if visual then attempt('Texture',visual.clear) end
+        if hd_session then attempt('HD capture',function() return hd_session.stop('F11 return requested') end) end
         if stream then attempt('Capture',function() return stream.stop('return requested') end) end
         -- Each optional cleanup is independent of EVE's guarded return.
         local inspected,state=pcall(active.status)
@@ -293,7 +301,10 @@ if bridge then
         if pending then return false end
         pending=true
         local read_ok,packet=pcall(bridge.read)
-        if not read_ok then stream.cancel('bridge snapshot read failed: '..tostring(packet)) end
+        if not read_ok then
+            stream.cancel('bridge snapshot read failed: '..tostring(packet))
+            hd_session.cancel('bridge snapshot read failed')
+        end
         local scene_packet
         if scene.enabled() then
             local scene_read,value=pcall(scene.read)
@@ -308,6 +319,7 @@ if bridge then
                     if not scene.enabled() then report_result('capture',stream.tick())
                     elseif stream.active() then report_result('capture',stream.stop('native scene rendering is active')) end
                 else
+                    report_result('hd',hd_session.stop('bridge tick failed'))
                     report_result('scene',scene.clear('bridge tick failed'))
                     report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error)))
                 end
@@ -316,15 +328,39 @@ if bridge then
             pending=false
             if not ok then
                 stream.cancel('game-thread callback failed')
+                hd_session.cancel('terrain game-thread callback failed')
                 log('Bridge/capture callback failed: '..tostring(why))
             end
         end)
         if not scheduled then
             stream.cancel('game-thread scheduling failed')
+            hd_session.cancel('terrain game-thread scheduling failed')
             pending=false
             log('Bridge schedule failed: '..tostring(err))
         end
         return false
     end)
+    local hd_pending=false
+    LoopAsync(50,function()
+        if hd_pending then return false end
+        hd_pending=true
+        local read_ok,packet=pcall(hd_session.read)
+        if not read_ok then hd_session.cancel('capture request read failed') end
+        local scheduled,why=pcall(ExecuteInGameThread,function()
+            local ran,err=pcall(function() report_result('hd',hd_session.tick(read_ok and packet or {})) end)
+            hd_pending=false
+            if not ran then
+                hd_session.cancel('capture callback failed')
+                log('Continuous HD callback failed: '..tostring(err))
+            end
+        end)
+        if not scheduled then
+            hd_session.cancel('capture scheduling failed')
+            hd_pending=false
+            log('Continuous HD scheduling failed: '..tostring(why))
+        end
+        return false
+    end)
+
 end
-log('Loaded revision 22; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. No geometry or capture created at startup.')
+log('Loaded revision 23; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. No geometry or capture created at startup.')

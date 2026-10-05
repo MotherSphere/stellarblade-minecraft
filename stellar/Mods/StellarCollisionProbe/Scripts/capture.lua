@@ -7,9 +7,9 @@
 -- FILE <fixedImageBasename> <byteLength>
 -- END <captureId>
 -- Coordinates use Stellar Blade world units; color alpha is unverified inverse opacity.
--- Paired frame metadata v1/v2/v3: ten ASCII LF lines, with a trailing LF.
+-- Paired frame metadata v1/v2/v3: ten ASCII LF lines; v4 adds RUN before END for a continuous session.
 -- V3 is one pending HD request: COLOR/MASK counts are zero; all images require observed file closes.
--- SBMC_FRAME <1|2|3> <unixSeconds-counter> <unixSeconds>
+-- SBMC_FRAME <1|2|3|4> <unixSeconds-counter> <unixSeconds>
 -- SIZE <320 180|1280 720> (HD is an explicit still profile only)
 -- CAMERA <x> <y> <z> <pitch> <yaw> <roll> <horizontalFovDegrees>
 -- PAWN <x> <y> <z> <capsuleHalfHeight>
@@ -162,14 +162,15 @@ local function check_link(link)
     assert(type(p)=='table' and finite(p.x) and finite(p.y) and finite(p.z),'Frame link has an invalid relative position.')
     return string.format('LINK %s %d %.9g %.9g %.9g %.9g\n',link.session,link.ack,link.scale,p.x,p.y,p.z)
 end
-local function frame_metadata(id,epoch,camera,link_line,layers,width,height,version)
+local function frame_metadata(id,epoch,camera,link_line,layers,width,height,version,run)
     local p,r,e=camera.position,camera.rotation,camera.pawn_position
     return string.format('SBMC_FRAME %d %s %d\nSIZE %d %d\n'
         ..'CAMERA %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n'
         ..'PAWN %.9g %.9g %.9g %.9g\nCONTEXT %d %d\n',
         version,id,epoch,width,height,p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll,camera.fov,e.X,e.Y,e.Z,camera.half_height,camera.pawn_id,camera.world_id)
-        ..link_line..string.format('COLOR %s %d\nMASK %s %d\nDEPTH %s %d\nEND %s\n',
-        layers[1].file,layers[1].size,layers[2].file,layers[2].size,layers[3].file,layers[3].size,id)
+        ..link_line..string.format('COLOR %s %d\nMASK %s %d\nDEPTH %s %d\n',
+        layers[1].file,layers[1].size,layers[2].file,layers[2].size,layers[3].file,layers[3].size)
+        ..(run and 'RUN '..run..'\n' or '')..'END '..id..'\n'
 end
 -- Logger timestamps bracket each optional HD stage, including failed calls.
 local function stage(trace,name,run)
@@ -185,6 +186,7 @@ function Capture.new(engine,directory,log)
     local api,owned,retired={},{},{}
     local next_id=0
     local previous_files={}
+    local stream_enabled,pending_frame=false,nil
     local function purge_files()
         -- Invalidate the published descriptor before deleting its image generation.
         if retired['eve-frame.txt'] then
@@ -213,7 +215,22 @@ function Capture.new(engine,directory,log)
         until available
         return id
     end
-    function api.status() return (#owned>0 or next(retired)) and 'cleanup-required' or 'idle' end
+    function api.stream_busy() return stream_enabled or pending_frame~=nil end
+    function api.status()
+        return (#owned>0 or next(retired)) and 'cleanup-required' or (api.stream_busy() and 'stream-owned' or 'idle')
+    end
+    function api.stream_enable(enabled)
+        assert(type(enabled)=='boolean','Stream ownership requires a boolean.')
+        if enabled and (api.status()~='idle' or async_attempted) then
+            return false,'Another capture or retained manual async attempt owns capture resources.'
+        end
+        stream_enabled=enabled
+        return true
+    end
+    function api.stream_pending()
+        local p=pending_frame
+        return p and {id=p.id,run=p.run,session=p.session,time=p.time,published=p.published,poisoned=p.poisoned} or nil
+    end
     function api.cleanup()
         local failures={}
         for i=#owned,1,-1 do
@@ -231,10 +248,13 @@ function Capture.new(engine,directory,log)
         end
         purge_files()
         if next(retired) then failures[#failures+1]='capture files could not be removed' end
-        if api.status()~='idle' then return false,'Capture cleanup failed: '..table.concat(failures,'; ') end
+        if #owned>0 or next(retired) then return false,'Capture cleanup failed: '..table.concat(failures,'; ') end
         return true,'Capture resources released.'
     end
     function api.clear()
+        stream_enabled=false
+        -- The draining reader still needs unresolved metadata, even after off/F11.
+        if pending_frame then return api.cleanup() end
         retired['eve-frame.txt']=true
         retired['eve-frame.txt.tmp']=true
         for _,layer in ipairs(previous_files) do retired[layer.file]=true end
@@ -310,7 +330,7 @@ function Capture.new(engine,directory,log)
             {width=1280,height=720,source=4,format=6,file=prefix..'-depth.hdr'},
         }
     end
-    local function submit_async(camera,layers,trace)
+    local function submit_async(camera,layers,trace,pending)
         local prepared={}
         for i,layer in ipairs(layers) do
             prepared[i]=prepare_capture(camera,layer,trace,({'color','mask','depth'})[i])
@@ -318,9 +338,9 @@ function Capture.new(engine,directory,log)
         -- Kismet's synchronous readback drains all earlier captures, so both ImageWriteQueue
         -- submissions see initialized TextureRHI resources even on a fresh generation.
         layers[3].size=export_layer(prepared[3],layers[3],'depth',trace,'depth')
-        -- ponytail: one attempt per Lua lifetime; another run needs a native writer-completion
-        -- signal before any pending output can be replaced. A submission exception is ambiguous.
-        async_attempted=true
+        -- Manual diagnostics retain their one-shot output. Continuous frames instead require
+        -- the exact consumer ACK before replacement; any submission exception stays unresolved.
+        if not pending then async_attempted=true end
         stage(trace,'color BMP async submission',function()
             engine.export_async(prepared[1].target,directory,layers[1].file,2)
         end)
@@ -371,6 +391,56 @@ function Capture.new(engine,directory,log)
         previous_files={}
         -- Async images never enter retirement: native writers may still hold their output paths.
         return true,'Published pending async EVE frame '..id..'; Minecraft must observe all image file closes before loading.'
+    end
+    function api.stream_retry()
+        local p=pending_frame
+        if not p then return true end
+        if p.poisoned then return false,'Async submission is unresolved; retain this generation until the game closes.' end
+        if p.published then return true end
+        local cleaned,why=api.cleanup()
+        if not cleaned then return false,why end
+        local ok,err=pcall(publish,directory..'/eve-frame.txt',p.metadata)
+        if not ok then return false,'Pending frame publication will retry: '..tostring(err) end
+        p.published=true
+        retire_files(previous_files); previous_files={}
+        return true
+    end
+    function api.stream_ack(run,session,id)
+        local p=pending_frame
+        if not p or p.run~=run or p.session~=session or p.id~=id or not p.published or p.poisoned then return true end
+        -- ACK proves the exact consumer finished file access; it is not a native task fence.
+        retired['eve-frame.txt']=true
+        for _,layer in ipairs(p.layers) do retired[layer.file]=true end
+        local cleaned,why=api.cleanup()
+        if not cleaned then return false,why end
+        pending_frame=nil
+        return true
+    end
+    function api.streamframe(link,run)
+        if not stream_enabled or pending_frame or #owned>0 or next(retired) then
+            return false,'Continuous capture is disabled or still owns a pending generation.'
+        end
+        local p
+        local ok,why=pcall(function()
+            assert(type(run)=='string' and #run==32 and run:match('^[0-9a-f]+$'),'Invalid capture run.')
+            assert(link,'Continuous frames require an entered link.')
+            local link_line=check_link(link)
+            local camera=engine.camera(); check_camera(camera)
+            local epoch=os.time(); local id=frame_id(epoch)
+            p={id=id,run=run,session=link.session,time=epoch,layers=async_layers('eve-frame-'..id),published=false}
+            pending_frame=p
+            submit_async(camera,p.layers,nil,p)
+            p.metadata=frame_metadata(id,epoch,camera,link_line,p.layers,1280,720,4,run)
+        end)
+        local cleaned,cleanup_message=api.cleanup()
+        if not ok then
+            if p then p.poisoned=true end
+            return false,tostring(why)..(cleaned and '' or '; '..cleanup_message)
+        end
+        if not cleaned then return false,cleanup_message end
+        local published,message=api.stream_retry()
+        if not published then return false,message end
+        return true
     end
     function api.capture(kind)
         local mode=modes[kind]

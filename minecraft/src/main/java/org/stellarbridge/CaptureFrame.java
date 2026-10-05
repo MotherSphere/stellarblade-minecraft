@@ -23,7 +23,12 @@ final class CaptureFrame {
     record Context(long pawn, long world) { }
     record Link(String session, int ack, double scale, Position feet) { }
     record Metadata(String id, long time, double fov, int colorBytes, int maskBytes, int depthBytes,
-                    Camera camera, Pawn pawn, Context context, Link link, int width, int height, int version) { }
+                    Camera camera, Pawn pawn, Context context, Link link, int width, int height, int version, String run) {
+        Metadata(String id, long time, double fov, int colorBytes, int maskBytes, int depthBytes,
+                 Camera camera, Pawn pawn, Context context, Link link, int width, int height, int version) {
+            this(id, time, fov, colorBytes, maskBytes, depthBytes, camera, pawn, context, link, width, height, version, null);
+        }
+    }
     record Observation(CaptureCloseWatch watch, Path directory, String id) {
         void verify(byte[] descriptor) throws IOException {
             verifyUnchanged(directory, descriptor);
@@ -35,10 +40,15 @@ final class CaptureFrame {
             this(metadata, descriptor, color, mask, depth, null);
         }
         void verifyObservation() throws IOException {
-            if (metadata.version == 3) {
+            if (metadata.version >= 3) {
                 require(observation != null, "Asynchronous capture has no close observation");
                 observation.verify(descriptor);
             }
+        }
+        void retire() throws IOException {
+            require(metadata.version == 4 && observation != null, "Only continuous observed captures can retire");
+            observation.verify(descriptor);
+            observation.watch.retire(observation.directory, metadata.id);
         }
     }
 
@@ -53,17 +63,25 @@ final class CaptureFrame {
         if (previous != null) previous.close();
     }
 
+    static void requireWatching(Path directory) throws IOException {
+        var watch = closeWatch;
+        if (watch == null) throw new IOException("Asynchronous capture watcher unavailable; restart Minecraft before capturing");
+        watch.available(directory);
+    }
+
     static Metadata parse(byte[] bytes) {
         require(bytes.length > 0 && bytes.length <= 2048, "Capture descriptor exceeds limits");
         for (byte value : bytes)
             require(value == '\n' || value >= 32 && value <= 126, "Capture descriptor must be ASCII with LF endings");
         String[] lines = new String(bytes, StandardCharsets.US_ASCII).split("\n", -1);
-        require(lines.length == 11 && lines[10].isEmpty(), "Capture descriptor must have exactly ten lines");
+        require((lines.length == 11 || lines.length == 12) && lines[lines.length - 1].isEmpty(),
+                "Capture descriptor has an invalid line count");
         String[] header = fields(lines[0], "SBMC_FRAME", 4);
-        require(header[1].matches("[123]") && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
+        require(header[1].matches("[1234]") && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
         int version = Integer.parseInt(header[1]);
+        require(lines.length == (version == 4 ? 12 : 11), "Capture descriptor version has an invalid line count");
         String id = header[2];
-        require(version != 3 || id.matches("[0-9]{1,16}-[0-9]{1,16}"), "Asynchronous capture generation exceeds limits");
+        require(version < 3 || id.matches("[0-9]{1,16}-[0-9]{1,16}"), "Asynchronous capture generation exceeds limits");
         long time = integer(header[3], 0, MAX_INTEGER);
         String[] sequence = id.split("-", -1);
         require(integer(sequence[0], 0, MAX_INTEGER) == time, "Capture ID timestamp mismatch");
@@ -71,7 +89,7 @@ final class CaptureFrame {
         String[] size = fields(lines[1], "SIZE", 3);
         int width = (int) integer(size[1], 1, 1280), height = (int) integer(size[2], 1, 720);
         require(supportedSize(width, height), "Only 320 by 180 and 1280 by 720 captures are supported");
-        require(version != 3 || width == 1280 && height == 720, "Asynchronous capture is HD still-only");
+        require(version < 3 || width == 1280 && height == 720, "Asynchronous capture requires HD dimensions");
         String[] camera = fields(lines[2], "CAMERA", 8);
         for (int i = 1; i < camera.length; i++) decimal(camera[i]);
         double fov = decimal(camera[7]);
@@ -84,20 +102,23 @@ final class CaptureFrame {
         String[] link = fields(lines[5], "LINK", 7);
         boolean unlinked = link[1].equals("none");
         require(unlinked || link[1].matches("[0-9a-f]{32}"), "Invalid bridge session");
+        require(version != 4 || !unlinked, "Continuous capture requires a terrain session");
         long ack = integer(link[2], unlinked ? 0 : 1, Integer.MAX_VALUE);
         require(decimal(link[3]) > 0, "Invalid capture scale");
         double x = decimal(link[4]), y = decimal(link[5]), z = decimal(link[6]);
         require(!unlinked || ack == 0 && x == 0 && y == 0 && z == 0, "Unlinked capture has bridge coordinates");
-        int color = imageLine(lines[6], "COLOR", id, version >= 2 ? "color.bmp" : "color.png", version == 3);
-        int mask = imageLine(lines[7], "MASK", id, "mask.png", version == 3);
+        int color = imageLine(lines[6], "COLOR", id, version >= 2 ? "color.bmp" : "color.png", version >= 3);
+        int mask = imageLine(lines[7], "MASK", id, "mask.png", version >= 3);
         int depth = imageLine(lines[8], "DEPTH", id, "depth.hdr", false);
-        require(fields(lines[9], "END", 2)[1].equals(id), "Capture footer mismatch");
+        String run = version == 4 ? fields(lines[9], "RUN", 2)[1] : null;
+        require(run == null || run.matches("[0-9a-f]{32}"), "Invalid capture run");
+        require(fields(lines[version == 4 ? 10 : 9], "END", 2)[1].equals(id), "Capture footer mismatch");
         return new Metadata(id, time, fov, color, mask, depth,
                 new Camera(new Position(decimal(camera[1]), decimal(camera[2]), decimal(camera[3])),
                         decimal(camera[4]), decimal(camera[5]), decimal(camera[6])),
                 new Pawn(new Position(decimal(pawn[1]), decimal(pawn[2]), decimal(pawn[3])), decimal(pawn[4])),
                 new Context(integer(context[1], 1, MAX_INTEGER), integer(context[2], 1, MAX_INTEGER)),
-                new Link(link[1], (int) ack, decimal(link[3]), new Position(x, y, z)), width, height, version);
+                new Link(link[1], (int) ack, decimal(link[3]), new Position(x, y, z)), width, height, version, run);
     }
 
     static boolean supportedSize(int width, int height) {
@@ -129,12 +150,23 @@ final class CaptureFrame {
     }
 
     static Loaded readIfNew(Path directory, long now, String previousId, CaptureCloseWatch watch) throws IOException {
+        return readIfNew(directory, now, previousId, watch, false, false);
+    }
+
+    static Loaded readForStream(Path directory, long now, String previousId, boolean continuousOnly) throws IOException {
+        return readIfNew(directory, now, previousId, closeWatch, true, continuousOnly);
+    }
+
+    private static Loaded readIfNew(Path directory, long now, String previousId, CaptureCloseWatch watch,
+                                    boolean settleContinuous, boolean continuousOnly) throws IOException {
         byte[] descriptor = readFile(directory, "eve-frame.txt", 2048);
         Metadata metadata = parse(descriptor);
-        require(fresh(metadata.time, now), "Capture is older than 30 seconds or has a future timestamp");
+        if (continuousOnly && metadata.version != 4) return null;
+        require(settleContinuous && metadata.version == 4 || fresh(metadata.time, now),
+                "Capture is older than 30 seconds or has a future timestamp");
         if (!newer(metadata.id, previousId)) return null;
         Observation observation = null;
-        if (metadata.version == 3) {
+        if (metadata.version >= 3) {
             require(watch != null, "Asynchronous capture watcher unavailable; restart Minecraft before capturing");
             watch.requireReady(directory, metadata.id);
             observation = new Observation(watch, directory, metadata.id);
@@ -143,7 +175,7 @@ final class CaptureFrame {
         byte[] color = readFile(directory, prefix + (metadata.version >= 2 ? "color.bmp" : "color.png"), MAX_IMAGE_BYTES);
         byte[] mask = readFile(directory, prefix + "mask.png", MAX_IMAGE_BYTES);
         byte[] depth = readFile(directory, prefix + "depth.hdr", MAX_IMAGE_BYTES);
-        require((metadata.version == 3 || color.length == metadata.colorBytes && mask.length == metadata.maskBytes)
+        require((metadata.version >= 3 || color.length == metadata.colorBytes && mask.length == metadata.maskBytes)
                         && depth.length == metadata.depthBytes,
                 "Capture image size does not match its descriptor");
         if (metadata.version >= 2) validateBmp(color, metadata.width, metadata.height);
@@ -153,7 +185,7 @@ final class CaptureFrame {
         if (observation != null) {
             observation.verify(descriptor);
             metadata = new Metadata(metadata.id, metadata.time, metadata.fov, color.length, mask.length, depth.length,
-                    metadata.camera, metadata.pawn, metadata.context, metadata.link, metadata.width, metadata.height, metadata.version);
+                    metadata.camera, metadata.pawn, metadata.context, metadata.link, metadata.width, metadata.height, metadata.version, metadata.run);
         } else verifyUnchanged(directory, descriptor);
         return new Loaded(metadata, descriptor, color, mask, decodedDepth, observation);
     }

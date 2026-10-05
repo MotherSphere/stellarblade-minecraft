@@ -41,6 +41,7 @@ public final class CaptureView {
     private static ShaderProgram shader;
     private static View active;
     private static View rendering; // One immutable choice for camera, FOV and composition of a Minecraft frame.
+    private static View presented;
     private static CaptureStream stream;
     private static Binding liveBinding;
 
@@ -50,7 +51,8 @@ public final class CaptureView {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registry) -> dispatcher.register(
                 ClientCommandManager.literal("stellarview")
                     .then(ClientCommandManager.literal("load").executes(context -> load(context.getSource())))
-                    .then(ClientCommandManager.literal("live").executes(context -> live(context.getSource())))
+                    .then(ClientCommandManager.literal("live").executes(context -> live(context.getSource(), false)))
+                    .then(ClientCommandManager.literal("livehd").executes(context -> live(context.getSource(), true)))
                     .then(ClientCommandManager.literal("status").executes(context -> {
                         context.getSource().sendFeedback(Text.literal(stream == null ? "EVE live diagnostic has not run."
                                 : stream.mailbox.status(System.nanoTime())));
@@ -77,6 +79,10 @@ public final class CaptureView {
     }
     public static void endFrame() { rendering = null; }
     public static CaptureProjection.CameraPose camera() { return rendering == null ? null : rendering.camera; }
+    public static CaptureProjection.CameraPose targetCamera() {
+        View view = rendering != null ? rendering : presented;
+        return view != null && valid(view) ? view.camera : null;
+    }
 
     private static boolean supported(MinecraftClient client) {
         return client.player != null && shader != null && !MinecraftClient.isFabulousGraphicsOrBetter()
@@ -99,7 +105,7 @@ public final class CaptureView {
                 Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
     }
 
-    private static int live(FabricClientCommandSource source) {
+    private static int live(FabricClientCommandSource source, boolean hd) {
         off();
         MinecraftClient client = source.getClient();
         var context = StellarBridge.renderingContext();
@@ -108,9 +114,17 @@ public final class CaptureView {
             return 0;
         }
         if (stream == null) stream = new CaptureStream(directory());
+        try {
+            if (hd) stream.startHd(context.session(), context.revision(), context.origin(), System.nanoTime());
+            else stream.mailbox.start(context.session(), context.revision(), context.origin(), System.nanoTime());
+        } catch (IOException failure) {
+            source.sendError(Text.literal("EVE HD request failed: " + failure.getMessage()));
+            return 0;
+        }
         liveBinding = new Binding(client.world, context.session(), context.owner(), context.dimension(), context.origin());
-        stream.mailbox.start(context.session(), context.revision(), context.origin(), System.nanoTime());
-        source.sendFeedback(Text.literal("EVE live diagnostic waiting for native capture. /stellarview off restores the camera; /stellarview status shows observed cadence."));
+        source.sendFeedback(Text.literal(hd
+                ? "EVE HD stream requested. Native controls remain in Stellar Blade. /stellarview off stops the stream and restores the camera."
+                : "EVE live diagnostic waiting for native capture. /stellarview off restores the camera; /stellarview status shows observed cadence."));
         return 1;
     }
 
@@ -133,6 +147,13 @@ public final class CaptureView {
             }
             if (stream.mailbox.expired(System.nanoTime())) {
                 stopLive("no complete fresh generation before the deadline", true);
+                return;
+            }
+            try {
+                stream.heartbeat();
+            } catch (IOException failure) {
+                stopLive("capture request heartbeat failed", true);
+                LoggerFactory.getLogger("stellar_bridge").warn("EVE capture heartbeat failed", failure);
                 return;
             }
             if (active != null && !valid(active)) clearView();
@@ -247,7 +268,12 @@ public final class CaptureView {
     private static void stopLive(String reason, boolean notify) {
         boolean wasLive = liveBinding != null;
         liveBinding = null;
-        if (stream != null) stream.mailbox.stop(reason);
+        if (stream != null) {
+            try { stream.stop(reason); }
+            catch (IOException failure) {
+                LoggerFactory.getLogger("stellar_bridge").warn("EVE stream stop publication failed; native lease will expire", failure);
+            }
+        }
         clearView();
         if (wasLive) {
             LoggerFactory.getLogger("stellar_bridge").info("{}", stream.mailbox.status(System.nanoTime()));
@@ -261,6 +287,7 @@ public final class CaptureView {
         View previous = active;
         active = null;
         rendering = null;
+        presented = null;
         close(previous);
     }
 
@@ -277,6 +304,7 @@ public final class CaptureView {
         if (context.advancedTranslucency()) { off(); return; }
         try {
             draw(view, context);
+            presented = view;
         } catch (RuntimeException failure) {
             off();
             LoggerFactory.getLogger("stellar_bridge").error("EVE compositor stopped", failure);

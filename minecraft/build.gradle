@@ -131,3 +131,11 @@ tasks.register('captureAsyncTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn captureAsyncTest
+
+tasks.register('captureContinuousTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.CaptureContinuousTest'
+    jvmArgs '-ea'
+}
+check.dependsOn captureContinuousTest

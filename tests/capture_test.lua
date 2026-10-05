@@ -308,6 +308,76 @@ check('async and synchronous frame identifiers skip existing PNG and BMP generat
     assert(read(directory..'/'..png_name)=='foreign PNG' and read(directory..'/'..bmp_name)=='foreign BMP')
     assert(c.clear())
 end)
+check('continuous HD reserves one generation until exact ACK and excludes competing captures',function()
+    local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+    local b=backend(); local c=fresh.new(b,directory)
+    assert(type(c.streamframe)=='function','The continuous pending-frame lifecycle is missing')
+    local run,session=string.rep('b',32),string.rep('a',32)
+    local link={session=session,ack=1,scale=100,position={x=0,y=0,z=0}}
+    assert(not c.streamframe(link,run),'Explicit stream ownership is required')
+    assert(c.stream_enable(true)); assert(c.stream_busy() and c.status()~='idle')
+    assert(not c.frame() and not c.frameasync() and not c.exportasync() and not c.exportbmp() and not c.capture('color'))
+    assert(c.streamframe(link,run)); track_frame(b)
+    local pending=assert(c.stream_pending()); local meta=assert(read(directory..'/eve-frame.txt'))
+    assert(meta:match('^SBMC_FRAME 4 ') and meta:find('\nRUN '..run..'\nEND '..pending.id..'\n',1,true))
+    assert(pending.run==run and pending.session==session and pending.published and not pending.poisoned)
+    assert(b.actors==0 and b.targets==0 and b.camera_reads==1)
+    local paths={table.unpack(b.files)}
+    assert(not c.streamframe(link,run) and b.camera_reads==1)
+    c.stream_ack(string.rep('c',32),session,pending.id)
+    c.stream_ack(run,string.rep('c',32),pending.id)
+    c.stream_ack(run,session,pending.id..'0')
+    assert(c.stream_pending() and read(directory..'/eve-frame.txt')==meta)
+    assert(c.stream_enable(false)); assert(c.clear())
+    assert(read(directory..'/eve-frame.txt')==meta,'F11 must leave unresolved metadata available to the draining reader')
+    for _,path in ipairs(paths) do assert(read(directory..'/'..path)) end
+    assert(not c.stream_enable(true),'An unresolved old generation blocks another run')
+    assert(c.stream_ack(run,session,pending.id))
+    assert(not c.stream_pending() and not c.stream_busy() and c.status()=='idle' and not read(directory..'/eve-frame.txt'))
+    for _,path in ipairs(paths) do assert(not read(directory..'/'..path)) end
+    assert(c.stream_enable(true) and c.streamframe(link,run)); track_frame(b)
+    local next_pending=assert(c.stream_pending()); assert(next_pending.id~=pending.id and b.camera_reads==2)
+    assert(c.stream_ack(run,session,next_pending.id)); c.stream_enable(false)
+    assert(c.frameasync(link),'Continuous frames must not consume the separate manual one-shot guard'); track_frame(b)
+    assert(not c.stream_enable(true),'An unacknowledged manual async attempt blocks continuous ownership')
+    assert(c.clear())
+end)
+check('continuous metadata retries never recapture and partial submission stays poisoned',function()
+    for _,failure in ipairs({'publication','second-submit'}) do
+        local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+        local b=backend(); local c=fresh.new(b,directory)
+        local run,session=string.rep('b',32),string.rep('a',32)
+        local link={session=session,ack=1,scale=100,position={x=0,y=0,z=0}}
+        assert(c.frame(nil,'hd')); track_frame(b)
+        local previous=read(directory..'/eve-frame.txt')
+        local export=b.export_async
+        function b.export_async(...)
+            export(...)
+            if failure=='second-submit' and b.async_exports==2 then error('ambiguous submit failure') end
+        end
+        local rename=os.rename
+        if failure=='publication' then os.rename=function() return nil,'locked',13 end end
+        assert(c.stream_enable(true)); local ran,ok=pcall(c.streamframe,link,run)
+        os.rename=rename; track_frame(b)
+        assert(ran and not ok and read(directory..'/eve-frame.txt')==previous)
+        local pending=assert(c.stream_pending()); local captures=b.captures
+        c.stream_enable(false); assert(c.clear()); assert(read(directory..'/eve-frame.txt')==previous)
+        if failure=='publication' then
+            assert(not pending.poisoned and not pending.published)
+            assert(c.stream_retry()); assert(c.stream_pending().published)
+            local remove=os.remove
+            os.remove=function(path) if path:match('%-color%.bmp$') then return nil,'locked',13 end; return remove(path) end
+            local acknowledged=c.stream_ack(run,session,pending.id); os.remove=remove
+            assert(not acknowledged and c.stream_pending(),'Failed ACK retirement retains ownership for retry')
+            assert(c.stream_ack(run,session,pending.id) and not c.stream_pending())
+        else
+            assert(pending.poisoned and not pending.published)
+            assert(not c.stream_retry()); c.stream_ack(run,session,pending.id)
+            assert(c.stream_pending() and not c.stream_enable(true),'An ACK cannot authorize deletion after uncertain submission')
+        end
+        assert(b.captures==captures,'Metadata/ACK recovery must not submit another native capture')
+    end
+end)
 check('HD captures all planes before Kismet readback makes the BMP resource ready',function()
     local b=backend(); local c=Capture.new(b,directory)
     local captured,order={},{}

@@ -5,7 +5,7 @@ local count=0
 local function check(name,run) run(); count=count+1; print('PASS '..name) end
 local function fixture()
     local f={now=100,frames=0,clears=0,status='idle',pose={session=string.rep('a',32),state='entered',ack=1,position={x=1,y=2,z=3}}}
-    local capture={}
+    local capture={stream_busy=function()return f.hd_owned end}
     function capture.status() return f.status end
     function capture.frame(link)
         f.frames=f.frames+1; f.link=link
@@ -85,5 +85,9 @@ check('the wall deadline and backwards clocks stop capture',function()
     end
     local f=fixture(); assert(f.stream.start()); f.now=159; f.frame_time=160
     f.stream.tick(); assert(f.frames==1 and not f.stream.active(),'A slow export must clear the expired stream immediately')
+end)
+check('legacy live cannot invalidate a competing HD session',function()
+    local f=fixture(); f.hd_owned=true
+    assert(not f.stream.start() and f.clears==0 and not f.stream.active())
 end)
 print(count..' live capture lifecycle checks passed.')

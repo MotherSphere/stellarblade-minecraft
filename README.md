@@ -73,7 +73,7 @@ The console command **`sbmc frame`** retains the **320×180** PNG baseline throu
 
 HD captures log start/end boundaries for native allocation, capture, export, validation, cleanup and publication. Minecraft logs CPU read/depth decoding, color/mask decoding and texture-upload submission times when a still is accepted. Submission time does not measure GPU completion. These diagnostics help identify the next transport improvement without claiming asynchronous readback or a playable frame rate.
 
-The `sbmc exporttest` command is disabled: its experimental asynchronous call crashed the tested UE4SS build. F4 retains the supported synchronous still path. No asynchronous image export is enabled.
+The `sbmc exporttest` command is disabled: its experimental completion callback crashed the tested UE4SS build. F4 retains the synchronous still path. The newer asynchronous paths omit that callback and use reader-side file-close validation.
 
 With production capture stopped, `sbmc exportbmp` compares synchronous PNG and BMP exports of one 1280×720 color target. It does not bind a completion callback or change the paired-frame descriptor. The timing log and diagnostic files test whether avoiding PNG compression reduces export cost; this command does not enable a faster Minecraft stream.
 
@@ -94,6 +94,14 @@ After starting the terrain link and entering it with EVE, press F4 for the HD st
 The view requires the same active private creative session and exactly the captured terrain revision. It stops on block revisions, stale captures, link loss, world changes or unsupported effects. Use Fast/Fancy graphics without Iris, and a calm player without status effects. Camera roll, full translucency and other renderer replacements are unsupported. The window may use a different aspect ratio: the EVE layer covers the matching portion of Minecraft's projection instead of stretching.
 
 The rendering branch corrects the provisional coordinate basis to **Unreal `(X,Y,Z)` → Minecraft `(X,Z,Y)`**, with the configured units-per-block conversion. Both collision import and exported feet use this basis. The native image is not mirrored, preserving EVE's visible handedness. Update both mods together and start a fresh session; do not mix the earlier negative-horizontal-axis build with this renderer.
+
+### Continuous HD composition
+
+After `/stellar start`, F5 and F8 have established the existing terrain link, run **`/stellarview livehd`** in Minecraft. This requests a continuous **1280×720** stream directly; F1 and repeated still captures are unnecessary. Keep the native terrain renderer disabled. **`/stellarview off`** stops the request and restores the normal camera. **`/stellarview status`** reports accepted image cadence, which is distinct from Minecraft rendering FPS. Native EVE controls still require Stellar Blade focus; Minecraft input forwarding and cross-game combat are not implemented by this command.
+
+The stream uses frame-v4 metadata with a distinct run identifier. Only one native image generation may await consumption. Minecraft observes file closure, validates and decodes all planes, then acknowledges that exact generation before the producer retires its files and submits another. Images rejected for an outdated terrain revision or stopped view are still consumed safely. Stop and F11 retain an unresolved generation until it can be acknowledged; uncertain export failure blocks further submission. A timed-out run requires a new explicit `livehd` command and never restarts just because a late frame arrives. Manual capture and the reverse renderer are blocked while this stream owns capture or has unresolved writes. Start from a fresh Stellar Blade launch if a manual asynchronous one-shot has already reserved its separate retained output.
+
+The displayed camera also supplies Minecraft's block and entity targeting. Interaction reach remains measured from the player, and normal Minecraft interaction handlers still perform the action. An unsupported camera offset or interaction range above 64 blocks produces no target in this local-patch implementation. Fast/Fancy graphics, the private creative terrain link and the existing rendering restrictions still apply. Hair/transparency quality, shader integration, larger-world streaming and performance tuning remain separate work. The continuous path has automated protocol, ownership and decoding tests; its integrated in-game behavior still needs validation.
 
 ### Bounded animated preview
 
@@ -206,6 +214,7 @@ lua tests/bridge_test.lua
 lua tests/capture_test.lua
 lua tests/capture_stream_test.lua
 lua tests/capture_stream_main_test.lua
+lua tests/capture_session_test.lua
 lua tests/visual_probe_test.lua
 lua tests/visual_probe_adapter_test.lua
 lua tests/scene_protocol_test.lua
