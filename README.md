@@ -75,6 +75,8 @@ HD captures log start/end boundaries for native allocation, capture, export, val
 
 The `sbmc exporttest` command is disabled: its experimental asynchronous call crashed the tested UE4SS build. F4 retains the supported synchronous still path. No asynchronous image export is enabled.
 
+With production capture stopped, `sbmc exportbmp` compares synchronous PNG and BMP exports of one 1280×720 color target. It does not bind a completion callback or change the paired-frame descriptor. The timing log and diagnostic files test whether avoiding PNG compression reduces export cost; this command does not enable a faster Minecraft stream.
+
 `eve-frame.txt` in the private bridge directory names three generation-specific PNG/HDR files and records the camera, projection and context. It is published only after all exports and cleanup succeed. A failed capture preserves the previous complete frame. Files from the preceding frame of the same Lua lifetime are removed after replacement; old files from earlier launches can be removed while both games are closed.
 
 In a private Minecraft singleplayer world, run **`/stellarpreview load`** within 30 seconds of F4 to inspect the capture in a diagnostic inset. **`/stellarpreview off`** closes it. The preview uses the display-color image and the separate inverse-opacity mask, rejecting low-coverage sky/haze pixels. Partial hair and translucency remain unsupported. The texture expires 30 seconds after capture and is removed on world change or disconnect. This is an opt-in still preview, not a live renderer, world-camera override or depth-tested composition.

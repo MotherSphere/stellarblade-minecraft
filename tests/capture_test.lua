@@ -22,6 +22,11 @@ local png_hd=unhex('89504e470d0a1a0a0000000d4948445200000500000002d00806000000cf
     ..string.rep('\0',3572)..unhex('af0146180001850592430000000049454e44ae426082')
 local hdr_hd='#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 720 +X 1280\n'
     ..string.rep('\2\2\5\0'..string.rep(string.rep('\255\0',10)..'\138\0',4),720)
+local function bmp_hd(bits)
+    local bytes=1280*720*bits//8
+    return 'BM'..string.pack('<I4I2I2I4I4i4i4I2I2I4I4i4i4I4I4',54+bytes,0,0,54,40,1280,720,1,bits,0,bytes,0,0,0,0)
+        ..string.rep('\0',bytes)
+end
 local function backend()
     local b={actors=0,targets=0,spawned=0,camera_reads=0,sources={},cameras={},exports=0,files={}}
     function b.camera() b.camera_reads=b.camera_reads+1; return {pawn_id=11,world_id=12,position={X=1,Y=2,Z=3},rotation={Pitch=4,Yaw=5,Roll=6},fov=70,pawn_position={X=7,Y=8,Z=9},half_height=95} end
@@ -29,13 +34,20 @@ local function backend()
     function b.configure(_,_,mode) b.sources[#b.sources+1]=mode.source; if b.fail_configure then error('configure failed') end end
     function b.create_target(_,mode) b.targets=b.targets+1; return {mode=mode} end
     function b.bind() if b.fail_bind then error('bind failed') end end
-    function b.capture() if b.fail_capture then error('capture failed') end end
+    function b.capture() b.captures=(b.captures or 0)+1; if b.fail_capture then error('capture failed') end end
     function b.export(_,target,dir,name)
+        b.png_target=target
         b.exports=b.exports+1; b.files[#b.files+1]=name
         if b.no_export or b.fail_export_at==b.exports then return end
         local depth=name:match('%.hdr$')
         local image=target.mode.width==1280 and (depth and hdr_hd or png_hd) or (depth and hdr or png)
         write(dir..'/'..name,b.image or (b.bad_export and 'wrong format' or image))
+    end
+    function b.export_bmp(target,dir,name)
+        assert(target==b.png_target and target.mode.width==1280 and target.mode.height==720 and target.mode.source==2)
+        b.bmp_exports=(b.bmp_exports or 0)+1
+        if b.fail_bmp then error('BMP export failed') end
+        write(dir..'/'..name,b.bmp_image or bmp_hd(32))
     end
     function b.destroy() if b.fail_destroy then error('destroy failed') end; b.actors=b.actors-1 end
     function b.release() if b.fail_release then error('release failed') end; b.targets=b.targets-1 end
@@ -105,6 +117,42 @@ check('unsupported modes do not allocate or touch existing capture',function()
     write(directory..'/eve-capture-color.txt','preserved')
     assert(not c.capture('../color')); assert(b.spawned==0)
     assert(read(directory..'/eve-capture-color.txt')=='preserved')
+end)
+check('synchronous BMP comparison reuses one target and leaves paired publication unchanged',function()
+    for _,bits in ipairs({24,32}) do
+        local b,logs=backend(),{}; b.bmp_image=bmp_hd(bits)
+        local c=Capture.new(b,directory,function(message) logs[#logs+1]=message end)
+        write(directory..'/eve-frame.txt','preserved paired frame')
+        assert(type(c.exportbmp)=='function','The bounded synchronous BMP comparison is missing')
+        local ok,message=c.exportbmp(); assert(ok,message)
+        assert(message:find(bits..' bpp',1,true) and message:find('compression 0',1,true))
+        assert(b.camera_reads==1 and b.spawned==1 and b.captures==3 and b.exports==2 and b.bmp_exports==1)
+        assert(b.actors==0 and b.targets==0 and c.status()=='idle')
+        assert(read(directory..'/eve-frame.txt')=='preserved paired frame')
+        assert(read(directory..'/eve-exportbmp-kismet.png')==png_hd and read(directory..'/eve-exportbmp.bmp')==b.bmp_image)
+        local joined=table.concat(logs,'\n')
+        for _,label in ipairs({'Kismet cold export','BMP synchronous export','Kismet warm export'}) do
+            assert(joined:find(label..' start',1,true) and joined:find(label..' end',1,true))
+        end
+    end
+end)
+check('BMP exceptions and invalid headers use existing cleanup and resource retry',function()
+    local good=bmp_hd(32)
+    local bad_width=good:sub(1,18)..string.pack('<i4',1279)..good:sub(23)
+    local compressed=good:sub(1,30)..string.pack('<I4',1)..good:sub(35)
+    for _,invalid in ipairs({good:sub(1,80),bad_width,compressed,good..string.rep('\0',4*1024*1024)}) do
+        local b=backend(); b.bmp_image=invalid; local c=Capture.new(b,directory)
+        assert(not c.exportbmp()); assert(b.actors==0 and b.targets==0 and c.status()=='idle')
+        assert(read(directory..'/eve-frame.txt')=='preserved paired frame')
+    end
+    local b=backend(); b.fail_bmp=true; b.fail_destroy=true; local c=Capture.new(b,directory)
+    assert(not c.exportbmp() and c.status()=='cleanup-required' and b.targets==1)
+    assert(not c.exportbmp() and b.spawned==1,'Failed cleanup must prevent another allocation')
+    b.fail_destroy=false; assert(c.cleanup() and b.targets==0 and c.status()=='idle')
+    b=backend(); b.fail_export_at=2; c=Capture.new(b,directory)
+    assert(not c.exportbmp() and not read(directory..'/eve-exportbmp-kismet.png'),
+        'A silent warm export must not reuse the preceding cold PNG')
+    assert(b.actors==0 and b.targets==0 and read(directory..'/eve-frame.txt')=='preserved paired frame')
 end)
 local frame_files={}
 local function track_frame(b) for _,name in ipairs(b.files) do frame_files[name]=true end end
@@ -252,6 +300,7 @@ check('repeated frames keep only one complete generation and bounded native hand
 end)
 for name in pairs(frame_files) do os.remove(directory..'/'..name) end
 for _,name in ipairs({'eve-frame.txt','eve-frame.txt.tmp','eve-frame.txt.previous'}) do os.remove(directory..'/'..name) end
+for _,name in ipairs({'eve-exportbmp-kismet.png','eve-exportbmp.bmp'}) do os.remove(directory..'/'..name) end
 for _,name in ipairs({'eve-capture-color.png','eve-capture-color.txt','eve-capture-color.txt.tmp','eve-capture-depth.hdr','eve-capture-depth.txt'}) do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
 check('adapter matches reflected API arity and disables automatic rendering before binding',function()
@@ -273,6 +322,16 @@ check('adapter matches reflected API arity and disables automatic rendering befo
         GetCameraLocation=function()return {X=1,Y=2,Z=3}end,
         GetCameraRotation=function()return {Pitch=4,Yaw=5,Roll=6}end,GetFOVAngle=function()return 70 end}}
     local lib={IsValid=valid}
+    local writer={IsValid=valid}
+    function writer:ExportToDisk(...)
+        assert(select('#',...)==3,'The pinned ImageWriteQueue function requires three inputs')
+        local texture,path,options=...
+        assert(texture==target and path==directory..'/test.bmp')
+        assert(options.Format==2 and options.CompressionQuality==0 and options.bAsync==false and options.bOverwriteFile==false)
+        assert(options.OnComplete==nil and options.NativeOnComplete==nil,'No callback may enter the delegate marshaller')
+        local count=0; for _ in pairs(options) do count=count+1 end; assert(count==4)
+        self.called=true
+    end
     function lib:CreateRenderTarget2D(...)
         assert(select('#',...)==6,'Target-game CreateRenderTarget2D takes six inputs')
         local context,w,h,format,clear,mips=...
@@ -283,14 +342,18 @@ check('adapter matches reflected API arity and disables automatic rendering befo
     function lib:ExportRenderTarget(...) assert(select('#',...)==4); local owner,texture,dir,name=...; assert(owner==actor and texture==target and dir==directory and name=='eve-capture-color.png') end
     function lib:ReleaseRenderTarget2D(...) assert(select('#',...)==1 and (...)==target and actor.destroyed); self.released=true end
     package.loaded.UEHelpers={GetPlayer=function()return pawn end,GetPlayerController=function()return controller end}
-    StaticFindObject=function(path) return path=='/Script/Engine.SceneCapture2D' and world or lib end
+    StaticFindObject=function(path)
+        if path=='/Script/ImageWriteQueue.Default__ImageWriteBlueprintLibrary' then return writer end
+        return path=='/Script/Engine.SceneCapture2D' and world or lib
+    end
     CreateInvalidObject=function()return null end
     local adapter=require('capture_adapter').new()
     local camera=adapter.camera(); assert(camera.pawn_id==11 and camera.world_id==12 and camera.half_height==95)
     local mode={width=320,height=180,source=0,format=2}
     local owned=adapter.spawn(camera); adapter.configure(owned,camera,mode)
     local image=adapter.create_target(camera,mode); adapter.bind(owned,image); adapter.capture(owned)
-    adapter.export(owned,image,directory,'eve-capture-color.png'); adapter.destroy(owned); adapter.release(image)
-    assert(capture.captured and lib.released)
+    adapter.export(owned,image,directory,'eve-capture-color.png')
+    adapter.export_bmp(image,directory,'test.bmp'); adapter.destroy(owned); adapter.release(image)
+    assert(capture.captured and lib.released and writer.called)
 end)
 print(count..' capture checks passed; native rendering remains untested.')

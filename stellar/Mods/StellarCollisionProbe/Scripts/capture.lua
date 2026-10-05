@@ -91,6 +91,24 @@ local function image_size(path,kind,mode)
     end
     return #data
 end
+local function bmp_info(path,width,height)
+    local file=assert(io.open(path,'rb'),'Native BMP export is unavailable.')
+    local data=file:read(4*1024*1024+1); file:close()
+    assert(data and #data>=54 and #data<=4*1024*1024 and data:sub(1,2)=='BM','BMP size or signature is invalid.')
+    local size,reserved1,reserved2,offset=string.unpack('<I4I2I2I4',data,3)
+    local header,w,h,planes,bits,compression,pixel_size=string.unpack('<I4i4i4I2I2I4I4',data,15)
+    assert(size==#data and reserved1==0 and reserved2==0,'BMP file header is invalid.')
+    assert(header==40 or header==108 or header==124,'Unsupported BMP information header.')
+    assert(w==width and math.abs(h)==height and planes==1,'BMP dimensions or plane count differ from the capture.')
+    -- This color-only gate accepts ordinary uncompressed RGB, not palette/RLE or bitfield variants.
+    assert((bits==24 or bits==32) and compression==0,
+        string.format('Unsupported BMP format: %d bpp, compression %d.',bits,compression))
+    local required=((w*bits+31)//32)*4*math.abs(h)
+    assert(offset>=14+header and offset+required<=#data and (pixel_size==0 or pixel_size==required),
+        'BMP pixel layout is incomplete or inconsistent.')
+    return string.format('%dx%d, %d bpp, compression %d, %s, %d bytes',w,math.abs(h),bits,compression,
+        h<0 and 'top-down' or 'bottom-up',#data)
+end
 local function metadata(kind,id,epoch,mode,camera,size)
     local p,r,e=camera.position,camera.rotation,camera.pawn_position
     return string.format('SBMC_CAPTURE 1 %s %d %d\nSIZE %d %d %d %d\n'
@@ -203,19 +221,51 @@ function Capture.new(engine,directory,log)
         purge_files()
         return api.cleanup()
     end
-    local function capture_layer(camera,mode,kind,trace,label)
+    local function allocate_capture(camera,mode,trace,label)
         local handle={}
         owned[#owned+1]=handle
-        label=label or kind
+        label=label or 'capture'
         stage(trace,label..' allocation',function()
             handle.actor=assert(engine.spawn(camera),'Capture actor was not created.')
             engine.configure(handle.actor,camera,mode)
             handle.target=assert(engine.create_target(camera,mode),'Capture target was not created.')
             engine.bind(handle.actor,handle.target)
         end)
+        return handle
+    end
+    local function capture_layer(camera,mode,kind,trace,label)
+        label=label or kind
+        local handle=allocate_capture(camera,mode,trace,label)
         stage(trace,label..' capture',function() engine.capture(handle.actor) end)
         stage(trace,label..' export',function() engine.export(handle.actor,handle.target,directory,mode.file) end)
         return stage(trace,label..' validation',function() return image_size(directory..'/'..mode.file,kind,mode) end)
+    end
+    function api.exportbmp()
+        if api.status()~='idle' then return false,'Capture cleanup is required before the BMP comparison.' end
+        local mode={width=1280,height=720,source=2,format=2,file='eve-exportbmp-kismet.png'}
+        local bmp='eve-exportbmp.bmp'
+        local trace=log and function(message) pcall(log,'BMP comparison '..message) end
+        local result
+        local ok,why=pcall(function()
+            remove_existing(directory..'/'..mode.file); remove_existing(directory..'/'..bmp)
+            local camera=engine.camera(); check_camera(camera)
+            local handle=allocate_capture(camera,mode)
+            local function png(label)
+                remove_existing(directory..'/'..mode.file)
+                engine.capture(handle.actor)
+                stage(trace,label,function() engine.export(handle.actor,handle.target,directory,mode.file) end)
+                image_size(directory..'/'..mode.file,'color',mode)
+            end
+            png('Kismet cold export')
+            engine.capture(handle.actor)
+            stage(trace,'BMP synchronous export',function() engine.export_bmp(handle.target,directory,bmp) end)
+            result=bmp_info(directory..'/'..bmp,mode.width,mode.height)
+            png('Kismet warm export')
+        end)
+        local cleaned,cleanup_message=api.cleanup()
+        if not ok then return false,tostring(why)..(cleaned and '' or '; '..cleanup_message) end
+        if not cleaned then return false,cleanup_message end
+        return true,'Exported color-only BMP comparison: '..result..'. Diagnostic PNG/BMP retained; paired frame unchanged.'
     end
     function api.capture(kind)
         local mode=modes[kind]

@@ -3,6 +3,7 @@ package.path='stellar/Mods/StellarCollisionProbe/Scripts/?.lua;'..package.path
 local queued,keys={},{}
 local loop,console,frame_hook
 local frames,stills,clears,returns=0,0,0,0
+local bmp_exports=0
 local profiles={}
 local state='idle'
 local tick_error,schedule_error,clear_error,read_error=false,false,false,false
@@ -17,6 +18,7 @@ end
 local capture={status=function()return 'idle' end}
 function capture.frame(_,profile) frames=frames+1; profiles[frames]=profile or 'default'; if frame_hook then frame_hook() end; return true,'frame' end
 function capture.capture() stills=stills+1; return true,'still' end
+function capture.exportbmp() bmp_exports=bmp_exports+1; return true,'BMP comparison' end
 function capture.cleanup() return true,'cleaned' end
 function capture.clear() clears=clears+1; if clear_error then error('native cleanup failed') end; return true,'cleared' end
 local bridge={status=function()return state end,shapes=function()return {} end}
@@ -125,12 +127,12 @@ local scene_start_clears=clears; keys['Shift+F8'](); drain()
 assert(scene_enabled and clears==scene_start_clears+1,'Native visuals must stop live capture before activation')
 command('live'); keys.F1(); drain(); loop(); drain()
 assert(frames==0,'Both live start paths must reject simultaneous native scene rendering')
-keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd')
-assert(frames==0 and stills==0,'All still export commands must reject native visual mode')
+keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd'); command('exportbmp')
+assert(frames==0 and stills==0 and bmp_exports==0,'All still export commands must reject native visual mode')
 command('visuals'); assert(not scene_enabled); keys.F1(); drain()
 loop(); drain(); assert(frames==1,'F1 should enable the entered link')
-keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd')
-assert(frames==1 and stills==0,'Manual captures must not overlap live capture')
+keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd'); command('exportbmp')
+assert(frames==1 and stills==0 and bmp_exports==0,'Manual captures must not overlap live capture')
 frame_hook=function() loop(); assert(#queued==0,'The pending gate was released during native capture') end
 loop(); loop(); assert(#queued==1,'The bridge cannot queue catch-up callbacks')
 drain(); frame_hook=nil; assert(frames==2)
@@ -160,3 +162,4 @@ assert(frames==6 and profiles[1]=='default' and profiles[2]=='default' and profi
     and profiles[4]=='hd' and profiles[5]=='hd' and profiles[6]=='default',
     'Bare F4 and framehd must request HD; frame and live frames must retain default dimensions')
 print('PASS HD still/live/texture commands, F11 cleanup independence, native F6 counters, and pending gate through capture')
+command('exportbmp'); assert(bmp_exports==1 and frames==6 and stills==2,'BMP comparison must remain opt-in and separate from paired frames')
