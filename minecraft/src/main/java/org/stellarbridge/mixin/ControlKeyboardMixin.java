@@ -9,7 +9,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Keyboard.class)
 abstract class ControlKeyboardMixin {
-    @Inject(method = "onKey", at = @At("TAIL"))
+    // Releases return before the final press branch; observe every normal exit.
+    @Inject(method = "onKey", at = @At("RETURN"))
     private void stellarInput(long window, int key, int scan, int action, int modifiers, CallbackInfo callback) {
         ControlBridge.keyboard(window, key, scan, action, modifiers);
     }

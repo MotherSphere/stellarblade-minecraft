@@ -5,6 +5,14 @@ import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.AnnotationNode;
+import org.objectweb.asm.tree.MethodNode;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.points.BeforeFinalReturn;
+import org.spongepowered.asm.mixin.injection.points.BeforeReturn;
+import org.spongepowered.asm.mixin.injection.struct.InjectionPointData;
+import org.spongepowered.asm.util.Annotations;
 
 /** Validate the actual pinned input boundaries without generating input or launching a window. */
 public final class ControlHooksTest {
@@ -16,6 +24,23 @@ public final class ControlHooksTest {
             assert hasMethod(client, method[0], method[1]);
         ClassNode keyboard = read("net/minecraft/client/Keyboard"), mouse = read("net/minecraft/client/Mouse");
         assert hasMethod(keyboard, "onKey", "(JIIII)V") && hasMethod(mouse, "onMouseButton", "(JIII)V");
+        MethodNode onKey = keyboard.methods.stream().filter(method -> method.name.equals("onKey")).findFirst().orElseThrow();
+        AbstractInsnNode releaseReturn = null;
+        for (var instruction : onKey.instructions) {
+            if (instruction instanceof MethodInsnNode call && call.owner.equals("net/minecraft/client/option/KeyBinding")
+                    && call.name.equals("setKeyPressed") && call.getPrevious().getOpcode() == org.objectweb.asm.Opcodes.ICONST_0) {
+                releaseReturn = call;
+                while (releaseReturn.getOpcode() != org.objectweb.asm.Opcodes.RETURN) releaseReturn = releaseReturn.getNext();
+                break;
+            }
+        }
+        assert releaseReturn != null : "Pinned keyboard release branch must be identified";
+        assert !returns("TAIL", onKey).contains(releaseReturn) : "TAIL only reaches the later press return";
+        MethodNode keyObserver = read("org/stellarbridge/mixin/ControlKeyboardMixin").methods.stream()
+                .filter(method -> method.name.equals("stellarInput")).findFirst().orElseThrow();
+        var at = Annotations.<java.util.List<AnnotationNode>>getValue(Annotations.getVisible(keyObserver, Inject.class), "at").getFirst();
+        assert returns(Annotations.getValue(at, "value"), onKey).contains(releaseReturn)
+                : "Keyboard observer misses releases; held-key blocking and scan codes can never clear";
         assert calls(mouse, "updateMouse", "net/minecraft/client/network/ClientPlayerEntity", "changeLookDirection", "(DD)V") == 1;
         ClassNode player = read("net/minecraft/client/network/ClientPlayerEntity");
         assert hasMethod(player, "move", "(Lnet/minecraft/entity/MovementType;Lnet/minecraft/util/math/Vec3d;)V");
@@ -60,6 +85,15 @@ public final class ControlHooksTest {
     }
     private static boolean hasMethod(ClassNode node, String name, String descriptor) {
         return node.methods.stream().anyMatch(method -> method.name.equals(name) && method.desc.equals(descriptor));
+    }
+    private static java.util.List<AbstractInsnNode> returns(String at, MethodNode target) {
+        var data = new InjectionPointData(null, at, java.util.List.of(), "", "", -1, 0, null, 0) {
+            @Override public org.spongepowered.asm.mixin.refmap.IMixinContext getMixin() { return null; }
+        };
+        var point = at.equals("RETURN") ? new BeforeReturn(data) : new BeforeFinalReturn(data);
+        var selected = new java.util.ArrayList<AbstractInsnNode>();
+        point.find(target.desc, target.instructions, selected);
+        return selected;
     }
     private static int calls(ClassNode node, String methodName, String owner, String name, String descriptor) {
         int count = 0;
