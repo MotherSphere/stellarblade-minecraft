@@ -75,7 +75,7 @@ Key={F1='F1',F2='F2',F4='F4',F5='F5',F6='F6',F7='F7',F8='F8',F9='F9',F11='F11'}
 ModifierKey={SHIFT='SHIFT'}
 RegisterKeyBind=function(key,modifiers,callback)
     if callback then
-        assert((key==Key.F4 or key==Key.F7 or key==Key.F8) and #modifiers==1 and modifiers[1]==ModifierKey.SHIFT)
+        assert((key==Key.F7 or key==Key.F8) and #modifiers==1 and modifiers[1]==ModifierKey.SHIFT)
         keys['Shift+'..key]=callback
     else keys[key]=modifiers end
 end
@@ -90,7 +90,7 @@ local function drain() while #queued>0 do table.remove(queued,1)() end end
 local function command(name) console(nil,{name}); drain() end
 assert(keys['Shift+F7'],'The explicit Shift+F7 texture binding is missing')
 assert(keys['Shift+F8'],'The explicit Shift+F8 native scene binding is missing')
-assert(keys['Shift+F4'],'The explicit Shift+F4 HD still binding is missing')
+assert(keys.F4 and not keys['Shift+F4'],'HD capture must not require Shift, which triggers native dodge')
 assert(visual_toggles==0,'The texture probe must remain inactive at startup')
 command('texture'); keys['Shift+F7'](); drain(); assert(visual_toggles==2)
 keys.F7(); drain(); assert(ordinary_creates==1 and visual_toggles==2,'Bare F7 must retain the original fixture action')
@@ -121,11 +121,11 @@ local scene_start_clears=clears; keys['Shift+F8'](); drain()
 assert(scene_enabled and clears==scene_start_clears+1,'Native visuals must stop live capture before activation')
 command('live'); keys.F1(); drain(); loop(); drain()
 assert(frames==0,'Both live start paths must reject simultaneous native scene rendering')
-keys.F4(); keys['Shift+F4'](); keys.F2(); drain(); command('capture'); command('framehd')
+keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd')
 assert(frames==0 and stills==0,'All still export commands must reject native visual mode')
 command('visuals'); assert(not scene_enabled); keys.F1(); drain()
 loop(); drain(); assert(frames==1,'F1 should enable the entered link')
-keys.F4(); keys['Shift+F4'](); keys.F2(); drain(); command('capture'); command('framehd')
+keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd')
 assert(frames==1 and stills==0,'Manual captures must not overlap live capture')
 frame_hook=function() loop(); assert(#queued==0,'The pending gate was released during native capture') end
 loop(); loop(); assert(#queued==1,'The bridge cannot queue catch-up callbacks')
@@ -151,8 +151,8 @@ command('mirror'); command('enter'); command('live'); command('liveoff'); loop()
 assert(frames==2,'Explicit liveoff must prevent subsequent captures')
 command('frame'); command('capture'); command('depth')
 assert(frames==3 and stills==2,'Still export commands must remain available after native visuals are disabled')
-command('framehd'); keys['Shift+F4'](); drain(); keys.F4(); drain()
+command('framehd'); keys.F4(); drain(); command('frame')
 assert(frames==6 and profiles[1]=='default' and profiles[2]=='default' and profiles[3]=='default'
     and profiles[4]=='hd' and profiles[5]=='hd' and profiles[6]=='default',
-    'HD must be explicit; bare F4, frame and live frames must retain default dimensions')
+    'Bare F4 and framehd must request HD; frame and live frames must retain default dimensions')
 print('PASS HD still/live/texture commands, F11 cleanup independence, native F6 counters, and pending gate through capture')

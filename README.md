@@ -67,9 +67,9 @@ The native scene uses an opaque display material for this first stage. Texture s
 
 ## Native image capture experiment
 
-With bridge configuration installed, **F4** (`sbmc frame`) requests a paired 320×180 capture through temporary Unreal scene-capture actors showing EVE's components. Display color, inverse-opacity mask and scene depth use the same camera snapshot within one game-thread call. A manual request takes one frame without moving EVE or hiding the original level. It releases the temporary actors and render targets after each request; `sbmc capturecleanup` retries cleanup if the log reports a failure. Stop the animated preview before taking manual captures.
+With bridge configuration installed, **F4** (`sbmc framehd`) requests a paired **1280×720 still** through temporary Unreal scene-capture actors showing EVE's components. Use F4 without a modifier: Shift also triggers EVE's native dodge. Display color, inverse-opacity mask and scene depth use the same camera snapshot within one game-thread call. A manual request takes one frame without moving EVE or hiding the original level. It releases the temporary actors and render targets after each request; `sbmc capturecleanup` retries cleanup if the log reports a failure. Stop the animated preview before taking manual captures.
 
-**Shift+F4** (`sbmc framehd`) requests an opt-in **1280×720 paired still** through the same lifecycle. Both mods must include HD support. Only 320×180 and 1280×720 are accepted; every color, mask and depth plane must match its descriptor and stay within 4 MiB. This is a detail and timing check, not a faster live stream. F4 and the animated preview retain their original resolution and cadence.
+The console command **`sbmc frame`** retains the **320×180** baseline through the same lifecycle. Both mods must include HD support for F4. Only 320×180 and 1280×720 are accepted; every color, mask and depth plane must match its descriptor and stay within 4 MiB. This is a detail and timing check, not a faster live stream. The animated preview retains its original resolution and cadence.
 
 HD captures log start/end boundaries for native allocation, capture, export, validation, cleanup and publication. Minecraft logs CPU read/depth decoding, PNG/mask decoding and texture-upload submission times when a still is accepted. Submission time does not measure GPU completion. These diagnostics help identify the next transport improvement without claiming asynchronous readback or a playable frame rate.
 
@@ -81,7 +81,7 @@ The original independent probes remain available: `sbmc capture` writes `eve-cap
 
 ### World composition experiment
 
-After starting the terrain link and entering it with EVE, press F4 (320×180) or Shift+F4 (1280×720), then run **`/stellarview load`** in Minecraft within 30 seconds. Keep the native terrain diagnostic disabled. This selects the captured camera and projection and draws EVE with her captured scene depth against Minecraft's world depth. **`/stellarview off`** restores the vanilla camera. This is a frozen view; it does not refresh as EVE moves. Capture again before loading a new view.
+After starting the terrain link and entering it with EVE, press F4 for the HD still (or use `sbmc frame` for the 320×180 baseline), then run **`/stellarview load`** in Minecraft within 30 seconds. Keep the native terrain diagnostic disabled. This selects the captured camera and projection and draws EVE with her captured scene depth against Minecraft's world depth. **`/stellarview off`** restores the vanilla camera. This is a frozen view; it does not refresh as EVE moves. Capture again before loading a new view.
 
 The view requires the same active private creative session and exactly the captured terrain revision. It stops on block revisions, stale captures, link loss, world changes or unsupported effects. Use Fast/Fancy graphics without Iris, and a calm player without status effects. Camera roll, full translucency and other renderer replacements are unsupported. The window may use a different aspect ratio: the EVE layer covers the matching portion of Minecraft's projection instead of stretching.
 
@@ -171,7 +171,7 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 | Shift+F7 | `sbmc texture` | Toggle the non-colliding native stone-texture probe |
 | Shift+F8 | `sbmc visuals` | Toggle the bounded native Minecraft terrain renderer after entering the link |
 | F1 | `sbmc live` / `sbmc liveoff` | Toggle the bounded animated capture while EVE is in the linked lab |
-| Shift+F4 | `sbmc framehd` | Capture one 1280×720 color/mask/depth frame for the Minecraft still view |
+| F4 | `sbmc framehd` | Capture one 1280×720 color/mask/depth frame for the Minecraft still view |
 | F5 | `sbmc mirror` | Import the active Minecraft terrain when bridge configuration is installed |
 | F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
 | F7 | `sbmc create` | Create the fixture 600 Unreal units above the current player position |
