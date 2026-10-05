@@ -12,13 +12,20 @@ local function player()
     assert(valid(world), 'The player has no valid world.')
     return pawn, world
 end
-local function native_timing(world)
+local function native_frame_count()
     local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+    assert(valid(system),'native frame counter library is unavailable')
+    local frames=system:GetFrameCount()
+    assert(type(frames)=='number' and frames>=0 and frames<=9007199254740991 and frames%1==0,
+        'native frame counter is unavailable')
+    return frames,system
+end
+local function native_timing(world)
+    local frames,system=native_frame_count()
     local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
-    assert(valid(system) and valid(gameplay),'native timing libraries are unavailable')
-    local frames,seconds=system:GetFrameCount(),gameplay:GetRealTimeSeconds(world)
-    assert(type(frames)=='number' and frames>=0 and type(seconds)=='number' and seconds>=0 and seconds<1e15,
-        'native timing counters are unavailable')
+    assert(valid(gameplay),'native timing library is unavailable')
+    local seconds=gameplay:GetRealTimeSeconds(world)
+    assert(type(seconds)=='number' and seconds>=0 and seconds<1e15,'native timing counter is unavailable')
     return string.format('native_frame_count=%d native_real_seconds=%.6f idle_when_background=%d max_fps=%.3f',
         frames,seconds,system:GetConsoleVariableIntValue('t.IdleWhenNotForeground'),
         system:GetConsoleVariableFloatValue('t.MaxFPS'))
@@ -383,11 +390,16 @@ if bridge then
             log('Bridge/capture callback failed: '..tostring(why))
         end
     end)
-    local hd_pending=false
-    LoopInGameThreadWithDelay(50,function()
+    local hd_pending,last_hd_frame=false,nil
+    -- The loader starts its delay after callback completion. A short timer
+    -- checks the next native frame; raw capture still owns only one pending frame.
+    LoopInGameThreadWithDelay(1,function()
         if hd_pending then return end
         hd_pending=true
         local ran,err=pcall(function()
+            local frame=native_frame_count()
+            if frame==last_hd_frame then return end
+            last_hd_frame=frame
             local read_ok,packet=pcall(hd_session.read)
             if not read_ok then cancel_hd('capture request read failed') end
             report_result('hd',hd_session.tick(read_ok and packet or {}))
@@ -401,4 +413,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 27; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 28; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

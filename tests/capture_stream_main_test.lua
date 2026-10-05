@@ -1,7 +1,7 @@
 -- Exercise the real command and scheduling integration without invoking Unreal.
 package.path='stellar/Mods/StellarCollisionProbe/Scripts/?.lua;'..package.path
 local queued,keys={},{}
-local loop,hd_loop,console,frame_hook
+local loop,hd_loop,console,frame_hook,hd_delay
 local frames,stills,clears,returns=0,0,0,0
 local bmp_exports=0
 local async_exports,async_frames,async_link=0,0,nil
@@ -42,8 +42,13 @@ local pawn={IsValid=function()return true end,GetWorld=function()return world en
     K2_GetActorRotation=function()return {Pitch=0,Yaw=0,Roll=0} end,
     CapsuleComponent={IsValid=function()return true end,GetScaledCapsuleHalfHeight=function()return 95 end,GetScaledCapsuleRadius=function()return 35 end}}
 local timing_available,frame_samples,time_samples=true,0,0
+local native_frame,frame_counter_error=1200,false
 local system={IsValid=function()return true end,LineTraceSingle=function()return false end}
-function system:GetFrameCount(...) assert(select('#',...)==0); frame_samples=frame_samples+1; return 1200 end
+function system:GetFrameCount(...)
+    assert(select('#',...)==0); frame_samples=frame_samples+1
+    if frame_counter_error then error('native frame counter failed') end
+    return native_frame
+end
 local gameplay={IsValid=function()return true end}
 local paused,cinematic,input_context_error,local_controller=true,false,false,true
 function gameplay:IsGamePaused(value) assert(value==world); return paused end
@@ -120,7 +125,7 @@ ExecuteInGameThread=function(callback)
 end
 LoopAsync=function() error('Bridge state must never run on the asynchronous Lua thread') end
 LoopInGameThreadWithDelay=function(milliseconds,callback)
-    if milliseconds==200 then loop=callback elseif milliseconds==50 then hd_loop=callback else error('Unexpected polling interval') end
+    if milliseconds==200 then loop=callback elseif milliseconds==1 or milliseconds==50 then hd_loop=callback;hd_delay=milliseconds else error('Unexpected polling interval') end
 end
 dofile('stellar/Mods/StellarCollisionProbe/Scripts/main.lua')
 local function drain() while #queued>0 do table.remove(queued,1)() end end
@@ -204,10 +209,25 @@ command('frameasync'); assert(async_frames==1 and async_link.session==string.rep
 keys.F11(); drain(); command('frameasync'); assert(async_frames==2 and async_link==nil,'Unlinked async still must preserve the ordinary camera context gate')
 
 assert(hd_loop and hd_ticks==0,'The two game-thread timers retain the separate terrain and HD intervals')
+local function next_hd_frame()
+    native_frame=native_frame+1
+    hd_loop(); drain()
+end
 hd_loop(); assert(#queued==0 and hd_ticks==1,'The HD timer must execute without an asynchronous handoff'); drain()
-local old_hd_cancels=hd_cancels
-hd_error=true; hd_loop(); drain(); hd_error=false; assert(hd_cancels==old_hd_cancels+1)
-hd_loop(); drain(); assert(hd_ticks==3,'An HD exception must release the game-thread scheduling gate')
+local same_frame_permits=permit_ticks
+hd_loop(); hd_loop(); drain()
+assert(hd_ticks==1 and permit_ticks==same_frame_permits,'Repeated callbacks in one native frame must not repeat HD or control work')
+assert(hd_delay==1,'The HD timer must check completed frames at the next native tick')
+next_hd_frame(); assert(hd_ticks==2,'The next native frame must progress without a 50 ms pacing gate')
+local old_hd_cancels,old_permit_revokes=hd_cancels,permit_revokes
+hd_error=true; next_hd_frame(); hd_error=false
+assert(hd_cancels==old_hd_cancels+1 and permit_revokes>old_permit_revokes,'An HD failure must still cancel capture and release native input')
+hd_loop(); drain(); assert(hd_ticks==3,'A failed frame must not be retried within that native frame')
+next_hd_frame(); assert(hd_ticks==4,'An HD exception must release the game-thread scheduling gate')
+old_hd_cancels,old_permit_revokes=hd_cancels,permit_revokes
+frame_counter_error=true; next_hd_frame(); frame_counter_error=false
+assert(hd_cancels==old_hd_cancels+1 and permit_revokes>old_permit_revokes,'Frame counter failure must cancel capture and release native input')
+hd_loop(); drain(); assert(hd_ticks==5,'A frame counter exception must not leave the game-thread gate locked')
 hd_pending=true
 local before_bmp,old_texture,old_scene=bmp_exports,visual_toggles,scene_enabled
 command('exportbmp'); command('texture'); command('visuals'); command('live')
@@ -216,14 +236,14 @@ assert(bmp_exports==before_bmp and visual_toggles==old_texture and scene_enabled
 local old_hd_stops=hd_stops; keys.F11(); drain(); assert(hd_stops==old_hd_stops+1 and hd_pending,'F11 must stop HD without discarding pending output')
 hd_pending=false
 command('mirror'); command('enter'); hd_active=true; paused=false
-hd_loop(); drain()
+next_hd_frame()
 assert(permit_context and permit_context.pawn==11 and permit_context.world==12,'The entered HD session must publish a checked native permit')
-paused=true; hd_loop(); drain(); assert(not permit_context,'Native pause must neutralize input')
-paused=false; cinematic=true; hd_loop(); drain(); assert(not permit_context,'An unplayable sequence must neutralize input')
-cinematic=false; local_controller=false; hd_loop(); drain(); assert(not permit_context,'Only the local controller is eligible')
+paused=true; next_hd_frame(); assert(not permit_context,'Native pause must neutralize input')
+paused=false; cinematic=true; next_hd_frame(); assert(not permit_context,'An unplayable sequence must neutralize input')
+cinematic=false; local_controller=false; next_hd_frame(); assert(not permit_context,'Only the local controller is eligible')
 local_controller=true; input_context_error=true; local before_revoke=permit_revokes
-hd_loop(); drain(); assert(permit_revokes>before_revoke,'Native getter failure must revoke the permit')
-input_context_error=false; hd_loop(); drain(); assert(permit_context)
+next_hd_frame(); assert(permit_revokes>before_revoke,'Native getter failure must revoke the permit')
+input_context_error=false; next_hd_frame(); assert(permit_context)
 local before_stop=permit_stops; keys.F11(); drain()
 assert(permit_stops>before_stop and not permit_context,'F11 must revoke input independently of image cleanup')
 print('PASS native control permission gates: local entered context, pause, cinematics, getter failure and F11')
