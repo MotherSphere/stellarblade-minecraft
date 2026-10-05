@@ -156,6 +156,76 @@ check('BMP exceptions and invalid headers use existing cleanup and resource retr
         'A silent warm export must not reuse the preceding cold PNG')
     assert(b.actors==0 and b.targets==0 and read(directory..'/eve-frame.txt')=='preserved paired frame')
 end)
+check('async export gate warms all targets and submits once without touching paired publication',function()
+    local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+    local b,logs=backend(),{}
+    local c=fresh.new(b,directory,function(message) logs[#logs+1]=message end)
+    assert(type(c.exportasync)=='function','The bounded async capability gate is missing')
+    write(directory..'/eve-frame.txt','preserved paired frame')
+    local export=b.export
+    function b.export(...)
+        assert(b.captures==3 and b.actors==3 and b.targets==3,'All captures must precede the depth readback')
+        assert(select(4,...)=='eve-exportasync-depth.hdr')
+        export(...)
+        b.ready=true
+    end
+    local submissions={}
+    function b.export_async(target,dir,name,format)
+        assert(b.ready and b.exports==1,'Depth readback must establish RHI readiness first')
+        assert(target.mode.width==1280 and target.mode.height==720 and target.mode.format==2)
+        submissions[#submissions+1]={name,format,target.mode.source}
+        write(dir..'/'..name,'pending native writer')
+    end
+    local ok,message=c.exportasync(); assert(ok,message)
+    assert(message:find('completion is unverified',1,true))
+    assert(b.camera_reads==1 and b.spawned==3 and b.actors==0 and b.targets==0 and c.status()=='idle')
+    assert(table.concat(b.sources,',')=='2,0,4' and b.cameras[1]==b.cameras[2] and b.cameras[2]==b.cameras[3])
+    assert(#submissions==2 and submissions[1][1]=='eve-exportasync-color.bmp' and submissions[1][2]==2 and submissions[1][3]==2)
+    assert(submissions[2][1]=='eve-exportasync-mask.png' and submissions[2][2]==0 and submissions[2][3]==0)
+    assert(read(directory..'/eve-frame.txt')=='preserved paired frame')
+    local joined=table.concat(logs,'\n')
+    for _,label in ipairs({'depth export','depth validation','color BMP async submission','mask PNG async submission'}) do
+        assert(joined:find(label..' start',1,true) and joined:find(label..' end',1,true))
+    end
+    assert(c.clear() and not c.exportasync(),'F11 cleanup must not reset the attempt guard')
+    local another=fresh.new(backend(),directory)
+    assert(not another.exportasync(),'Another capture controller must not reset the module-lifetime guard')
+    for _,submission in ipairs(submissions) do assert(read(directory..'/'..submission[1])=='pending native writer') end
+    assert(read(directory..'/eve-exportasync-depth.hdr')==hdr_hd)
+end)
+check('async partial submissions stay guarded while cleanup remains independently retryable',function()
+    for fail_at=1,2 do
+        local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+        local b=backend(); local c=fresh.new(b,directory)
+        local calls=0
+        function b.export_async(_,dir,name)
+            calls=calls+1; write(dir..'/'..name,'possibly pending')
+            assert(not c.exportasync(),'The attempt guard must precede the first native call')
+            if calls==fail_at then b.fail_destroy=true; error('submission failed') end
+        end
+        write(directory..'/eve-frame.txt','preserved paired frame')
+        assert(not c.exportasync() and calls==fail_at and c.status()=='cleanup-required' and b.targets==3)
+        local spawned=b.spawned
+        assert(not c.frame(nil,'hd') and not c.capture('color') and not c.exportbmp() and b.spawned==spawned)
+        b.fail_destroy=false; assert(c.cleanup() and b.targets==0 and b.actors==0)
+        assert(not c.exportasync() and calls==fail_at and b.spawned==spawned)
+        assert(read(directory..'/eve-frame.txt')=='preserved paired frame')
+        assert(read(directory..'/eve-exportasync-color.bmp')=='possibly pending')
+        assert(c.clear() and read(directory..'/eve-exportasync-color.bmp')=='possibly pending')
+    end
+end)
+check('async gate retries only pre-submission failure after resource cleanup succeeds',function()
+    local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+    local b=backend(); b.fail_capture=true; b.fail_release=true
+    local c=fresh.new(b,directory); local calls=0
+    function b.export_async() calls=calls+1 end
+    assert(not c.exportasync() and calls==0 and c.status()=='cleanup-required')
+    local spawned=b.spawned; assert(not c.exportasync() and b.spawned==spawned)
+    b.fail_capture=false; b.fail_release=false; assert(c.cleanup())
+    b.bad_export=true; assert(not c.exportasync() and calls==0 and c.status()=='idle',
+        'An invalid depth warmup must prevent both submissions')
+    b.bad_export=false; assert(c.exportasync() and calls==2)
+end)
 local frame_files={}
 local function track_frame(b) for _,name in ipairs(b.files) do frame_files[name]=true end end
 check('HD captures all planes before Kismet readback makes the BMP resource ready',function()
@@ -382,7 +452,7 @@ check('repeated frames keep only one complete generation and bounded native hand
 end)
 for name in pairs(frame_files) do os.remove(directory..'/'..name) end
 for _,name in ipairs({'eve-frame.txt','eve-frame.txt.tmp','eve-frame.txt.previous'}) do os.remove(directory..'/'..name) end
-for _,name in ipairs({'eve-exportbmp-kismet.png','eve-exportbmp.bmp'}) do os.remove(directory..'/'..name) end
+for _,name in ipairs({'eve-exportbmp-kismet.png','eve-exportbmp.bmp','eve-exportasync-color.bmp','eve-exportasync-mask.png','eve-exportasync-depth.hdr'}) do os.remove(directory..'/'..name) end
 for _,name in ipairs({'eve-capture-color.png','eve-capture-color.txt','eve-capture-color.txt.tmp','eve-capture-depth.hdr','eve-capture-depth.txt'}) do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
 check('adapter matches reflected API arity and disables automatic rendering before binding',function()
@@ -408,8 +478,8 @@ check('adapter matches reflected API arity and disables automatic rendering befo
     function writer:ExportToDisk(...)
         assert(select('#',...)==3,'The pinned ImageWriteQueue function requires three inputs')
         local texture,path,options=...
-        assert(texture==target and path==directory..'/test.bmp')
-        assert(options.Format==2 and options.CompressionQuality==0 and options.bAsync==false and options.bOverwriteFile==false)
+        assert(texture==target and path==directory..'/'..self.filename)
+        assert(options.Format==self.format and options.CompressionQuality==0 and options.bAsync==self.async and options.bOverwriteFile==false)
         assert(options.OnComplete==nil and options.NativeOnComplete==nil,'No callback may enter the delegate marshaller')
         local count=0; for _ in pairs(options) do count=count+1 end; assert(count==4)
         self.called=true
@@ -435,7 +505,11 @@ check('adapter matches reflected API arity and disables automatic rendering befo
     local owned=adapter.spawn(camera); adapter.configure(owned,camera,mode)
     local image=adapter.create_target(camera,mode); adapter.bind(owned,image); adapter.capture(owned)
     adapter.export(owned,image,directory,'eve-capture-color.png')
-    adapter.export_bmp(image,directory,'test.bmp'); adapter.destroy(owned); adapter.release(image)
+    writer.filename='test.bmp'; writer.format=2; writer.async=false
+    adapter.export_bmp(image,directory,'test.bmp')
+    writer.async=true; adapter.export_async(image,directory,'test.bmp',2)
+    writer.filename='test.png'; writer.format=0; adapter.export_async(image,directory,'test.png',0)
+    adapter.destroy(owned); adapter.release(image)
     assert(capture.captured and lib.released and writer.called)
 end)
 print(count..' capture checks passed; native rendering remains untested.')

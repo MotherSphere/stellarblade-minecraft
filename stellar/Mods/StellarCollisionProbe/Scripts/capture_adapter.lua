@@ -61,13 +61,15 @@ function Adapter.new()
     function engine.export(actor,target,directory,filename)
         library():ExportRenderTarget(actor,target,directory,filename)
     end
-    function engine.export_bmp(target,directory,filename)
+    local function export_image(target,directory,filename,format,async)
         local writer=StaticFindObject('/Script/ImageWriteQueue.Default__ImageWriteBlueprintLibrary')
         assert(valid(writer),'ImageWriteQueue is unavailable in this game build.')
         -- Omit OnComplete entirely: this loader's nested delegate converter is unsafe.
         writer:ExportToDisk(target,directory..'/'..filename,
-            {Format=2,CompressionQuality=0,bOverwriteFile=false,bAsync=false})
+            {Format=format,CompressionQuality=0,bOverwriteFile=false,bAsync=async})
     end
+    function engine.export_bmp(target,directory,filename) export_image(target,directory,filename,2,false) end
+    function engine.export_async(target,directory,filename,format) export_image(target,directory,filename,format,true) end
     function engine.destroy(actor)
         if not valid(actor) then return end
         local capture=actor.CaptureComponent2D

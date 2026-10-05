@@ -22,6 +22,7 @@
 -- A frame uses one camera snapshot in one game-thread call.
 local Capture = {}
 local frame_counter=0
+local async_attempted=false
 local modes = {
     color={width=320,height=180,source=0,format=2,file='eve-capture-color.png'},
     depth={width=320,height=180,source=4,format=6,file='eve-capture-depth.hdr'},
@@ -287,6 +288,43 @@ function Capture.new(engine,directory,log)
         if not ok then return false,tostring(why)..(cleaned and '' or '; '..cleanup_message) end
         if not cleaned then return false,cleanup_message end
         return true,'Exported color-only BMP comparison: '..result..'. Diagnostic PNG/BMP retained; paired frame unchanged.'
+    end
+    function api.exportasync()
+        if async_attempted then return false,'Async export was already attempted in this Lua lifetime; diagnostic files remain retained.' end
+        if api.status()~='idle' then return false,'Capture cleanup is required before the async export test.' end
+        local trace=log and function(message) pcall(log,'Async export test '..message) end
+        local layers={
+            {width=1280,height=720,source=2,format=2,file='eve-exportasync-color.bmp'},
+            {width=1280,height=720,source=0,format=2,file='eve-exportasync-mask.png'},
+            {width=1280,height=720,source=4,format=6,file='eve-exportasync-depth.hdr'},
+        }
+        local ok,why=pcall(function()
+            for _,layer in ipairs(layers) do remove_existing(directory..'/'..layer.file) end
+            local camera=engine.camera(); check_camera(camera)
+            local prepared={}
+            for i,layer in ipairs(layers) do
+                prepared[i]=prepare_capture(camera,layer,trace,({'color','mask','depth'})[i])
+            end
+            -- Kismet's synchronous readback drains all earlier captures, so both ImageWriteQueue
+            -- submissions see initialized TextureRHI resources even on a fresh generation.
+            export_layer(prepared[3],layers[3],'depth',trace,'depth')
+            -- ponytail: one attempt per Lua lifetime; another run needs a native writer-completion
+            -- signal before any pending output can be replaced. A submission exception is ambiguous.
+            async_attempted=true
+            stage(trace,'color BMP async submission',function()
+                engine.export_async(prepared[1].target,directory,layers[1].file,2)
+            end)
+            stage(trace,'mask PNG async submission',function()
+                engine.export_async(prepared[2].target,directory,layers[2].file,0)
+            end)
+        end)
+        -- In this verified game build, explicit target release queues resource destruction after
+        -- the submitted readback on the same render queue. File writers own their CPU pixels.
+        -- Do not validate, publish, remove, or retry diagnostic outputs after submission.
+        local cleaned,cleanup_message=stage(trace,'cleanup',api.cleanup)
+        if not ok then return false,tostring(why)..(cleaned and '' or '; '..cleanup_message) end
+        if not cleaned then return false,cleanup_message end
+        return true,'Async color/mask submission calls returned; writer completion is unverified. Diagnostic files retained; paired frame unchanged.'
     end
     function api.capture(kind)
         local mode=modes[kind]

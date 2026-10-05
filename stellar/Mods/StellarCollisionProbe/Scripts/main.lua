@@ -158,6 +158,12 @@ local function paired_still(profile)
 end
 local actions = {
     exporttest=function() return false,'Async export test is disabled after a native loader crash. Use F4 for the supported still capture.' end,
+    exportasync=function()
+        assert(capture,'Install with --bridge-dir to enable native image capture.')
+        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before testing exports.')
+        assert(not stream.active(),'Stop native live capture before testing exports.')
+        return capture.exportasync()
+    end,
     exportbmp=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before testing exports.')
@@ -248,7 +254,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, exportbmp, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, exportbmp, exportasync, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -318,4 +324,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 20; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports. No geometry or capture created at startup.')
+log('Loaded revision 21; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc exportasync permits one diagnostic async submission attempt per Lua lifetime. No geometry or capture created at startup.')
