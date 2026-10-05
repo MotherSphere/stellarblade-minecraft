@@ -99,3 +99,11 @@ tasks.register('nativeSceneFilesTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn nativeSceneFilesTest
+
+tasks.register('bridgePauseTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.BridgePauseTest'
+    jvmArgs '-ea'
+}
+check.dependsOn bridgePauseTest

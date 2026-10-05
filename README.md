@@ -30,7 +30,7 @@ python tools/deploy.py install --mods-dir '/path/to/StellarBlade/SB/Binaries/Win
 
 The installer generates a machine-specific Lua configuration, including the Proton `Z:` path, and records it in the ownership manifest. It is not part of the source. A custom Minecraft location can be set with `-Dstellarbridge.directory=/absolute/path`; both games must use the same directory.
 
-1. Stand on a full block in the creative test world and run `/stellar start`. `/stellar status` reports the revision and position link. `/stellar stop` ends the session.
+1. Stand on a full block in the creative test world and run `/stellar start`. `/stellar status` reports the revision and position link. Minecraft keeps this private world running while the bridge session is active, including in pause menus or after switching windows. `/stellar stop` ends the session and restores normal pause behavior; disconnecting also releases the override.
 2. In Stellar Blade, load a backed-up save in a clear outdoor location. Press **F5** (`sbmc mirror`) to import the terrain. Check that the elevated scene is clear of the game's existing geometry.
 3. Press **F8** to enter once. EVE's native controller owns movement. Minecraft's local player follows her feet position; Minecraft mouse look remains available for block editing during this phase.
 4. Edit blocks in the fixed patch to test collision updates. A new block intersecting EVE is deferred until she moves away. Imported replacement collision is prepared before the old collision is removed.
@@ -44,7 +44,7 @@ Transport uses bounded versioned text snapshots with session IDs, revisions, tim
 
 This route displays Minecraft block faces inside Stellar Blade, preserving EVE's normal rendering, animation and camera. It avoids the low-resolution EVE frame transport described in the diagnostic sections below. Both games still run: Minecraft owns the world and block changes, while Stellar Blade owns EVE's movement.
 
-This renderer is experimental. Native mesh creation and textured faces have been observed in game; the corrected face orientation, live visual updates and performance with both games running still require validation.
+This renderer is experimental. Native mesh creation, the corrected upper grass faces and a live wool-block addition have been observed in game. A bounded flat-patch test with both games open averaged 59.7 native engine frames per second over 131 seconds. This is an average engine counter, not a guarantee of frame-time consistency or larger-world performance. Further block-update and traversal checks remain in progress.
 
 1. In the prepared Minecraft world, run `/stellar start` while standing on the floor.
 2. Load the outdoor Stellar Blade save, then use **F5** to import collision and **F8** to enter the lab.

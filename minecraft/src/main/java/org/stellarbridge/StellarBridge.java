@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.UUID;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
@@ -36,6 +37,7 @@ public final class StellarBridge implements ClientModInitializer {
     static final BridgeProtocol.Box BOUNDS = new BridgeProtocol.Box(-4.5, -2, -4.5, 4.5, 4, 4.5);
     private static Session session; // Integrated server thread only.
     private static volatile Control control; // Immutable publication to client and packet threads.
+    private static volatile PauseBinding pauseBinding; // Independent of EVE pose freshness; never exposes Session.
 
     @Override
     public void onInitializeClient() {
@@ -53,6 +55,7 @@ public final class StellarBridge implements ClientModInitializer {
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             if (session != null && session.server == server) stop("World closed");
         });
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> pauseBinding = null);
         ClientTickEvents.START_CLIENT_TICK.register(client -> {
             Control current = control;
             if (client.player != null && permits(client.player, current)) move(client.player, current.position);
@@ -73,6 +76,7 @@ public final class StellarBridge implements ClientModInitializer {
             Session next = new Session(server, player, new BridgeFiles(directory));
             next.publish();
             session = next;
+            pauseBinding = new PauseBinding(server, player.getUuid(), next.world.getRegistryKey().getValue().toString());
             source.sendFeedback(() -> Text.literal("Stellar Bridge ready: " + next.boxes.size()
                     + " collision boxes. Enter the imported patch in Stellar Blade to control this player's position."), false);
             LOG.info("Bridge started: session={} origin={} revision={} boxes={}", next.id, next.origin, next.revision, next.boxes.size());
@@ -112,6 +116,7 @@ public final class StellarBridge implements ClientModInitializer {
         Session previous = session;
         session = null;
         control = null;
+        pauseBinding = null;
         NativeSceneExport.stop();
         if (previous == null) return;
         try { previous.files.stop(); }
@@ -153,6 +158,18 @@ public final class StellarBridge implements ClientModInitializer {
     }
 
     public static boolean overrides(ClientPlayerEntity player) { return permits(player, control); }
+
+    /** Keep the real private server ticking while its bridge is active, including pause screens from focus loss. */
+    public static boolean keepsWorldRunning(MinecraftClient client) {
+        PauseBinding current = pauseBinding;
+        IntegratedServer server = client.getServer();
+        return current != null && server == current.server && !server.isRemote()
+                && client.world != null && client.player != null && client.player.getUuid().equals(current.owner)
+                && client.world.getRegistryKey().getValue().toString().equals(current.dimension)
+                && client.player.isCreative() && client.player.isAlive() && !client.player.hasVehicle();
+    }
+
+    private record PauseBinding(IntegratedServer server, UUID owner, String dimension) { }
 
     /** Immutable server publication; no live Session or entity is exposed to the renderer. */
     static RenderingContext renderingContext() {

@@ -2,6 +2,6 @@
   "required": true,
   "package": "org.stellarbridge.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": ["ClientPlayerMovementMixin", "ServerPlayerMovementMixin", "CaptureCameraMixin", "CaptureGameRendererMixin"],
+  "client": ["ClientPlayerMovementMixin", "ServerPlayerMovementMixin", "CaptureCameraMixin", "CaptureGameRendererMixin", "BridgePauseMixin"],
   "injectors": { "defaultRequire": 1 }
 }
