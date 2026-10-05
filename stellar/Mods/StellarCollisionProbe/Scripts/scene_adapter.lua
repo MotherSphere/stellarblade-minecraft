@@ -21,7 +21,8 @@ local function image_path(directory,texture)
     assert(width==256 and height==256,'Native scene texture must be 256 by 256.')
     return path
 end
-function Adapter.new()
+function Adapter.new(log)
+    log=log or function() end
     local probe=ProbeAdapter.new()
     local engine={snapshot=probe.snapshot}
     function engine.spawn(snapshot,anchor)
@@ -46,8 +47,9 @@ function Adapter.new()
         mesh:SetMobility(2); mesh:SetCollisionEnabled(0); mesh:SetGenerateOverlapEvents(false)
         local sections=Geometry.groups(packet,scale)
         if #sections==0 then return end
-        local parent=ProbeAdapter.parent_material(true)
+        local parent=ProbeAdapter.parent_material()
         assert(parent:IsA('/Script/Engine.MaterialInterface'),'Native scene parent is not a material.')
+        log('Native scene parent material: '..parent:GetFullName())
         local rendering=required('/Script/Engine.Default__KismetRenderingLibrary')
         for _,section in ipairs(sections) do
             local index=section.texture
@@ -66,8 +68,13 @@ function Adapter.new()
             assert(layer.texture:Blueprint_GetSizeX()==256 and layer.texture:Blueprint_GetSizeY()==256,
                 'Imported native scene texture dimensions changed.')
             layer.mid:SetTextureParameterValue(FName('SlateUI'),layer.texture)
-            layer.mid:SetVectorParameterValue(FName('TintColorAndOpacity'),{R=1,G=1,B=1,A=1})
-            layer.mid:SetVectorParameterValue(FName('BackColor'),{R=0,G=0,B=0,A=0})
+            for _,entry in ipairs({{'TintColorAndOpacity',1},{'BackColor',0}}) do
+                local name,value=FName(entry[1]),entry[2]
+                layer.mid:SetVectorParameterValue(name,{R=value,G=value,B=value,A=value})
+                local actual=layer.mid:K2_GetVectorParameterValue(name)
+                assert(actual.R==value and actual.G==value and actual.B==value and actual.A==value,
+                    'Native scene material tint was not assigned.')
+            end
             assert(same(layer.mid:K2_GetTextureParameterValue(FName('SlateUI')),layer.texture),
                 'Native scene texture parameter was not assigned.')
         end

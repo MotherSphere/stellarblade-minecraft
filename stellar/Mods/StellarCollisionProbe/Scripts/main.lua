@@ -98,7 +98,7 @@ if configured then
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
     capture = require('capture').new(require('capture_adapter').new(),config.directory)
     visual = require('visual_probe').new(require('visual_probe_adapter').new(),config.directory)
-    scene = require('native_scene').new(require('scene_adapter').new(),bridge,config.directory,config.scale)
+    scene = require('native_scene').new(require('scene_adapter').new(log),bridge,config.directory,config.scale)
     stream = require('capture_stream').new(capture,function()
         return active==bridge and bridge.pose() or nil
     end,config.scale)
@@ -307,4 +307,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 11; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
+log('Loaded revision 12; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

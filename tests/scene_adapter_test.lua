@@ -10,15 +10,23 @@ local function write(data) local file=assert(io.open(directory..'/'..name,'wb'))
 write(png)
 local packet={textures={{index=0,file=name,size=#png,width=256,height=256}},
     faces={{texture=0,center={x=1,y=1,z=2},direction='U'}}}
-local calls={imports=0,sections=0,sets=0}
+local calls={imports=0,sections=0,sets=0,readbacks=0}
 local function valid() return true end
 local null={IsValid=function()return false end}
-local material={IsValid=valid,IsA=function()return true end}
+local material={IsValid=valid,IsA=function()return true end,
+    GetFullName=function()return 'Material Widget3DPassThrough_Opaque_OneSided' end}
+local two_sided={IsValid=valid,IsA=function()return true end}
 local texture={IsValid=valid,GetAddress=function()return 101 end,
     Blueprint_GetSizeX=function()return 256 end,Blueprint_GetSizeY=function()return 256 end}
 local mid={IsValid=valid,GetAddress=function()return 102 end}
 function mid:SetTextureParameterValue(...) assert(select('#',...)==2); local n,t=...; assert(n=='SlateUI' and t==texture); self.texture=t end
 function mid:SetVectorParameterValue(...) assert(select('#',...)==2); local n,v=...; self[n]=v end
+function mid:K2_GetVectorParameterValue(...)
+    assert(select('#',...)==1); local name=...
+    assert(name=='TintColorAndOpacity' or name=='BackColor'); calls.readbacks=calls.readbacks+1
+    if calls.fail_readback==name then return {R=0.5,G=0.5,B=0.5,A=0.5} end
+    return self[name]
+end
 function mid:K2_GetTextureParameterValue(...) assert(select('#',...)==1 and (...)=='SlateUI'); return self.texture end
 local mesh={IsValid=valid,IsA=function(_,path)return path=='/Script/ProceduralMeshComponent.ProceduralMeshComponent' end}
 function mesh:SetCollisionEnabled(...) assert(select('#',...)==1 and (...)==0); self.collision=0 end
@@ -69,22 +77,31 @@ StaticFindObject=function(path)
     if path=='/Script/ProceduralMeshComponent.ProceduralMeshComponent' then return pmc_class end
     if path=='/Script/Engine.Default__KismetRenderingLibrary' then return library end
     if path=='/Script/Engine.Default__KismetMathLibrary' then return math_library end
-    if path=='/Script/UMG.Default__WidgetComponent' then return {IsValid=valid,OpaqueMaterial=material} end
+    if path=='/Script/UMG.Default__WidgetComponent' then return {IsValid=valid,OpaqueMaterial=two_sided,OpaqueMaterial_OneSided=material} end
     return null
 end
 LoadAsset=function() return null end
 FName=function(value)return value end
-local engine=Adapter.new()
+local logs={}
+local engine=Adapter.new(function(message) logs[#logs+1]=message end)
 local handle=engine.spawn({world=world},{X=10,Y=20,Z=30})
 engine.configure(handle,packet,directory,100)
 assert(calls.hidden and calls.imports==1 and calls.sections==1 and calls.sets==1 and engine.valid(handle))
+assert(calls.readbacks==2 and logs[1]=='Native scene parent material: '..material:GetFullName())
 engine.set_visible(handle,true); assert(not calls.hidden)
 calls.fail_destroy=true; assert(not pcall(engine.destroy,handle)); assert(handle.actor)
 calls.fail_destroy=false; engine.destroy(handle); assert(calls.destroyed and not handle.actor)
 handle=engine.spawn({world=world},{X=10,Y=20,Z=30}); calls.fail_section=true
 assert(not pcall(engine.configure,handle,packet,directory,100)); assert(handle.actor and calls.hidden)
 calls.fail_section=false; engine.destroy(handle)
+for _,name in ipairs({'TintColorAndOpacity','BackColor'}) do
+    handle=engine.spawn({world=world},{X=10,Y=20,Z=30}); calls.fail_readback=name
+    local ok,why=pcall(engine.configure,handle,packet,directory,100)
+    assert(not ok and tostring(why):find('material tint was not assigned',1,true))
+    assert(handle.actor and calls.hidden,'A material mismatch must retain hidden cleanup ownership')
+    calls.fail_readback=nil; engine.destroy(handle)
+end
 handle=engine.spawn({world=world},{X=10,Y=20,Z=30}); write(png..'x'); local imports=calls.imports
 assert(not pcall(engine.configure,handle,packet,directory,100)); assert(calls.imports==imports)
 engine.destroy(handle); assert(os.remove(directory..'/'..name)); assert(os.execute('rmdir '..string.format('%q',directory)))
-print('PASS procedural scene arities, array structure, texture size, hidden setup and cleanup ownership; native marshaling remains untested.')
+print('PASS procedural scene arities, unchanged arrays, proven parent preference, tint readbacks and hidden cleanup ownership.')
