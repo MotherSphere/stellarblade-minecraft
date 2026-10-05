@@ -78,10 +78,10 @@ struct Mapping {
 };
 std::string descriptor(const std::string &run, const std::string &session,
                        const std::string &id, uint64_t time) {
-  return "SBMC_FRAME 5 " + id + " " + std::to_string(time) +
+  return "SBMC_FRAME 6 " + id + " " + std::to_string(time) +
          "\nSIZE 2 1\n"
          "CAMERA 1 2 3 4 5 6 75\nPAWN 1 2 3 90\nCONTEXT 11 12\nLINK " +
-         session + " 1 100 0 0 0\nCOLOR raw 8\nMASK none 0\nDEPTH raw 8\nRUN " +
+         session + " 1 100 0 0 0\nCOLOR raw 8\nMASK depth 0\nDEPTH raw 8\nRUN " +
          run + "\nEND " + id + "\n";
 }
 void save(const std::wstring &path, const std::string &text) {
@@ -165,8 +165,7 @@ int wmain(int argc, wchar_t **argv) {
   std::array<unsigned char, 0x90> task{};
   std::array<unsigned char, 0x60> holder{};
   std::array<unsigned char, 0x40> pixels{};
-  std::array<unsigned char, 8> color{1, 2, 3, 255, 4, 5, 6, 255},
-      mask{0, 0, 0, 0, 0, 0, 0, 128};
+  std::array<unsigned char, 8> color{1, 2, 3, 255, 4, 5, 6, 255};
   std::array<uint16_t, 8> depth{0x3c00, 0, 0, 0, 0x4000, 0, 0, 0};
   write(task.data(), 0, table);
   write(task.data(), 0x30, uintptr_t(0x1234));
@@ -194,32 +193,31 @@ int wmain(int argc, wchar_t **argv) {
     write(pixels.data(), 0x10, int32_t(kind == 2 ? 1 : 0));
     write(pixels.data(), 0x14, uint8_t(kind == 2 ? 0 : 1));
     write(pixels.data(), 0x15, uint8_t(kind == 2 ? 16 : 8));
-    const void *data = kind == 2   ? static_cast<const void *>(depth.data())
-                       : kind == 1 ? mask.data()
-                                   : color.data();
+    const void *data = kind == 2 ? static_cast<const void *>(depth.data())
+                                 : color.data();
     write(pixels.data(), 0x28, data);
     return reinterpret_cast<bool (*)(void *)>(table[1])(task.data());
   };
   assert(invoke(std::string(32, 'f'), 0) &&
          forwarded == 1); // Foreign filename uses original.
+  // Depth is submitted first; the generation publishes with its color plane.
   assert(invoke(run, 2) && read64(first.data, 216) == 0);
-  assert(invoke(run, 0) && read64(first.data, 216) == 0);
-  assert(invoke(run, 1) && read64(first.data, 216) == 1 && forwarded == 1);
+  assert(invoke(run, 0) && read64(first.data, 216) == 1 && forwarded == 1);
   for (uint64_t counter = 2; counter <= 13; ++counter) {
     id = std::to_string(time) + "-" + std::to_string(counter);
     save(path + L"eve-raw-frame.txt", descriptor(run, session, id, time));
-    assert(invoke(run, 0) && invoke(run, 1) && invoke(run, 2));
+    assert(invoke(run, 2) && invoke(run, 0));
   }
   stellar_raw::poll_raw_capture(request(run), stellar_raw::wall_ms());
   std::ifstream timing_file(path + L"eve-raw-timing.txt", std::ios::binary);
   std::string timing{std::istreambuf_iterator<char>(timing_file), {}};
   assert(timing.find("SBMC_RAW_TIMINGS 1\nRUN " + run + "\n") == 0);
-  assert(timing.find("END 36\n") != std::string::npos && timing.size() <= 4096);
+  assert(timing.find("END 24\n") != std::string::npos && timing.size() <= 4096);
   assert(timing.find("PLANE " + std::to_string(time) + "-12 ") !=
          std::string::npos);
   assert(timing.find("PLANE " + std::to_string(time) + "-13 ") ==
          std::string::npos);
-  assert(!invoke(run, 1)); // Duplicate cannot publish twice.
+  assert(!invoke(run, 2)); // Duplicate cannot publish twice.
   assert((read64(first.data, 192) >> 32) == 3);
   stellar_raw::poll_raw_capture(request(run), stellar_raw::wall_ms());
   assert((read64(first.data, 192) >> 32) == 2 &&

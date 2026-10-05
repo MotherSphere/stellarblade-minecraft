@@ -17,19 +17,19 @@ public final class RawFrameBusTest {
     static String metadata(int width, int height, long time, long counter) {
         String id = time + "-" + counter;
         int bytes = width * height * 4;
-        return "SBMC_FRAME 5 " + id + " " + time + "\nSIZE " + width + " " + height
+        return "SBMC_FRAME 6 " + id + " " + time + "\nSIZE " + width + " " + height
                 + "\nCAMERA 0 0 100 0 90 0 75\nPAWN 0 0 0 90\nCONTEXT 1 2\nLINK " + SESSION
-                + " 1 100 0 0 0\nCOLOR raw " + bytes + "\nMASK none 0\nDEPTH raw " + bytes
+                + " 1 100 0 0 0\nCOLOR raw " + bytes + "\nMASK depth 0\nDEPTH raw " + bytes
                 + "\nRUN " + RUN + "\nEND " + id + "\n";
     }
     public static void main(String[] args) throws Exception {
         if (args.length == 2) { interop(Path.of(args[0]), Integer.parseInt(args[1])); return; }
         String valid = metadata(2560, 1440, 1791200000, 1);
         var parsed = CaptureFrame.parse(valid.getBytes(StandardCharsets.US_ASCII));
-        assert parsed.version() == 5 && parsed.width() == 2560 && parsed.height() == 1440;
+        assert parsed.version() == 6 && parsed.width() == 2560 && parsed.height() == 1440;
         for (String bad : new String[] {valid.replace("2560 1440", "3841 1440"), valid.replace("2560 1440", "2560 2161"),
-                valid.replace("COLOR raw", "COLOR image.bmp"), valid.replace("MASK none 0", "MASK raw 1"),
-                valid.replace("DEPTH raw 14745600", "DEPTH raw 4"), valid.replace("SBMC_FRAME 5", "SBMC_FRAME 4")})
+                valid.replace("COLOR raw", "COLOR image.bmp"), valid.replace("MASK depth 0", "MASK raw 1"), valid.replace("MASK depth 0", "MASK none 0"),
+                valid.replace("DEPTH raw 14745600", "DEPTH raw 4"), valid.replace("SBMC_FRAME 6", "SBMC_FRAME 4"), valid.replace("SBMC_FRAME 6", "SBMC_FRAME 5")})
             rejects(() -> CaptureFrame.parse(bad.getBytes(StandardCharsets.US_ASCII)));
         assert java.util.Arrays.equals(RawFrameBus.dimensions(5120, 2880), new int[] {3840, 2160});
         assert java.util.Arrays.equals(RawFrameBus.dimensions(2560, 1440), new int[] {2560, 1440});
@@ -118,7 +118,7 @@ public final class RawFrameBusTest {
                 for (var path : paths.sorted(Comparator.reverseOrder()).toList()) Files.delete(path);
             }
         }
-        System.out.println("Raw frame tests passed: real JNA mapping, triple-slot ownership, bounded v5, fractional coverage, raw worker/request and stop/restart");
+        System.out.println("Raw frame tests passed: real JNA mapping, triple-slot ownership, bounded v6, fractional coverage, raw worker/request and stop/restart");
     }
     private static void recycling(Path directory) throws Exception {
         long now = System.currentTimeMillis();

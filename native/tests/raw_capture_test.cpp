@@ -10,9 +10,9 @@
 using namespace stellar_raw;
 static const std::string run(32, 'a'), session(32, 'b');
 static std::string metadata() {
-  return "SBMC_FRAME 5 100-7 100\nSIZE 2 1\nCAMERA 1 2 3 4 5 6 75\n"
+  return "SBMC_FRAME 6 100-7 100\nSIZE 2 1\nCAMERA 1 2 3 4 5 6 75\n"
          "PAWN 1 2 3 90\nCONTEXT 11 12\nLINK " +
-         session + " 1 100 0 0 0\nCOLOR raw 8\nMASK none 0\nDEPTH raw 8\nRUN " +
+         session + " 1 100 0 0 0\nCOLOR raw 8\nMASK depth 0\nDEPTH raw 8\nRUN " +
          run + "\nEND 100-7\n";
 }
 template <size_t N, class T>
@@ -46,6 +46,13 @@ int main() {
   assert(!parse_metadata(bad));
   bad = metadata();
   bad.replace(bad.find("11 12"), 5, "0 12");
+  assert(!parse_metadata(bad));
+  // Frame-v5 implied a separate coverage plane; only v6 derives it from depth.
+  bad = metadata();
+  bad.replace(bad.find("SBMC_FRAME 6"), 12, "SBMC_FRAME 5");
+  assert(!parse_metadata(bad));
+  bad = metadata();
+  bad.replace(bad.find("MASK depth 0"), 12, "MASK none 0");
   assert(!parse_metadata(bad));
   auto path = L"Z:/bridge/eve-raw-" + std::wstring(run.begin(), run.end()) +
               L"-100-7-color.bmp";

@@ -392,7 +392,8 @@ bool Producer::plane(int kind, const void *pixels, size_t bytes, uint32_t width,
     stop();
     return false;
   }
-  if (!self.pending || kind < 0 || kind > 2 || (self.seen & (1u << kind)) ||
+  // Frame-v6 has color (0) and depth (2) planes; kind 1 is a retired mask.
+  if (!self.pending || (kind != 0 && kind != 2) || (self.seen & (1u << kind)) ||
       !pixels || width != self.request.width || height != self.request.height ||
       bytes != size_t(self.dimensions.pixels) * (kind == 2 ? 8 : 4)) {
     fail(2);
@@ -402,27 +403,24 @@ bool Producer::plane(int kind, const void *pixels, size_t bytes, uint32_t width,
   auto *rgba = slot + Header;
   auto *depth = rgba + self.dimensions.plane;
   auto *input = static_cast<const uint8_t *>(pixels);
-  const bool have_mask = (self.seen & 2u) != 0, have_depth = (self.seen & 4u) != 0;
-  for (size_t i = 0; i < self.dimensions.pixels; i++) {
-    if (kind == 0) {
+  if (kind == 0) {
+    for (size_t i = 0; i < self.dimensions.pixels; i++) {
       rgba[4 * i] = input[4 * i + 2];
       rgba[4 * i + 1] = input[4 * i + 1];
       rgba[4 * i + 2] = input[4 * i];
-    } else if (kind == 1) {
-      // Whichever coverage/depth plane arrives second clears invalid pixels.
-      rgba[4 * i + 3] = have_depth && plain<float>(depth, 4 * i) <= 0
-                            ? 0
-                            : 255 - input[4 * i + 3];
-    } else {
+    }
+  } else {
+    for (size_t i = 0; i < self.dimensions.pixels; i++) {
       auto value = half_float(plain<uint16_t>(input, 8 * i));
       value = std::isfinite(value) && value > 0 ? value : 0.0f;
       put(depth, 4 * i, value);
-      if (have_mask && value <= 0)
-        rgba[4 * i + 3] = 0;
+      // Captures clear unrendered pixels to the largest finite binary16 depth.
+      // Coverage is exactly the nearer depths; the color plane never owns alpha.
+      rgba[4 * i + 3] = value > 0 && value < 65504.0f ? 255 : 0;
     }
   }
   self.seen |= 1u << kind;
-  if (self.seen != 7)
+  if (self.seen != 5)
     return true;
   put(slot, 8, wall_now());
   // Adapted from SkyCraft's MIT-licensed overlay triple buffer: publish a

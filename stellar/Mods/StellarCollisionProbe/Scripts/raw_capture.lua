@@ -67,7 +67,8 @@ function Raw.new(engine,directory,clock,log)
         return true
     end
     local function prepare(camera)
-        for _,spec in ipairs({{source=2,format=2},{source=0,format=2},{source=4,format=6}}) do
+        -- Final color and scene depth. Coverage is derived natively from depth.
+        for _,spec in ipairs({{source=2,format=2},{source=4,format=6}}) do
             spec.width=request.width;spec.height=request.height;spec.persistent=true
             local handle={};owned[#owned+1]=handle
             handle.actor=assert(engine.spawn(camera))
@@ -76,11 +77,11 @@ function Raw.new(engine,directory,clock,log)
             engine.bind(handle.actor,handle.target)
             engine.capture(handle.actor)
         end
-        -- One established synchronous depth fence initializes all three fresh resources.
+        -- One established synchronous depth fence initializes both fresh resources.
         -- Later captures reuse them and submit only raw image-queue jobs.
         local name='eve-raw-warmup-'..request.run..'.hdr';warmup=directory..'/'..name
         local old=io.open(warmup,'rb');if old then old:close();error('Raw warmup path already exists.') end
-        engine.export(owned[3].actor,owned[3].target,directory,name)
+        engine.export(owned[2].actor,owned[2].target,directory,name)
         local f=assert(io.open(warmup,'rb'),'Native capture warmup produced no depth data.')
         local header=f:read(1024);f:close()
         local h,w=header:match('\n%-Y (%d+) %+X (%d+)\r?\n')
@@ -128,12 +129,11 @@ function Raw.new(engine,directory,clock,log)
         pending={counter=counter,time=now,id=id}
         Capture.publish_metadata(directory..'/eve-raw-frame.txt',metadata)
         local prefix='eve-raw-'..request.run..'-'..id
+        -- The larger depth readback goes first so its native conversion overlaps the color readback.
+        trace(id,'depth_submit')
+        engine.export_async(owned[2].target,directory,prefix..'-depth.exr',3)
         trace(id,'color_submit')
         engine.export_async(owned[1].target,directory,prefix..'-color.bmp',2)
-        trace(id,'mask_submit')
-        engine.export_async(owned[2].target,directory,prefix..'-mask.bmp',2)
-        trace(id,'depth_submit')
-        engine.export_async(owned[3].target,directory,prefix..'-depth.exr',3)
         trace(id,'queued')
         return true,nil,true
     end

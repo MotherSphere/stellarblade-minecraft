@@ -32,14 +32,14 @@ function engine.bind(actor,target)actor.target=target end
 function engine.update(actor,cam)assert(actor.target and cam==camera);updates=updates+1 end
 function engine.capture(actor)assert(actor.target);captures=captures+1 end
 function engine.export(actor,target,dir,name)
- assert(target.mode.source==4 and captures==3,'Only the initial depth export fences all three fresh resources')
+ assert(target.mode.source==4 and captures==2,'Only the initial depth export fences both fresh resources')
  warmups=warmups+1
  local f=assert(io.open(dir..'/'..name,'wb'));f:write('#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 48 +X 64\n',string.rep('\0',64));f:close()
 end
 function engine.export_async(target,dir,name,format)
  assert(warmups==1 and (format==2 or format==3))
  local f=assert(io.open(dir..'/eve-raw-frame.txt','rb'));local meta=f:read('*a');f:close()
- assert(meta:find('SBMC_FRAME 5 ',1,true) and meta:find('COLOR raw 12288',1,true) and meta:find('MASK none 0',1,true))
+ assert(meta:find('SBMC_FRAME 6 ',1,true) and meta:find('COLOR raw 12288',1,true) and meta:find('MASK depth 0',1,true))
  assert(meta:find('RUN '..run,1,true) and name:find('eve-raw-'..run..'-',1,true))
  exports[#exports+1]={name=name,format=format,metadata=meta}
 end
@@ -50,26 +50,27 @@ local traces={}
 local raw=Raw.new(engine,directory,function()return now end,function(message)traces[#traces+1]=message end)
 assert(raw.start(request));assert(raw.tick(link) and spawns==0,'No capture before native producer readiness')
 field(192,'<I4I4',42,1);field(208,'<I8',100000)
-assert(raw.tick(link));assert(spawns==3 and targets==3 and warmups==1 and #exports==3)
+assert(raw.tick(link));assert(spawns==2 and targets==2 and warmups==1 and #exports==2)
 assert(traces[1] and traces[1]:find('stage=begin',1,true),'Trace submission before the native calls')
 assert(traces[#traces]:find('stage=queued',1,true),'Trace the end of the asynchronous submissions')
-assert(exports[1].format==2 and exports[2].format==2 and exports[3].format==3)
+assert(exports[1].format==3 and exports[1].name:find('%-depth%.exr$') and exports[2].format==2
+ and exports[2].name:find('%-color%.bmp$'),'Submit the larger depth readback before color; no coverage pass')
 local first=exports[1].metadata
-assert(raw.tick(link) and #exports==3,'One generation must wait for native raw completion')
-local counter=tonumber(first:match('SBMC_FRAME 5 %d+%-(%d+)'))
+assert(raw.tick(link) and #exports==2,'One generation must wait for native raw completion')
+local counter=tonumber(first:match('SBMC_FRAME 6 %d+%-(%d+)'))
 field(216,'<I8',counter)
 camera.rotation.Yaw=20
-assert(raw.tick(link));assert(spawns==3 and targets==3 and warmups==1 and #exports==6 and updates==3)
+assert(raw.tick(link));assert(spawns==2 and targets==2 and warmups==1 and #exports==4 and updates==2)
 assert(table.concat(traces,'\n'):find('frame=100-1 stage=complete',1,true),'Trace native completion only after its counter acknowledgement')
-assert(exports[4].metadata~=first and captures==6,'Reuse targets while replacing exact camera/frame metadata')
-assert(raw.tick(link) and #exports==6)
+assert(exports[3].metadata~=first and captures==4,'Reuse targets while replacing exact camera/frame metadata')
+assert(raw.tick(link) and #exports==4)
 for completed=2,12 do field(216,'<I8',completed);assert(raw.tick(link)) end
 local trace_count=#traces
 field(216,'<I8',13);assert(raw.tick(link))
 assert(#traces==trace_count,'Startup tracing must stop after twelve frames')
 local submitted=#exports
 fail_destroy=true;assert(not raw.clear() and raw.busy() and next(released)==nil,'Never release still-bound targets')
-fail_destroy=false;assert(raw.clear() and not raw.busy());assert(released[1] and released[2] and released[3])
+fail_destroy=false;assert(raw.clear() and not raw.busy());assert(released[1] and released[2] and not released[3])
 -- A stopped mapping must never produce more work or reactivate an old RUN.
 assert(raw.start(request));field(256,'<I4',2);assert(not raw.tick(link) and #exports==submitted)
 assert(raw.clear())
@@ -78,4 +79,4 @@ header();field(16,'<I4',3841)
 assert(raw.start(request));assert(not raw.tick(link) and #exports==submitted);assert(raw.clear())
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
-print('PASS raw capture: strict request/header, producer readiness, persistent targets, one warmup, three raw planes, completion ownership and cleanup')
+print('PASS raw capture: strict request/header, producer readiness, two persistent targets, one warmup, depth-first v6 planes, completion ownership and cleanup')
