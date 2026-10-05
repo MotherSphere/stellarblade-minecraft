@@ -37,7 +37,7 @@ function mesh:CreateMeshSection(...)
     local index,vertices,triangles,normals,uv,colors,tangents,collision=...
     assert(index==0 and #vertices==4 and #triangles==6 and #normals==4 and #uv==4 and #colors==4 and #tangents==4 and collision==false)
     assert(vertices[1].X==50 and vertices[1].Y==150 and vertices[1].Z==100)
-    assert(triangles[1]==0 and triangles[6]==3 and normals[1].Z==1 and uv[1].X==0)
+    assert(triangles[1]==0 and triangles[6]==2 and normals[1].Z==1 and uv[1].X==0)
     assert(colors[1].A==255 and tangents[1].TangentX.X==1 and tangents[1].bFlipTangentY==false)
     assert(calls.hidden and self.collision==0 and self.overlaps==false and calls.actor_collision==false)
     calls.sections=calls.sections+1

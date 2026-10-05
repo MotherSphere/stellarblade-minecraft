@@ -44,6 +44,8 @@ Transport uses bounded versioned text snapshots with session IDs, revisions, tim
 
 This route displays Minecraft block faces inside Stellar Blade, preserving EVE's normal rendering, animation and camera. It avoids the low-resolution EVE frame transport described in the diagnostic sections below. Both games still run: Minecraft owns the world and block changes, while Stellar Blade owns EVE's movement.
 
+This renderer is experimental. Native mesh creation and textured faces have been observed in game; the corrected face orientation, live visual updates and performance with both games running still require validation.
+
 1. In the prepared Minecraft world, run `/stellar start` while standing on the floor.
 2. Load the outdoor Stellar Blade save, then use **F5** to import collision and **F8** to enter the lab.
 3. Press **Shift+F8** (`sbmc visuals`) to enable the native terrain scene. Keep Stellar Blade focused for native controls. The command also toggles the scene off.

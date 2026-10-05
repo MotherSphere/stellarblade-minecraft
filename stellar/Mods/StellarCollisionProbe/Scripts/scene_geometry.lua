@@ -35,7 +35,8 @@ function Geometry.groups(packet,scale)
             section.tangents[#section.tangents+1]={TangentX=vector(basis[2]),bFlipTangentY=false}
             section.colors[#section.colors+1]={R=255,G=255,B=255,A=255}
         end
-        for _,index in ipairs({0,1,2,0,2,3}) do section.triangles[#section.triangles+1]=base+index end
+        -- Target Unreal front faces use the opposite winding to the outward normal's cross product.
+        for _,index in ipairs({0,2,1,0,3,2}) do section.triangles[#section.triangles+1]=base+index end
     end
     table.sort(sections,function(a,b) return a.texture<b.texture end)
     return sections

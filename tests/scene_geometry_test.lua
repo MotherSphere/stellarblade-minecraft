@@ -37,8 +37,8 @@ for direction,expected in pairs(cases) do
         local a,b,c=section.vertices[section.triangles[i]+1],section.vertices[section.triangles[i+1]+1],section.vertices[section.triangles[i+2]+1]
         local ab,ac={b.X-a.X,b.Y-a.Y,b.Z-a.Z},{c.X-a.X,c.Y-a.Y,c.Z-a.Z}
         local cross={ab[2]*ac[3]-ab[3]*ac[2],ab[3]*ac[1]-ab[1]*ac[3],ab[1]*ac[2]-ab[2]*ac[1]}
-        assert(cross[1]*expected[3][1]+cross[2]*expected[3][2]+cross[3]*expected[3][3]==100,
-            'nondegenerate winding must point toward the declared outward normal')
+        assert(cross[1]*expected[3][1]+cross[2]*expected[3][2]+cross[3]*expected[3][3]==-100,
+            'target Unreal front-face winding must have negative cross-product dot outward normal')
     end
     local a,b=section.vertices[1],section.vertices[2]
     vector(section.tangents[1].TangentX,(b.X-a.X)/10,(b.Y-a.Y)/10,(b.Z-a.Z)/10)
@@ -50,7 +50,7 @@ local grouped=Geometry.groups({faces={
 }},100)
 assert(#grouped==2 and grouped[1].texture==1 and grouped[2].texture==4,'sections sort by explicit material index')
 assert(#grouped[2].vertices==8 and #grouped[2].triangles==12)
-assert(grouped[2].triangles[7]==4 and grouped[2].triangles[8]==5 and grouped[2].triangles[9]==6,
+assert(grouped[2].triangles[7]==4 and grouped[2].triangles[8]==6 and grouped[2].triangles[9]==5,
     'subsequent faces must offset their zero-based native triangle indices')
 assert(#Geometry.groups({faces={}},100)==0)
 for _,scale in ipairs({0,-1,math.huge,0/0}) do assert(not pcall(Geometry.groups,{faces={}},scale)) end
@@ -62,4 +62,4 @@ for _,vertex in ipairs(cube[1].vertices) do
     assert((vertex.X==-50 or vertex.X==50) and (vertex.Y==-50 or vertex.Y==50)
         and (vertex.Z==0 or vertex.Z==100),'shared Java cube must map to native 100-unit edges')
 end
-print('PASS scene geometry: positive basis, all six UV orientations, outward winding and grouped native arrays')
+print('PASS scene geometry: positive basis, all six UV orientations, target front-face winding and grouped native arrays')
