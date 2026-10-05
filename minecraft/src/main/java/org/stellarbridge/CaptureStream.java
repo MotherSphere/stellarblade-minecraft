@@ -19,14 +19,18 @@ final class CaptureStream implements AutoCloseable {
     private boolean closed;
 
     CaptureStream(Path directory) {
-        this.directory = directory;
-        session = new CaptureSession(directory);
-        worker = Executors.newSingleThreadScheduledExecutor(task -> {
+        this(directory, Executors.newSingleThreadScheduledExecutor(task -> {
             Thread thread = new Thread(task, "stellar-capture-reader");
             thread.setDaemon(true);
             return thread;
-        });
-        worker.scheduleWithFixedDelay(this::poll, 0, 20, TimeUnit.MILLISECONDS);
+        }));
+    }
+
+    CaptureStream(Path directory, ScheduledExecutorService worker) {
+        this.directory = directory;
+        session = new CaptureSession(directory);
+        this.worker = worker;
+        worker.schedule(this::readNext, 0, TimeUnit.MILLISECONDS);
     }
 
     synchronized void startEncoded(String terrainSession, int revision, CaptureFrame.Position origin, long nowNanos) throws IOException {
@@ -62,6 +66,12 @@ final class CaptureStream implements AutoCloseable {
     }
 
     private void reap() throws IOException { if (retired != null && retired.reap()) retired = null; }
+
+    private synchronized void readNext() {
+        poll();
+        // Schedule under the same lock as close: no task can be submitted after shutdown.
+        if (!closed) worker.schedule(this::readNext, raw == null ? 20 : 1, TimeUnit.MILLISECONDS);
+    }
 
     private synchronized void poll() {
         if (closed) return;

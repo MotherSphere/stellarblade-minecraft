@@ -41,6 +41,9 @@ final class RawFrameBus implements AutoCloseable {
     private long previousCounter;
     private long heartbeatMillis, heartbeatNanos;
     private boolean stopped, pendingDelete;
+    // Detached storage may be returned by the render thread after this mapping has closed.
+    private final java.util.ArrayDeque<ByteBuffer[]> free = new java.util.ArrayDeque<>();
+    private boolean poolClosed;
 
     RawFrameBus(Path directory, String run, String session, int width, int height, long nowMs) throws IOException {
         if (!Platform.isLinux() || Native.POINTER_SIZE != 8) throw new IOException("Raw frames require 64-bit Linux");
@@ -177,6 +180,11 @@ final class RawFrameBus implements AutoCloseable {
         unmap(); // An unresolved producer keeps its file; never truncate or reuse it.
     }
     private void unmap() {
+        synchronized (free) {
+            poolClosed = true;
+            for (var pair : free) { MemoryUtil.memFree(pair[0]); MemoryUtil.memFree(pair[1]); }
+            free.clear();
+        }
         map = null;
         if (address != null) { C.munmap(address, new NativeLong(bytes)); address = null; }
         if (fd >= 0) { C.close(fd); fd = -1; }
@@ -186,18 +194,29 @@ final class RawFrameBus implements AutoCloseable {
         double scale = Math.min(1, Math.min((double) MAX_WIDTH / width, (double) MAX_HEIGHT / height));
         return new int[] {Math.max(1, (int) Math.floor(width * scale)), Math.max(1, (int) Math.floor(height * scale))};
     }
-    static final class Frame implements AutoCloseable {
+    final class Frame implements AutoCloseable {
         final CaptureFrame.Metadata metadata;
         final ByteBuffer color, depth;
+        private final ByteBuffer[] pair;
         private boolean closed;
         Frame(CaptureFrame.Metadata metadata, int planeBytes) {
             this.metadata = metadata;
-            color = MemoryUtil.memAlloc(planeBytes).order(ByteOrder.LITTLE_ENDIAN);
-            try { depth = MemoryUtil.memAlloc(planeBytes).order(ByteOrder.LITTLE_ENDIAN); }
-            catch (RuntimeException | Error failure) { MemoryUtil.memFree(color); throw failure; }
+            ByteBuffer[] available;
+            synchronized (free) { available = free.pollFirst(); }
+            if (available == null) {
+                ByteBuffer first = MemoryUtil.memAlloc(planeBytes).order(ByteOrder.LITTLE_ENDIAN);
+                try { available = new ByteBuffer[] {first, MemoryUtil.memAlloc(planeBytes).order(ByteOrder.LITTLE_ENDIAN)}; }
+                catch (RuntimeException | Error failure) { MemoryUtil.memFree(first); throw failure; }
+            }
+            pair = available; color = pair[0].clear(); depth = pair[1].clear();
         }
         @Override public void close() {
-            if (!closed) { closed = true; MemoryUtil.memFree(color); MemoryUtil.memFree(depth); }
+            synchronized (free) {
+                if (closed) return;
+                closed = true;
+                if (!poolClosed && free.size() < 3) free.addFirst(pair);
+                else { MemoryUtil.memFree(color); MemoryUtil.memFree(depth); }
+            }
         }
     }
     private static void require(boolean condition, String message) throws IOException {

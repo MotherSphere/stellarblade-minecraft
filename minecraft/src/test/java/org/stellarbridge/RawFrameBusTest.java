@@ -109,6 +109,8 @@ public final class RawFrameBusTest {
                     peer.stopped(); assert bus.reap();
                 }
             }
+            recycling(directory);
+            scheduling(directory);
             stream(directory);
             failedRun(directory);
         } finally {
@@ -117,6 +119,117 @@ public final class RawFrameBusTest {
             }
         }
         System.out.println("Raw frame tests passed: real JNA mapping, triple-slot ownership, bounded v5, fractional coverage, raw worker/request and stop/restart");
+    }
+    private static void recycling(Path directory) throws Exception {
+        long now = System.currentTimeMillis();
+        try (var bus = new RawFrameBus(directory, RUN, SESSION, 2, 2, now); var peer = new Peer(bus.path)) {
+            peer.ready(now);
+            var released = new RawFrameBus.Frame[4];
+            var borrowed = new RawFrameBus.Frame[4];
+            try {
+                for (int i = 0; i < released.length; i++) {
+                    peer.publish(i + 1, metadata(2, 2, now / 1000, i + 1), now);
+                    released[i] = bus.poll(now, System.nanoTime());
+                }
+                for (var frame : released) frame.close();
+                int reused = 0;
+                for (int i = 0; i < borrowed.length; i++) {
+                    peer.publish(i + 5, metadata(2, 2, now / 1000, i + 5), now);
+                    borrowed[i] = bus.poll(now, System.nanoTime());
+                    for (var old : released) {
+                        if (old.color == borrowed[i].color) {
+                            reused++;
+                            assert old != borrowed[i] : "Each publication needs its own immutable metadata and close state";
+                            assert old.metadata.id().endsWith("-" + (java.util.Arrays.asList(released).indexOf(old) + 1));
+                        }
+                        old.close(); // A duplicate release must not return storage borrowed by a newer frame.
+                    }
+                    for (int j = 0; j <= i; j++)
+                        assert borrowed[j].color.get(0) == j + 5 : "An owned frame was overwritten by buffer recycling";
+                }
+                assert reused == 3 : "Retain exactly three idle buffer pairs; allocate only when every cached pair is owned";
+                bus.stop(); peer.stopped(); assert bus.reap();
+                for (int i = 0; i < borrowed.length; i++)
+                    assert borrowed[i].color.get(0) == i + 5 : "Unmapping must preserve outstanding detached frames";
+                String nextRun = "33333333333333333333333333333333";
+                try (var resized = new RawFrameBus(directory, nextRun, SESSION, 3, 1, now); var nextPeer = new Peer(resized.path)) {
+                    nextPeer.ready(now);
+                    nextPeer.publish(1, metadata(3, 1, now / 1000, 1).replace(RUN, nextRun), now);
+                    try (var frame = resized.poll(now, System.nanoTime())) {
+                        assert frame.color.capacity() == 12 && frame.depth.capacity() == 12;
+                        for (var old : borrowed) old.close();
+                        assert frame.color.get(0) == 1 : "Late returns from the old run must not touch resized storage";
+                    }
+                    int slot = nextPeer.publish(2, metadata(3, 1, now / 1000, 2).replace(RUN, nextRun), now);
+                    nextPeer.map.putFloat(slot + RawFrameBus.HEADER + 12, Float.NaN);
+                    rejects(() -> resized.poll(now, System.nanoTime()));
+                    // A failed poll has no returned Frame handle; inspect owned storage to catch leaks on that path.
+                    var cacheField = RawFrameBus.class.getDeclaredField("free");
+                    cacheField.setAccessible(true);
+                    var cache = (java.util.Collection<?>) cacheField.get(resized);
+                    assert cache.size() == 1 : "Rejected payload must release its borrowed buffers";
+                    nextPeer.stopped(); assert resized.reap();
+                    assert cache.isEmpty() : "Unmapping must release every cached buffer pair";
+                }
+            } finally {
+                for (var frame : released) if (frame != null) frame.close();
+                for (var frame : borrowed) if (frame != null) { frame.close(); frame.close(); }
+            }
+        }
+    }
+    private static void scheduling(Path directory) throws Exception {
+        var worker = new ManualWorker();
+        try (var stream = new CaptureStream(directory, worker)) {
+            assert worker.delayMillis == 0;
+            worker.runNext();
+            assert worker.delayMillis == 20 : "Inactive reads keep their slow polling cadence";
+            stream.startHd(SESSION, 1, new CaptureFrame.Position(0, 64, 0), System.nanoTime(), 2, 2);
+            String run = stream.mailbox.request().run();
+            try (var peer = new Peer(directory.resolve("eve-frames-" + run + ".bin"))) {
+                long now = System.currentTimeMillis(); peer.ready(now);
+                peer.publish(1, metadata(2, 2, now / 1000, 1).replace(RUN, run), now);
+                worker.runNext();
+                assert worker.delayMillis == 1 : "Raw frames must not inherit the encoded reader's 20 ms delay";
+                try (var frame = stream.mailbox.take()) { assert frame != null && frame.raw != null; }
+                stream.stop("off");
+                worker.runNext();
+                assert worker.delayMillis == 20 : "Stopping raw capture must restore idle polling";
+                peer.stopped(); worker.runNext();
+            }
+            stream.startHd(SESSION, 1, new CaptureFrame.Position(0, 64, 0), System.nanoTime(), 2, 2);
+            worker.runNext();
+            assert worker.delayMillis == 1 : "Restart must resume fast raw polling";
+            Runnable queued = worker.next;
+            stream.close();
+            assert worker.isShutdown() && worker.next == null;
+            queued.run(); // Model a task already dequeued when shutdown wins the stream lock.
+            assert worker.next == null : "A late poll must not schedule after shutdown";
+            rejects(() -> stream.startHd(SESSION, 1, new CaptureFrame.Position(0, 64, 0), System.nanoTime(), 2, 2));
+        }
+    }
+    /** Manually advance the real poll at the scheduler boundary, without clock-based assertions. */
+    private static final class ManualWorker extends java.util.concurrent.ScheduledThreadPoolExecutor {
+        Runnable next;
+        long delayMillis;
+        ManualWorker() { super(1); }
+        @Override public java.util.concurrent.ScheduledFuture<?> schedule(Runnable task, long delay, java.util.concurrent.TimeUnit unit) {
+            assert next == null : "Only one reader task may be pending";
+            assert !isShutdown() : "CaptureStream scheduled after shutdown";
+            next = task; delayMillis = unit.toMillis(delay);
+            return null;
+        }
+        @Override public java.util.concurrent.ScheduledFuture<?> scheduleWithFixedDelay(Runnable task, long initial, long delay,
+                                                                                       java.util.concurrent.TimeUnit unit) {
+            return schedule(task, initial, unit);
+        }
+        void runNext() {
+            Runnable task = next;
+            assert task != null : "Reader did not schedule its next poll";
+            next = null;
+            task.run();
+            assert next != null : "Reader did not schedule its next poll";
+        }
+        @Override public java.util.List<Runnable> shutdownNow() { next = null; return super.shutdownNow(); }
     }
     private static void failedRun(Path directory) throws Exception {
         for (int nativeState : new int[] {3, 2}) {
