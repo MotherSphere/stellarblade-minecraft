@@ -2,13 +2,15 @@
 
 An experimental bridge project for playing EVE with her native movement and combat in a live Minecraft Java world on Linux, with Stellar Blade running through Proton.
 
-The current build includes an experimental **local Minecraft terrain and position link**, a bounded native terrain renderer, and EVE image-capture diagnostics. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. The native terrain route keeps EVE in Stellar Blade's normal renderer. Cross-game combat, general world streaming and full-world rendering performance are not established yet.
+**Minecraft is the primary game and renderer.** Its world, entities, inventory, menus, mods and shader pipeline remain in Minecraft. Stellar Blade supplies EVE's native movement, animations and combat systems through the bridge. The intended view composites EVE into Minecraft; it does not replace Minecraft's renderer with Stellar Blade's.
+
+The current build includes an experimental **local Minecraft terrain and position link** and EVE image-capture diagnostics. Minecraft exports real collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's position back to the Minecraft player. A still EVE image can be composed with Minecraft's world depth. Practical continuous composition, controls while Minecraft has focus, cross-game combat, general world streaming and Iris compatibility are not established yet. Compatibility with other mods and shader packs must be verified against specific versions; it is not universal by default.
+
+A bounded Minecraft-terrain renderer inside Stellar Blade is retained as a separate diagnostic. It is not the final rendering direction and does not establish Minecraft shader compatibility. Stellar Blade outfit and CNS compatibility are secondary goals.
 
 ## Minecraft terrain link
 
-Use **Minecraft Java 1.21.1**, **Fabric Loader 0.19.5**, **Fabric API 0.116.17+1.21.1**, and **Java 21**. This experiment accepts only a private creative singleplayer world, without LAN players, fluids or vehicles. Start with a separate flat test world. Disable `pauseOnLostFocus` in this instance's `options.txt` so its integrated server keeps publishing while Stellar Blade has focus. Keep Minecraft in the world, rather than its pause menu.
-
-If Minecraft still opens its pause menu when switching games, return to the world and use **F3+P** to toggle automatic pausing off in the running game. A file edit alone does not change an already running instance's options. Check that terrain timestamps keep advancing after switching to Stellar Blade.
+Use **Minecraft Java 1.21.1**, **Fabric Loader 0.19.5**, **Fabric API 0.116.17+1.21.1**, and **Java 21**. This experiment accepts only a private creative singleplayer world, without LAN players, fluids or vehicles. Start with a separate flat test world. An active bridge session keeps that world running through pause menus and focus changes without editing Minecraft's saved pause setting. `/stellar stop` or disconnect restores normal pause behavior.
 
 Build with the included Gradle wrapper (Loom 1.11.8, Yarn 1.21.1+build.3):
 
@@ -40,11 +42,13 @@ The sampled patch is nine blocks wide, six blocks high and nine blocks deep, fix
 
 Transport uses bounded versioned text snapshots with session IDs, revisions, timestamps and complete-message footers. Java publishes terrain with atomic replacement; Lua alternates two EVE files because the Windows C runtime cannot rename over an existing destination. Missing or stale EVE packets release Minecraft's position override. No network service or additional native transport DLL is used.
 
-## Bounded native terrain rendering
+## Bounded native terrain diagnostic
 
 This route displays Minecraft block faces inside Stellar Blade, preserving EVE's normal rendering, animation and camera. It avoids the low-resolution EVE frame transport described in the diagnostic sections below. Both games still run: Minecraft owns the world and block changes, while Stellar Blade owns EVE's movement.
 
 This renderer is experimental. In-game checks confirmed the grass surface and exterior block faces, native traversal, live block addition/removal, and a wool-to-stone appearance change without a collision revision. With both games open, bounded flat-patch checks averaged 59.7 native engine frames per second over 131 seconds, and 57.9 over 147 seconds including block edits and window switching. These are average engine counters, not frame-time consistency measurements or larger-world performance guarantees.
+
+Those measurements apply only to terrain rendered inside Stellar Blade. They do not measure EVE's image-transfer rate or gameplay performance inside Minecraft.
 
 The linked world also remained active with Minecraft's pause menu open and Stellar Blade in focus. F11 returned EVE and cleaned up the native scene; `/stellar stop` restored Minecraft's normal menu pause behavior.
 
