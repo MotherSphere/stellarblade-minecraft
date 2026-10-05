@@ -4,7 +4,7 @@ local queued,keys={},{}
 local loop,console,frame_hook
 local frames,stills,clears,returns=0,0,0,0
 local bmp_exports=0
-local async_exports=0
+local async_exports,async_frames,async_link=0,0,nil
 local profiles={}
 local state='idle'
 local tick_error,schedule_error,clear_error,read_error=false,false,false,false
@@ -19,6 +19,7 @@ end
 local capture={status=function()return 'idle' end}
 function capture.frame(_,profile) frames=frames+1; profiles[frames]=profile or 'default'; if frame_hook then frame_hook() end; return true,'frame' end
 function capture.capture() stills=stills+1; return true,'still' end
+function capture.frameasync(link) async_frames=async_frames+1; async_link=link; return true,'pending async frame' end
 function capture.exportasync() async_exports=async_exports+1; return true,'async submissions' end
 function capture.exportbmp() bmp_exports=bmp_exports+1; return true,'BMP comparison' end
 function capture.cleanup() return true,'cleaned' end
@@ -129,12 +130,12 @@ local scene_start_clears=clears; keys['Shift+F8'](); drain()
 assert(scene_enabled and clears==scene_start_clears+1,'Native visuals must stop live capture before activation')
 command('live'); keys.F1(); drain(); loop(); drain()
 assert(frames==0,'Both live start paths must reject simultaneous native scene rendering')
-keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd'); command('framehdpng'); command('exportbmp'); command('exportasync')
-assert(frames==0 and stills==0 and bmp_exports==0 and async_exports==0,'All still export commands must reject native visual mode')
+keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd'); command('framehdpng'); command('exportbmp'); command('exportasync'); command('frameasync')
+assert(frames==0 and stills==0 and bmp_exports==0 and async_exports==0 and async_frames==0,'All still export commands must reject native visual mode')
 command('visuals'); assert(not scene_enabled); keys.F1(); drain()
 loop(); drain(); assert(frames==1,'F1 should enable the entered link')
-keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd'); command('framehdpng'); command('exportbmp'); command('exportasync')
-assert(frames==1 and stills==0 and bmp_exports==0 and async_exports==0,'Manual captures must not overlap live capture')
+keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd'); command('framehdpng'); command('exportbmp'); command('exportasync'); command('frameasync')
+assert(frames==1 and stills==0 and bmp_exports==0 and async_exports==0 and async_frames==0,'Manual captures must not overlap live capture')
 frame_hook=function() loop(); assert(#queued==0,'The pending gate was released during native capture') end
 loop(); loop(); assert(#queued==1,'The bridge cannot queue catch-up callbacks')
 drain(); frame_hook=nil; assert(frames==2)
@@ -168,3 +169,6 @@ command('exportbmp'); assert(bmp_exports==1 and frames==6 and stills==2,'BMP com
 command('framehdpng'); assert(frames==7 and profiles[7]=='hd-png','The HD PNG fallback must select its explicit profile')
 
 command('exportasync'); assert(async_exports==1 and frames==7 and stills==2,'Async export must be opt-in and separate from paired frames')
+
+command('frameasync'); assert(async_frames==1 and async_link.session==string.rep('a',32) and async_link.ack==1 and async_link.scale==100)
+keys.F11(); drain(); command('frameasync'); assert(async_frames==2 and async_link==nil,'Unlinked async still must preserve the ordinary camera context gate')

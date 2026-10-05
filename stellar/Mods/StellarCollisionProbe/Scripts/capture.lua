@@ -7,8 +7,9 @@
 -- FILE <fixedImageBasename> <byteLength>
 -- END <captureId>
 -- Coordinates use Stellar Blade world units; color alpha is unverified inverse opacity.
--- Paired frame metadata v1/v2: ten ASCII LF lines, with a trailing LF.
--- SBMC_FRAME <1|2> <unixSeconds-counter> <unixSeconds>
+-- Paired frame metadata v1/v2/v3: ten ASCII LF lines, with a trailing LF.
+-- V3 is one pending HD request: COLOR/MASK counts are zero; all images require observed file closes.
+-- SBMC_FRAME <1|2|3> <unixSeconds-counter> <unixSeconds>
 -- SIZE <320 180|1280 720> (HD is an explicit still profile only)
 -- CAMERA <x> <y> <z> <pitch> <yaw> <roll> <horizontalFovDegrees>
 -- PAWN <x> <y> <z> <capsuleHalfHeight>
@@ -199,6 +200,19 @@ function Capture.new(engine,directory,log)
         for _,layer in ipairs(files) do retired[layer.file]=true end
         purge_files()
     end
+    local function frame_id(epoch)
+        -- Also avoid identifiers left by a same-second Lua reload, regardless of color encoding.
+        local id,available
+        repeat
+            frame_counter=frame_counter+1; id=string.format('%d-%d',epoch,frame_counter)
+            available=true
+            for _,suffix in ipairs({'color.png','color.bmp','mask.png','depth.hdr'}) do
+                local file=io.open(directory..'/eve-frame-'..id..'-'..suffix,'rb')
+                if file then file:close(); available=false end
+            end
+        until available
+        return id
+    end
     function api.status() return (#owned>0 or next(retired)) and 'cleanup-required' or 'idle' end
     function api.cleanup()
         local failures={}
@@ -289,34 +303,40 @@ function Capture.new(engine,directory,log)
         if not cleaned then return false,cleanup_message end
         return true,'Exported color-only BMP comparison: '..result..'. Diagnostic PNG/BMP retained; paired frame unchanged.'
     end
+    local function async_layers(prefix)
+        return {
+            {width=1280,height=720,source=2,format=2,file=prefix..'-color.bmp',size=0},
+            {width=1280,height=720,source=0,format=2,file=prefix..'-mask.png',size=0},
+            {width=1280,height=720,source=4,format=6,file=prefix..'-depth.hdr'},
+        }
+    end
+    local function submit_async(camera,layers,trace)
+        local prepared={}
+        for i,layer in ipairs(layers) do
+            prepared[i]=prepare_capture(camera,layer,trace,({'color','mask','depth'})[i])
+        end
+        -- Kismet's synchronous readback drains all earlier captures, so both ImageWriteQueue
+        -- submissions see initialized TextureRHI resources even on a fresh generation.
+        layers[3].size=export_layer(prepared[3],layers[3],'depth',trace,'depth')
+        -- ponytail: one attempt per Lua lifetime; another run needs a native writer-completion
+        -- signal before any pending output can be replaced. A submission exception is ambiguous.
+        async_attempted=true
+        stage(trace,'color BMP async submission',function()
+            engine.export_async(prepared[1].target,directory,layers[1].file,2)
+        end)
+        stage(trace,'mask PNG async submission',function()
+            engine.export_async(prepared[2].target,directory,layers[2].file,0)
+        end)
+    end
     function api.exportasync()
         if async_attempted then return false,'Async export was already attempted in this Lua lifetime; diagnostic files remain retained.' end
         if api.status()~='idle' then return false,'Capture cleanup is required before the async export test.' end
         local trace=log and function(message) pcall(log,'Async export test '..message) end
-        local layers={
-            {width=1280,height=720,source=2,format=2,file='eve-exportasync-color.bmp'},
-            {width=1280,height=720,source=0,format=2,file='eve-exportasync-mask.png'},
-            {width=1280,height=720,source=4,format=6,file='eve-exportasync-depth.hdr'},
-        }
+        local layers=async_layers('eve-exportasync')
         local ok,why=pcall(function()
             for _,layer in ipairs(layers) do remove_existing(directory..'/'..layer.file) end
             local camera=engine.camera(); check_camera(camera)
-            local prepared={}
-            for i,layer in ipairs(layers) do
-                prepared[i]=prepare_capture(camera,layer,trace,({'color','mask','depth'})[i])
-            end
-            -- Kismet's synchronous readback drains all earlier captures, so both ImageWriteQueue
-            -- submissions see initialized TextureRHI resources even on a fresh generation.
-            export_layer(prepared[3],layers[3],'depth',trace,'depth')
-            -- ponytail: one attempt per Lua lifetime; another run needs a native writer-completion
-            -- signal before any pending output can be replaced. A submission exception is ambiguous.
-            async_attempted=true
-            stage(trace,'color BMP async submission',function()
-                engine.export_async(prepared[1].target,directory,layers[1].file,2)
-            end)
-            stage(trace,'mask PNG async submission',function()
-                engine.export_async(prepared[2].target,directory,layers[2].file,0)
-            end)
+            submit_async(camera,layers,trace)
         end)
         -- In this verified game build, explicit target release queues resource destruction after
         -- the submitted readback on the same render queue. File writers own their CPU pixels.
@@ -325,6 +345,32 @@ function Capture.new(engine,directory,log)
         if not ok then return false,tostring(why)..(cleaned and '' or '; '..cleanup_message) end
         if not cleaned then return false,cleanup_message end
         return true,'Async color/mask submission calls returned; writer completion is unverified. Diagnostic files retained; paired frame unchanged.'
+    end
+    function api.frameasync(link)
+        if async_attempted then return false,'One async generation was already reserved or submitted; restart the game for another attempt.' end
+        if api.status()~='idle' then return false,'Capture cleanup is required before an async frame.' end
+        local result,id
+        local trace=log and function(message) pcall(log,'Async frame '..(id or 'pending')..' '..message) end
+        local ok,why=pcall(function()
+            local link_line=check_link(link)
+            local camera=engine.camera(); check_camera(camera)
+            local epoch=os.time(); id=frame_id(epoch)
+            local layers=async_layers('eve-frame-'..id)
+            -- Reserve the sole generation before allocation. Even a depth/setup failure now needs
+            -- a game restart, so retained files cannot accumulate through repeated attempts.
+            async_attempted=true
+            submit_async(camera,layers,trace)
+            result=frame_metadata(id,epoch,camera,link_line,layers,1280,720,3)
+        end)
+        local cleaned,cleanup_message=stage(trace,'cleanup',api.cleanup)
+        if not ok then return false,tostring(why)..(cleaned and '' or '; '..cleanup_message) end
+        if not cleaned then return false,cleanup_message end
+        local published,publish_error=pcall(stage,trace,'publication',function() publish(directory..'/eve-frame.txt',result) end)
+        if not published then return false,'Pending frame publication failed: '..tostring(publish_error) end
+        retire_files(previous_files)
+        previous_files={}
+        -- Async images never enter retirement: native writers may still hold their output paths.
+        return true,'Published pending async EVE frame '..id..'; Minecraft must observe all image file closes before loading.'
     end
     function api.capture(kind)
         local mode=modes[kind]
@@ -365,16 +411,7 @@ function Capture.new(engine,directory,log)
             local camera=engine.camera()
             check_camera(camera)
             local epoch=os.time()
-            -- Also avoid identifiers left by a same-second Lua reload.
-            local available
-            repeat
-                frame_counter=frame_counter+1; id=string.format('%d-%d',epoch,frame_counter)
-                available=true
-                for _,suffix in ipairs({'color.png','color.bmp','mask.png','depth.hdr'}) do
-                    local file=io.open(directory..'/eve-frame-'..id..'-'..suffix,'rb')
-                    if file then file:close(); available=false end
-                end
-            until available
+            id=frame_id(epoch)
             local prepared={}
             local specs={{'color',2,2,version==2 and 'bmp' or 'png'},{'mask',0,2,'png'},{'depth',4,6,'hdr'}}
             for i,spec in ipairs(specs) do

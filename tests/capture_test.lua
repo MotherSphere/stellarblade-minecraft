@@ -51,6 +51,10 @@ local function backend()
         if b.fail_bmp then error('BMP export failed') end
         write(dir..'/'..name,b.bmp_image or bmp_hd(24))
     end
+    function b.export_async(target,dir,name,format)
+        b.async_exports=(b.async_exports or 0)+1; b.files[#b.files+1]=name
+        write(dir..'/'..name,format==2 and bmp_hd(24) or png_hd)
+    end
     function b.destroy() if b.fail_destroy then error('destroy failed') end; b.actors=b.actors-1 end
     function b.release() if b.fail_release then error('release failed') end; b.targets=b.targets-1 end
     return b
@@ -228,6 +232,82 @@ check('async gate retries only pre-submission failure after resource cleanup suc
 end)
 local frame_files={}
 local function track_frame(b) for _,name in ipairs(b.files) do frame_files[name]=true end end
+check('async frame publishes a pending HD request and survives F4 replacement and F11 cleanup',function()
+    local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+    local b=backend(); local c=fresh.new(b,directory)
+    assert(type(c.frameasync)=='function','The one-shot async paired request is missing')
+    assert(c.frame(nil,'hd')); track_frame(b)
+    local old={table.unpack(b.files)}
+    local link={session=string.rep('a',32),ack=7,scale=100,position={x=1.25,y=2,z=-3}}
+    assert(not c.frameasync({session='../invalid'})); assert(b.camera_reads==1)
+    local ok,message=c.frameasync(link); assert(ok,message); track_frame(b)
+    assert(message:find('pending',1,true) and b.camera_reads==2 and b.async_exports==2 and b.exports==3 and b.bmp_exports==1)
+    assert(b.cameras[4]==b.cameras[5] and b.cameras[5]==b.cameras[6] and b.actors==0 and b.targets==0)
+    local meta=assert(read(directory..'/eve-frame.txt')); local lines={}
+    for line in meta:gmatch('[^\n]+') do lines[#lines+1]=line end
+    local id=assert(lines[1]:match('^SBMC_FRAME 3 (%d+%-%d+) %d+$'))
+    assert(#lines==10 and lines[2]=='SIZE 1280 720' and lines[6]=='LINK '..link.session..' 7 100 1.25 2 -3')
+    assert(lines[7]=='COLOR eve-frame-'..id..'-color.bmp 0' and lines[8]=='MASK eve-frame-'..id..'-mask.png 0')
+    assert(lines[9]=='DEPTH eve-frame-'..id..'-depth.hdr '..#hdr_hd and lines[10]=='END '..id)
+    local pending={}
+    for i=7,9 do pending[#pending+1]=assert(lines[i]:match('^[A-Z]+ ([^ ]+) ')) end
+    for _,name in ipairs(old) do assert(not read(directory..'/'..name),'Published v3 retires the previous synchronous generation') end
+    assert(not c.frameasync(link) and not c.exportasync(),'Both async commands share one lifetime guard')
+    assert(c.frame(nil,'hd')); track_frame(b)
+    assert(read(directory..'/eve-frame.txt'):match('^SBMC_FRAME 2 '),'Normal F4 must replace a pending request')
+    assert(c.clear() and not read(directory..'/eve-frame.txt'))
+    for _,name in ipairs(pending) do assert(read(directory..'/'..name),'F4 replacement and F11 must retain async images') end
+end)
+check('async frame failures preserve the previous descriptor and never delete or resubmit a reserved generation',function()
+    for _,failure in ipairs({'depth','color','mask','release','publication'}) do
+        local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+        local b=backend(); local c=fresh.new(b,directory); assert(c.frame(nil,'hd')); track_frame(b)
+        local previous=assert(read(directory..'/eve-frame.txt')); local old_count=#b.files
+        local export_async=b.export_async
+        function b.export_async(...)
+            export_async(...)
+            if (failure=='color' and b.async_exports==1) or (failure=='mask' and b.async_exports==2) then
+                error('submission failed')
+            end
+        end
+        b.fail_export_at=failure=='depth' and b.exports+1 or nil
+        b.fail_release=failure=='release'
+        local rename=os.rename
+        if failure=='publication' then os.rename=function() return nil,'simulated rename failure',13 end end
+        local ran,ok=pcall(c.frameasync)
+        os.rename=rename; track_frame(b)
+        assert(ran and not ok and read(directory..'/eve-frame.txt')==previous)
+        assert(not c.frameasync() and not c.exportasync(),'Every reserved v3 generation consumes the shared one-shot guard')
+        b.fail_release=false; assert(c.cleanup() and b.actors==0 and b.targets==0)
+        local retained={}
+        for i=old_count+1,#b.files do
+            local name=b.files[i]
+            if read(directory..'/'..name) then retained[name]=read(directory..'/'..name) end
+        end
+        assert(c.clear())
+        for name,data in pairs(retained) do assert(read(directory..'/'..name)==data,'Late writers must never lose their output paths') end
+    end
+    local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+    local b=backend(); local c=fresh.new(b,directory); assert(c.exportasync())
+    assert(not c.frameasync() and b.spawned==3,'Diagnostic export first must prevent a second async generation')
+end)
+check('async and synchronous frame identifiers skip existing PNG and BMP generations',function()
+    local fresh=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture.lua')
+    local b=backend(); local c=fresh.new(b,directory)
+    local png_name,bmp_name='eve-frame-2468-1-color.png','eve-frame-2468-3-color.bmp'
+    write(directory..'/'..png_name,'foreign PNG'); write(directory..'/'..bmp_name,'foreign BMP')
+    frame_files[png_name]=true; frame_files[bmp_name]=true
+    local time=os.time; os.time=function() return 2468 end
+    local ran,why=pcall(function()
+        assert(c.frameasync()); track_frame(b)
+        assert(read(directory..'/eve-frame.txt'):match('^SBMC_FRAME 3 2468%-2 '))
+        assert(c.frame(nil,'hd')); track_frame(b)
+        assert(read(directory..'/eve-frame.txt'):match('^SBMC_FRAME 2 2468%-4 '))
+    end)
+    os.time=time; assert(ran,why)
+    assert(read(directory..'/'..png_name)=='foreign PNG' and read(directory..'/'..bmp_name)=='foreign BMP')
+    assert(c.clear())
+end)
 check('HD captures all planes before Kismet readback makes the BMP resource ready',function()
     local b=backend(); local c=Capture.new(b,directory)
     local captured,order={},{}

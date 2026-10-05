@@ -23,7 +23,15 @@ final class CaptureImages {
 
     static NativeImage decodeMasked(CaptureFrame.Loaded frame) throws IOException {
         var metadata = frame.metadata();
-        return decodeMasked(frame.color(), frame.mask(), metadata.width(), metadata.height(), metadata.version() == 2);
+        frame.verifyObservation();
+        NativeImage image = decodeMasked(frame.color(), frame.mask(), metadata.width(), metadata.height(), metadata.version() >= 2);
+        try {
+            frame.verifyObservation();
+            return image;
+        } catch (IOException | RuntimeException | Error exception) {
+            image.close();
+            throw exception;
+        }
     }
 
     private static NativeImage decodeMasked(byte[] colorBytes, byte[] maskBytes, int width, int height, boolean bmp) throws IOException {

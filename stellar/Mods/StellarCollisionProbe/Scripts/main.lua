@@ -152,8 +152,10 @@ local function paired_still(profile)
     if pose and pose.state=='entered' then
         link={session=pose.session,ack=pose.ack,scale=config.scale,position=pose.position}
     end
-    log(profile=='hd-png' and 'Native HD PNG baseline capture started (1280x720 still).'
+    log(profile=='async' and 'Native HD async frame requested (one-shot pending files).'
+        or profile=='hd-png' and 'Native HD PNG baseline capture started (1280x720 still).'
         or profile=='hd' and 'Native HD frame capture started (1280x720 still).' or 'Native frame capture started.')
+    if profile=='async' then return capture.frameasync(link) end
     return capture.frame(link,profile)
 end
 local actions = {
@@ -198,6 +200,7 @@ local actions = {
         return stream.start()
     end,
     frame=function() return paired_still() end,
+    frameasync=function() return paired_still('async') end,
     framehd=function() return paired_still('hd') end,
     framehdpng=function() return paired_still('hd-png') end,
     capture=function()
@@ -254,7 +257,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, exportbmp, exportasync, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, frameasync, exportbmp, exportasync, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -324,4 +327,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 21; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc exportasync permits one diagnostic async submission attempt per Lua lifetime. No geometry or capture created at startup.')
+log('Loaded revision 22; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. No geometry or capture created at startup.')

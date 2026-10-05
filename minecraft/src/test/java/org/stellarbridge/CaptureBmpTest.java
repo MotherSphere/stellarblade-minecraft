@@ -110,7 +110,7 @@ public final class CaptureBmpTest {
     private static int rgb(int x, int y) {
         return 0xff000000 | ((x * 17 + y * 3) & 255) << 16 | ((x * 7 + y * 11) & 255) << 8 | ((x * 13 + y * 5) & 255);
     }
-    private static byte[] bmp() {
+    static byte[] bmp() {
         ByteBuffer output = ByteBuffer.allocate(54 + WIDTH * HEIGHT * 3).order(ByteOrder.LITTLE_ENDIAN);
         output.putShort((short) 0x4d42).putInt(output.capacity()).putInt(0).putInt(54);
         output.putInt(40).putInt(WIDTH).putInt(HEIGHT).putShort((short) 1).putShort((short) 24);
@@ -121,12 +121,12 @@ public final class CaptureBmpTest {
         }
         return output.array();
     }
-    private static byte[] png(BufferedImage image) throws Exception {
+    static byte[] png(BufferedImage image) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ImageIO.write(image, "PNG", output);
         return output.toByteArray();
     }
-    private static byte[] depth() throws Exception {
+    static byte[] depth() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y " + HEIGHT + " +X " + WIDTH + "\n").getBytes(StandardCharsets.US_ASCII));
         for (int y = 0; y < HEIGHT; y++) {
@@ -140,7 +140,7 @@ public final class CaptureBmpTest {
         }
         return output.toByteArray();
     }
-    private static String descriptor(int version, String suffix, int color, int mask, int depth) {
+    static String descriptor(int version, String suffix, int color, int mask, int depth) {
         return "SBMC_FRAME " + version + " " + ID + " 1791110000\nSIZE " + WIDTH + " " + HEIGHT
                 + "\nCAMERA 1 2 3 4 5 0 75\nPAWN 7 8 9 95\nCONTEXT 11 12\n"
                 + "LINK 0123456789abcdef0123456789abcdef 1 100 0 0 0\n"

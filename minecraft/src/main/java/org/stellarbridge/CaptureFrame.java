@@ -9,12 +9,14 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.regex.Pattern;
+import java.util.zip.CRC32;
 
 /** A bounded one-shot native capture; no packet is executable. */
 final class CaptureFrame {
     private static final int MAX_IMAGE_BYTES = 4 * 1024 * 1024;
     private static final long MAX_INTEGER = 9007199254740991L;
     private static final Pattern DECIMAL = Pattern.compile("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?");
+    private static volatile CaptureCloseWatch closeWatch;
     record Position(double x, double y, double z) { }
     record Camera(Position position, double pitch, double yaw, double roll) { }
     record Pawn(Position position, double halfHeight) { }
@@ -22,7 +24,34 @@ final class CaptureFrame {
     record Link(String session, int ack, double scale, Position feet) { }
     record Metadata(String id, long time, double fov, int colorBytes, int maskBytes, int depthBytes,
                     Camera camera, Pawn pawn, Context context, Link link, int width, int height, int version) { }
-    record Loaded(Metadata metadata, byte[] descriptor, byte[] color, byte[] mask, float[] depth) { }
+    record Observation(CaptureCloseWatch watch, Path directory, String id) {
+        void verify(byte[] descriptor) throws IOException {
+            verifyUnchanged(directory, descriptor);
+            watch.requireReady(directory, id);
+        }
+    }
+    record Loaded(Metadata metadata, byte[] descriptor, byte[] color, byte[] mask, float[] depth, Observation observation) {
+        Loaded(Metadata metadata, byte[] descriptor, byte[] color, byte[] mask, float[] depth) {
+            this(metadata, descriptor, color, mask, depth, null);
+        }
+        void verifyObservation() throws IOException {
+            if (metadata.version == 3) {
+                require(observation != null, "Asynchronous capture has no close observation");
+                observation.verify(descriptor);
+            }
+        }
+    }
+
+    static synchronized void startWatching(Path directory) throws IOException {
+        stopWatching();
+        closeWatch = new CaptureCloseWatch(directory);
+    }
+
+    static synchronized void stopWatching() {
+        var previous = closeWatch;
+        closeWatch = null;
+        if (previous != null) previous.close();
+    }
 
     static Metadata parse(byte[] bytes) {
         require(bytes.length > 0 && bytes.length <= 2048, "Capture descriptor exceeds limits");
@@ -31,9 +60,10 @@ final class CaptureFrame {
         String[] lines = new String(bytes, StandardCharsets.US_ASCII).split("\n", -1);
         require(lines.length == 11 && lines[10].isEmpty(), "Capture descriptor must have exactly ten lines");
         String[] header = fields(lines[0], "SBMC_FRAME", 4);
-        require((header[1].equals("1") || header[1].equals("2")) && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
+        require(header[1].matches("[123]") && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
         int version = Integer.parseInt(header[1]);
         String id = header[2];
+        require(version != 3 || id.matches("[0-9]{1,16}-[0-9]{1,16}"), "Asynchronous capture generation exceeds limits");
         long time = integer(header[3], 0, MAX_INTEGER);
         String[] sequence = id.split("-", -1);
         require(integer(sequence[0], 0, MAX_INTEGER) == time, "Capture ID timestamp mismatch");
@@ -41,6 +71,7 @@ final class CaptureFrame {
         String[] size = fields(lines[1], "SIZE", 3);
         int width = (int) integer(size[1], 1, 1280), height = (int) integer(size[2], 1, 720);
         require(supportedSize(width, height), "Only 320 by 180 and 1280 by 720 captures are supported");
+        require(version != 3 || width == 1280 && height == 720, "Asynchronous capture is HD still-only");
         String[] camera = fields(lines[2], "CAMERA", 8);
         for (int i = 1; i < camera.length; i++) decimal(camera[i]);
         double fov = decimal(camera[7]);
@@ -57,9 +88,9 @@ final class CaptureFrame {
         require(decimal(link[3]) > 0, "Invalid capture scale");
         double x = decimal(link[4]), y = decimal(link[5]), z = decimal(link[6]);
         require(!unlinked || ack == 0 && x == 0 && y == 0 && z == 0, "Unlinked capture has bridge coordinates");
-        int color = imageLine(lines[6], "COLOR", id, version == 2 ? "color.bmp" : "color.png");
-        int mask = imageLine(lines[7], "MASK", id, "mask.png");
-        int depth = imageLine(lines[8], "DEPTH", id, "depth.hdr");
+        int color = imageLine(lines[6], "COLOR", id, version >= 2 ? "color.bmp" : "color.png", version == 3);
+        int mask = imageLine(lines[7], "MASK", id, "mask.png", version == 3);
+        int depth = imageLine(lines[8], "DEPTH", id, "depth.hdr", false);
         require(fields(lines[9], "END", 2)[1].equals(id), "Capture footer mismatch");
         return new Metadata(id, time, fov, color, mask, depth,
                 new Camera(new Position(decimal(camera[1]), decimal(camera[2]), decimal(camera[3])),
@@ -94,22 +125,37 @@ final class CaptureFrame {
     }
 
     static Loaded readIfNew(Path directory, long now, String previousId) throws IOException {
+        return readIfNew(directory, now, previousId, closeWatch);
+    }
+
+    static Loaded readIfNew(Path directory, long now, String previousId, CaptureCloseWatch watch) throws IOException {
         byte[] descriptor = readFile(directory, "eve-frame.txt", 2048);
         Metadata metadata = parse(descriptor);
         require(fresh(metadata.time, now), "Capture is older than 30 seconds or has a future timestamp");
         if (!newer(metadata.id, previousId)) return null;
+        Observation observation = null;
+        if (metadata.version == 3) {
+            require(watch != null, "Asynchronous capture watcher unavailable; restart Minecraft before capturing");
+            watch.requireReady(directory, metadata.id);
+            observation = new Observation(watch, directory, metadata.id);
+        }
         String prefix = "eve-frame-" + metadata.id + "-";
-        byte[] color = readFile(directory, prefix + (metadata.version == 2 ? "color.bmp" : "color.png"), MAX_IMAGE_BYTES);
+        byte[] color = readFile(directory, prefix + (metadata.version >= 2 ? "color.bmp" : "color.png"), MAX_IMAGE_BYTES);
         byte[] mask = readFile(directory, prefix + "mask.png", MAX_IMAGE_BYTES);
         byte[] depth = readFile(directory, prefix + "depth.hdr", MAX_IMAGE_BYTES);
-        require(color.length == metadata.colorBytes && mask.length == metadata.maskBytes && depth.length == metadata.depthBytes,
+        require((metadata.version == 3 || color.length == metadata.colorBytes && mask.length == metadata.maskBytes)
+                        && depth.length == metadata.depthBytes,
                 "Capture image size does not match its descriptor");
-        if (metadata.version == 2) validateBmp(color, metadata.width, metadata.height);
+        if (metadata.version >= 2) validateBmp(color, metadata.width, metadata.height);
         else validatePng(color, metadata.width, metadata.height);
         validatePng(mask, metadata.width, metadata.height);
         float[] decodedDepth = decodeDepth(depth, metadata.width, metadata.height);
-        verifyUnchanged(directory, descriptor);
-        return new Loaded(metadata, descriptor, color, mask, decodedDepth);
+        if (observation != null) {
+            observation.verify(descriptor);
+            metadata = new Metadata(metadata.id, metadata.time, metadata.fov, color.length, mask.length, depth.length,
+                    metadata.camera, metadata.pawn, metadata.context, metadata.link, metadata.width, metadata.height, metadata.version);
+        } else verifyUnchanged(directory, descriptor);
+        return new Loaded(metadata, descriptor, color, mask, decodedDepth, observation);
     }
 
     static void verifyUnchanged(Path directory, byte[] descriptor) throws IOException {
@@ -118,10 +164,7 @@ final class CaptureFrame {
 
     private static byte[] readFile(Path directory, String name, int limit) throws IOException {
         directory = directory.toAbsolutePath().normalize();
-        for (Path current = directory; current != null; current = current.getParent()) {
-            if (Files.isSymbolicLink(current) || !Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS))
-                throw new IOException("Capture directory must not contain symlinks or non-directories");
-        }
+        validateDirectory(directory);
         Path file = directory.resolve(name);
         if (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
             throw new IOException("Capture is unavailable or is not a regular file");
@@ -129,6 +172,13 @@ final class CaptureFrame {
             byte[] data = input.readNBytes(limit + 1);
             require(data.length <= limit, "Capture file exceeds limits");
             return data;
+        }
+    }
+
+    static void validateDirectory(Path directory) throws IOException {
+        for (Path current = directory; current != null; current = current.getParent()) {
+            if (Files.isSymbolicLink(current) || !Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS))
+                throw new IOException("Capture directory must not contain symlinks or non-directories");
         }
     }
 
@@ -140,11 +190,18 @@ final class CaptureFrame {
                 "Invalid capture PNG header");
         require(input.getInt() == width && input.getInt() == height && input.get() == 8 && input.get() == 6,
                 "Capture PNG must be RGBA8 and match the descriptor dimensions");
+        require(input.get() == 0 && input.get() == 0 && input.get() == 0,
+                "Capture PNG requires standard compression, filtering and no interlace");
         boolean pixels = false, ended = false;
         input.position(8);
         while (input.remaining() >= 12) {
+            int start = input.position();
             int length = input.getInt(), type = input.getInt();
             require(length >= 0 && length <= input.remaining() - 4, "Truncated capture PNG chunk");
+            require(type != 0x49484452 || start == 8, "Duplicate capture PNG header");
+            CRC32 crc = new CRC32();
+            crc.update(bytes, start + 4, length + 4);
+            require((int) crc.getValue() == input.getInt(start + 8 + length), "Invalid capture PNG checksum");
             input.position(input.position() + length + 4);
             if (type == 0x49444154) pixels = true;
             if (type == 0x49454e44) {
@@ -211,10 +268,10 @@ final class CaptureFrame {
         return depth;
     }
 
-    private static int imageLine(String line, String tag, String id, String suffix) {
+    private static int imageLine(String line, String tag, String id, String suffix, boolean pending) {
         String[] values = fields(line, tag, 3);
         require(values[1].equals("eve-frame-" + id + "-" + suffix), "Capture filename does not match its generation");
-        return (int) integer(values[2], 1, MAX_IMAGE_BYTES);
+        return (int) integer(values[2], pending ? 0 : 1, pending ? 0 : MAX_IMAGE_BYTES);
     }
     private static String[] fields(String line, String tag, int count) {
         String[] values = line.split(" ", -1);

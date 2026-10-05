@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.UUID;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -41,6 +42,16 @@ public final class StellarBridge implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        try {
+            Path directory = Path.of(System.getProperty("stellarbridge.directory",
+                    Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
+            new BridgeFiles(directory);
+            CaptureFrame.startWatching(directory);
+            LOG.info("Asynchronous capture close notifications armed");
+        } catch (IOException | RuntimeException | LinkageError failure) {
+            LOG.warn("Asynchronous capture unavailable; synchronous captures remain supported: {}", failure.toString());
+        }
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> CaptureFrame.stopWatching());
         CapturePreview.initialize();
         CaptureView.initialize();
         NativeSceneExport.initialize();
