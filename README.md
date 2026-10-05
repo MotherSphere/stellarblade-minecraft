@@ -107,7 +107,7 @@ The displayed camera also supplies Minecraft's block and entity targeting. Inter
 
 The optional game-local XInput adapter lets **`/stellarview play`** request the HD view and forward actual Minecraft keyboard/mouse input through Stellar Blade's native controller path. This implementation has offline protocol, lifecycle and fake-host checks; native gameplay and background focus still need in-game acceptance. It does not implement damage between EVE and Minecraft mobs or establish Iris compatibility.
 
-Install the matching Lua mod, Fabric jar and production **`xinput1_3.dll`** with both games closed. The adapter supports the pinned Stellar Blade executable only: it checks its full SHA-256 and the verified gameplay polling callsite. It forwards physical input through the system `xinput1_4.dll`, preserving other controller slots. When slot0 has no physical controller, it reports a connected neutral pad so the engine continues polling. Existing UE4SS and Xion loader files remain separate.
+Install the matching Lua mod, Fabric jar and production **`xinput1_3.dll`** with both games closed. The adapter supports the pinned Stellar Blade executable only: it checks its full SHA-256 and the verified gameplay polling callsite. The Lua bridge requires the installed loader's `LoopInGameThreadWithDelay` API; its terrain and capture timers execute directly on the game thread. It forwards physical input through the system `xinput1_4.dll`, preserving other controller slots. When slot0 has no physical controller, it reports a connected neutral pad so the engine continues polling. Existing UE4SS and Xion loader files remain separate.
 
 ```sh
 python tools/input_proxy.py install \

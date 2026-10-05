@@ -333,74 +333,59 @@ if bridge then
             last_messages[kind]=message
         elseif not message then last_messages[kind]=nil end
     end
-    LoopAsync(200,function()
-        if pending then return false end
+    -- Keep Lua reads, state and native calls on one thread. The loader's
+    -- recurring game-thread timer avoids sharing Lua state with LoopAsync.
+    assert(type(LoopInGameThreadWithDelay)=='function','This loader requires game-thread timer support.')
+    LoopInGameThreadWithDelay(200,function()
+        if pending then return end
         pending=true
-        local read_ok,packet=pcall(bridge.read)
-        if not read_ok then
-            stream.cancel('bridge snapshot read failed: '..tostring(packet))
-            cancel_hd('bridge snapshot read failed')
-        end
-        local scene_packet
-        if scene.enabled() then
-            local scene_read,value=pcall(scene.read)
-            if scene_read then scene_packet=value end
-        end
-        local scheduled,err=pcall(ExecuteInGameThread,function()
-            local ok,why=pcall(function()
-                report_result('texture',visual.tick())
-                local updated,update_error=pcall(bridge.tick,read_ok and packet or nil)
-                if updated then
-                    report_result('scene',scene.tick(scene_packet))
-                    if not scene.enabled() then report_result('capture',stream.tick())
-                    elseif stream.active() then report_result('capture',stream.stop('native scene rendering is active')) end
-                else
-                    control_permit.stop()
-                    report_result('hd',hd_session.stop('bridge tick failed'))
-                    report_result('scene',scene.clear('bridge tick failed'))
-                    report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error)))
-                end
-            end)
-            -- Keep one pending callback until native export and cleanup have finished.
-            pending=false
-            if not ok then
-                stream.cancel('game-thread callback failed')
-                cancel_hd('terrain game-thread callback failed')
-                log('Bridge/capture callback failed: '..tostring(why))
+        local ok,why=pcall(function()
+            local read_ok,packet=pcall(bridge.read)
+            if not read_ok then
+                stream.cancel('bridge snapshot read failed: '..tostring(packet))
+                cancel_hd('bridge snapshot read failed')
+            end
+            local scene_packet
+            if scene.enabled() then
+                local scene_read,value=pcall(scene.read)
+                if scene_read then scene_packet=value end
+            end
+            report_result('texture',visual.tick())
+            local updated,update_error=pcall(bridge.tick,read_ok and packet or nil)
+            if updated then
+                report_result('scene',scene.tick(scene_packet))
+                if not scene.enabled() then report_result('capture',stream.tick())
+                elseif stream.active() then report_result('capture',stream.stop('native scene rendering is active')) end
+            else
+                control_permit.stop()
+                report_result('hd',hd_session.stop('bridge tick failed'))
+                report_result('scene',scene.clear('bridge tick failed'))
+                report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error)))
             end
         end)
-        if not scheduled then
-            stream.cancel('game-thread scheduling failed')
-            cancel_hd('terrain game-thread scheduling failed')
-            pending=false
-            log('Bridge schedule failed: '..tostring(err))
+        pending=false
+        if not ok then
+            stream.cancel('game-thread callback failed')
+            cancel_hd('terrain game-thread callback failed')
+            log('Bridge/capture callback failed: '..tostring(why))
         end
-        return false
     end)
     local hd_pending=false
-    LoopAsync(50,function()
-        if hd_pending then return false end
+    LoopInGameThreadWithDelay(50,function()
+        if hd_pending then return end
         hd_pending=true
-        local read_ok,packet=pcall(hd_session.read)
-        if not read_ok then cancel_hd('capture request read failed') end
-        local scheduled,why=pcall(ExecuteInGameThread,function()
-            local ran,err=pcall(function()
-                report_result('hd',hd_session.tick(read_ok and packet or {}))
-                report_result('input',update_control_permit())
-            end)
-            hd_pending=false
-            if not ran then
-                cancel_hd('capture callback failed')
-                log('Continuous HD callback failed: '..tostring(err))
-            end
+        local ran,err=pcall(function()
+            local read_ok,packet=pcall(hd_session.read)
+            if not read_ok then cancel_hd('capture request read failed') end
+            report_result('hd',hd_session.tick(read_ok and packet or {}))
+            report_result('input',update_control_permit())
         end)
-        if not scheduled then
-            cancel_hd('capture scheduling failed')
-            hd_pending=false
-            log('Continuous HD scheduling failed: '..tostring(why))
+        hd_pending=false
+        if not ran then
+            cancel_hd('capture callback failed')
+            log('Continuous HD callback failed: '..tostring(err))
         end
-        return false
     end)
 
 end
-log('Loaded revision 24; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 25; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

@@ -9,7 +9,7 @@ local hd_active,hd_pending,hd_ticks,hd_stops,hd_cancels=false,false,0,0,0
 local hd_error=false
 local profiles={}
 local state='idle'
-local tick_error,schedule_error,clear_error,read_error=false,false,false,false
+local tick_error,clear_error,read_error=false,false,false
 local report_error=false
 local logs={}
 local print_message=print
@@ -114,10 +114,10 @@ RegisterKeyBind=function(key,modifiers,callback)
 end
 RegisterConsoleCommandHandler=function(name,callback) assert(name=='sbmc'); console=callback end
 ExecuteInGameThread=function(callback)
-    if schedule_error then error('schedule failed') end
     queued[#queued+1]=callback
 end
-LoopAsync=function(milliseconds,callback)
+LoopAsync=function() error('Bridge state must never run on the asynchronous Lua thread') end
+LoopInGameThreadWithDelay=function(milliseconds,callback)
     if milliseconds==200 then loop=callback elseif milliseconds==50 then hd_loop=callback else error('Unexpected polling interval') end
 end
 dofile('stellar/Mods/StellarCollisionProbe/Scripts/main.lua')
@@ -167,7 +167,7 @@ loop(); drain(); assert(frames==1,'F1 should enable the entered link')
 keys.F4(); keys.F2(); drain(); command('capture'); command('frame'); command('framehd'); command('framehdpng'); command('exportbmp'); command('exportasync'); command('frameasync')
 assert(frames==1 and stills==0 and bmp_exports==0 and async_exports==0 and async_frames==0,'Manual captures must not overlap live capture')
 frame_hook=function() loop(); assert(#queued==0,'The pending gate was released during native capture') end
-loop(); loop(); assert(#queued==1,'The bridge cannot queue catch-up callbacks')
+loop(); assert(#queued==0,'A native timer must execute directly without enqueueing another Lua callback')
 drain(); frame_hook=nil; assert(frames==2)
 keys.F1(); drain(); loop(); drain(); assert(frames==2,'F1 should stop capture')
 command('live'); tick_error=true; loop(); drain(); tick_error=false
@@ -176,13 +176,10 @@ command('live'); tick_error=true; report_error=true; loop()
 local ran=pcall(drain)
 report_error=false; tick_error=false
 assert(ran,'Unexpected cleanup reporting failure must not escape the game-thread callback')
-loop(); assert(#queued==1,'An unexpected callback failure must release the pending gate'); drain()
+loop(); assert(#queued==0,'An unexpected callback failure must leave the native timer usable'); drain()
 assert(frames==2,'A callback failure must cancel capture')
 command('live'); read_error=true; loop(); drain(); read_error=false
 loop(); drain(); assert(frames==2,'A bridge read exception must cancel capture')
-command('live'); schedule_error=true; loop(); schedule_error=false
-local before=clears; loop(); drain()
-assert(frames==2 and clears==before+1,'Schedule failure must cancel and defer cleanup to the game thread')
 command('live'); clear_error=true; keys.F11(); drain()
 assert(returns==1,'F11 must attempt the native return even when capture cleanup throws')
 clear_error=false; loop(); drain(); assert(frames==2)
@@ -203,13 +200,11 @@ command('exportasync'); assert(async_exports==1 and frames==7 and stills==2,'Asy
 command('frameasync'); assert(async_frames==1 and async_link.session==string.rep('a',32) and async_link.ack==1 and async_link.scale==100)
 keys.F11(); drain(); command('frameasync'); assert(async_frames==2 and async_link==nil,'Unlinked async still must preserve the ordinary camera context gate')
 
-assert(hd_loop and hd_ticks==0,'The continuous loop is separate from the unchanged terrain interval')
-hd_loop(); hd_loop(); assert(#queued==1,'The HD loop can own only one pending game-thread callback'); drain(); assert(hd_ticks==1)
+assert(hd_loop and hd_ticks==0,'The two game-thread timers retain the separate terrain and HD intervals')
+hd_loop(); assert(#queued==0 and hd_ticks==1,'The HD timer must execute without an asynchronous handoff'); drain()
 local old_hd_cancels=hd_cancels
 hd_error=true; hd_loop(); drain(); hd_error=false; assert(hd_cancels==old_hd_cancels+1)
 hd_loop(); drain(); assert(hd_ticks==3,'An HD exception must release the game-thread scheduling gate')
-schedule_error=true; hd_loop(); schedule_error=false; assert(hd_cancels==old_hd_cancels+2)
-hd_loop(); drain(); assert(hd_ticks==4)
 hd_pending=true
 local before_bmp,old_texture,old_scene=bmp_exports,visual_toggles,scene_enabled
 command('exportbmp'); command('texture'); command('visuals'); command('live')
