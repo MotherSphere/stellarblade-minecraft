@@ -2,35 +2,75 @@
 local UE=require('UEHelpers')
 local Adapter={}
 local PARENT_BONE_SPACE=3 -- ERelativeTransformSpace::RTS_ParentBoneSpace
-local function valid(object) return object and object:IsValid() end
-local function each(array,callback)
-    -- UE4SS may return converted Lua tables or TArray userdata.
-    if type(array)=='table' then for index,value in ipairs(array) do callback(index,value) end return end
-    array:ForEach(function(index,element) callback(index,element:get()) end)
+local function kind(value)
+    if type(value)~='userdata' and type(value)~='table' then return nil end
+    local ok,result=pcall(function() return value:type() end)
+    return ok and result or nil
 end
-local function text(name) return type(name)=='string' and name or name:ToString() end
+-- UE4SS may wrap values as RemoteUnrealParam/LocalUnrealParam; open them before use.
+local function value_of(value)
+    for _=1,3 do
+        local k=kind(value)
+        if k~='RemoteUnrealParam' and k~='LocalUnrealParam' then return value end
+        value=value:get()
+    end
+    return value
+end
+local function valid(object)
+    object=value_of(object)
+    return object~=nil and kind(object)~=nil and object:IsValid() and object or nil
+end
+-- Arrays arrive as converted Lua lists or TArray userdata; elements may be wrapped.
+local function each(array,callback)
+    array=value_of(array)
+    if array==nil then return end
+    if type(array)=='table' and rawget(array,'ForEach')==nil then
+        local wrapped
+        for index,value in ipairs(array) do
+            if wrapped==nil then local k=kind(value); wrapped=k=='RemoteUnrealParam' or k=='LocalUnrealParam' end
+            callback(index,wrapped and value_of(value) or value)
+        end
+        return
+    end
+    array:ForEach(function(index,element) callback(index,value_of(element:get())) end)
+end
+local function text(name)
+    name=value_of(name)
+    return type(name)=='string' and name or name:ToString()
+end
 local function transform(t)
     local r,p,s=t.Rotation,t.Translation,t.Scale3D
+    if r==nil or type(r.X)~='number' then -- Wrapped values are rare; keep the per-bone path cheap.
+        t=value_of(t); r,p,s=value_of(t.Rotation),value_of(t.Translation),value_of(t.Scale3D)
+    end
     return {qx=r.X,qy=r.Y,qz=r.Z,qw=r.W,x=p.X,y=p.Y,z=p.Z,sx=s.X,sy=s.Y,sz=s.Z}
+end
+local function describe(component)
+    local mesh=valid(component.SkeletalMesh)
+    local entry={handle=component,name=text(component:GetFName()),mesh=mesh and text(mesh:GetFName()) or 'none',
+        bones=component:GetNumBones(),morphs={}}
+    local found,leader=pcall(function() return valid(value_of(component.MasterPoseComponent):Get()) end)
+    if found and leader then entry.leader=text(leader:GetFName()) elseif not found then entry.note='leader unknown: '..tostring(leader) end
+    local parent=valid(component:GetAttachParent())
+    entry.parent=parent and text(parent:GetFName()) or nil
+    entry.socket=text(component:GetAttachSocketName())
+    if mesh then each(mesh.MorphTargets,function(_,morph) morph=valid(morph); if morph then entry.morphs[#entry.morphs+1]=text(morph:GetFName()) end end) end
+    return entry
 end
 function Adapter.new()
     local engine,fallback={},{}
     function engine.components()
-        local pawn=UE.GetPlayer()
-        assert(valid(pawn),'Load a playable save before probing EVE.')
-        local class=StaticFindObject('/Script/Engine.SkeletalMeshComponent')
-        assert(valid(class),'SkeletalMeshComponent is unavailable in this game build.')
+        local pawn=valid(UE.GetPlayer())
+        assert(pawn,'Load a playable save before probing EVE.')
+        local class=valid(StaticFindObject('/Script/Engine.SkeletalMeshComponent'))
+        assert(class,'SkeletalMeshComponent is unavailable in this game build.')
         local list={}
-        each(pawn:K2_GetComponentsByClass(class),function(_,component)
-            if not valid(component) then return end
-            local mesh,leader,parent=component.SkeletalMesh,component.MasterPoseComponent:Get(),component:GetAttachParent()
-            local morphs={}
-            if valid(mesh) then each(mesh.MorphTargets,function(_,morph) if valid(morph) then morphs[#morphs+1]=morph:GetFName():ToString() end end) end
-            list[#list+1]={handle=component,name=component:GetFName():ToString(),
-                mesh=valid(mesh) and mesh:GetFName():ToString() or 'none',bones=component:GetNumBones(),
-                leader=valid(leader) and leader:GetFName():ToString() or nil,
-                parent=valid(parent) and parent:GetFName():ToString() or nil,
-                socket=text(component:GetAttachSocketName()),morphs=morphs}
+        each(pawn:K2_GetComponentsByClass(class),function(index,component)
+            component=valid(component)
+            if not component then return end
+            local ok,entry=pcall(describe,component)
+            -- A component whose description fails is listed but never snapshotted.
+            list[#list+1]=ok and entry or {handle=component,name='component'..index,mesh='?',bones=0,morphs={},leader='unknown',note=tostring(entry)}
         end)
         return list
     end
@@ -38,14 +78,15 @@ function Adapter.new()
         -- Fallback: one reflected call per bone and per morph.
         local result={names={},transforms={},weights={},method='sockets'}
         for index=0,component:GetNumBones()-1 do
-            local name=component:GetBoneName(index)
+            local name=value_of(component:GetBoneName(index))
             result.names[index+1]=text(name)
             result.transforms[index+1]=transform(component:GetSocketTransform(name,PARENT_BONE_SPACE))
         end
-        local mesh=component.SkeletalMesh
-        if valid(mesh) then
+        local mesh=valid(component.SkeletalMesh)
+        if mesh then
             each(mesh.MorphTargets,function(_,morph)
-                if valid(morph) then result.weights[#result.weights+1]=component:GetMorphTarget(morph:GetFName()) end
+                morph=valid(morph)
+                if morph then result.weights[#result.weights+1]=component:GetMorphTarget(morph:GetFName()) end
             end)
         end
         return result
@@ -56,12 +97,14 @@ function Adapter.new()
         if fallback[key] then return sockets(component) end
         local ran,result=pcall(function()
             local snapshot={}
-            component:SnapshotPose(snapshot)
-            assert(snapshot.bIsValid,'SnapshotPose returned an invalid pose.')
+            local returned=component:SnapshotPose(snapshot)
+            -- Out structs normally fill the passed table; accept a returned struct too.
+            if snapshot.LocalTransforms==nil and returned~=nil then snapshot=value_of(returned) end
+            assert(value_of(snapshot.bIsValid),'SnapshotPose returned an invalid pose.')
             local value={names={},transforms={},weights={},method='snapshot'}
             each(snapshot.BoneNames,function(index,name) value.names[index]=text(name) end)
             each(snapshot.LocalTransforms,function(index,t) value.transforms[index]=transform(t) end)
-            each(snapshot.MorphTargetWeights,function(index,weight) value.weights[index]=weight end)
+            if snapshot.MorphTargetWeights~=nil then each(snapshot.MorphTargetWeights,function(index,weight) value.weights[index]=weight end) end
             assert(#value.names>0 and #value.names==#value.transforms,'SnapshotPose returned mismatched arrays.')
             return value
         end)
@@ -74,4 +117,5 @@ function Adapter.new()
     function engine.world(component) return transform(component:K2_GetComponentToWorld()) end
     return engine
 end
+Adapter.value_of,Adapter.each=value_of,each
 return Adapter

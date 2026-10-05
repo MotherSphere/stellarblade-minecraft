@@ -14,6 +14,7 @@ function Probe.new(engine,directory,clock,log)
             lines[#lines+1]=string.format('COMPONENT %d %s mesh=%s bones=%d morphs=%d weights=%d leader=%s parent=%s socket=%s recorded=%s method=%s',
                 index,c.name,c.mesh,c.bones,#c.morphs,c.weights or 0,c.leader or '-',c.parent or '-',c.socket or '-',tostring(c.recorded),c.method or '-')
             if c.fallback then lines[#lines+1]='FALLBACK '..index..' '..c.fallback:gsub('\n',' ') end
+            if c.note then lines[#lines+1]='NOTE '..index..' '..c.note:gsub('\n',' ') end
             if c.recorded and c.names then lines[#lines+1]='BONES '..index..' '..table.concat(c.names,' ') end
             if #c.morphs>0 then lines[#lines+1]='MORPHS '..index..' '..table.concat(c.morphs,' ') end
         end
