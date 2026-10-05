@@ -239,10 +239,12 @@ function Capture.new(engine,directory,log)
         end)
         return handle
     end
-    local function capture_layer(camera,mode,kind,trace,label)
-        label=label or kind
+    local function prepare_capture(camera,mode,trace,label)
         local handle=allocate_capture(camera,mode,trace,label)
         stage(trace,label..' capture',function() engine.capture(handle.actor) end)
+        return handle
+    end
+    local function export_layer(handle,mode,kind,trace,label)
         stage(trace,label..' export',function()
             if kind=='bmp' then engine.export_bmp(handle.target,directory,mode.file)
             else engine.export(handle.actor,handle.target,directory,mode.file) end
@@ -254,6 +256,10 @@ function Capture.new(engine,directory,log)
             end
             return image_size(directory..'/'..mode.file,kind,mode)
         end)
+    end
+    local function capture_layer(camera,mode,kind,trace,label)
+        label=label or kind
+        return export_layer(prepare_capture(camera,mode,trace,label),mode,kind,trace,label)
     end
     function api.exportbmp()
         if api.status()~='idle' then return false,'Capture cleanup is required before the BMP comparison.' end
@@ -331,11 +337,24 @@ function Capture.new(engine,directory,log)
                     if file then file:close(); available=false end
                 end
             until available
-            for _,spec in ipairs({{'color',2,2,version==2 and 'bmp' or 'png'},{'mask',0,2,'png'},{'depth',4,6,'hdr'}}) do
+            local prepared={}
+            local specs={{'color',2,2,version==2 and 'bmp' or 'png'},{'mask',0,2,'png'},{'depth',4,6,'hdr'}}
+            for i,spec in ipairs(specs) do
                 local layer={width=width,height=height,source=spec[2],format=spec[3],file='eve-frame-'..id..'-'..spec[1]..'.'..spec[4]}
                 layers[#layers+1]=layer
-                local kind=spec[4]=='bmp' and 'bmp' or (spec[1]=='depth' and 'depth' or 'color')
-                layer.size=capture_layer(camera,layer,kind,trace,spec[1])
+                if version==2 then
+                    prepared[i]=prepare_capture(camera,layer,trace,spec[1])
+                else
+                    layer.size=capture_layer(camera,layer,i==3 and 'depth' or 'color',trace,spec[1])
+                end
+            end
+            if version==2 then
+                -- ImageWriteQueue checks TextureRHI before synchronizing. Queue every capture
+                -- first; the required Kismet readbacks finish earlier render commands before BMP.
+                for _,i in ipairs({2,3,1}) do
+                    local kind=i==1 and 'bmp' or (i==3 and 'depth' or 'color')
+                    layers[i].size=export_layer(prepared[i],layers[i],kind,trace,specs[i][1])
+                end
             end
             result=frame_metadata(id,epoch,camera,link_line,layers,width,height,version)
         end)

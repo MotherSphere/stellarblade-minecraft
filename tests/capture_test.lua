@@ -158,6 +158,57 @@ check('BMP exceptions and invalid headers use existing cleanup and resource retr
 end)
 local frame_files={}
 local function track_frame(b) for _,name in ipairs(b.files) do frame_files[name]=true end end
+check('HD captures all planes before Kismet readback makes the BMP resource ready',function()
+    local b=backend(); local c=Capture.new(b,directory)
+    local captured,order={},{}
+    local bind,capture,export,export_bmp=b.bind,b.capture,b.export,b.export_bmp
+    function b.bind(actor,target) bind(actor,target); actor.target=target end
+    function b.capture(actor)
+        capture(actor)
+        captured[#captured+1]=actor.target
+    end
+    function b.export(...)
+        assert(#captured==3 and b.actors==3 and b.targets==3,
+            'Every plane must be captured and owned before the first readback')
+        export(...)
+        -- Model the native Kismet readback draining earlier render commands.
+        for _,target in ipairs(captured) do target.ready=true end
+        order[#order+1]=select(4,...):match('%-([a-z]+)%.')
+    end
+    function b.export_bmp(target,...)
+        assert(target.ready,'ImageWriteQueue rejects a target whose GPU resource is still pending')
+        assert(b.actors==3 and b.targets==3,'All captures must survive until every export completes')
+        order[#order+1]='color'
+        export_bmp(target,...)
+    end
+    for iteration=1,2 do
+        captured,order={},{}
+        local ok,message=c.frame(nil,'hd'); assert(ok,message); track_frame(b)
+        assert(table.concat(order,',')=='mask,depth,color' and b.captures==iteration*3)
+        assert(b.exports==iteration*2 and b.bmp_exports==iteration and b.camera_reads==iteration)
+        assert(b.actors==0 and b.targets==0 and c.status()=='idle')
+        local base=(iteration-1)*3
+        assert(b.cameras[base+1]==b.cameras[base+2] and b.cameras[base+2]==b.cameras[base+3])
+        local metadata=assert(read(directory..'/eve-frame.txt'))
+        assert(metadata:match('^SBMC_FRAME 2 ') and metadata:match('\nCOLOR [^\n]+\nMASK [^\n]+\nDEPTH [^\n]+\nEND '))
+    end
+    local previous=read(directory..'/eve-frame.txt')
+    captured,order={},{}; b.fail_export_at=b.exports+2
+    assert(not c.frame(nil,'hd')); track_frame(b)
+    assert(b.bmp_exports==2 and b.actors==0 and b.targets==0 and read(directory..'/eve-frame.txt')==previous,
+        'Failed preceding readback must abort BMP and preserve the complete generation')
+    captured,order={},{}; b.fail_export_at=nil
+    local capture_all=b.capture
+    function b.capture(actor)
+        if #captured==1 then error('second capture failed') end
+        capture_all(actor)
+    end
+    local exports=b.exports
+    assert(not c.frame(nil,'hd')); track_frame(b)
+    assert(b.exports==exports and b.bmp_exports==2 and b.actors==0 and b.targets==0
+        and read(directory..'/eve-frame.txt')==previous,'Partial preparation must clean up without any export')
+    assert(c.clear())
+end)
 check('HD BMP v2 and explicit PNG fallback share publication and cleanup',function()
     local b,logs=backend(),{}
     local c=Capture.new(b,directory,function(message) logs[#logs+1]=message end)
@@ -169,8 +220,8 @@ check('HD BMP v2 and explicit PNG fallback share publication and cleanup',functi
         local name,size=metadata:match('\n'..label..' ([a-z0-9%.%-]+) (%d+)\n')
         assert(name and #read(directory..'/'..name)==tonumber(size),'Version 2 must publish each actual byte length')
     end
-    assert(read(directory..'/'..b.files[1])==bmp_hd(24) and read(directory..'/'..b.files[2])==png_hd)
-    assert(read(directory..'/'..b.files[3])==hdr_hd and b.camera_reads==1 and b.actors==0 and b.targets==0)
+    assert(read(directory..'/'..b.files[1])==png_hd and read(directory..'/'..b.files[2])==hdr_hd)
+    assert(read(directory..'/'..b.files[3])==bmp_hd(24) and b.camera_reads==1 and b.actors==0 and b.targets==0)
     assert(table.concat(b.sources,',')=='2,0,4' and b.cameras[1]==b.cameras[2] and b.cameras[2]==b.cameras[3])
     local joined=table.concat(logs,'\n')
     for _,stage in ipairs({'color allocation','color capture','color export','color validation',
