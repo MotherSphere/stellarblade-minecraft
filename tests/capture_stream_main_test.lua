@@ -45,6 +45,14 @@ local timing_available,frame_samples,time_samples=true,0,0
 local system={IsValid=function()return true end,LineTraceSingle=function()return false end}
 function system:GetFrameCount(...) assert(select('#',...)==0); frame_samples=frame_samples+1; return 1200 end
 local gameplay={IsValid=function()return true end}
+local paused,cinematic,input_context_error,local_controller=true,false,false,true
+function gameplay:IsGamePaused(value) assert(value==world); return paused end
+function pawn:IsAttachedToLevelSequenceWithoutPlayable()
+    if input_context_error then error('context unavailable') end
+    return cinematic
+end
+local controller={IsValid=function()return true end,GetWorld=function()return world end,
+    IsLocalPlayerController=function()return local_controller end,K2_GetPawn=function()return pawn end}
 function gameplay:GetRealTimeSeconds(...) assert(select('#',...)==1 and (...)==world); time_samples=time_samples+1; return 42.5 end
 StaticFindObject=function(path)
     if timing_available then
@@ -53,7 +61,8 @@ StaticFindObject=function(path)
     end
     return {IsValid=function()return false end}
 end
-package.loaded.UEHelpers={GetPlayer=function()return pawn end,GetKismetSystemLibrary=function()return system end}
+package.loaded.UEHelpers={GetPlayer=function()return pawn end,GetKismetSystemLibrary=function()return system end,
+    GetPlayerController=function()return controller end}
 local ordinary_creates,probe_returns,probe_state,return_error=0,0,'idle',false
 local diagnostic={status=function()return probe_state end,shapes=function()return {} end}
 function diagnostic.create() ordinary_creates=ordinary_creates+1; return true,'diagnostic created' end
@@ -67,10 +76,18 @@ package.loaded.capture_adapter={new=function()return {} end}
 package.loaded.capture_session={new=function(received,pose,directory,scale,allowed)
     assert(received==capture and directory=='/unused' and scale==100)
     return {active=function()return hd_active end,busy=function()return hd_active or hd_pending end,
+        binding=function() return hd_active and {run=string.rep('c',32),session=string.rep('a',32)} or nil end,
         read=function()return {} end,
         tick=function() hd_ticks=hd_ticks+1; if hd_error then error('HD tick failed') end; return true end,
         stop=function()hd_stops=hd_stops+1; hd_active=false; return true,'HD stopped' end,
         cancel=function()hd_cancels=hd_cancels+1; hd_active=false end}
+end}
+local permit_context,permit_ticks,permit_stops,permit_revokes=nil,0,0,0
+package.loaded.control_permit={new=function(directory)
+    assert(directory=='/unused')
+    return {tick=function(binding,context) permit_ticks=permit_ticks+1; permit_context=context; return true end,
+        stop=function() permit_stops=permit_stops+1; permit_context=nil; return true end,
+        revoke=function() permit_revokes=permit_revokes+1; permit_context=nil; return true end}
 end}
 
 local visual_toggles,visual_clears,visual_ticks,visual_error=0,0,0,false
@@ -200,3 +217,15 @@ assert(bmp_exports==before_bmp and visual_toggles==old_texture and scene_enabled
     'Pending HD output must exclude diagnostic capture, legacy live and native visuals')
 local old_hd_stops=hd_stops; keys.F11(); drain(); assert(hd_stops==old_hd_stops+1 and hd_pending,'F11 must stop HD without discarding pending output')
 hd_pending=false
+command('mirror'); command('enter'); hd_active=true; paused=false
+hd_loop(); drain()
+assert(permit_context and permit_context.pawn==11 and permit_context.world==12,'The entered HD session must publish a checked native permit')
+paused=true; hd_loop(); drain(); assert(not permit_context,'Native pause must neutralize input')
+paused=false; cinematic=true; hd_loop(); drain(); assert(not permit_context,'An unplayable sequence must neutralize input')
+cinematic=false; local_controller=false; hd_loop(); drain(); assert(not permit_context,'Only the local controller is eligible')
+local_controller=true; input_context_error=true; local before_revoke=permit_revokes
+hd_loop(); drain(); assert(permit_revokes>before_revoke,'Native getter failure must revoke the permit')
+input_context_error=false; hd_loop(); drain(); assert(permit_context)
+local before_stop=permit_stops; keys.F11(); drain()
+assert(permit_stops>before_stop and not permit_context,'F11 must revoke input independently of image cleanup')
+print('PASS native control permission gates: local entered context, pause, cinematics, getter failure and F11')

@@ -1,0 +1,10 @@
+{
+  "key.categories.stellar_bridge": "Stellar Bridge",
+  "key.stellar_bridge.mode": "Toggle EVE / build mode",
+  "key.stellar_bridge.y": "Controller Y",
+  "key.stellar_bridge.rb": "Controller RB",
+  "key.stellar_bridge.lt": "Controller LT",
+  "key.stellar_bridge.rt": "Controller RT",
+  "key.stellar_bridge.r3": "Controller right stick button",
+  "key.stellar_bridge.dpad_up": "Controller D-pad up"
+}

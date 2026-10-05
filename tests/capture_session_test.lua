@@ -55,13 +55,16 @@ local function fixture()
     return f
 end
 local f=fixture(); assert(f.api.tick({}) and f.frames==0)
+assert(f.api.binding()==nil)
 assert(f.api.tick(packet(run1,100)) and f.api.active() and f.frames==1)
+assert(f.api.binding().run==run1 and f.api.binding().session==session)
 assert(f.api.tick(packet(run1,100)) and f.frames==1)
 local first=f.pending.id
 assert(f.api.tick(packet(run1,100,nil,ack(run2,first))) and f.frames==1)
 assert(f.api.tick(packet(run1,100,nil,ack(run1,first))) and f.frames==2)
 assert(f.link.scale==100 and f.link.ack==1)
 assert(f.api.tick(packet(run1,100,'stopped')) and not f.api.active() and f.pending)
+assert(f.api.binding()==nil,'A pending image must not keep input permitted after stop')
 local second=f.pending.id
 assert(f.api.tick(packet(run1,100,nil,ack(run1,second))) and f.frames==2 and not f.pending,'Stopped RUN must not resurrect after late ACK')
 assert(f.api.tick(packet(run2,100)) and f.frames==3)

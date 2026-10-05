@@ -103,6 +103,27 @@ The stream uses frame-v4 metadata with a distinct run identifier. Only one nativ
 
 The displayed camera also supplies Minecraft's block and entity targeting. Interaction reach remains measured from the player, and normal Minecraft interaction handlers still perform the action. An unsupported camera offset or interaction range above 64 blocks produces no target in this local-patch implementation. Fast/Fancy graphics, the private creative terrain link and the existing rendering restrictions still apply. Hair/transparency quality, shader integration, larger-world streaming and performance tuning remain separate work. The continuous path has automated protocol, ownership and decoding tests; its integrated in-game behavior still needs validation.
 
+### Minecraft-focused controller bridge
+
+The optional game-local XInput adapter lets **`/stellarview play`** request the HD view and forward actual Minecraft keyboard/mouse input through Stellar Blade's native controller path. This implementation has offline protocol, lifecycle and fake-host checks; native gameplay and background focus still need in-game acceptance. It does not implement damage between EVE and Minecraft mobs or establish Iris compatibility.
+
+Install the matching Lua mod, Fabric jar and production **`xinput1_3.dll`** with both games closed. The adapter supports the pinned Stellar Blade executable only: it checks its full SHA-256 and the verified gameplay polling callsite. It forwards physical input through the system `xinput1_4.dll`, preserving other controller slots. When slot0 has no physical controller, it reports a connected neutral pad so the engine continues polling. Existing UE4SS and Xion loader files remain separate.
+
+```sh
+python tools/input_proxy.py install \
+  --game-exe '/path/to/StellarBlade/SB/Binaries/Win64/SB-Win64-Shipping.exe' \
+  --dll '/path/to/build/xinput1_3.dll' \
+  --bridge-dir "$HOME/.local/share/stellar-blade-minecraft/bridge"
+```
+
+The installer refuses foreign or modified adapter files and records ownership for `python tools/input_proxy.py remove --game-exe '/path/to/SB-Win64-Shipping.exe'`. It does not change Steam launch options. Proton must load this native DLL: add `xinput1_3=n,b` to the game's existing `WINEDLLOVERRIDES` entries, retaining its other overrides. Never install `stellar_input_fixture.dll`; that build is exclusively for the isolated fake host, and the installer rejects it.
+
+After the existing `/stellar start`, F5 and F8 setup, run `/stellarview play`, close chat and release held controls. Forwarding starts only after a fresh displayed HD frame, a matching native permit and a neutral controller acknowledgement. **B** toggles EVE/build mode and is rebindable in Minecraft's Controls menu; `/stellarview mode eve` and `/stellarview mode build` are equivalent. EVE mode forwards configured Minecraft movement, jump, sneak, sprint, attack and use bindings as left stick, A, B, L3, X and LB. Six additional controller buttons—Y, RB, LT, RT, R3 and D-pad up—are initially unbound and can be assigned there. The actions those buttons perform follow Stellar Blade's own controller settings.
+
+Build mode holds EVE's movement/actions neutral, keeps native camera look, and gives Minecraft normal block/entity clicks and sneak interactions. Inventory, chat, hotbar and other screens remain Minecraft-owned. Mouse look uses a right-stick conversion; **`/stellarview gain <1..32767>`** adjusts its sensitivity (default2500), which requires game calibration. **`/stellarview off`** stops input and rendering; F11 also revokes native permission before returning EVE. Menus, lost focus, stale data, native pause and non-playable sequences neutralize forwarded controls; held keys require release before resuming.
+
+Input is independent of image-write completion. A bounded ordered queue retains each press/release with its stick direction until a verified native gameplay poll acknowledges it. Device-detection queries cannot consume these edges. Expired or conflicting data stops the old control epoch; newer heartbeat traffic cannot revive an old held action. The adapter's acknowledgement proves delivery to the native polling boundary, not execution or damage from a skill.
+
 ### Bounded animated preview
 
 The animated preview reuses the same 320×180 color, mask, depth and camera bundle. It requests at most one capture per 200 ms bridge callback, with no catch-up queue. Synchronous native exports and temporary capture allocation can cause stutters; this first diagnostic is limited to 300 published frames or 60 seconds, whichever comes first. It does not establish a playable frame rate.
@@ -215,6 +236,7 @@ lua tests/capture_test.lua
 lua tests/capture_stream_test.lua
 lua tests/capture_stream_main_test.lua
 lua tests/capture_session_test.lua
+lua tests/control_permit_test.lua
 lua tests/visual_probe_test.lua
 lua tests/visual_probe_adapter_test.lua
 lua tests/scene_protocol_test.lua
@@ -225,5 +247,15 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 luac -p stellar/Mods/StellarCollisionProbe/Scripts/*.lua
 cd minecraft && ./gradlew build
 ```
+
+The portable native input checks use CMake and a C++17 compiler:
+
+```sh
+cmake -S native -B build/input -DCMAKE_BUILD_TYPE=Release
+cmake --build build/input
+ctest --test-dir build/input --output-on-failure
+```
+
+To build the production Windows DLL on Linux, configure a separate build with the installed clang-cl/xwin Windows SDK toolchain using `-DCMAKE_TOOLCHAIN_FILE=/path/to/clang-cl-msvc.cmake`. `STELLAR_INPUT_BUILD_FIXTURE=ON` additionally builds an isolated Windows test host and fixture adapter; these are not game artifacts. The production DLL defaults to the verified game identity, with no environment-variable bypass.
 
 The Lua tests use a small engine boundary substitute to exercise scene ownership, transactional replacement, failed creation/return, changed worlds, cleanup retries and bounded capture scheduling. Java checks cover real file publication, pose gating, collision merging, shared protocol fixtures, worker cancellation and image decoding. Engine API availability, graphics, collision responses, movement interception and controller behavior require in-game validation.

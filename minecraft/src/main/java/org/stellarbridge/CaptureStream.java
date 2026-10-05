@@ -130,6 +130,7 @@ final class CaptureStream implements AutoCloseable {
         final CaptureProjection.CameraPose camera;
         final float[] depth;
         final long loadNanos;
+        final long receivedNanos = System.nanoTime();
         NativeImage color;
         long epoch;
 

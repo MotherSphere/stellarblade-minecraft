@@ -139,3 +139,19 @@ tasks.register('captureContinuousTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn captureContinuousTest
+
+tasks.register('controlStateTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.ControlStateTest'
+    jvmArgs '-ea'
+}
+check.dependsOn controlStateTest
+
+tasks.register('controlHooksTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.ControlHooksTest'
+    jvmArgs '-ea'
+}
+check.dependsOn controlHooksTest

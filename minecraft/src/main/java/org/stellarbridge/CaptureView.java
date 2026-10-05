@@ -46,6 +46,7 @@ public final class CaptureView {
     private static Binding liveBinding;
 
     static void initialize() {
+        ControlBridge.initialize();
         CoreShaderRegistrationCallback.EVENT.register(context -> context.register(
                 Identifier.of("stellar_bridge", "eve_composite"), VertexFormats.POSITION_TEXTURE, program -> shader = program));
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registry) -> dispatcher.register(
@@ -53,9 +54,20 @@ public final class CaptureView {
                     .then(ClientCommandManager.literal("load").executes(context -> load(context.getSource())))
                     .then(ClientCommandManager.literal("live").executes(context -> live(context.getSource(), false)))
                     .then(ClientCommandManager.literal("livehd").executes(context -> live(context.getSource(), true)))
+                    .then(ClientCommandManager.literal("play").executes(context -> play(context.getSource())))
+                    .then(ClientCommandManager.literal("mode")
+                            .then(ClientCommandManager.literal("eve").executes(context -> mode(context.getSource(), false)))
+                            .then(ClientCommandManager.literal("build").executes(context -> mode(context.getSource(), true))))
+                    .then(ClientCommandManager.literal("gain").then(ClientCommandManager.argument("value",
+                            com.mojang.brigadier.arguments.DoubleArgumentType.doubleArg(1, 32767)).executes(context -> {
+                                ControlBridge.gain(com.mojang.brigadier.arguments.DoubleArgumentType.getDouble(context, "value"));
+                                context.getSource().sendFeedback(Text.literal(ControlBridge.status()));
+                                return 1;
+                            })))
                     .then(ClientCommandManager.literal("status").executes(context -> {
                         context.getSource().sendFeedback(Text.literal(stream == null ? "EVE live diagnostic has not run."
                                 : stream.mailbox.status(System.nanoTime())));
+                        context.getSource().sendFeedback(Text.literal(ControlBridge.status()));
                         return 1;
                     }))
                     .then(ClientCommandManager.literal("off").executes(context -> {
@@ -82,6 +94,37 @@ public final class CaptureView {
     public static CaptureProjection.CameraPose targetCamera() {
         View view = rendering != null ? rendering : presented;
         return view != null && valid(view) ? view.camera : null;
+    }
+    static boolean controlFrameReady(String run, String session, long nowNanos) {
+        return controlCamera(run, session, nowNanos) != null;
+    }
+    static CaptureProjection.CameraPose controlCamera(String run, String session, long nowNanos) {
+        View view = presented;
+        return view != null && view.live && view.metadata.version() == 4 && run.equals(view.metadata.run())
+                && session.equals(view.metadata.link().session()) && valid(view)
+                && controlFrameFresh(view.receivedNanos, nowNanos) ? view.camera : null;
+    }
+    static boolean controlFrameFresh(long receivedNanos, long nowNanos) {
+        return nowNanos >= receivedNanos && nowNanos - receivedNanos <= 500_000_000L;
+    }
+
+    private static int play(FabricClientCommandSource source) {
+        if (live(source, true) == 0) return 0;
+        try {
+            var request = stream.mailbox.request();
+            ControlBridge.start(directory(), request.run(), request.session());
+            source.sendFeedback(Text.literal("EVE control requested. Release held controls; forwarding starts after a fresh image and native acknowledgement. Use the EVE/build binding to switch modes."));
+            return 1;
+        } catch (IOException failure) {
+            off();
+            source.sendError(Text.literal("EVE control failed: " + failure.getMessage()));
+            return 0;
+        }
+    }
+    private static int mode(FabricClientCommandSource source, boolean build) {
+        ControlBridge.build(build);
+        source.sendFeedback(Text.literal(ControlBridge.status()));
+        return 1;
     }
 
     private static boolean supported(MinecraftClient client) {
@@ -172,7 +215,7 @@ public final class CaptureView {
             frame.color = null; // Ownership passes only after the texture constructor succeeds.
             depthTexture = uploadDepth(frame.depth, frame.metadata.width(), frame.metadata.height());
             View next = new View(frame.metadata, frame.camera, liveBinding.world, liveBinding.owner,
-                    liveBinding.dimension, liveBinding.origin, texture, depthTexture, true);
+                    liveBinding.dimension, liveBinding.origin, texture, depthTexture, true, frame.receivedNanos);
             if (!stream.mailbox.current(frame) || !valid(next)) return;
             View previous = active;
             active = next;
@@ -218,7 +261,7 @@ public final class CaptureView {
             color = null;
             depthTexture = uploadDepth(loaded.depth(), loaded.metadata().width(), loaded.metadata().height());
             long uploadNanos = System.nanoTime() - uploadStarted;
-            var next = new View(loaded.metadata(), camera, client.world, context.owner(), context.dimension(), context.origin(), texture, depthTexture, false);
+            var next = new View(loaded.metadata(), camera, client.world, context.owner(), context.dimension(), context.origin(), texture, depthTexture, false, System.nanoTime());
             if (!valid(next)) throw new IOException("The active bridge changed while loading");
             active = next;
             texture = null;
@@ -266,6 +309,7 @@ public final class CaptureView {
     }
 
     private static void stopLive(String reason, boolean notify) {
+        ControlBridge.stop();
         boolean wasLive = liveBinding != null;
         liveBinding = null;
         if (stream != null) {
@@ -305,6 +349,7 @@ public final class CaptureView {
         try {
             draw(view, context);
             presented = view;
+            ControlBridge.alignPresentedLook();
         } catch (RuntimeException failure) {
             off();
             LoggerFactory.getLogger("stellar_bridge").error("EVE compositor stopped", failure);
@@ -372,7 +417,7 @@ public final class CaptureView {
 
     private static long now() { return System.currentTimeMillis() / 1000; }
     private record View(CaptureFrame.Metadata metadata, CaptureProjection.CameraPose camera, ClientWorld world, UUID owner,
-                        String dimension, CaptureFrame.Position origin, NativeImageBackedTexture color, int depthTexture, boolean live) { }
+                        String dimension, CaptureFrame.Position origin, NativeImageBackedTexture color, int depthTexture, boolean live, long receivedNanos) { }
     private record Binding(ClientWorld world, String session, UUID owner, String dimension, CaptureFrame.Position origin) {
         boolean matches(ClientWorld currentWorld, StellarBridge.RenderingContext context) {
             return world == currentWorld && session.equals(context.session()) && owner.equals(context.owner())

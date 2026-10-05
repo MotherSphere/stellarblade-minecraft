@@ -20,6 +20,19 @@ function engine.snapshot()
         position=vec(pawn:K2_GetActorLocation()), rotation=rot(pawn:K2_GetActorRotation()),
         half_height=capsule:GetScaledCapsuleHalfHeight(),radius=capsule:GetScaledCapsuleRadius()}
 end
+function engine.control_context()
+    local pawn,world=player()
+    local controller=UE.GetPlayerController()
+    if not valid(controller) or not controller:IsLocalPlayerController() then return nil end
+    local controlled=controller:K2_GetPawn()
+    local controller_world=controller:GetWorld()
+    if not valid(controlled) or controlled:GetAddress()~=pawn:GetAddress()
+        or not valid(controller_world) or controller_world:GetAddress()~=world:GetAddress() then return nil end
+    local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
+    assert(valid(gameplay),'Native pause state is unavailable.')
+    if gameplay:IsGamePaused(world) or pawn:IsAttachedToLevelSequenceWithoutPlayable() then return nil end
+    return {pawn=pawn:GetAddress(),world=world:GetAddress()}
+end
 function engine.valid(handle) return valid(handle.actor) end
 
 -- Visuals are optional. Collision always belongs to the TriggerBox, never this mesh.
@@ -91,6 +104,7 @@ local bridge
 local capture
 local stream
 local hd_session
+local control_permit
 local visual
 local scene
 local configured,config = pcall(require,'bridge_config')
@@ -108,6 +122,22 @@ if configured then
     end,config.directory,config.scale,function()
         return not stream.busy() and not scene.enabled() and scene.status()=='idle' and visual.status()=='idle'
     end)
+    control_permit=require('control_permit').new(config.directory)
+end
+local function cancel_hd(message)
+    hd_session.cancel(message)
+    control_permit.revoke()
+end
+local function update_control_permit()
+    local binding=hd_session.binding()
+    local pose=binding and active==bridge and bridge.pose() or nil
+    if not pose or pose.state~='entered' or pose.session~=binding.session then return control_permit.stop() end
+    local ok,context=pcall(engine.control_context)
+    if not ok then
+        control_permit.revoke()
+        return false,'Native input permission unavailable: '..tostring(context)
+    end
+    return control_permit.tick(binding,context)
 end
 local function show_markers()
     if scene and scene.enabled() then return end
@@ -199,6 +229,7 @@ local actions = {
     end,
     liveoff=function()
         assert(stream,'Native live capture is not configured.')
+        control_permit.stop()
         if hd_session.busy() then return hd_session.stop('native stop requested') end
         return stream.stop()
     end,
@@ -222,6 +253,7 @@ local actions = {
     end,
     capturecleanup=function()
         assert(capture,'Capture is not configured.')
+        control_permit.stop()
         local ok,why=hd_session.stop('cleanup requested')
         local old_ok,old_why=stream.stop('cleanup requested')
         return ok and old_ok,tostring(why)..'; '..tostring(old_why)
@@ -250,6 +282,10 @@ local actions = {
             success=success and ran and ok
             messages[#messages+1]=label..': '..tostring(ran and message or ok)
         end
+        if control_permit then attempt('Input',function()
+            local ok,why=control_permit.stop()
+            return ok,why or 'Native input permission revoked.'
+        end) end
         if scene then attempt('Scene',scene.clear) end
         if visual then attempt('Texture',visual.clear) end
         if hd_session then attempt('HD capture',function() return hd_session.stop('F11 return requested') end) end
@@ -303,7 +339,7 @@ if bridge then
         local read_ok,packet=pcall(bridge.read)
         if not read_ok then
             stream.cancel('bridge snapshot read failed: '..tostring(packet))
-            hd_session.cancel('bridge snapshot read failed')
+            cancel_hd('bridge snapshot read failed')
         end
         local scene_packet
         if scene.enabled() then
@@ -319,6 +355,7 @@ if bridge then
                     if not scene.enabled() then report_result('capture',stream.tick())
                     elseif stream.active() then report_result('capture',stream.stop('native scene rendering is active')) end
                 else
+                    control_permit.stop()
                     report_result('hd',hd_session.stop('bridge tick failed'))
                     report_result('scene',scene.clear('bridge tick failed'))
                     report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error)))
@@ -328,13 +365,13 @@ if bridge then
             pending=false
             if not ok then
                 stream.cancel('game-thread callback failed')
-                hd_session.cancel('terrain game-thread callback failed')
+                cancel_hd('terrain game-thread callback failed')
                 log('Bridge/capture callback failed: '..tostring(why))
             end
         end)
         if not scheduled then
             stream.cancel('game-thread scheduling failed')
-            hd_session.cancel('terrain game-thread scheduling failed')
+            cancel_hd('terrain game-thread scheduling failed')
             pending=false
             log('Bridge schedule failed: '..tostring(err))
         end
@@ -345,17 +382,20 @@ if bridge then
         if hd_pending then return false end
         hd_pending=true
         local read_ok,packet=pcall(hd_session.read)
-        if not read_ok then hd_session.cancel('capture request read failed') end
+        if not read_ok then cancel_hd('capture request read failed') end
         local scheduled,why=pcall(ExecuteInGameThread,function()
-            local ran,err=pcall(function() report_result('hd',hd_session.tick(read_ok and packet or {})) end)
+            local ran,err=pcall(function()
+                report_result('hd',hd_session.tick(read_ok and packet or {}))
+                report_result('input',update_control_permit())
+            end)
             hd_pending=false
             if not ran then
-                hd_session.cancel('capture callback failed')
+                cancel_hd('capture callback failed')
                 log('Continuous HD callback failed: '..tostring(err))
             end
         end)
         if not scheduled then
-            hd_session.cancel('capture scheduling failed')
+            cancel_hd('capture scheduling failed')
             hd_pending=false
             log('Continuous HD scheduling failed: '..tostring(why))
         end
@@ -363,4 +403,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 23; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. No geometry or capture created at startup.')
+log('Loaded revision 24; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

@@ -32,6 +32,7 @@ function Session.new(capture,pose,directory,scale,allowed,clock)
         if value and not stopped[value] and stopped_count<128 then stopped[value]=true; stopped_count=stopped_count+1 end
     end
     function api.active() return live end
+    function api.binding() return live and {run=run,session=session} or nil end
     function api.busy() return capture.stream_busy() end
     function api.read()
         return {request=read(directory..'/eve-stream.txt',Session.parse_request),
