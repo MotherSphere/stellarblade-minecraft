@@ -120,15 +120,26 @@ bool middle_valid(uint32_t state) {
   return (state & ~7u) == 0 && (state & 3u) < Slots;
 }
 float half_float(uint16_t bits) {
-  auto exponent = (bits >> 10) & 31u, mantissa = bits & 1023u;
-  float value;
+  uint32_t sign = uint32_t(bits & 0x8000u) << 16;
+  uint32_t exponent = (bits >> 10) & 31u, mantissa = bits & 1023u;
+  uint32_t value = sign;
+  // Construct IEEE754 bits directly: a Windows CRT ldexp call per depth pixel
+  // otherwise dominates full-resolution frames. Preserve canonical quiet NaNs.
   if (exponent == 31)
-    value = mantissa ? std::numeric_limits<float>::quiet_NaN()
-                     : std::numeric_limits<float>::infinity();
-  else
-    value = exponent ? std::ldexp(float(1024 + mantissa), int(exponent) - 25)
-                     : std::ldexp(float(mantissa), -24);
-  return bits & 0x8000u ? -value : value;
+    value |= 0x7f800000u | (mantissa ? 0x00400000u : 0u);
+  else if (exponent)
+    value |= ((exponent + 112u) << 23) | (mantissa << 13);
+  else if (mantissa) {
+    exponent = 113;
+    while (!(mantissa & 1024u)) {
+      mantissa <<= 1;
+      --exponent;
+    }
+    value |= (exponent << 23) | ((mantissa & 1023u) << 13);
+  }
+  float result;
+  std::memcpy(&result, &value, sizeof result);
+  return result;
 }
 } // namespace
 

@@ -18,6 +18,62 @@ std::optional<stellar_frame::Request> current;
 uint64_t request_observed = 0;
 bool enabled = false, stopped = true;
 constexpr size_t maximum_runs = 128;
+struct PlaneTiming {
+  std::array<char, 34> id{};
+  int kind = 0;
+  uint64_t wall = 0, microseconds = 0;
+  bool success = false;
+};
+std::array<PlaneTiming, 36> timings{};
+size_t timing_count = 0;
+std::string timing_run;
+bool timing_dirty = false;
+uint64_t qpc_frequency() {
+  static const uint64_t frequency = [] {
+    LARGE_INTEGER value{};
+    return QueryPerformanceFrequency(&value) && value.QuadPart > 0
+               ? static_cast<uint64_t>(value.QuadPart)
+               : uint64_t(0);
+  }();
+  return frequency;
+}
+std::string timing_report() {
+  if (!timing_dirty || !timing_count)
+    return {};
+  std::string text = "SBMC_RAW_TIMINGS 1\nRUN " + timing_run + "\n";
+  for (size_t i = 0; i < timing_count; ++i) {
+    const auto &row = timings[i];
+    text += "PLANE " + std::string(row.id.data()) + " " +
+            std::to_string(row.kind) + " " + std::to_string(row.wall) + " " +
+            std::to_string(row.microseconds) + " " + (row.success ? "1" : "0") +
+            "\n";
+  }
+  text += "END " + std::to_string(timing_count) + "\n";
+  timing_dirty = false;
+  return text;
+}
+void write_timing_report(const std::string &text) {
+  if (text.empty() || text.size() > 4096)
+    return;
+  auto path = directory + L"eve-raw-timing.txt", temporary = path + L".tmp";
+  HANDLE file = CreateFileW(
+      temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+  BY_HANDLE_FILE_INFORMATION info{};
+  bool regular = GetFileInformationByHandle(file, &info) &&
+                 !(info.dwFileAttributes &
+                   (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+  DWORD count = 0;
+  bool written = regular &&
+                 WriteFile(file, text.data(), static_cast<DWORD>(text.size()),
+                           &count, nullptr) &&
+                 count == text.size();
+  CloseHandle(file);
+  if (written)
+    MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+}
 
 uint64_t wall_ms() {
   FILETIME time;
@@ -141,13 +197,34 @@ bool run_task(void *task) {
           fail(2);
           return false;
         }
-        if (!producer.begin(*text, metadata->counter) ||
-            !producer.plane(job->kind, plane->data, plane->bytes,
-                            metadata->width, metadata->height)) {
+        if (!producer.begin(*text, metadata->counter)) {
           fail(2);
           return false;
         }
-        return true;
+        LARGE_INTEGER begin{}, end{};
+        bool measured = metadata->counter <= 12 &&
+                        timing_count < timings.size() && qpc_frequency() != 0;
+        uint64_t wall = measured ? wall_ms() : 0;
+        measured = measured && QueryPerformanceCounter(&begin);
+        bool copied = producer.plane(job->kind, plane->data, plane->bytes,
+                                     metadata->width, metadata->height);
+        if (measured && QueryPerformanceCounter(&end) &&
+            end.QuadPart >= begin.QuadPart) {
+          auto &row = timings[timing_count++];
+          std::copy(metadata->id.begin(), metadata->id.end(), row.id.begin());
+          row.id[metadata->id.size()] = 0;
+          row.kind = job->kind;
+          row.wall = wall;
+          uint64_t delta = static_cast<uint64_t>(end.QuadPart - begin.QuadPart);
+          auto frequency = qpc_frequency();
+          row.microseconds = (delta / frequency) * 1000000 +
+                             (delta % frequency) * 1000000 / frequency;
+          row.success = copied;
+          timing_dirty = true;
+        }
+        if (!copied)
+          fail(2);
+        return copied;
       }
     }
   } catch (...) {
@@ -268,6 +345,60 @@ bool initialize_raw_capture(void *module, const std::wstring &path) {
   return true;
 }
 
+namespace {
+void update_capture_request(std::string_view bytes, uint64_t now_ms) {
+  // A callback failure latches this RUN immediately. The worker then releases
+  // its mapping and acknowledges state 2, preserving the recorded error.
+  if (stopped)
+    producer.stop();
+  auto mono = GetTickCount64();
+  auto request = stellar_frame::parse_request(bytes);
+  if (current && !stopped && !lease_alive(now_ms, mono)) {
+    stopped = true;
+    producer.stop();
+  }
+  if (!request || !request->active || request->time > now_ms / 1000 ||
+      now_ms / 1000 - request->time > 3) {
+    if (!stopped) {
+      stopped = true;
+      producer.stop();
+    }
+    return;
+  }
+  if (current && current->run == request->run) {
+    if (stopped)
+      return;
+    if (current->session != request->session ||
+        current->width != request->width ||
+        current->height != request->height || request->time < current->time) {
+      fail(1);
+      return;
+    }
+    if (request->time != current->time)
+      request_observed = mono;
+    current = request;
+  } else {
+    if (known_run(request->run) || owned_runs.size() >= maximum_runs)
+      return;
+    owned_runs.push_back(request->run);
+    timing_run = request->run;
+    timing_count = 0;
+    timing_dirty = false;
+    current = request;
+    request_observed = mono;
+    stopped = false;
+    if (!producer.open(directory, *request, GetCurrentProcessId(), now_ms)) {
+      fail(1);
+      return;
+    }
+  }
+  producer.heartbeat(now_ms);
+  if (!producer.active(now_ms)) {
+    stopped = true;
+    producer.stop();
+  }
+}
+} // namespace
 void poll_raw_capture(std::string_view bytes, uint64_t now_ms) {
   // Input and its leases share this worker. A raw pixel copy must not delay
   // that path; the next worker iteration can observe the raw request.
@@ -275,55 +406,17 @@ void poll_raw_capture(std::string_view bytes, uint64_t now_ms) {
   if (!lock.owns_lock() || !enabled)
     return;
   try {
-    // A callback failure latches this RUN immediately. The worker then releases
-    // its mapping and acknowledges state 2, preserving the recorded error.
-    if (stopped)
-      producer.stop();
-    auto mono = GetTickCount64();
-    auto request = stellar_frame::parse_request(bytes);
-    if (current && !stopped && !lease_alive(now_ms, mono)) {
-      stopped = true;
-      producer.stop();
-    }
-    if (!request || !request->active || request->time > now_ms / 1000 ||
-        now_ms / 1000 - request->time > 3) {
-      if (!stopped) {
-        stopped = true;
-        producer.stop();
-      }
-      return;
-    }
-    if (current && current->run == request->run) {
-      if (stopped)
-        return;
-      if (current->session != request->session ||
-          current->width != request->width ||
-          current->height != request->height || request->time < current->time) {
-        fail(1);
-        return;
-      }
-      if (request->time != current->time)
-        request_observed = mono;
-      current = request;
-    } else {
-      if (known_run(request->run) || owned_runs.size() >= maximum_runs)
-        return;
-      owned_runs.push_back(request->run);
-      current = request;
-      request_observed = mono;
-      stopped = false;
-      if (!producer.open(directory, *request, GetCurrentProcessId(), now_ms)) {
-        fail(1);
-        return;
-      }
-    }
-    producer.heartbeat(now_ms);
-    if (!producer.active(now_ms)) {
-      stopped = true;
-      producer.stop();
-    }
+    update_capture_request(bytes, now_ms);
   } catch (...) {
     fail(3);
+  }
+  // Diagnostics are bounded to the first 12 frames. File I/O never runs in an
+  // image callback or while holding the producer lock, and failure is optional.
+  try {
+    auto report = timing_report();
+    lock.unlock();
+    write_timing_report(report);
+  } catch (...) {
   }
 }
 

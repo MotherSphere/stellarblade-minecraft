@@ -54,6 +54,8 @@ end
 local controller={IsValid=function()return true end,GetWorld=function()return world end,
     IsLocalPlayerController=function()return local_controller end,K2_GetPawn=function()return pawn end}
 function gameplay:GetRealTimeSeconds(...) assert(select('#',...)==1 and (...)==world); time_samples=time_samples+1; return 42.5 end
+function system:GetConsoleVariableIntValue(name)assert(name=='t.IdleWhenNotForeground');return 0 end
+function system:GetConsoleVariableFloatValue(name)assert(name=='t.MaxFPS');return 60 end
 StaticFindObject=function(path)
     if timing_available then
         if path=='/Script/Engine.Default__KismetSystemLibrary' then return system end
@@ -148,6 +150,7 @@ keys.F6(); drain(); assert(frame_samples==1 and time_samples==1)
 local timing_logged=false
 for _,message in ipairs(logs) do if message:find('native_frame_count=1200',1,true) and message:find('native_real_seconds=42.500000',1,true) then timing_logged=true end end
 assert(timing_logged,'F6 must log both native counters from one callback')
+assert(table.concat(logs,'\n'):find('idle_when_background=0 max_fps=60.000',1,true),'Timing must identify a native background or frame cap without changing it')
 timing_available=false; keys.F6(); drain(); timing_available=true
 assert(logs[#logs]:find('Native timing unavailable',1,true),'Unavailable timing must be nonfatal and explicit')
 assert(keys.F1,'F1 live capture toggle is missing')

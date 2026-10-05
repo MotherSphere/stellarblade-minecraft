@@ -1,6 +1,23 @@
--- Reflected game API only. Call every method on the game thread.
+-- Game-thread capture adapter for the pinned game build.
 local UE=require('UEHelpers')
 local Adapter={}
+local flags_registered=false
+local function enable_temporal_aa(capture)
+    -- Pinned SB 573aaff1: capture flags at 0x2c8, TemporalAA bit 3.
+    -- Persistent raw setup runs only after the native executable/readiness gate.
+    if not flags_registered then
+        assert(type(RegisterCustomProperty)=='function' and PropertyTypes and PropertyTypes.UInt32Property,
+            'This loader cannot expose the pinned capture TemporalAA flag.')
+        RegisterCustomProperty({Name='StellarRawCaptureShowFlags',Type=PropertyTypes.UInt32Property,
+            BelongsToClass='/Script/Engine.SceneCaptureComponent',OffsetInternal=0x2c8})
+        flags_registered=true
+    end
+    local flags=capture.StellarRawCaptureShowFlags
+    assert(type(flags)=='number' and flags%1==0 and flags>=0 and flags<=0xffffffff,
+        'Pinned capture TemporalAA flags are unavailable.')
+    capture.StellarRawCaptureShowFlags=flags|8
+    assert(capture.StellarRawCaptureShowFlags==(flags|8),'Capture TemporalAA flag did not persist.')
+end
 local function valid(object) return object and object:IsValid() end
 local function vec(value) return {X=value.X,Y=value.Y,Z=value.Z} end
 local function rot(value) return {Pitch=value.Pitch,Yaw=value.Yaw,Roll=value.Roll} end
@@ -41,7 +58,11 @@ function Adapter.new()
         local capture=component(actor)
         capture.bCaptureEveryFrame=false
         capture.bCaptureOnMovement=false
-        if mode.persistent then capture.bAlwaysPersistRenderingState=true end
+        if mode.persistent then
+            capture.bAlwaysPersistRenderingState=true
+            capture.bConsiderUnrenderedOpaquePixelAsFullyTranslucent=true
+            if mode.source==2 then enable_temporal_aa(capture) end
+        end
         capture.PrimitiveRenderMode=2 -- PRM_UseShowOnlyList
         capture.ProjectionType=0 -- Perspective
         capture.CompositeMode=0 -- SCCM_Overwrite

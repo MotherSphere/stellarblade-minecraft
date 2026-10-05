@@ -205,6 +205,20 @@ int wmain(int argc, wchar_t **argv) {
   assert(invoke(run, 2) && read64(first.data, 216) == 0);
   assert(invoke(run, 0) && read64(first.data, 216) == 0);
   assert(invoke(run, 1) && read64(first.data, 216) == 1 && forwarded == 1);
+  for (uint64_t counter = 2; counter <= 13; ++counter) {
+    id = std::to_string(time) + "-" + std::to_string(counter);
+    save(path + L"eve-raw-frame.txt", descriptor(run, session, id, time));
+    assert(invoke(run, 0) && invoke(run, 1) && invoke(run, 2));
+  }
+  stellar_raw::poll_raw_capture(request(run), stellar_raw::wall_ms());
+  std::ifstream timing_file(path + L"eve-raw-timing.txt", std::ios::binary);
+  std::string timing{std::istreambuf_iterator<char>(timing_file), {}};
+  assert(timing.find("SBMC_RAW_TIMINGS 1\nRUN " + run + "\n") == 0);
+  assert(timing.find("END 36\n") != std::string::npos && timing.size() <= 4096);
+  assert(timing.find("PLANE " + std::to_string(time) + "-12 ") !=
+         std::string::npos);
+  assert(timing.find("PLANE " + std::to_string(time) + "-13 ") ==
+         std::string::npos);
   assert(!invoke(run, 1)); // Duplicate cannot publish twice.
   assert((read64(first.data, 192) >> 32) == 3);
   stellar_raw::poll_raw_capture(request(run), stellar_raw::wall_ms());

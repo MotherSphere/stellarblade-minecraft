@@ -672,4 +672,56 @@ check('adapter matches reflected API arity and disables automatic rendering befo
     adapter.destroy(owned); adapter.release(image)
     assert(capture.captured and lib.released and writer.called)
 end)
+check('persistent raw capture enables only its own temporal AA and excludes background fog',function()
+    local property='StellarRawCaptureShowFlags'
+    local registered,registrations=false,0
+    PropertyTypes={UInt32Property={}}
+    RegisterCustomProperty=function(info)
+        registrations=registrations+1
+        assert(info.Name==property and info.Type==PropertyTypes.UInt32Property)
+        assert(info.BelongsToClass=='/Script/Engine.SceneCaptureComponent' and info.OffsetInternal==0x2c8)
+        local count=0;for _ in pairs(info) do count=count+1 end;assert(count==4)
+        registered=true
+    end
+    local Adapter=dofile('stellar/Mods/StellarCollisionProbe/Scripts/capture_adapter.lua')
+    local camera={pawn={},fov=75}
+    local function component(flags,reject_write)
+        local value=flags
+        local capture={IsValid=function()return true end,ClearShowOnlyComponents=function()end,ShowOnlyActorComponents=function()end}
+        setmetatable(capture,{__index=function(_,key)
+            if key==property then assert(registered,'Register the property before accessing it');return value end
+        end,__newindex=function(self,key,new)
+            if key==property then
+                assert(registered and not reject_write,'Unexpected custom property write')
+                value=new
+            else rawset(self,key,new) end
+        end})
+        return {IsValid=function()return true end,CaptureComponent2D=capture},function()return value end
+    end
+    local ordinary,ordinary_flags=component(0xfffffff7,true)
+    Adapter.new().configure(ordinary,camera,{source=2})
+    assert(registrations==0 and ordinary_flags()==0xfffffff7)
+    assert(ordinary.CaptureComponent2D.bConsiderUnrenderedOpaquePixelAsFullyTranslucent==nil,
+        'Diagnostic captures retain their established fog/AA settings')
+    for _,source in ipairs({0,4}) do
+        local actor,flags=component(0xa5a5a5a5,true)
+        Adapter.new().configure(actor,camera,{source=source,persistent=true})
+        assert(flags()==0xa5a5a5a5 and registrations==0,'Raw mask/depth must not change AA flags')
+        assert(actor.CaptureComponent2D.bConsiderUnrenderedOpaquePixelAsFullyTranslucent==true,
+            'Raw captures must restrict fog to rendered opaque pixels')
+    end
+    for _,initial in ipairs({0,0xfffffff7,0xa5a5a5ad}) do
+        local actor,flags=component(initial)
+        Adapter.new().configure(actor,camera,{source=2,persistent=true})
+        assert(flags()==(initial|8),'Only the pinned TemporalAA bit may change')
+        assert(actor.CaptureComponent2D.bAlwaysPersistRenderingState==true)
+        assert(actor.CaptureComponent2D.bConsiderUnrenderedOpaquePixelAsFullyTranslucent==true)
+    end
+    assert(registrations==1,'Register the shared custom property once across adapter instances')
+    local bad={IsValid=function()return true end,ClearShowOnlyComponents=function()end,ShowOnlyActorComponents=function()end}
+    setmetatable(bad,{__index=function(_,key)if key==property then return 0 end end,
+        __newindex=function(self,key,value)if key~=property then rawset(self,key,value) end end})
+    local ok,message=pcall(Adapter.new().configure,{IsValid=function()return true end,CaptureComponent2D=bad},camera,{source=2,persistent=true})
+    assert(not ok and tostring(message):find('TemporalAA',1,true),'A failed native flag write must stop capture setup')
+end)
 print(count..' capture checks passed; native rendering remains untested.')

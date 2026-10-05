@@ -22,12 +22,18 @@ local function read_header(directory,request)
     assert(state==0 or state==1,'Native raw producer stopped or failed (code '..err..').')
     return {ready=pid~=0 and state==1,beat=beat,completed=completed}
 end
-function Raw.new(engine,directory,clock)
+function Raw.new(engine,directory,clock,log)
     clock=clock or os.time
     local api,owned={},{}
     local request,context,pending,started,counter=nil,nil,nil,nil,0
     local enabled=false
     local warmup
+    local function trace(id,stage)
+        -- Bound diagnostics to startup; continuous capture must not grow a per-frame log indefinitely.
+        if log and counter<=12 then
+            pcall(log,string.format('Raw trace run=%s frame=%s stage=%s',request.run,id,stage))
+        end
+    end
     function api.busy()return enabled or #owned>0 end
     function api.cancel()enabled=false end
     function api.clear()
@@ -97,6 +103,7 @@ function Raw.new(engine,directory,clock)
                 assert(header.completed<pending.counter and now-pending.time<5,'Native raw frame completion expired or changed.')
                 return true
             end
+            trace(pending.id,'complete')
             pending=nil
         end
         local camera=engine.camera()
@@ -107,19 +114,27 @@ function Raw.new(engine,directory,clock)
         assert(counter<=9007199254740991,'Raw capture sequence exhausted.')
         local id=string.format('%d-%d',now,counter)
         local metadata=Capture.raw_metadata(id,now,camera,link,request.width,request.height,request.run)
+        trace(id,'begin')
         if #owned==0 then
+            trace(id,'warmup_begin')
             prepare(camera)
+            trace(id,'warmup_end')
             context={pawn=camera.pawn_id,world=camera.world_id}
         else
             for _,handle in ipairs(owned) do engine.update(handle.actor,camera);engine.capture(handle.actor) end
         end
+        trace(id,'captures_queued')
         -- Reserve before submission. A partial failure may still leave engine-owned tasks in flight.
-        pending={counter=counter,time=now}
+        pending={counter=counter,time=now,id=id}
         Capture.publish_metadata(directory..'/eve-raw-frame.txt',metadata)
         local prefix='eve-raw-'..request.run..'-'..id
+        trace(id,'color_submit')
         engine.export_async(owned[1].target,directory,prefix..'-color.bmp',2)
+        trace(id,'mask_submit')
         engine.export_async(owned[2].target,directory,prefix..'-mask.bmp',2)
+        trace(id,'depth_submit')
         engine.export_async(owned[3].target,directory,prefix..'-depth.exr',3)
+        trace(id,'queued')
         return true,nil,true
     end
     function api.tick(link)

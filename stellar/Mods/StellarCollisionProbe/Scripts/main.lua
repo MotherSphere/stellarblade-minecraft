@@ -12,6 +12,24 @@ local function player()
     assert(valid(world), 'The player has no valid world.')
     return pawn, world
 end
+local function native_timing(world)
+    local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+    local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
+    assert(valid(system) and valid(gameplay),'native timing libraries are unavailable')
+    local frames,seconds=system:GetFrameCount(),gameplay:GetRealTimeSeconds(world)
+    assert(type(frames)=='number' and frames>=0 and type(seconds)=='number' and seconds>=0 and seconds<1e15,
+        'native timing counters are unavailable')
+    return string.format('native_frame_count=%d native_real_seconds=%.6f idle_when_background=%d max_fps=%.3f',
+        frames,seconds,system:GetConsoleVariableIntValue('t.IdleWhenNotForeground'),
+        system:GetConsoleVariableFloatValue('t.MaxFPS'))
+end
+local function raw_trace(message)
+    if message:find('stage=begin',1,true) then
+        local ok,timing=pcall(function()local _,world=player();return native_timing(world)end)
+        message=message..' '..(ok and timing or 'native timing unavailable: '..tostring(timing))
+    end
+    log(message)
+end
 function engine.snapshot()
     local pawn,world = player()
     local capsule = pawn.CapsuleComponent
@@ -122,7 +140,7 @@ if configured then
         return active==bridge and bridge.pose() or nil
     end,config.directory,config.scale,function()
         return not stream.busy() and not scene.enabled() and scene.status()=='idle' and visual.status()=='idle'
-    end,nil,require('raw_capture').new(capture_engine,config.directory))
+    end,nil,require('raw_capture').new(capture_engine,config.directory,nil,raw_trace))
     control_permit=require('control_permit').new(config.directory)
 end
 local function cancel_hd(message)
@@ -157,15 +175,7 @@ local function status()
     local s = engine.snapshot()
     log(string.format('state=%s pawn=%s world=%s pos=(%.2f,%.2f,%.2f) capsule=(radius %.2f,half-height %.2f)',
         active.status(),pawn:GetFullName(),world:GetFullName(),s.position.X,s.position.Y,s.position.Z,s.radius,s.half_height))
-    local timed,timing=pcall(function()
-        local system=StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
-        local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
-        assert(valid(system) and valid(gameplay),'native timing libraries are unavailable')
-        local frames,seconds=system:GetFrameCount(),gameplay:GetRealTimeSeconds(world)
-        assert(type(frames)=='number' and frames>=0 and type(seconds)=='number' and seconds>=0 and seconds<1e15,
-            'native timing counters are unavailable')
-        return string.format('native_frame_count=%d native_real_seconds=%.6f',frames,seconds)
-    end)
+    local timed,timing=pcall(native_timing,world)
     log(timed and timing or 'Native timing unavailable: '..tostring(timing))
     -- A short downward trace can identify support, but cannot prove native traversal by itself.
     local hit = {}
@@ -391,4 +401,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 26; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 27; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
