@@ -59,7 +59,7 @@ final class BridgeFiles {
 
     void stop() throws IOException { Files.deleteIfExists(checked("terrain.txt")); }
 
-    private Path checked(String filename) throws IOException {
+    Path checked(String filename) throws IOException {
         for (Path current = directory; current != null; current = current.getParent()) {
             if (Files.isSymbolicLink(current) || !Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS))
                 throw new IOException("Bridge directory changed or became a symlink");

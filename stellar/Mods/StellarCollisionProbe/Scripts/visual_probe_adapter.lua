@@ -10,20 +10,22 @@ local function load(path)
     end
     return object
 end
-local function parent_material()
+local function parent_material(two_sided)
     local defaults=StaticFindObject('/Script/UMG.Default__WidgetComponent')
     if valid(defaults) then
-        for _,field in ipairs({'OpaqueMaterial_OneSided','OpaqueMaterial'}) do
+        for _,field in ipairs(two_sided and {'OpaqueMaterial','OpaqueMaterial_OneSided'} or {'OpaqueMaterial_OneSided','OpaqueMaterial'}) do
             local ok,parent=pcall(function() return defaults[field] end)
             if ok and valid(parent) then return parent end
         end
     end
-    for _,name in ipairs({'Widget3DPassThrough_Opaque_OneSided','Widget3DPassThrough_Opaque'}) do
+    for _,name in ipairs(two_sided and {'Widget3DPassThrough_Opaque','Widget3DPassThrough_Opaque_OneSided'}
+        or {'Widget3DPassThrough_Opaque_OneSided','Widget3DPassThrough_Opaque'}) do
         local parent=load('/Engine/EngineMaterials/'..name..'.'..name)
         if valid(parent) then return parent end
     end
     error('No supported opaque Widget3D material is available in this game build.')
 end
+Adapter.parent_material=parent_material
 local function image_path(directory)
     local path=directory..'/minecraft-stone.png'
     local file=assert(io.open(path,'rb'),'The private minecraft-stone.png probe image is missing.')

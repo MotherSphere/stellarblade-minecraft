@@ -63,12 +63,19 @@ function visual.clear() visual_clears=visual_clears+1; if visual_error then erro
 function visual.tick() visual_ticks=visual_ticks+1; return true end
 package.loaded.visual_probe={new=function(_,directory) assert(directory=='/unused'); return visual end}
 package.loaded.visual_probe_adapter={new=function()return {} end}
+local scene_enabled,scene_clears,scene_error=false,0,false
+local scene={enabled=function()return scene_enabled end,status=function()return scene_enabled and 'active' or 'idle' end,
+    read=function()return nil end,tick=function()return true end}
+function scene.toggle() scene_enabled=not scene_enabled; return true,'native scene toggled' end
+function scene.clear() scene_clears=scene_clears+1; scene_enabled=false; if scene_error then error('scene cleanup threw') end; return true,'native scene removed' end
+package.loaded.native_scene={new=function(_,received,directory,scale) assert(received==bridge and directory=='/unused' and scale==100); return scene end}
+package.loaded.scene_adapter={new=function()return {} end}
 Key={F1='F1',F2='F2',F4='F4',F5='F5',F6='F6',F7='F7',F8='F8',F9='F9',F11='F11'}
 ModifierKey={SHIFT='SHIFT'}
 RegisterKeyBind=function(key,modifiers,callback)
     if callback then
-        assert(key==Key.F7 and #modifiers==1 and modifiers[1]==ModifierKey.SHIFT)
-        keys['Shift+F7']=callback
+        assert((key==Key.F7 or key==Key.F8) and #modifiers==1 and modifiers[1]==ModifierKey.SHIFT)
+        keys['Shift+'..key]=callback
     else keys[key]=modifiers end
 end
 RegisterConsoleCommandHandler=function(name,callback) assert(name=='sbmc'); console=callback end
@@ -81,13 +88,16 @@ dofile('stellar/Mods/StellarCollisionProbe/Scripts/main.lua')
 local function drain() while #queued>0 do table.remove(queued,1)() end end
 local function command(name) console(nil,{name}); drain() end
 assert(keys['Shift+F7'],'The explicit Shift+F7 texture binding is missing')
+assert(keys['Shift+F8'],'The explicit Shift+F8 native scene binding is missing')
 assert(visual_toggles==0,'The texture probe must remain inactive at startup')
 command('texture'); keys['Shift+F7'](); drain(); assert(visual_toggles==2)
 keys.F7(); drain(); assert(ordinary_creates==1 and visual_toggles==2,'Bare F7 must retain the original fixture action')
 keys.F11(); drain(); assert(probe_returns==1 and visual_clears==1 and clears==1)
+assert(scene_clears==1,'F11 must also clear native scenes')
 assert(logs[#logs]:find('OK:',1,true),'Texture-only cleanup with an idle scene must succeed')
-visual_error=true; clear_error=true; keys.F11(); drain(); visual_error=false; clear_error=false
+scene_error=true; visual_error=true; clear_error=true; keys.F11(); drain(); scene_error=false; visual_error=false; clear_error=false
 assert(probe_returns==2 and visual_clears==2 and clears==2,'F11 must attempt all three stages even if both optional cleanups throw')
+assert(scene_clears==2 and logs[#logs]:find('scene cleanup threw',1,true),'A native scene cleanup exception must not skip later stages')
 assert(logs[#logs]:find('STOP:',1,true) and logs[#logs]:find('visual cleanup threw',1,true))
 return_error=true; keys.F11(); drain(); return_error=false
 assert(probe_returns==3 and logs[#logs]:find('return threw',1,true),'Thrown idle return errors must remain visible')
@@ -103,7 +113,15 @@ assert(keys.F1,'F1 live capture toggle is missing')
 loop(); drain(); assert(frames==0,'Startup must not capture')
 assert(visual_ticks>0 and frame_samples==1 and time_samples==1,'Ticks must check the visual lifecycle without sampling F6 counters')
 command('live'); loop(); drain(); assert(frames==0,'Unentered scene must not capture')
-command('mirror'); command('enter'); keys.F1(); drain()
+command('visuals'); assert(not scene_enabled,'Unentered scene cannot enable native visuals')
+command('mirror'); command('enter'); command('live')
+local scene_start_clears=clears; keys['Shift+F8'](); drain()
+assert(scene_enabled and clears==scene_start_clears+1,'Native visuals must stop live capture before activation')
+command('live'); keys.F1(); drain(); loop(); drain()
+assert(frames==0,'Both live start paths must reject simultaneous native scene rendering')
+keys.F4(); keys.F2(); drain(); command('capture')
+assert(frames==0 and stills==0,'All three still export commands must reject native visual mode')
+command('visuals'); assert(not scene_enabled); keys.F1(); drain()
 loop(); drain(); assert(frames==1,'F1 should enable the entered link')
 keys.F4(); keys.F2(); drain(); command('capture')
 assert(frames==1 and stills==0,'Manual captures must not overlap live capture')
@@ -129,4 +147,6 @@ assert(returns==1,'F11 must attempt the native return even when capture cleanup 
 clear_error=false; loop(); drain(); assert(frames==2)
 command('mirror'); command('enter'); command('live'); command('liveoff'); loop(); drain()
 assert(frames==2,'Explicit liveoff must prevent subsequent captures')
+command('frame'); command('capture'); command('depth')
+assert(frames==3 and stills==2,'Still export commands must remain available after native visuals are disabled')
 print('PASS live/texture commands, F11 cleanup independence, native F6 counters, and pending gate through capture')

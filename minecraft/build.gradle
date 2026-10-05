@@ -82,3 +82,20 @@ tasks.register('captureStreamTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn captureStreamTest
+
+tasks.register('nativeSceneTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.NativeSceneTest'
+    workingDir projectDir.parentFile
+    jvmArgs '-ea'
+}
+check.dependsOn nativeSceneTest
+
+tasks.register('nativeSceneFilesTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.NativeSceneFilesTest'
+    jvmArgs '-ea'
+}
+check.dependsOn nativeSceneFilesTest

@@ -1,0 +1,12 @@
+SBMC_SCENE 1 0123456789abcdef0123456789abcdef 1 1791110000 1
+DIM minecraft:overworld
+ORIGIN 0.5 64.0 0.5
+COUNTS 1 6
+TEXTURE 0 mc-scene-0123456789abcdef0123456789abcdef-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png 1024 256 256
+FACE 0 0.0 0.0 0.0 D
+FACE 0 0.0 1.0 0.0 U
+FACE 0 0.0 0.5 -0.5 N
+FACE 0 0.0 0.5 0.5 S
+FACE 0 -0.5 0.5 0.0 W
+FACE 0 0.5 0.5 0.0 E
+END 0123456789abcdef0123456789abcdef 1

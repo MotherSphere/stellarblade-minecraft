@@ -31,12 +31,19 @@ local function read(name)
     local text=f:read('*a'); f:close(); return text
 end
 local bridge=Bridge.new(lifecycle,path,function()end,function()return now end)
+assert(type(bridge.binding)=='function','Fresh visual binding is missing')
+assert(bridge.binding()==nil)
 assert(bridge.pose()==nil,'inactive bridge cannot attach a rendering frame to a session')
 write(terrain(1,now-6))
 assert(not bridge.create() and state=='idle','stale terrain must not create a scene')
 write(terrain(1,now))
 assert(bridge.create()); assert(bridge.enter())
 assert(bridge.pose().session==session and bridge.pose().state=='entered')
+local binding=assert(bridge.binding())
+assert(binding.session==session and binding.dimension=='minecraft:overworld' and binding.ack==1)
+binding.origin.x=99; binding.bounds[1]=99; binding.position.x=99
+assert(bridge.binding().origin.x==0.5 and bridge.binding().bounds[1]==-4.5 and bridge.binding().position.x==1,
+    'Binding snapshots must not expose mutable bridge state')
 bridge.tick(bridge.read())
 assert(read('eve.0') and read('eve.1'),'both publication slots should exist')
 local previous=read('eve.1')
@@ -47,10 +54,12 @@ for i=1,7 do
     now=now+1; write(terrain(3,now)); bridge.tick(bridge.read())
 end
 assert(state=='entered' and ack==2,'healthy deferred edits must retain the scene and previous terrain ack')
+assert(bridge.binding().ack==2,'Rendering binding must use the actually imported collision revision')
 deferred=false
 now=now+6; return_fails=true
 bridge.tick(bridge.read()); assert(state=='entered','failed return retains supporting scene')
 assert(bridge.pose()==nil,'a stopping bridge must not authorize new linked rendering frames')
+assert(bridge.binding()==nil,'Stopping or expired terrain cannot authorize native visuals')
 local slots=(read('eve.0') or '')..(read('eve.1') or '')
 assert(slots:find('STATE idle 2',1,true),'expired bridge must stop Minecraft pose authority even if return fails')
 return_fails=false; bridge.tick(bridge.read()); assert(state=='idle')

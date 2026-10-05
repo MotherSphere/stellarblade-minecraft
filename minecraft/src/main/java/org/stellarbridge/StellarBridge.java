@@ -41,6 +41,7 @@ public final class StellarBridge implements ClientModInitializer {
     public void onInitializeClient() {
         CapturePreview.initialize();
         CaptureView.initialize();
+        NativeSceneExport.initialize();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             if (environment != CommandManager.RegistrationEnvironment.INTEGRATED) return;
             dispatcher.register(CommandManager.literal("stellar")
@@ -111,6 +112,7 @@ public final class StellarBridge implements ClientModInitializer {
         Session previous = session;
         session = null;
         control = null;
+        NativeSceneExport.stop();
         if (previous == null) return;
         try { previous.files.stop(); }
         catch (IOException exception) { LOG.warn("Could not delete terrain snapshot; its heartbeat will expire", exception); }
@@ -249,6 +251,8 @@ public final class StellarBridge implements ClientModInitializer {
             if (nextRevision != revision) LOG.info("Terrain revision={} boxes={}", nextRevision, next.size());
             boxes = next;
             revision = nextRevision;
+            NativeSceneExport.capture(server, world, player.getUuid(), new NativeScene.Binding(id, revision,
+                    world.getRegistryKey().getValue().toString(), new CaptureFrame.Position(origin.x, origin.y, origin.z)));
         }
     }
 }

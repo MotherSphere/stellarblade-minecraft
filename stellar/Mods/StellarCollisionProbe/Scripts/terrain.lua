@@ -29,6 +29,7 @@ function Terrain.new(engine,scale)
     scale=scale or 100
     assert(type(scale)=='number' and scale>0 and scale<math.huge,'Scale must be finite and positive.')
     local fixture
+    local visuals_visible=true
     local api={}
     local function protected(fn)
         return function(...)
@@ -54,6 +55,7 @@ function Terrain.new(engine,scale)
         end)
     end
     local function spawn_owned(group,spec)
+        spec.visuals_visible=visuals_visible
         local actor=engine.spawn(spec)
         assert(actor,'spawn returned no actor')
         group[#group+1]={actor=actor,spec=spec}
@@ -117,6 +119,7 @@ function Terrain.new(engine,scale)
 
     api.create=protected(function(packet)
         assert(not fixture,'A terrain patch already exists; return and clean up first.')
+        visuals_visible=true
         local origin=engine.snapshot()
         assert(origin.radius>0 and origin.half_height>=origin.radius,'A valid EVE capsule is required.')
         local bounds=packet.bounds
@@ -223,6 +226,17 @@ function Terrain.new(engine,scale)
         if not fixture then return 'idle' end
         if not fixture.complete then return 'cleanup-required' end
         return fixture.entered and 'entered' or 'ready'
+    end
+    function api.set_visuals_visible(visible)
+        assert(type(visible)=='boolean','Diagnostic visibility must be boolean.')
+        visuals_visible=visible
+        local failures={}
+        if fixture then each_actor(function(item)
+            local ok,why=pcall(engine.set_visual_visible,item.actor,visible)
+            if not ok then failures[#failures+1]=tostring(why) end
+        end) end
+        if #failures>0 then return false,'Diagnostic visibility update failed: '..table.concat(failures,'; ') end
+        return true,visible and 'Diagnostic meshes restored.' or 'Diagnostic meshes hidden; collision unchanged.'
     end
     function api.shapes()
         local specs={}

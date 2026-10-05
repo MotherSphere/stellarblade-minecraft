@@ -40,7 +40,7 @@ local function add_visual(world, spec, handle)
     visual:SetActorEnableCollision(false,false)
     assert(component:SetStaticMesh(mesh), 'Optional cube visual could not be set.')
     visual:SetActorScale3D({X=spec.extent.X/50,Y=spec.extent.Y/50,Z=spec.extent.Z/50})
-    visual:SetActorHiddenInGame(false)
+    visual:SetActorHiddenInGame(spec.visuals_visible==false)
 end
 function engine.spawn(spec)
     local _,world = player()
@@ -73,6 +73,9 @@ function engine.destroy(handle)
     if valid(handle.visual) then handle.visual:K2_DestroyActor() end
     if valid(handle.actor) then handle.actor:K2_DestroyActor() end
 end
+function engine.set_visual_visible(handle,visible)
+    if valid(handle.visual) then handle.visual:SetActorHiddenInGame(not visible) end
+end
 function engine.move(position, rotation)
     local pawn = player()
     local hit = {}
@@ -88,17 +91,20 @@ local bridge
 local capture
 local stream
 local visual
+local scene
 local configured,config = pcall(require,'bridge_config')
 if configured then
     local Terrain = require('terrain')
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
     capture = require('capture').new(require('capture_adapter').new(),config.directory)
     visual = require('visual_probe').new(require('visual_probe_adapter').new(),config.directory)
+    scene = require('native_scene').new(require('scene_adapter').new(),bridge,config.directory,config.scale)
     stream = require('capture_stream').new(capture,function()
         return active==bridge and bridge.pose() or nil
     end,config.scale)
 end
 local function show_markers()
+    if scene and scene.enabled() then return end
     local pawn = player()
     local kismet = UE.GetKismetSystemLibrary()
     for _,spec in ipairs(active.shapes()) do
@@ -138,12 +144,21 @@ local function status()
     show_markers()
 end
 local actions = {
+    visuals=function()
+        assert(scene,'Install with --bridge-dir to enable native Minecraft visuals.')
+        if scene.enabled() or scene.status()=='cleanup-required' then return scene.clear() end
+        assert(active==bridge,'Import and enter the Minecraft collision link first.')
+        local stopped,why=stream.stop('native scene rendering requested')
+        if not stopped then return false,why end
+        return scene.toggle()
+    end,
     texture=function()
         assert(visual,'Install with --bridge-dir to enable the native texture probe.')
         return visual.toggle()
     end,
     live=function()
         assert(stream,'Install with --bridge-dir to enable native live capture.')
+        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
         return stream.start()
     end,
     liveoff=function()
@@ -153,10 +168,12 @@ local actions = {
     livetoggle=function()
         assert(stream,'Install with --bridge-dir to enable native live capture.')
         if stream.active() then return stream.stop() end
+        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
         return stream.start()
     end,
     frame=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
+        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
         assert(not stream.active(),'Stop native live capture before requesting a still.')
         local pose=active==bridge and bridge.pose() or nil
         local link
@@ -168,11 +185,13 @@ local actions = {
     end,
     capture=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
+        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
         assert(not stream.active(),'Stop native live capture before requesting a still.')
         return capture.capture('color')
     end,
     depth=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
+        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
         assert(not stream.active(),'Stop native live capture before requesting a still.')
         return capture.capture('depth')
     end,
@@ -204,6 +223,7 @@ local actions = {
             success=success and ran and ok
             messages[#messages+1]=label..': '..tostring(ran and message or ok)
         end
+        if scene then attempt('Scene',scene.clear) end
         if visual then attempt('Texture',visual.clear) end
         if stream then attempt('Capture',function() return stream.stop('return requested') end) end
         -- Each optional cleanup is independent of EVE's guarded return.
@@ -217,7 +237,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, live, liveoff, frame, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -233,6 +253,7 @@ RegisterKeyBind(Key.F6,function() dispatch('status') end)
 RegisterKeyBind(Key.F7,function() dispatch('create') end)
 RegisterKeyBind(Key.F7,{ModifierKey.SHIFT},function() dispatch('texture') end)
 RegisterKeyBind(Key.F8,function() dispatch('enter') end)
+RegisterKeyBind(Key.F8,{ModifierKey.SHIFT},function() dispatch('visuals') end)
 RegisterKeyBind(Key.F9,function() dispatch('toggle') end)
 RegisterKeyBind(Key.F11,function() dispatch('restore') end)
 RegisterConsoleCommandHandler('sbmc',function(_,parameters)
@@ -253,12 +274,23 @@ if bridge then
         pending=true
         local read_ok,packet=pcall(bridge.read)
         if not read_ok then stream.cancel('bridge snapshot read failed: '..tostring(packet)) end
+        local scene_packet
+        if scene.enabled() then
+            local scene_read,value=pcall(scene.read)
+            if scene_read then scene_packet=value end
+        end
         local scheduled,err=pcall(ExecuteInGameThread,function()
             local ok,why=pcall(function()
                 report_result('texture',visual.tick())
                 local updated,update_error=pcall(bridge.tick,read_ok and packet or nil)
-                if updated then report_result('capture',stream.tick())
-                else report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error))) end
+                if updated then
+                    report_result('scene',scene.tick(scene_packet))
+                    if not scene.enabled() then report_result('capture',stream.tick())
+                    elseif stream.active() then report_result('capture',stream.stop('native scene rendering is active')) end
+                else
+                    report_result('scene',scene.clear('bridge tick failed'))
+                    report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error)))
+                end
             end)
             -- Keep one pending callback until native export and cleanup have finished.
             pending=false
@@ -275,4 +307,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 10; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
+log('Loaded revision 11; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

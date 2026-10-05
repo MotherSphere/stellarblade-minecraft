@@ -2,7 +2,7 @@
 
 An experimental bridge project for playing EVE with her native movement and combat in a live Minecraft Java world on Linux, with Stellar Blade running through Proton.
 
-The current build includes an experimental **local Minecraft terrain and position link**, native EVE capture, still-image composition and an opt-in bounded animated preview. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. Playable rendering performance, cross-game combat and general world streaming are not established yet.
+The current build includes an experimental **local Minecraft terrain and position link**, a bounded native terrain renderer, and EVE image-capture diagnostics. Minecraft exports real block collision shapes; Stellar Blade imports them into a bounded elevated lab and sends EVE's native position back to the local Minecraft player. The native terrain route keeps EVE in Stellar Blade's normal renderer. Cross-game combat, general world streaming and full-world rendering performance are not established yet.
 
 ## Minecraft terrain link
 
@@ -39,6 +39,23 @@ The installer generates a machine-specific Lua configuration, including the Prot
 The sampled patch is nine blocks wide, six blocks high and nine blocks deep, fixed around the initial Minecraft anchor. At most 256 merged collision boxes are accepted. The provisional scale is 100 Unreal units per block. Separate lab guards contain EVE at the patch boundary; they are additional experimental geometry, not Minecraft blocks. Visible cubes are diagnostic visuals from Stellar Blade, not Minecraft textures or a finished passthrough renderer.
 
 Transport uses bounded versioned text snapshots with session IDs, revisions, timestamps and complete-message footers. Java publishes terrain with atomic replacement; Lua alternates two EVE files because the Windows C runtime cannot rename over an existing destination. Missing or stale EVE packets release Minecraft's position override. No network service or additional native transport DLL is used.
+
+## Bounded native terrain rendering
+
+This route displays Minecraft block faces inside Stellar Blade, preserving EVE's normal rendering, animation and camera. It avoids the low-resolution EVE frame transport described in the diagnostic sections below. Both games still run: Minecraft owns the world and block changes, while Stellar Blade owns EVE's movement.
+
+1. In the prepared Minecraft world, run `/stellar start` while standing on the floor.
+2. Load the outdoor Stellar Blade save, then use **F5** to import collision and **F8** to enter the lab.
+3. Press **Shift+F8** (`sbmc visuals`) to enable the native terrain scene. Keep Stellar Blade focused for native controls. The command also toggles the scene off.
+4. Edit blocks in Minecraft to update the scene. **F11** clears the owned visuals and performs the guarded return before removing collision.
+
+The initial renderer supports full cubes of **stone, dirt, grass blocks without snow, white wool and bedrock**, plus empty air, within the existing 9×6×9 patch. Unsupported non-air blocks stop visual publication with a diagnostic. The current native scene then expires, and the collision experiment remains available. This is a bounded terrain view: the original Stellar Blade surroundings are still present, and distant chunks, decorative block models, fluids, Minecraft mobs and HUD are not imported.
+
+Visible faces use the supported vanilla texture paths from the active Minecraft resource manager. Grass top and side colors use Minecraft's tint; the side overlay is combined with its base texture. Square power-of-two source images up to 256 pixels are accepted. Texels are replicated with nearest-neighbor sampling into 256×256 tiles to retain block texture edges through native filtering. Face layouts and UV orientation are fixed: vanilla randomized rotations/mirroring, model-based texture redirection, custom model geometry and animated textures are outside this initial renderer. PNG replacements at the supported paths are honored.
+
+Visual revisions are independent of collision revisions: changing stone into wool refreshes its appearance even when the collision shape is identical. A complete replacement mesh is prepared before the prior scene is retired. Only the mod's diagnostic terrain and guard meshes are hidden while a matching visual scene is active; their collision remains. Session changes, stale data and native context changes release the scene and restore diagnostic visibility.
+
+The native scene uses an opaque display material for this first stage. Texture selection is supported; physically matched Minecraft lighting is not. Live EVE capture is stopped when this route is enabled, and cannot start while native terrain rendering remains enabled.
 
 ## Native image capture experiment
 
@@ -140,6 +157,7 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 | Keys | Console equivalent | Action |
 |---|---|---|
 | Shift+F7 | `sbmc texture` | Toggle the non-colliding native stone-texture probe |
+| Shift+F8 | `sbmc visuals` | Toggle the bounded native Minecraft terrain renderer after entering the link |
 | F1 | `sbmc live` / `sbmc liveoff` | Toggle the bounded animated capture while EVE is in the linked lab |
 | F5 | `sbmc mirror` | Import the active Minecraft terrain when bridge configuration is installed |
 | F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
@@ -169,6 +187,10 @@ lua tests/capture_stream_test.lua
 lua tests/capture_stream_main_test.lua
 lua tests/visual_probe_test.lua
 lua tests/visual_probe_adapter_test.lua
+lua tests/scene_protocol_test.lua
+lua tests/scene_geometry_test.lua
+lua tests/native_scene_test.lua
+lua tests/scene_adapter_test.lua
 python -m unittest discover -s tests -p 'test_*.py' -v
 luac -p stellar/Mods/StellarCollisionProbe/Scripts/*.lua
 cd minecraft && ./gradlew build

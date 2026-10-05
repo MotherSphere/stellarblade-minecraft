@@ -22,8 +22,13 @@ local function backend()
         b.events[#b.events+1]={'spawn',a.id}
         return a
     end
-    function b.configure(a)
+    function b.configure(a,spec)
         if b.fail_configure==a.id then error('configure failed') end
+        a.visible=spec.visuals_visible~=false
+    end
+    function b.set_visual_visible(a,visible)
+        if b.fail_visibility==a.id then error('visibility failed') end
+        a.visible=visible
     end
     function b.valid(a) return b.live[a.id]~=nil end
     function b.destroy(a)
@@ -53,6 +58,28 @@ end
 local function imported(b)
     for _,a in pairs(b.live) do if a.spec.role=='minecraft' then return a end end
 end
+
+check('diagnostic visibility is independent of collision and inherited by replacement actors',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(type(t.set_visuals_visible)=='function','Owned diagnostic visibility control is missing')
+    assert(t.create(packet())); assert(t.enter()); local moves,count=b.moves,b.count()
+    assert(t.set_visuals_visible(false))
+    for _,a in pairs(b.live) do assert(a.visible==false) end
+    assert(b.moves==moves and b.count()==count and t.pose().state=='entered')
+    assert(t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
+    for _,a in pairs(b.live) do assert(a.visible==false,'New collision actors must inherit hidden diagnostic visuals') end
+    assert(t.set_visuals_visible(true))
+    for _,a in pairs(b.live) do assert(a.visible==true) end
+    assert(t.restore())
+end)
+
+check('diagnostic visibility failure remains retryable without deleting physics',function()
+    local b=backend(); local t=Terrain.new(b); assert(t.create(packet()))
+    b.fail_visibility=1; assert(not t.set_visuals_visible(false)); assert(b.count()==7)
+    b.fail_visibility=nil; assert(t.set_visuals_visible(true))
+    for _,a in pairs(b.live) do assert(a.visible==true) end
+    assert(t.restore())
+end)
 
 check('explicit entry maps Minecraft axes and exports EVE feet',function()
     local b=backend(); local t=Terrain.new(b)

@@ -4,10 +4,18 @@ local Bridge={}
 function Bridge.new(terrain,directory,log,clock)
     clock=clock or os.time
     local current,sequence,last_message,alive_time,stopping=nil,0,nil,0,false
-    local api={status=terrain.status,shapes=terrain.shapes}
+    local api={status=terrain.status,shapes=terrain.shapes,set_visuals_visible=terrain.set_visuals_visible}
     function api.pose()
         if not current or stopping or not Protocol.fresh(alive_time,clock()) then return nil end
         return terrain.pose()
+    end
+    function api.binding()
+        local pose=api.pose()
+        if not pose or pose.state~='entered' then return nil end
+        return {session=pose.session,dimension=current.dimension,state=pose.state,ack=pose.ack,
+            origin={x=current.origin.x,y=current.origin.y,z=current.origin.z},
+            bounds={table.unpack(current.bounds)},
+            position={x=pose.position.x,y=pose.position.y,z=pose.position.z}}
     end
     local function report(message)
         if message~=last_message then log(message); last_message=message end
