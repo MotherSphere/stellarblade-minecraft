@@ -137,6 +137,7 @@ local control_permit
 local visual
 local scene
 local raw
+local pose_recorder
 local last_hd_frame
 local configured,config = pcall(require,'bridge_config')
 if configured then
@@ -156,6 +157,7 @@ if configured then
         return not stream.busy() and not scene.enabled() and scene.status()=='idle' and visual.status()=='idle'
     end,nil,raw)
     control_permit=require('control_permit').new(config.directory)
+    pose_recorder=require('pose_probe').new(require('pose_adapter').new(),config.directory,os.clock,log)
 end
 local function cancel_hd(message)
     hd_session.cancel(message)
@@ -278,6 +280,10 @@ local actions = {
         require_still()
         return capture.capture('depth')
     end,
+    posetest=function()
+        assert(pose_recorder,'Install with --bridge-dir to enable the pose probe.')
+        return pose_recorder.start()
+    end,
     capturecleanup=function()
         assert(capture,'Capture is not configured.')
         control_permit.stop()
@@ -328,7 +334,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, frameasync, exportbmp, exportasync, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, frameasync, exportbmp, exportasync, capture, depth, posetest or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -434,6 +440,7 @@ if bridge then
             if not read_ok then cancel_hd('capture request read failed') end
             report_result('hd',hd_session.tick(read_ok and packet or {}))
             report_result('input',update_control_permit())
+            report_result('pose',pose_recorder.tick(frame))
             pcall(report_cadence,frame) -- Optional diagnostics never cancel capture or input.
         end)
         hd_pending=false
@@ -444,4 +451,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 29; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 30; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

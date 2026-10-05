@@ -109,6 +109,13 @@ local scene={enabled=function()return scene_enabled end,status=function()return 
     read=function()return nil end,tick=function()return true end}
 function scene.toggle() scene_enabled=not scene_enabled; return true,'native scene toggled' end
 function scene.clear() scene_clears=scene_clears+1; scene_enabled=false; if scene_error then error('scene cleanup threw') end; return true,'native scene removed' end
+local pose_starts,pose_frames=0,{}
+package.loaded.pose_adapter={new=function()return {} end}
+package.loaded.pose_probe={new=function(engine,directory,clock,logger)
+    assert(type(engine)=='table' and directory=='/unused' and clock==os.clock and type(logger)=='function')
+    return {start=function() pose_starts=pose_starts+1; return true,'pose recording' end,
+        tick=function(frame) pose_frames[#pose_frames+1]=frame; return true end}
+end}
 package.loaded.native_scene={new=function(_,received,directory,scale) assert(received==bridge and directory=='/unused' and scale==100); return scene end}
 package.loaded.scene_adapter={new=function()return {} end}
 Key={F1='F1',F2='F2',F4='F4',F5='F5',F6='F6',F7='F7',F8='F8',F9='F9',F11='F11'}
@@ -281,3 +288,6 @@ assert(cadence_lines()==before+2,'A world clock reset starts a new window')
 os.time=wall_clock
 hd_active=false; keys.F11(); drain()
 print('PASS bounded native cadence reports: idle and live, wall-second gate, nonfatal diagnostics')
+command('posetest'); assert(pose_starts==1 and logs[#logs]:find('OK: pose recording',1,true),'The console command starts one pose recording')
+next_hd_frame(); assert(pose_frames[#pose_frames]==native_frame,'Each native frame ticks the pose probe once with its frame count')
+print('PASS pose probe console command and per-frame tick')

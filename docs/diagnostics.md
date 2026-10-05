@@ -18,6 +18,8 @@ The gameplay path is [`/stellarview play`](../README.md#start-a-session). The co
 | Shift+F7 | `sbmc texture` | Toggle a non-colliding stone-texture probe |
 | Shift+F8 | `sbmc visuals` | Toggle native Minecraft terrain visuals inside Stellar Blade |
 
+`sbmc posetest` records EVE's skeletal mesh components for up to 15 seconds or 900 frames: bone transforms relative to their parents (`SnapshotPose`, with a per-bone fallback), face morph weights and component world transforms. It writes private `eve-pose-probe.txt` (components, bones, method, timing) and `eve-pose-probe.bin` (per frame: frame number, seconds, then each component's world transform followed by its bones and weights, 10 floats per transform). It changes nothing in the scene and is input to the avatar experiment.
+
 `sbmc frame` retains the 320 × 180 PNG still; `sbmc framehdpng` retains HD PNG color. `sbmc capture` is an independent color probe. `sbmc capturecleanup` retries failed capture cleanup.
 
 `sbmc exportbmp` compares synchronous color exports. `sbmc exportasync` and `sbmc frameasync` share one asynchronous submission attempt per Lua lifetime and omit completion callbacks. The latter requires Minecraft's file-close watcher already running, then `/stellarpreview load` or `/stellarview load`. Pending generation files are retained until cleanup with both games closed. `sbmc exporttest` is disabled because its callback crashed the pinned loader.
