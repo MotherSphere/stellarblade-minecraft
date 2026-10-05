@@ -73,6 +73,8 @@ The console command **`sbmc frame`** retains the **320×180** baseline through t
 
 HD captures log start/end boundaries for native allocation, capture, export, validation, cleanup and publication. Minecraft logs CPU read/depth decoding, PNG/mask decoding and texture-upload submission times when a still is accepted. Submission time does not measure GPU completion. These diagnostics help identify the next transport improvement without claiming asynchronous readback or a playable frame rate.
 
+With EVE loaded and production capture stopped, **`sbmc exporttest`** compares the existing PNG exporter with Unreal's asynchronous image-writing queue on one owned 1280×720 color target. It writes `eve-exporttest-kismet.png` and `eve-exporttest-async.png` for inspection and logs call and completion boundaries. It leaves the paired-frame protocol unchanged. This is a capability and timing test, not a faster gameplay stream. Cleanup waits for the native completion callback; F11 can request cancellation and still return EVE, but a pending writer retains its resources until completion. Do not reload Lua while a write is pending.
+
 `eve-frame.txt` in the private bridge directory names three generation-specific PNG/HDR files and records the camera, projection and context. It is published only after all exports and cleanup succeed. A failed capture preserves the previous complete frame. Files from the preceding frame of the same Lua lifetime are removed after replacement; old files from earlier launches can be removed while both games are closed.
 
 In a private Minecraft singleplayer world, run **`/stellarpreview load`** within 30 seconds of F4 to inspect the capture in a diagnostic inset. **`/stellarpreview off`** closes it. The preview uses the display-color image and the separate inverse-opacity mask, rejecting low-coverage sky/haze pixels. Partial hair and translucency remain unsupported. The texture expires 30 seconds after capture and is removed on world change or disconnect. This is an opt-in still preview, not a live renderer, world-camera override or depth-tested composition.
@@ -198,6 +200,8 @@ lua tests/bridge_test.lua
 lua tests/capture_test.lua
 lua tests/capture_stream_test.lua
 lua tests/capture_stream_main_test.lua
+lua tests/export_adapter_test.lua
+lua tests/export_test_test.lua
 lua tests/visual_probe_test.lua
 lua tests/visual_probe_adapter_test.lua
 lua tests/scene_protocol_test.lua
