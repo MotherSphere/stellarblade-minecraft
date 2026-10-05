@@ -20,12 +20,16 @@ local function native_frame_count()
         'native frame counter is unavailable')
     return frames,system
 end
-local function native_timing(world)
-    local frames,system=native_frame_count()
+local function real_seconds(world)
     local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
     assert(valid(gameplay),'native timing library is unavailable')
     local seconds=gameplay:GetRealTimeSeconds(world)
     assert(type(seconds)=='number' and seconds>=0 and seconds<1e15,'native timing counter is unavailable')
+    return seconds
+end
+local function native_timing(world)
+    local frames,system=native_frame_count()
+    local seconds=real_seconds(world)
     return string.format('native_frame_count=%d native_real_seconds=%.6f idle_when_background=%d max_fps=%.3f',
         frames,seconds,system:GetConsoleVariableIntValue('t.IdleWhenNotForeground'),
         system:GetConsoleVariableFloatValue('t.MaxFPS'))
@@ -132,6 +136,8 @@ local hd_session
 local control_permit
 local visual
 local scene
+local raw
+local last_hd_frame
 local configured,config = pcall(require,'bridge_config')
 if configured then
     local Terrain = require('terrain')
@@ -143,11 +149,12 @@ if configured then
     stream = require('capture_stream').new(capture,function()
         return active==bridge and bridge.pose() or nil
     end,config.scale)
+    raw=require('raw_capture').new(capture_engine,config.directory,nil,raw_trace,function() return last_hd_frame end)
     hd_session=require('capture_session').new(capture,function()
         return active==bridge and bridge.pose() or nil
     end,config.directory,config.scale,function()
         return not stream.busy() and not scene.enabled() and scene.status()=='idle' and visual.status()=='idle'
-    end,nil,require('raw_capture').new(capture_engine,config.directory,nil,raw_trace))
+    end,nil,raw)
     control_permit=require('control_permit').new(config.directory)
 end
 local function cancel_hd(message)
@@ -390,7 +397,30 @@ if bridge then
             log('Bridge/capture callback failed: '..tostring(why))
         end
     end)
-    local hd_pending,last_hd_frame=false,nil
+    local hd_pending=false
+    -- One bounded line per ten native seconds while a link is entered, with or
+    -- without capture, so one session compares native cadence at a fixed size.
+    local cadence={}
+    local function report_cadence(frame)
+        local second=os.time()
+        if second==cadence.second then return end
+        cadence.second=second
+        local pose=active==bridge and bridge.pose() or nil
+        if not pose or pose.state~='entered' then cadence.start=nil; return end
+        local _,world=player()
+        local seconds,start=real_seconds(world),cadence.start
+        if not start or seconds<start.seconds or frame<start.frame then
+            cadence.start={frame=frame,seconds=seconds}; raw.cadence(); return
+        end
+        local elapsed=seconds-start.seconds
+        if elapsed<10 then return end
+        local generations=raw.cadence()
+        local h=generations.histogram
+        log(string.format('Cadence: %.1f native FPS over %.1f s; capture %s; %d generations, %.2f native frames each [1:%d 2:%d 3:%d 4:%d 5+:%d]',
+            (frame-start.frame)/elapsed,elapsed,hd_session.active() and 'live' or 'idle',generations.generations,
+            generations.generations>0 and generations.frames/generations.generations or 0,h[1],h[2],h[3],h[4],h[5]))
+        cadence.start={frame=frame,seconds=seconds}
+    end
     -- The loader starts its delay after callback completion. A short timer
     -- checks the next native frame; raw capture still owns only one pending frame.
     LoopInGameThreadWithDelay(1,function()
@@ -404,6 +434,7 @@ if bridge then
             if not read_ok then cancel_hd('capture request read failed') end
             report_result('hd',hd_session.tick(read_ok and packet or {}))
             report_result('input',update_control_permit())
+            pcall(report_cadence,frame) -- Optional diagnostics never cancel capture or input.
         end)
         hd_pending=false
         if not ran then

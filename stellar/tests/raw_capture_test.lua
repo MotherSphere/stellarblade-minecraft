@@ -47,7 +47,9 @@ function engine.destroy(actor)if fail_destroy then error('destroy failed')end;as
 function engine.release(target)assert(not released[target.id]);released[target.id]=true end
 local link={session=session,ack=1,scale=100,position={x=0,y=0,z=0}}
 local traces={}
-local raw=Raw.new(engine,directory,function()return now end,function(message)traces[#traces+1]=message end)
+local native_frame=1000
+local raw=Raw.new(engine,directory,function()return now end,function(message)traces[#traces+1]=message end,
+ function()return native_frame end)
 assert(raw.start(request));assert(raw.tick(link) and spawns==0,'No capture before native producer readiness')
 field(192,'<I4I4',42,1);field(208,'<I8',100000)
 assert(raw.tick(link));assert(spawns==2 and targets==2 and warmups==1 and #exports==2)
@@ -56,15 +58,22 @@ assert(traces[#traces]:find('stage=queued',1,true),'Trace the end of the asynchr
 assert(exports[1].format==3 and exports[1].name:find('%-depth%.exr$') and exports[2].format==2
  and exports[2].name:find('%-color%.bmp$'),'Submit the larger depth readback before color; no coverage pass')
 local first=exports[1].metadata
+native_frame=native_frame+1
 assert(raw.tick(link) and #exports==2,'One generation must wait for native raw completion')
 local counter=tonumber(first:match('SBMC_FRAME 6 %d+%-(%d+)'))
 field(216,'<I8',counter)
 camera.rotation.Yaw=20
+native_frame=native_frame+2
 assert(raw.tick(link));assert(spawns==2 and targets==2 and warmups==1 and #exports==4 and updates==2)
 assert(table.concat(traces,'\n'):find('frame=100-1 stage=complete',1,true),'Trace native completion only after its counter acknowledgement')
 assert(exports[3].metadata~=first and captures==4,'Reuse targets while replacing exact camera/frame metadata')
 assert(raw.tick(link) and #exports==4)
+local cadence=raw.cadence()
+assert(cadence.generations==1 and cadence.frames==3 and cadence.histogram[3]==1,'Count native frames from submission to observed completion')
+assert(raw.cadence().generations==0,'Cadence reports reset after each read')
 for completed=2,12 do field(216,'<I8',completed);assert(raw.tick(link)) end
+cadence=raw.cadence()
+assert(cadence.generations==11 and cadence.frames==11 and cadence.histogram[1]==11,'A completion is never counted in fewer than one frame')
 local trace_count=#traces
 field(216,'<I8',13);assert(raw.tick(link))
 assert(#traces==trace_count,'Startup tracing must stop after twelve frames')
@@ -79,4 +88,4 @@ header();field(16,'<I4',3841)
 assert(raw.start(request));assert(not raw.tick(link) and #exports==submitted);assert(raw.clear())
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
-print('PASS raw capture: strict request/header, producer readiness, two persistent targets, one warmup, depth-first v6 planes, completion ownership and cleanup')
+print('PASS raw capture: strict request/header, producer readiness, two persistent targets, one warmup, depth-first v6 planes, cadence, completion ownership and cleanup')

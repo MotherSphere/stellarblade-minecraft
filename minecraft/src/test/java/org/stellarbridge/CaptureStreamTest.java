@@ -76,6 +76,28 @@ public final class CaptureStreamTest {
         mailbox.stop("shutdown");
         assert pending.color == null && mailbox.take() == null;
         closed(pendingImage);
+
+        // Delivery counters separate worker arrivals, mailbox losses and displayed frames.
+        mailbox.start(SESSION, 5, ORIGIN, 0);
+        var request = mailbox.request();
+        var replaced = prepared("100-8", 5, 11);
+        var shown = prepared("100-9", 5, 11);
+        var older = prepared("100-8", 5, 11);
+        mailbox.publish(request, replaced, 100, 1_000_000_000L);
+        mailbox.publish(request, shown, 100, 1_100_000_000L);
+        mailbox.publish(request, older, 100, 1_200_000_000L);
+        for (int i = 0; i < 4; i++) mailbox.rendered();
+        try (var taken = mailbox.take()) {
+            assert taken == shown;
+            mailbox.accepted(taken, 2_000_000L);
+        }
+        String status = mailbox.status(2_000_000_000L);
+        assert status.contains("1 frames accepted in 2.0 s") && status.contains("3 arrived, 1 replaced before render, 1 rejected")
+                && status.contains("Minecraft 2.0 FPS") && status.contains("upload mean 2.0/max 2.0 ms") : status;
+        mailbox.start(SESSION, 5, ORIGIN, 0);
+        assert mailbox.status(1_000_000_000L).contains("0 arrived, 0 replaced before render, 0 rejected; Minecraft 0.0 FPS")
+                : "Every run starts with fresh delivery counters";
+        mailbox.stop("done");
         System.out.println("Capture stream lifecycle tests passed");
     }
 

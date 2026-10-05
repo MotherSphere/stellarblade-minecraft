@@ -30,6 +30,7 @@ public:
   bool ready() const;
   bool begin(std::string_view, uint64_t);
   bool plane(int, const void *, size_t, uint32_t, uint32_t);
+  bool pending() const; // Begun but not yet published.
   void fail(uint32_t);
   void stop();
 };

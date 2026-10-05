@@ -18,7 +18,7 @@ The producer owns a back slot, the consumer owns a front slot, and an atomic exc
 
 A single Java worker checks raw availability after a 1 ms delay; encoded and inactive paths use 20 ms. The render thread consumes one latest prepared frame, reuses its GL textures and swaps camera/color/depth coherently. Stopping prevents further scheduling and releases owned resources. Metadata, dimensions, identity, reserved bytes, depth and leases remain validated.
 
-This removes repeated image encoding/decoding and avoids per-frame buffer allocation once reusable storage is available. It does **not** remove Unreal's GPU surface readback: the hook runs after that readback. GPU staging needs separate resource ownership and fence integration; lowering delays alone cannot provide it. Capture timing, accepted image cadence and Minecraft rendering FPS measure different things.
+This removes repeated image encoding/decoding and avoids per-frame buffer allocation once reusable storage is available. It does **not** remove Unreal's GPU surface readback: the hook runs after that readback, which blocks Unreal's render thread for each plane. Its cost grows with captured pixels and is the dominant cost per generation. GPU staging needs separate resource ownership and fence integration; lowering delays alone cannot provide it. Capture timing, accepted image cadence and Minecraft rendering FPS measure different things; see [diagnostics](diagnostics.md#performance-measurements).
 
 ## Input and lifetimes
 

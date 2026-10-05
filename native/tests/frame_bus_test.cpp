@@ -147,9 +147,10 @@ int main() {
   const uint16_t depth[] = {0x3c00, 0, 0, 0, 0x7e00, 0, 0, 0};
   const uint16_t background[] = {0x7bff, 0, 0, 0, 0x7bfe, 0, 0, 0};
   assert(producer.plane(2, depth, sizeof depth, 2, 1));
-  assert(read<uint64_t>(path, 216) == 0);
+  assert(read<uint64_t>(path, 216) == 0 && producer.pending());
   assert(producer.plane(0, color, sizeof color, 2, 1));
-  assert(read<uint32_t>(path, 128) == 5 && read<uint64_t>(path, 216) == 1);
+  assert(read<uint32_t>(path, 128) == 5 && read<uint64_t>(path, 216) == 1 &&
+         !producer.pending());
   auto stride = read<uint32_t>(path, 24);
   auto slot = 4096 + stride;
   assert(read<uint64_t>(path, slot) == 1 &&

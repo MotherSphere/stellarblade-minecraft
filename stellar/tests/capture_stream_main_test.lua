@@ -247,3 +247,37 @@ input_context_error=false; next_hd_frame(); assert(permit_context)
 local before_stop=permit_stops; keys.F11(); drain()
 assert(permit_stops>before_stop and not permit_context,'F11 must revoke input independently of image cleanup')
 print('PASS native control permission gates: local entered context, pause, cinematics, getter failure and F11')
+
+-- Cadence diagnostics: one bounded line per ten native seconds, idle or live.
+local real_time,wall,cadence_error=100,0,false
+function gameplay:GetRealTimeSeconds(value)
+    assert(value==world); if cadence_error then error('real time unavailable') end; return real_time
+end
+local wall_clock=os.time
+os.time=function() return wall end
+command('mirror'); command('enter')
+local function cadence_lines()
+    local count=0
+    for _,message in ipairs(logs) do if message:find('Cadence:',1,true) then count=count+1 end end
+    return count
+end
+local function seconds(value) wall=wall+1; real_time=real_time+value; next_hd_frame() end
+local before=cadence_lines()
+seconds(0); for _=1,3 do seconds(2.5) end
+assert(cadence_lines()==before,'Report only after ten native seconds')
+seconds(2.5)
+assert(cadence_lines()==before+1 and logs[#logs]:find('Cadence: 0.4 native FPS over 10.0 s; capture idle; 0 generations',1,true),
+    'Report native frames per real second and capture state')
+real_time=real_time+20; native_frame=native_frame+1; hd_loop(); drain()
+assert(cadence_lines()==before+1,'Callbacks within one wall second never report again')
+real_time=real_time-20
+hd_active=true; for _=1,4 do seconds(2.5) end
+assert(cadence_lines()==before+2 and logs[#logs]:find('capture live',1,true),'Report live capture cadence in the same session')
+local cancels=hd_cancels
+cadence_error=true; seconds(2.5); cadence_error=false
+assert(hd_cancels==cancels,'Unavailable diagnostics must not cancel capture or input')
+real_time=50; seconds(0); for _=1,3 do seconds(2.5) end
+assert(cadence_lines()==before+2,'A world clock reset starts a new window')
+os.time=wall_clock
+hd_active=false; keys.F11(); drain()
+print('PASS bounded native cadence reports: idle and live, wall-second gate, nonfatal diagnostics')

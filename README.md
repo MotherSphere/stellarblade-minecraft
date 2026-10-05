@@ -29,7 +29,7 @@ The patch is fixed around the starting anchor: **9 × 6 × 9 blocks**, at most 2
 | `/stellarview livehd` | Same continuous view without input forwarding |
 | **B**, `/stellarview mode eve`, `/stellarview mode build` | Switch control ownership |
 | `/stellarview gain <1..32767>` | Native camera sensitivity; default 2500 |
-| `/stellarview status` | Accepted image cadence and stream state |
+| `/stellarview status` | Image delivery, Minecraft FPS and stream state |
 | `/stellarview off` | Stop rendering/input and restore the normal camera |
 
 EVE mode maps Minecraft movement, jump, sneak, sprint, attack and use bindings to left stick, A, B, L3, X and LB. Six extra controller buttons (Y, RB, LT, RT, R3, D-pad up) are initially unbound. Their actions follow Stellar Blade's controller settings. Build mode keeps camera look, neutralizes EVE's actions and restores normal Minecraft clicks and sneak interactions. Inventory, chat and hotbar remain Minecraft-owned.

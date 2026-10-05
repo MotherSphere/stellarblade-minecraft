@@ -22,12 +22,15 @@ local function read_header(directory,request)
     assert(state==0 or state==1,'Native raw producer stopped or failed (code '..err..').')
     return {ready=pid~=0 and state==1,beat=beat,completed=completed}
 end
-function Raw.new(engine,directory,clock,log)
+local function fresh_cadence() return {generations=0,frames=0,histogram={0,0,0,0,0}} end
+-- frame is optional and returns the native frame count observed by this game-thread tick.
+function Raw.new(engine,directory,clock,log,frame)
     clock=clock or os.time
     local api,owned={},{}
     local request,context,pending,started,counter=nil,nil,nil,nil,0
     local enabled=false
     local warmup
+    local cadence=fresh_cadence()
     local function trace(id,stage)
         -- Bound diagnostics to startup; continuous capture must not grow a per-frame log indefinitely.
         if log and counter<=12 then
@@ -35,6 +38,8 @@ function Raw.new(engine,directory,clock,log)
         end
     end
     function api.busy()return enabled or #owned>0 end
+    -- Native frames from submission to observed completion; returned and reset per report.
+    function api.cadence() local result=cadence;cadence=fresh_cadence();return result end
     function api.cancel()enabled=false end
     function api.clear()
         enabled=false
@@ -105,6 +110,11 @@ function Raw.new(engine,directory,clock,log)
                 return true
             end
             trace(pending.id,'complete')
+            if pending.frame then
+                local frames=math.max(1,frame()-pending.frame)
+                cadence.generations=cadence.generations+1;cadence.frames=cadence.frames+frames
+                local bucket=math.min(frames,5);cadence.histogram[bucket]=cadence.histogram[bucket]+1
+            end
             pending=nil
         end
         local camera=engine.camera()
@@ -126,7 +136,7 @@ function Raw.new(engine,directory,clock,log)
         end
         trace(id,'captures_queued')
         -- Reserve before submission. A partial failure may still leave engine-owned tasks in flight.
-        pending={counter=counter,time=now,id=id}
+        pending={counter=counter,time=now,id=id,frame=frame and frame()}
         Capture.publish_metadata(directory..'/eve-raw-frame.txt',metadata)
         local prefix='eve-raw-'..request.run..'-'..id
         -- The larger depth readback goes first so its native conversion overlaps the color readback.

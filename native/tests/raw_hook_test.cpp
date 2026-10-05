@@ -211,12 +211,18 @@ int wmain(int argc, wchar_t **argv) {
   stellar_raw::poll_raw_capture(request(run), stellar_raw::wall_ms());
   std::ifstream timing_file(path + L"eve-raw-timing.txt", std::ios::binary);
   std::string timing{std::istreambuf_iterator<char>(timing_file), {}};
-  assert(timing.find("SBMC_RAW_TIMINGS 1\nRUN " + run + "\n") == 0);
+  assert(timing.find("SBMC_RAW_TIMINGS 2\nRUN " + run + "\n") == 0);
   assert(timing.find("END 24\n") != std::string::npos && timing.size() <= 4096);
   assert(timing.find("PLANE " + std::to_string(time) + "-12 ") !=
          std::string::npos);
   assert(timing.find("PLANE " + std::to_string(time) + "-13 ") ==
          std::string::npos);
+  // Whole-RUN summaries include generation 13: 13 planes of each kind, one
+  // depth-to-color gap per generation and 12 publication periods.
+  assert(timing.find("\nCOST 0 13 ") != std::string::npos &&
+         timing.find("\nCOST 2 13 ") != std::string::npos &&
+         timing.find("\nGAP 13 ") != std::string::npos &&
+         timing.find("\nPERIOD 12 ") != std::string::npos);
   assert(!invoke(run, 2)); // Duplicate cannot publish twice.
   assert((read64(first.data, 192) >> 32) == 3);
   stellar_raw::poll_raw_capture(request(run), stellar_raw::wall_ms());

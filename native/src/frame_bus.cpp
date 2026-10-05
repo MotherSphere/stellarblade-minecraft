@@ -435,6 +435,7 @@ bool Producer::plane(int kind, const void *pixels, size_t bytes, uint32_t width,
   store64(self.base, 216, self.counter);
   return true;
 }
+bool Producer::pending() const { return impl_->pending; }
 void Producer::fail(uint32_t error) {
   auto &self = *impl_;
   self.pending = false;

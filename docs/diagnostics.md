@@ -29,11 +29,21 @@ Read `SB/Binaries/Win64/ue4ss/UE4SS.log`, prefix `[StellarCollisionProbe]`, and 
 - `/stellarpreview load` shows a still on a checkerboard; `/stellarpreview off` closes it.
 - `/stellarview load` composes a still against world depth. It requires the matching entered terrain session and revision.
 - `/stellarview live` consumes the legacy F1 producer. `/stellarview livehd` requests the continuous raw producer without input forwarding.
-- `/stellarview status` reports accepted image cadence separately from Minecraft FPS. `/stellarview off` restores the normal camera and stops forwarded controls.
+- `/stellarview status` reports image delivery separately from Minecraft FPS; see [performance measurements](#performance-measurements). `/stellarview off` restores the normal camera and stops forwarded controls.
 
 Still captures expire 30 seconds after capture. Legacy live startup times out after five seconds; two seconds without a fresh generation stops an established view. A repeated frame does not renew freshness. Revision changes hide incompatible frames. Unsupported effects, session/world changes or invalid data stop composition.
 
 A high Minecraft FPS counter with slow EVE motion indicates a different capture/transfer cadence; compare accepted frames over the same interval and framebuffer size. A small checkerboard preview does not show the full capture resolution. Hair noise can originate in native capture, not only the Minecraft compositor.
+
+## Performance measurements
+
+Each layer reports its own rate. Compare runs only at the same Minecraft framebuffer size, because capture cost grows with captured pixels.
+
+- **Stellar Blade:** while a link is entered, `UE4SS.log` receives one `Cadence:` line per ten native seconds: native FPS, whether capture is live, completed generations and native frames from submission to observed completion. Idle lines give the same session's uncaptured rate.
+- **Native adapter:** the private `eve-raw-timing.txt` keeps per-plane rows for the first 12 generations and rewrites whole-run summaries at most once per second. `COST 0`/`COST 2` are color/depth conversion times, `GAP` is the time between a generation's two plane arrivals: the second engine readback plus any image-queue wait, and `PERIOD` is the interval between publications. Values are count, mean and maximum microseconds.
+- **Minecraft:** `/stellarview status`, also logged when a view stops, gives displayed frames, frames that arrived from the worker, frames replaced before the next Minecraft render or rejected as stale or mismatched, Minecraft world renders per second while the view is requested, and worker copy and texture-upload times. Upload time is the render-thread call cost, not GPU completion.
+
+GPU contention between the games is outside these counters; sample it externally, for example with `nvidia-smi pmon`.
 
 ## Reverse terrain and texture probes
 
