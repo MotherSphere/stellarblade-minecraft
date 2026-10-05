@@ -96,7 +96,7 @@ local configured,config = pcall(require,'bridge_config')
 if configured then
     local Terrain = require('terrain')
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
-    capture = require('capture').new(require('capture_adapter').new(),config.directory)
+    capture = require('capture').new(require('capture_adapter').new(),config.directory,log)
     visual = require('visual_probe').new(require('visual_probe_adapter').new(),config.directory)
     scene = require('native_scene').new(require('scene_adapter').new(log),bridge,config.directory,config.scale)
     stream = require('capture_stream').new(capture,function()
@@ -143,6 +143,18 @@ local function status()
     end
     show_markers()
 end
+local function paired_still(profile)
+    assert(capture,'Install with --bridge-dir to enable native image capture.')
+    assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
+    assert(not stream.active(),'Stop native live capture before requesting a still.')
+    local pose=active==bridge and bridge.pose() or nil
+    local link
+    if pose and pose.state=='entered' then
+        link={session=pose.session,ack=pose.ack,scale=config.scale,position=pose.position}
+    end
+    log(profile=='hd' and 'Native HD frame capture started (1280x720 still).' or 'Native frame capture started.')
+    return capture.frame(link,profile)
+end
 local actions = {
     visuals=function()
         assert(scene,'Install with --bridge-dir to enable native Minecraft visuals.')
@@ -171,18 +183,8 @@ local actions = {
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
         return stream.start()
     end,
-    frame=function()
-        assert(capture,'Install with --bridge-dir to enable native image capture.')
-        assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
-        assert(not stream.active(),'Stop native live capture before requesting a still.')
-        local pose=active==bridge and bridge.pose() or nil
-        local link
-        if pose and pose.state=='entered' then
-            link={session=pose.session,ack=pose.ack,scale=config.scale,position=pose.position}
-        end
-        log('Native frame capture started.')
-        return capture.frame(link)
-    end,
+    frame=function() return paired_still() end,
+    framehd=function() return paired_still('hd') end,
     capture=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
@@ -237,7 +239,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -248,6 +250,7 @@ end
 RegisterKeyBind(Key.F1,function() dispatch('livetoggle') end)
 RegisterKeyBind(Key.F2,function() dispatch('depth') end)
 RegisterKeyBind(Key.F4,function() dispatch('frame') end)
+RegisterKeyBind(Key.F4,{ModifierKey.SHIFT},function() dispatch('framehd') end)
 RegisterKeyBind(Key.F5,function() dispatch('mirror') end)
 RegisterKeyBind(Key.F6,function() dispatch('status') end)
 RegisterKeyBind(Key.F7,function() dispatch('create') end)
@@ -307,4 +310,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 13; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')
+log('Loaded revision 14; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 paired frame, Shift+F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. No geometry or capture created at startup.')

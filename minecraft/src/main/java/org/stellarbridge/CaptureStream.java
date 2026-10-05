@@ -38,10 +38,14 @@ final class CaptureStream implements AutoCloseable {
             var frame = CaptureFrame.readIfNew(directory, now(), previousReadId);
             if (frame == null) return;
             previousReadId = frame.metadata().id();
+            if (frame.metadata().width() != 320 || frame.metadata().height() != 180) {
+                mailbox.failure(request, "HD capture is still-only; use /stellarview load");
+                return;
+            }
             if (!fresh(frame.metadata().time(), now())
                     || !CaptureProjection.matches(frame.metadata(), request.session(), request.revision(), now())) return;
             var camera = CaptureProjection.camera(frame.metadata(), request.origin());
-            color = CaptureImages.decodeMasked(frame.color(), frame.mask());
+            color = CaptureImages.decodeMasked(frame.color(), frame.mask(), frame.metadata().width(), frame.metadata().height());
             CaptureFrame.verifyUnchanged(directory, frame.descriptor());
             var prepared = new Prepared(frame.metadata(), camera, color, frame.depth(), System.nanoTime() - started);
             color = null;

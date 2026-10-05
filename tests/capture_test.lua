@@ -16,18 +16,26 @@ local png_hex='89504e470d0a1a0a0000000d4948445200000140000000b40806000000e5e4f51
     ..'0000003831e04502f32811669f0000000049454e44ae426082'
 local png=png_hex:gsub('..',function(byte)return string.char(tonumber(byte,16))end)
 local hdr='#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 180 +X 320\n'..string.rep('\2\2\1\64'..string.rep('\255\0\255\0\194\0',4),180)
+-- Complete transparent RGBA HD PNG and zero-valued RGBE HD image.
+local function unhex(value) return value:gsub('..',function(byte)return string.char(tonumber(byte,16))end) end
+local png_hd=unhex('89504e470d0a1a0a0000000d4948445200000500000002d00806000000cf7ddd5600000e0c4944415478daedc18100000000c3a0f9535fe1005501')
+    ..string.rep('\0',3572)..unhex('af0146180001850592430000000049454e44ae426082')
+local hdr_hd='#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 720 +X 1280\n'
+    ..string.rep('\2\2\5\0'..string.rep(string.rep('\255\0',10)..'\138\0',4),720)
 local function backend()
     local b={actors=0,targets=0,spawned=0,camera_reads=0,sources={},cameras={},exports=0,files={}}
     function b.camera() b.camera_reads=b.camera_reads+1; return {pawn_id=11,world_id=12,position={X=1,Y=2,Z=3},rotation={Pitch=4,Yaw=5,Roll=6},fov=70,pawn_position={X=7,Y=8,Z=9},half_height=95} end
     function b.spawn(camera) b.cameras[#b.cameras+1]=camera; b.actors=b.actors+1; b.spawned=b.spawned+1; return {} end
     function b.configure(_,_,mode) b.sources[#b.sources+1]=mode.source; if b.fail_configure then error('configure failed') end end
-    function b.create_target() b.targets=b.targets+1; return {} end
+    function b.create_target(_,mode) b.targets=b.targets+1; return {mode=mode} end
     function b.bind() if b.fail_bind then error('bind failed') end end
     function b.capture() if b.fail_capture then error('capture failed') end end
-    function b.export(_,_,dir,name)
+    function b.export(_,target,dir,name)
         b.exports=b.exports+1; b.files[#b.files+1]=name
         if b.no_export or b.fail_export_at==b.exports then return end
-        write(dir..'/'..name,b.image or (b.bad_export and 'wrong format' or (name:match('%.hdr$') and hdr or png)))
+        local depth=name:match('%.hdr$')
+        local image=target.mode.width==1280 and (depth and hdr_hd or png_hd) or (depth and hdr or png)
+        write(dir..'/'..name,b.image or (b.bad_export and 'wrong format' or image))
     end
     function b.destroy() if b.fail_destroy then error('destroy failed') end; b.actors=b.actors-1 end
     function b.release() if b.fail_release then error('release failed') end; b.targets=b.targets-1 end
@@ -100,6 +108,46 @@ check('unsupported modes do not allocate or touch existing capture',function()
 end)
 local frame_files={}
 local function track_frame(b) for _,name in ipairs(b.files) do frame_files[name]=true end end
+check('HD frames share paired publication and cleanup while preserving default dimensions',function()
+    local b,logs=backend(),{}
+    local c=Capture.new(b,directory,function(message) logs[#logs+1]=message end)
+    assert(c.frame(nil,'hd')); track_frame(b)
+    assert(read(directory..'/eve-frame.txt'):match('\nSIZE 1280 720\n'))
+    assert(read(directory..'/'..b.files[1])==png_hd and read(directory..'/'..b.files[2])==png_hd)
+    assert(read(directory..'/'..b.files[3])==hdr_hd and b.camera_reads==1 and b.actors==0 and b.targets==0)
+    assert(table.concat(b.sources,',')=='2,0,4' and b.cameras[1]==b.cameras[2] and b.cameras[2]==b.cameras[3])
+    local joined=table.concat(logs,'\n')
+    for _,stage in ipairs({'color allocation','color capture','color export','color validation',
+        'mask allocation','mask capture','mask export','mask validation',
+        'depth allocation','depth capture','depth export','depth validation','cleanup','publication'}) do
+        assert(joined:find(stage..' start',1,true) and joined:find(stage..' end',1,true),'Missing HD stage timing: '..stage)
+    end
+    local log_count=#logs
+    assert(c.frame()); track_frame(b)
+    assert(read(directory..'/eve-frame.txt'):match('\nSIZE 320 180\n') and #logs==log_count)
+    local previous=read(directory..'/eve-frame.txt'); local spawned=b.spawned
+    assert(not c.frame(nil,'other') and b.spawned==spawned and read(directory..'/eve-frame.txt')==previous)
+    assert(c.clear())
+end)
+check('HD rejects mismatched headers and oversized files through shared cleanup',function()
+    for _,invalid in ipairs({png,png_hd..string.rep('\0',4*1024*1024)}) do
+        local b=backend(); local c=Capture.new(b,directory); assert(c.frame()); track_frame(b)
+        local previous=read(directory..'/eve-frame.txt'); b.image=invalid
+        assert(not c.frame(nil,'hd')); track_frame(b)
+        assert(read(directory..'/eve-frame.txt')==previous and b.actors==0 and b.targets==0)
+        assert(c.clear())
+    end
+end)
+check('HD cleanup failure withholds publication and remains retryable',function()
+    local b=backend(); local c=Capture.new(b,directory,function() error('optional logger failed') end)
+    assert(c.frame()); track_frame(b)
+    local previous=read(directory..'/eve-frame.txt'); b.fail_release=true
+    assert(not c.frame(nil,'hd')); track_frame(b)
+    assert(c.status()=='cleanup-required' and b.targets==3 and read(directory..'/eve-frame.txt')==previous)
+    local spawned=b.spawned; assert(not c.frame(nil,'hd') and b.spawned==spawned)
+    b.fail_release=false; assert(c.clear()); assert(c.status()=='idle' and b.targets==0)
+    assert(c.frame(nil,'hd')); track_frame(b); assert(c.clear(),'Diagnostic logging must not block capture cleanup')
+end)
 check('paired frame publishes all three sources from exactly one camera snapshot',function()
     local b=backend(); local c=Capture.new(b,directory)
     assert(type(c.frame)=='function','The paired-frame capture API is missing')

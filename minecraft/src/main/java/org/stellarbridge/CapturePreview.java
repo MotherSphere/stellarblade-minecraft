@@ -60,32 +60,33 @@ final class CapturePreview {
             source.sendError(Text.literal("Use EVE capture preview in private, non-LAN singleplayer."));
             return 0;
         }
-        NativeImage color = null, mask = null;
+        NativeImage color = null;
         NativeImageBackedTexture texture = null;
         try {
             Path directory = Path.of(System.getProperty("stellarbridge.directory",
                     Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
+            long loadStarted = System.nanoTime();
             CaptureFrame.Loaded loaded = CaptureFrame.read(directory, now());
-            color = CaptureImages.decode(loaded.color());
-            mask = CaptureImages.decode(loaded.mask());
-            if (color.getWidth() != 320 || color.getHeight() != 180 || mask.getWidth() != 320 || mask.getHeight() != 180)
-                throw new IOException("Decoded capture dimensions differ from the descriptor");
-            for (int y = 0; y < 180; y++) {
-                for (int x = 0; x < 320; x++) {
-                    int alpha = CaptureFrame.previewAlpha(mask.getOpacity(x, y) & 255);
-                    color.setColor(x, y, color.getColor(x, y) & 0x00ffffff | alpha << 24);
-                }
-            }
+            long readDepthNanos = System.nanoTime() - loadStarted;
+            long decodeStarted = System.nanoTime();
+            color = CaptureImages.decodeMasked(loaded.color(), loaded.mask(), loaded.metadata().width(), loaded.metadata().height());
+            long decodeNanos = System.nanoTime() - decodeStarted;
             CaptureFrame.verifyUnchanged(directory, loaded.descriptor());
             if (!eligible(client) || !CaptureFrame.fresh(loaded.metadata().time(), now()))
                 throw new IOException("Capture or private world expired while loading");
+            long uploadStarted = System.nanoTime();
             texture = new NativeImageBackedTexture(color);
             color = null; // The texture now owns the NativeImage.
             client.getTextureManager().registerTexture(TEXTURE, texture);
             texture = null; // The texture manager now owns the texture.
+            long uploadNanos = System.nanoTime() - uploadStarted;
             frame = loaded.metadata();
             world = client.world;
-            source.sendFeedback(Text.literal("EVE capture loaded: one still, expiring 30 seconds after capture. "
+            org.slf4j.LoggerFactory.getLogger("stellar_bridge").info(
+                    "EVE preview still accepted frame={} width={} height={} read_depth_ms={} png_mask_ms={} upload_submit_ms={} total_ms={}",
+                    frame.id(), frame.width(), frame.height(), readDepthNanos / 1_000_000.0, decodeNanos / 1_000_000.0,
+                    uploadNanos / 1_000_000.0, (System.nanoTime() - loadStarted) / 1_000_000.0);
+            source.sendFeedback(Text.literal("EVE capture loaded (" + frame.width() + "x" + frame.height() + "): one still, expiring 30 seconds after capture. "
                     + "Cutout preview; partial hair and transparency are unsupported."));
             return 1;
         } catch (IOException | RuntimeException failure) {
@@ -93,7 +94,6 @@ final class CapturePreview {
             return 0;
         } finally {
             if (color != null) color.close();
-            if (mask != null) mask.close();
             if (texture != null) texture.close();
         }
     }
@@ -134,7 +134,7 @@ final class CapturePreview {
             RenderSystem.disableDepthTest();
             RenderSystem.enableBlend();
             RenderSystem.defaultBlendFunc();
-            context.drawTexture(TEXTURE, x, y, width, height, 0f, 0f, 320, 180, 320, 180);
+            context.drawTexture(TEXTURE, x, y, width, height, 0f, 0f, frame.width(), frame.height(), frame.width(), frame.height());
             context.drawTextWithShadow(client.textRenderer, "EVE capture — diagnostic", x, y - 12, 0xffffffff);
             context.drawTextWithShadow(client.textRenderer, String.format(Locale.ROOT, "Still: %ds old | FOV %.1f°",
                     Math.max(0, now() - frame.time()), frame.fov()), x, y + height + 3, 0xffffffff);

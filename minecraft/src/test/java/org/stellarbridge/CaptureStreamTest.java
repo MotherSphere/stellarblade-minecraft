@@ -88,7 +88,7 @@ public final class CaptureStreamTest {
         var point = new CaptureFrame.Position(0, 0, 0);
         var metadata = new CaptureFrame.Metadata(id, 100, 75, 1, 1, 1,
                 new CaptureFrame.Camera(point, 0, 0, 0), new CaptureFrame.Pawn(point, 95),
-                new CaptureFrame.Context(pawn, 12), new CaptureFrame.Link(SESSION, revision, 100, point));
+                new CaptureFrame.Context(pawn, 12), new CaptureFrame.Link(SESSION, revision, 100, point), 320, 180);
         return new CaptureStream.Prepared(metadata, CaptureProjection.camera(metadata, ORIGIN),
                 new NativeImage(1, 1, false), new float[1], 100);
     }

@@ -31,7 +31,7 @@ StaticFindObject=function(path) return path=='/Script/Engine.TriggerBox' and wor
 LoadAsset=function() return null end
 RegisterKeyBind=function(key,modifiers,callback)
     if callback then
-        assert((key==Key.F7 or key==Key.F8) and #modifiers==1 and modifiers[1]==ModifierKey.SHIFT,'Only the explicit texture/native-scene shortcuts have a modifier')
+        assert((key==Key.F4 or key==Key.F7 or key==Key.F8) and #modifiers==1 and modifiers[1]==ModifierKey.SHIFT,'Only the explicit HD/texture/native-scene shortcuts have a modifier')
     else assert(type(modifiers)=='function','Bare probe keys must retain their callbacks') end
 end
 RegisterConsoleCommandHandler=function()end

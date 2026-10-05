@@ -69,6 +69,10 @@ The native scene uses an opaque display material for this first stage. Texture s
 
 With bridge configuration installed, **F4** (`sbmc frame`) requests a paired 320×180 capture through temporary Unreal scene-capture actors showing EVE's components. Display color, inverse-opacity mask and scene depth use the same camera snapshot within one game-thread call. A manual request takes one frame without moving EVE or hiding the original level. It releases the temporary actors and render targets after each request; `sbmc capturecleanup` retries cleanup if the log reports a failure. Stop the animated preview before taking manual captures.
 
+**Shift+F4** (`sbmc framehd`) requests an opt-in **1280×720 paired still** through the same lifecycle. Both mods must include HD support. Only 320×180 and 1280×720 are accepted; every color, mask and depth plane must match its descriptor and stay within 4 MiB. This is a detail and timing check, not a faster live stream. F4 and the animated preview retain their original resolution and cadence.
+
+HD captures log start/end boundaries for native allocation, capture, export, validation, cleanup and publication. Minecraft logs CPU read/depth decoding, PNG/mask decoding and texture-upload submission times when a still is accepted. Submission time does not measure GPU completion. These diagnostics help identify the next transport improvement without claiming asynchronous readback or a playable frame rate.
+
 `eve-frame.txt` in the private bridge directory names three generation-specific PNG/HDR files and records the camera, projection and context. It is published only after all exports and cleanup succeed. A failed capture preserves the previous complete frame. Files from the preceding frame of the same Lua lifetime are removed after replacement; old files from earlier launches can be removed while both games are closed.
 
 In a private Minecraft singleplayer world, run **`/stellarpreview load`** within 30 seconds of F4 to inspect the capture in a diagnostic inset. **`/stellarpreview off`** closes it. The preview uses the display-color image and the separate inverse-opacity mask, rejecting low-coverage sky/haze pixels. Partial hair and translucency remain unsupported. The texture expires 30 seconds after capture and is removed on world change or disconnect. This is an opt-in still preview, not a live renderer, world-camera override or depth-tested composition.
@@ -77,7 +81,7 @@ The original independent probes remain available: `sbmc capture` writes `eve-cap
 
 ### World composition experiment
 
-After starting the terrain link and entering it with EVE, press F4 and run **`/stellarview load`** in Minecraft within 30 seconds. This selects the captured camera and projection and draws EVE with her captured scene depth against Minecraft's world depth. **`/stellarview off`** restores the vanilla camera. This is a frozen view; it does not refresh as EVE moves. Capture again before loading a new view.
+After starting the terrain link and entering it with EVE, press F4 (320×180) or Shift+F4 (1280×720), then run **`/stellarview load`** in Minecraft within 30 seconds. Keep the native terrain diagnostic disabled. This selects the captured camera and projection and draws EVE with her captured scene depth against Minecraft's world depth. **`/stellarview off`** restores the vanilla camera. This is a frozen view; it does not refresh as EVE moves. Capture again before loading a new view.
 
 The view requires the same active private creative session and exactly the captured terrain revision. It stops on block revisions, stale captures, link loss, world changes or unsupported effects. Use Fast/Fancy graphics without Iris, and a calm player without status effects. Camera roll, full translucency and other renderer replacements are unsupported. The window may use a different aspect ratio: the EVE layer covers the matching portion of Minecraft's projection instead of stretching.
 
@@ -167,6 +171,7 @@ Use a backed-up test save and a clear outdoor location. Do not save, travel, loa
 | Shift+F7 | `sbmc texture` | Toggle the non-colliding native stone-texture probe |
 | Shift+F8 | `sbmc visuals` | Toggle the bounded native Minecraft terrain renderer after entering the link |
 | F1 | `sbmc live` / `sbmc liveoff` | Toggle the bounded animated capture while EVE is in the linked lab |
+| Shift+F4 | `sbmc framehd` | Capture one 1280×720 color/mask/depth frame for the Minecraft still view |
 | F5 | `sbmc mirror` | Import the active Minecraft terrain when bridge configuration is installed |
 | F6 | `sbmc status` | Log player, world, capsule and position; refresh optional markers |
 | F7 | `sbmc create` | Create the fixture 600 Unreal units above the current player position |

@@ -42,7 +42,7 @@ public final class CaptureImagesTest {
         try (var worker = Executors.newSingleThreadExecutor()) {
             worker.submit(() -> {
                 assert !RenderSystem.isOnRenderThread();
-                try (NativeImage decoded = CaptureImages.decodeMasked(png, maskOutput.toByteArray())) {
+                try (NativeImage decoded = CaptureImages.decodeMasked(png, maskOutput.toByteArray(), 320, 180)) {
                     assert (decoded.getColor(137, 89) >>> 24) == 128;
                     assert (decoded.getColor(138, 89) >>> 24) == 0;
                     int pixel = decoded.getColor(137, 89); // ABGR; component helpers require the render thread.

@@ -12,14 +12,17 @@ final class CaptureImages {
         return NativeImage.read(new ByteArrayInputStream(bytes));
     }
 
-    static NativeImage decodeMasked(byte[] colorBytes, byte[] maskBytes) throws IOException {
+    static NativeImage decodeMasked(byte[] colorBytes, byte[] maskBytes, int width, int height) throws IOException {
+        // Validate declared dimensions and byte bounds before asking STB to allocate native pixels.
+        CaptureFrame.validatePng(colorBytes, width, height);
+        CaptureFrame.validatePng(maskBytes, width, height);
         NativeImage color = decode(colorBytes);
         boolean complete = false;
         try (NativeImage mask = decode(maskBytes)) {
-            if (color.getWidth() != 320 || color.getHeight() != 180 || mask.getWidth() != 320 || mask.getHeight() != 180)
+            if (color.getWidth() != width || color.getHeight() != height || mask.getWidth() != width || mask.getHeight() != height)
                 throw new IOException("Decoded capture dimensions differ from the descriptor");
-            for (int y = 0; y < 180; y++) {
-                for (int x = 0; x < 320; x++) {
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
                     int alpha = CaptureFrame.previewAlpha(mask.getOpacity(x, y) & 255);
                     color.setColor(x, y, color.getColor(x, y) & 0x00ffffff | alpha << 24);
                 }

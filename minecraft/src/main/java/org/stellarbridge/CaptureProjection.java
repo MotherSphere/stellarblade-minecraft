@@ -16,13 +16,13 @@ public final class CaptureProjection {
         require(Double.isFinite(x) && Double.isFinite(y) && Double.isFinite(z)
                 && Math.abs(x) <= 30000000 && Math.abs(y) <= 30000000 && Math.abs(z) <= 30000000,
                 "Capture camera is outside supported world coordinates");
-        double vertical = Math.toDegrees(2 * Math.atan(Math.tan(Math.toRadians(frame.fov() / 2)) / (320.0 / 180)));
+        double vertical = Math.toDegrees(2 * Math.atan(Math.tan(Math.toRadians(frame.fov() / 2)) / ((double) frame.width() / frame.height())));
         require(vertical > 0 && vertical < 180, "Invalid capture projection");
         return new CameraPose(x, y, z, (float) Math.IEEEremainder(camera.yaw() - 90, 360), (float) -camera.pitch(), vertical);
     }
     static double horizontalExtent(int width, int height) {
         require(width > 0 && height > 0, "Invalid viewport");
-        return (320.0 / 180) / ((double) width / height);
+        return (16.0 / 9) / ((double) width / height); // Both bounded capture sizes have this aspect ratio.
     }
     static double blocks(double units, double scale) {
         require(Double.isFinite(units) && Double.isFinite(scale) && scale > 0, "Invalid coordinate scale");

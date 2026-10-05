@@ -9,7 +9,7 @@
 -- Coordinates use Stellar Blade world units; color alpha is unverified inverse opacity.
 -- Paired frame metadata v1: ten ASCII LF lines, with a trailing LF.
 -- SBMC_FRAME 1 <unixSeconds-counter> <unixSeconds>
--- SIZE 320 180
+-- SIZE <320 180|1280 720> (HD is an explicit still profile only)
 -- CAMERA <x> <y> <z> <pitch> <yaw> <roll> <horizontalFovDegrees>
 -- PAWN <x> <y> <z> <capsuleHalfHeight>
 -- CONTEXT <pawnAddress> <worldAddress>
@@ -136,16 +136,25 @@ local function check_link(link)
     assert(type(p)=='table' and finite(p.x) and finite(p.y) and finite(p.z),'Frame link has an invalid relative position.')
     return string.format('LINK %s %d %.9g %.9g %.9g %.9g\n',link.session,link.ack,link.scale,p.x,p.y,p.z)
 end
-local function frame_metadata(id,epoch,camera,link_line,layers)
+local function frame_metadata(id,epoch,camera,link_line,layers,width,height)
     local p,r,e=camera.position,camera.rotation,camera.pawn_position
-    return string.format('SBMC_FRAME 1 %s %d\nSIZE 320 180\n'
+    return string.format('SBMC_FRAME 1 %s %d\nSIZE %d %d\n'
         ..'CAMERA %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n'
         ..'PAWN %.9g %.9g %.9g %.9g\nCONTEXT %d %d\n',
-        id,epoch,p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll,camera.fov,e.X,e.Y,e.Z,camera.half_height,camera.pawn_id,camera.world_id)
+        id,epoch,width,height,p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll,camera.fov,e.X,e.Y,e.Z,camera.half_height,camera.pawn_id,camera.world_id)
         ..link_line..string.format('COLOR %s %d\nMASK %s %d\nDEPTH %s %d\nEND %s\n',
         layers[1].file,layers[1].size,layers[2].file,layers[2].size,layers[3].file,layers[3].size,id)
 end
-function Capture.new(engine,directory)
+-- Logger timestamps bracket each optional HD stage, including failed calls.
+local function stage(trace,name,run)
+    if not trace then return run() end
+    trace(name..' start')
+    local ok,result,detail=pcall(run)
+    trace(name..' end'..((not ok or result==false) and ' failed' or ''))
+    if not ok then error(result,0) end
+    return result,detail
+end
+function Capture.new(engine,directory,log)
     assert(type(directory)=='string' and directory~='','Capture directory is required.')
     local api,owned,retired={},{},{}
     local next_id=0
@@ -194,16 +203,19 @@ function Capture.new(engine,directory)
         purge_files()
         return api.cleanup()
     end
-    local function capture_layer(camera,mode,kind)
+    local function capture_layer(camera,mode,kind,trace,label)
         local handle={}
         owned[#owned+1]=handle
-        handle.actor=assert(engine.spawn(camera),'Capture actor was not created.')
-        engine.configure(handle.actor,camera,mode)
-        handle.target=assert(engine.create_target(camera,mode),'Capture target was not created.')
-        engine.bind(handle.actor,handle.target)
-        engine.capture(handle.actor)
-        engine.export(handle.actor,handle.target,directory,mode.file)
-        return image_size(directory..'/'..mode.file,kind,mode)
+        label=label or kind
+        stage(trace,label..' allocation',function()
+            handle.actor=assert(engine.spawn(camera),'Capture actor was not created.')
+            engine.configure(handle.actor,camera,mode)
+            handle.target=assert(engine.create_target(camera,mode),'Capture target was not created.')
+            engine.bind(handle.actor,handle.target)
+        end)
+        stage(trace,label..' capture',function() engine.capture(handle.actor) end)
+        stage(trace,label..' export',function() engine.export(handle.actor,handle.target,directory,mode.file) end)
+        return stage(trace,label..' validation',function() return image_size(directory..'/'..mode.file,kind,mode) end)
     end
     function api.capture(kind)
         local mode=modes[kind]
@@ -227,10 +239,17 @@ function Capture.new(engine,directory)
         if not published then return false,'Capture metadata publication failed: '..tostring(publish_error) end
         return true,'Exported '..mode.file..' and paired metadata; isolated pixels still require inspection.'
     end
-    function api.frame(link)
+    function api.frame(link,profile)
+        if profile~=nil and profile~='hd' then return false,'Frame profile must be omitted or hd.' end
         if api.status()~='idle' then return false,'Capture cleanup is required before another frame.' end
+        local width,height=320,180
+        if profile=='hd' then width,height=1280,720 end
         local layers={}
         local result,id
+        local trace
+        if profile=='hd' and log then
+            trace=function(message) pcall(log,'HD frame '..(id or 'pending')..' '..message) end
+        end
         local ok,why=pcall(function()
             local link_line=check_link(link)
             local camera=engine.camera()
@@ -247,18 +266,18 @@ function Capture.new(engine,directory)
                 end
             until available
             for _,spec in ipairs({{'color',2,2,'png'},{'mask',0,2,'png'},{'depth',4,6,'hdr'}}) do
-                local layer={width=320,height=180,source=spec[2],format=spec[3],file='eve-frame-'..id..'-'..spec[1]..'.'..spec[4]}
+                local layer={width=width,height=height,source=spec[2],format=spec[3],file='eve-frame-'..id..'-'..spec[1]..'.'..spec[4]}
                 layers[#layers+1]=layer
-                layer.size=capture_layer(camera,layer,spec[1]=='depth' and 'depth' or 'color')
+                layer.size=capture_layer(camera,layer,spec[1]=='depth' and 'depth' or 'color',trace,spec[1])
             end
-            result=frame_metadata(id,epoch,camera,link_line,layers)
+            result=frame_metadata(id,epoch,camera,link_line,layers,width,height)
         end)
-        local cleaned,cleanup_message=api.cleanup()
+        local cleaned,cleanup_message=stage(trace,'cleanup',api.cleanup)
         if not ok or not cleaned then
             retire_files(layers)
             return false,(not ok and tostring(why)..'; ' or '')..(not cleaned and cleanup_message or 'Frame was not published.')
         end
-        local published,publish_error=pcall(publish,directory..'/eve-frame.txt',result)
+        local published,publish_error=pcall(stage,trace,'publication',function() publish(directory..'/eve-frame.txt',result) end)
         if not published then retire_files(layers); return false,'Frame publication failed: '..tostring(publish_error) end
         retire_files(previous_files)
         previous_files=layers

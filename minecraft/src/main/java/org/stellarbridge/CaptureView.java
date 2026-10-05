@@ -149,7 +149,7 @@ public final class CaptureView {
             if (!stream.mailbox.current(frame) || !CaptureStream.fresh(frame.metadata.time(), now())) return;
             texture = new NativeImageBackedTexture(frame.color);
             frame.color = null; // Ownership passes only after the texture constructor succeeds.
-            depthTexture = uploadDepth(frame.depth);
+            depthTexture = uploadDepth(frame.depth, frame.metadata.width(), frame.metadata.height());
             View next = new View(frame.metadata, frame.camera, liveBinding.world, liveBinding.owner,
                     liveBinding.dimension, liveBinding.origin, texture, depthTexture, true);
             if (!stream.mailbox.current(frame) || !valid(next)) return;
@@ -182,21 +182,32 @@ public final class CaptureView {
         int depthTexture = 0;
         try {
             Path directory = directory();
+            long loadStarted = System.nanoTime();
             var loaded = CaptureFrame.read(directory, now());
+            long readDepthNanos = System.nanoTime() - loadStarted;
             if (!CaptureProjection.matches(loaded.metadata(), context.session(), context.revision(), now()))
                 throw new IOException("Capture LINK does not match the active terrain session and revision");
             var camera = CaptureProjection.camera(loaded.metadata(), context.origin());
-            color = CaptureImages.decodeMasked(loaded.color(), loaded.mask());
+            long decodeStarted = System.nanoTime();
+            color = CaptureImages.decodeMasked(loaded.color(), loaded.mask(), loaded.metadata().width(), loaded.metadata().height());
+            long decodeNanos = System.nanoTime() - decodeStarted;
             CaptureFrame.verifyUnchanged(directory, loaded.descriptor());
+            long uploadStarted = System.nanoTime();
             texture = new NativeImageBackedTexture(color);
             color = null;
-            depthTexture = uploadDepth(loaded.depth());
+            depthTexture = uploadDepth(loaded.depth(), loaded.metadata().width(), loaded.metadata().height());
+            long uploadNanos = System.nanoTime() - uploadStarted;
             var next = new View(loaded.metadata(), camera, client.world, context.owner(), context.dimension(), context.origin(), texture, depthTexture, false);
             if (!valid(next)) throw new IOException("The active bridge changed while loading");
             active = next;
             texture = null;
             depthTexture = 0;
-            source.sendFeedback(Text.literal("EVE still view loaded: camera and depth from one capture, expires after 30 seconds. /stellarview off restores the camera."));
+            LoggerFactory.getLogger("stellar_bridge").info(
+                    "EVE still accepted frame={} width={} height={} read_depth_ms={} png_mask_ms={} upload_submit_ms={} total_ms={}",
+                    loaded.metadata().id(), loaded.metadata().width(), loaded.metadata().height(), readDepthNanos / 1_000_000.0,
+                    decodeNanos / 1_000_000.0, uploadNanos / 1_000_000.0, (System.nanoTime() - loadStarted) / 1_000_000.0);
+            source.sendFeedback(Text.literal("EVE still view loaded (" + loaded.metadata().width() + "x" + loaded.metadata().height()
+                    + "): camera and depth from one capture, expires after 30 seconds. /stellarview off restores the camera."));
             return 1;
         } catch (IOException | RuntimeException failure) {
             source.sendError(Text.literal("EVE still view failed: " + failure.getMessage()));
@@ -208,7 +219,9 @@ public final class CaptureView {
         }
     }
 
-    private static int uploadDepth(float[] values) {
+    private static int uploadDepth(float[] values, int width, int height) {
+        if (!CaptureFrame.supportedSize(width, height) || values.length != width * height)
+            throw new IllegalArgumentException("Capture depth upload dimensions do not match the decoded pixels");
         int previous = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
         int texture = GlStateManager._genTexture();
         boolean complete = false;
@@ -218,7 +231,7 @@ public final class CaptureView {
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
-            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R32F, 320, 180, 0, GL11.GL_RED, GL11.GL_FLOAT, values);
+            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL30.GL_R32F, width, height, 0, GL11.GL_RED, GL11.GL_FLOAT, values);
             complete = true;
             return texture;
         } finally {
