@@ -15,6 +15,7 @@ final class CaptureStream implements AutoCloseable {
     private final CaptureSession session;
     private String previousReadId;
     private Receipt settling;
+    private RawFrameBus raw, retired;
     private boolean closed;
 
     CaptureStream(Path directory) {
@@ -28,7 +29,7 @@ final class CaptureStream implements AutoCloseable {
         worker.scheduleWithFixedDelay(this::poll, 0, 20, TimeUnit.MILLISECONDS);
     }
 
-    synchronized void startHd(String terrainSession, int revision, CaptureFrame.Position origin, long nowNanos) throws IOException {
+    synchronized void startEncoded(String terrainSession, int revision, CaptureFrame.Position origin, long nowNanos) throws IOException {
         if (closed) throw new IOException("Capture reader is closed");
         stop("restarted");
         CaptureFrame.requireWatching(directory); // Never request a generation whose close evidence cannot be observed.
@@ -36,12 +37,31 @@ final class CaptureStream implements AutoCloseable {
         mailbox.start(terrainSession, revision, origin, nowNanos, run);
     }
 
+    synchronized void startHd(String terrainSession, int revision, CaptureFrame.Position origin, long nowNanos,
+                              int width, int height) throws IOException {
+        if (closed) throw new IOException("Capture reader is closed");
+        stop("restarted");
+        reap();
+        if (retired != null) throw new IOException("Waiting for the previous native raw producer to stop; its mapping is retained");
+        String run = java.util.UUID.randomUUID().toString().replace("-", "");
+        raw = new RawFrameBus(directory, run, terrainSession, width, height, System.currentTimeMillis());
+        try {
+            session.startRaw(run, terrainSession, width, height, now(), nowNanos);
+            mailbox.start(terrainSession, revision, origin, nowNanos, run);
+        } catch (IOException | RuntimeException failure) {
+            raw.stop(); retired = raw; raw = null; reap(); throw failure;
+        }
+    }
+
     void heartbeat() throws IOException { session.heartbeat(now(), System.nanoTime()); }
 
     synchronized void stop(String reason) throws IOException {
         mailbox.stop(reason);
-        session.stop(now());
+        if (raw != null) { raw.stop(); retired = raw; raw = null; }
+        try { session.stop(now()); } finally { reap(); }
     }
+
+    private void reap() throws IOException { if (retired != null && retired.reap()) retired = null; }
 
     private synchronized void poll() {
         if (closed) return;
@@ -49,6 +69,8 @@ final class CaptureStream implements AutoCloseable {
         NativeImage color = null;
         try {
             CaptureFrame.pollWatching(); // Drain unrelated bridge writes even without a descriptor or during ACK retries.
+            reap();
+            if (raw != null) { pollRaw(request); return; }
             if (settling != null) { acknowledge(); return; }
             long started = System.nanoTime();
             var frame = CaptureFrame.readForStream(directory, now(), previousReadId, request == null || request.run() != null);
@@ -96,6 +118,26 @@ final class CaptureStream implements AutoCloseable {
         }
     }
 
+    private void pollRaw(Request request) throws IOException {
+        RawFrameBus.Frame frame = null;
+        try {
+            long started = System.nanoTime();
+            frame = raw.poll(System.currentTimeMillis(), started);
+            if (frame == null) return;
+            if (request == null || !frame.metadata.run().equals(request.run())
+                    || !CaptureProjection.matches(frame.metadata, request.session(), request.revision(), now())) return;
+            CaptureProjection.CameraPose camera;
+            try { camera = CaptureProjection.camera(frame.metadata, request.origin()); }
+            catch (IllegalArgumentException unsupportedView) { mailbox.failure(request, unsupportedView.getMessage()); return; }
+            var prepared = new Prepared(frame, camera, System.nanoTime() - started);
+            frame = null;
+            mailbox.publish(request, prepared, now(), System.nanoTime());
+        } catch (IOException | RuntimeException failure) {
+            stop(failure.getMessage());
+            throw failure;
+        } finally { if (frame != null) frame.close(); }
+    }
+
     private void acknowledge() throws IOException {
         Receipt receipt = settling;
         session.acknowledge(receipt.metadata);
@@ -116,6 +158,8 @@ final class CaptureStream implements AutoCloseable {
             worker.shutdownNow();
             if (settling != null && settling.frame != null) settling.frame.close();
             settling = null;
+            if (retired != null) retired.close();
+            retired = null;
         }
     }
 
@@ -133,6 +177,7 @@ final class CaptureStream implements AutoCloseable {
         final long loadNanos;
         final long receivedNanos = System.nanoTime();
         NativeImage color;
+        final RawFrameBus.Frame raw;
         long epoch;
 
         Prepared(CaptureFrame.Metadata metadata, CaptureProjection.CameraPose camera, NativeImage color,
@@ -142,9 +187,15 @@ final class CaptureStream implements AutoCloseable {
             this.color = color;
             this.depth = depth;
             this.loadNanos = loadNanos;
+            raw = null;
+        }
+        Prepared(RawFrameBus.Frame raw, CaptureProjection.CameraPose camera, long loadNanos) {
+            this.raw = raw; metadata = raw.metadata; this.camera = camera;
+            depth = null; this.loadNanos = loadNanos;
         }
         @Override public void close() {
             if (color != null) { color.close(); color = null; }
+            if (raw != null) raw.close();
         }
     }
 
@@ -196,7 +247,7 @@ final class CaptureStream implements AutoCloseable {
             if (active != null && request.epoch == active.epoch && expired(nowNanos))
                 stop("no complete fresh generation before the deadline");
             if (active == null || request.epoch != active.epoch || !fresh(frame.metadata.time(), now)
-                    || (active.run == null ? frame.metadata.version() == 4 : !active.run.equals(frame.metadata.run()))
+                    || (active.run == null ? frame.metadata.version() >= 4 : !active.run.equals(frame.metadata.run()))
                     || !CaptureProjection.matches(frame.metadata, active.session, active.revision, now)
                     || !CaptureFrame.newer(frame.metadata.id(), previousId)) {
                 frame.close();

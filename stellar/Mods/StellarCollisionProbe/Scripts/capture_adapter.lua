@@ -41,6 +41,7 @@ function Adapter.new()
         local capture=component(actor)
         capture.bCaptureEveryFrame=false
         capture.bCaptureOnMovement=false
+        if mode.persistent then capture.bAlwaysPersistRenderingState=true end
         capture.PrimitiveRenderMode=2 -- PRM_UseShowOnlyList
         capture.ProjectionType=0 -- Perspective
         capture.CompositeMode=0 -- SCCM_Overwrite
@@ -57,6 +58,11 @@ function Adapter.new()
         return target
     end
     function engine.bind(actor,target) component(actor).TextureTarget=target end
+    function engine.update(actor,camera)
+        assert(actor:K2_SetActorLocationAndRotation(camera.position,camera.rotation,false,{},true),
+            'Capture camera could not be updated.')
+        component(actor).FOVAngle=camera.fov
+    end
     function engine.capture(actor) component(actor):CaptureScene() end
     function engine.export(actor,target,directory,filename)
         library():ExportRenderTarget(actor,target,directory,filename)

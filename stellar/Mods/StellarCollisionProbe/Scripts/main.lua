@@ -111,7 +111,8 @@ local configured,config = pcall(require,'bridge_config')
 if configured then
     local Terrain = require('terrain')
     bridge = require('bridge').new(Terrain.new(engine,config.scale),config.directory,log)
-    capture = require('capture').new(require('capture_adapter').new(),config.directory,log)
+    local capture_engine=require('capture_adapter').new()
+    capture = require('capture').new(capture_engine,config.directory,log)
     visual = require('visual_probe').new(require('visual_probe_adapter').new(),config.directory)
     scene = require('native_scene').new(require('scene_adapter').new(log),bridge,config.directory,config.scale)
     stream = require('capture_stream').new(capture,function()
@@ -121,7 +122,7 @@ if configured then
         return active==bridge and bridge.pose() or nil
     end,config.directory,config.scale,function()
         return not stream.busy() and not scene.enabled() and scene.status()=='idle' and visual.status()=='idle'
-    end)
+    end,nil,require('raw_capture').new(capture_engine,config.directory))
     control_permit=require('control_permit').new(config.directory)
 end
 local function cancel_hd(message)
@@ -181,7 +182,7 @@ local function status()
 end
 local function require_still()
     assert(capture,'Install with --bridge-dir to enable native image capture.')
-    assert(not capture.stream_busy(),'Continuous HD still owns capture output.')
+    assert(not hd_session.busy(),'Continuous capture still owns its output.')
     assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
     assert(not stream.active(),'Stop native live capture before requesting a still.')
 end
@@ -211,7 +212,7 @@ local actions = {
     visuals=function()
         assert(scene,'Install with --bridge-dir to enable native Minecraft visuals.')
         if scene.enabled() or scene.status()=='cleanup-required' then return scene.clear() end
-        assert(not capture.stream_busy(),'Continuous HD still owns capture output.')
+        assert(not hd_session.busy(),'Continuous capture still owns its output.')
         assert(active==bridge,'Import and enter the Minecraft collision link first.')
         local stopped,why=stream.stop('native scene rendering requested')
         if not stopped then return false,why end
@@ -219,11 +220,12 @@ local actions = {
     end,
     texture=function()
         assert(visual,'Install with --bridge-dir to enable the native texture probe.')
-        assert(not capture.stream_busy(),'Continuous HD still owns capture output.')
+        assert(not hd_session.busy(),'Continuous capture still owns its output.')
         return visual.toggle()
     end,
     live=function()
         assert(stream,'Install with --bridge-dir to enable native live capture.')
+        assert(not hd_session.busy(),'Continuous capture still owns its output.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
         return stream.start()
     end,
@@ -236,6 +238,7 @@ local actions = {
     livetoggle=function()
         assert(stream,'Install with --bridge-dir to enable native live capture.')
         if stream.active() then return stream.stop() end
+        assert(not hd_session.busy(),'Continuous capture still owns its output.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
         return stream.start()
     end,
@@ -388,4 +391,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 25; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 26; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

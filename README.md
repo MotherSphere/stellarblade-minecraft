@@ -97,11 +97,15 @@ The rendering branch corrects the provisional coordinate basis to **Unreal `(X,Y
 
 ### Continuous HD composition
 
-After `/stellar start`, F5 and F8 have established the existing terrain link, run **`/stellarview livehd`** in Minecraft. This requests a continuous **1280×720** stream directly; F1 and repeated still captures are unnecessary. Keep the native terrain renderer disabled. **`/stellarview off`** stops the request and restores the normal camera. **`/stellarview status`** reports accepted image cadence, which is distinct from Minecraft rendering FPS. Native EVE controls still require Stellar Blade focus; Minecraft input forwarding and cross-game combat are not implemented by this command.
+After `/stellar start`, F5 and F8 have established the terrain link, use **`/stellarview play`** in Minecraft for the native image and controller bridge. **`/stellarview livehd`** requests the same image stream without forwarding controls. Keep the native terrain renderer disabled. **`/stellarview off`** stops the request and restores the normal camera; **`/stellarview status`** reports accepted image cadence separately from Minecraft FPS.
 
-The stream uses frame-v4 metadata with a distinct run identifier. Only one native image generation may await consumption. Minecraft observes file closure, validates and decodes all planes, then acknowledges that exact generation before the producer retires its files and submits another. Images rejected for an outdated terrain revision or stopped view are still consumed safely. Stop and F11 retain an unresolved generation until it can be acknowledged; uncertain export failure blocks further submission. A timed-out run requires a new explicit `livehd` command and never restarts just because a late frame arrives. Manual capture and the reverse renderer are blocked while this stream owns capture or has unresolved writes. Start from a fresh Stellar Blade launch if a manual asynchronous one-shot has already reserved its separate retained output.
+The continuous path captures at the Minecraft framebuffer dimensions when the run starts, preserving aspect and limiting the image to 3840×2160. A later window resize preserves the captured aspect; start a new run to change capture resolution. Three persistent capture components retain their rendering state. One synchronous depth warmup establishes resource readiness; subsequent frames use the engine's asynchronous image queue. The version-pinned native adapter intercepts only this bridge's registered jobs before image encoding, combines display RGB, coverage and depth, and publishes complete frame-v5 bundles through a file-backed shared mapping. No PNG/BMP/EXR image files are written by accepted continuous raw jobs. Existing still/legacy paths retain their encodings.
 
-The displayed camera also supplies Minecraft's block and entity targeting. Interaction reach remains measured from the player, and normal Minecraft interaction handlers still perform the action. An unsupported camera offset or interaction range above 64 blocks produces no target in this local-patch implementation. Fast/Fancy graphics, the private creative terrain link and the existing rendering restrictions still apply. Hair/transparency quality, shader integration, larger-world streaming and performance tuning remain separate work. The continuous path has automated protocol, ownership and decoding tests; its integrated in-game behavior still needs validation.
+The transport adapts [SkyCraft's](https://github.com/chasmlol/SkyCraft) three-buffer ownership exchange. It works across a Windows process under Proton and native Linux Java: each side holds a private slot, and one atomic exchange transfers the middle slot. The Java reader copies an acquired frame before releasing its slot; the render thread reuses its color/depth textures. A new capture run creates a fresh private mapping, never resets one that another process may still use, and fails closed on invalid dimensions, identity, ownership or stale progress. See [third-party notices](THIRD-PARTY-NOTICES.md).
+
+Raw capture removes image encoding, image-file polling and image decoding. The engine still performs its original GPU surface readback; this implementation is not a zero-copy GPU link and does not establish a 60 FPS capture rate. Persistent targets and framebuffer-sized captures improve the prerequisites for quality, but the grouped native test must verify alpha, hair, temporal rendering and color. Iris and cross-game mob damage remain separate integrations. An unacknowledged stopped mapping is retained instead of truncating a potentially live resource; resolve the native stop or close both games before removing stale mapping files.
+
+The displayed camera also supplies Minecraft's block and entity targeting. Interaction reach remains measured from the player, and normal Minecraft interaction handlers still perform the action. An unsupported camera offset or interaction range above 64 blocks produces no target in this local-patch implementation. Fast/Fancy graphics, the private creative terrain link and the existing rendering restrictions still apply.
 
 ### Minecraft-focused controller bridge
 
@@ -236,6 +240,7 @@ lua tests/capture_test.lua
 lua tests/capture_stream_test.lua
 lua tests/capture_stream_main_test.lua
 lua tests/capture_session_test.lua
+lua tests/raw_capture_test.lua
 lua tests/control_permit_test.lua
 lua tests/visual_probe_test.lua
 lua tests/visual_probe_adapter_test.lua
@@ -248,7 +253,7 @@ luac -p stellar/Mods/StellarCollisionProbe/Scripts/*.lua
 cd minecraft && ./gradlew build
 ```
 
-The portable native input checks use CMake and a C++17 compiler:
+The portable native input, raw frame ownership and task-layout checks use CMake and a C++17 compiler:
 
 ```sh
 cmake -S native -B build/input -DCMAKE_BUILD_TYPE=Release

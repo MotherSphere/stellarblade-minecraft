@@ -86,9 +86,9 @@ final class CaptureFrame {
         require((lines.length == 11 || lines.length == 12) && lines[lines.length - 1].isEmpty(),
                 "Capture descriptor has an invalid line count");
         String[] header = fields(lines[0], "SBMC_FRAME", 4);
-        require(header[1].matches("[1234]") && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
+        require(header[1].matches("[12345]") && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
         int version = Integer.parseInt(header[1]);
-        require(lines.length == (version == 4 ? 12 : 11), "Capture descriptor version has an invalid line count");
+        require(lines.length == (version >= 4 ? 12 : 11), "Capture descriptor version has an invalid line count");
         String id = header[2];
         require(version < 3 || id.matches("[0-9]{1,16}-[0-9]{1,16}"), "Asynchronous capture generation exceeds limits");
         long time = integer(header[3], 0, MAX_INTEGER);
@@ -96,9 +96,10 @@ final class CaptureFrame {
         require(integer(sequence[0], 0, MAX_INTEGER) == time, "Capture ID timestamp mismatch");
         integer(sequence[1], 1, MAX_INTEGER);
         String[] size = fields(lines[1], "SIZE", 3);
-        int width = (int) integer(size[1], 1, 1280), height = (int) integer(size[2], 1, 720);
-        require(supportedSize(width, height), "Only 320 by 180 and 1280 by 720 captures are supported");
-        require(version < 3 || width == 1280 && height == 720, "Asynchronous capture requires HD dimensions");
+        int width = (int) integer(size[1], 1, version == 5 ? 3840 : 1280);
+        int height = (int) integer(size[2], 1, version == 5 ? 2160 : 720);
+        require(version == 5 || supportedSize(width, height), "Only 320 by 180 and 1280 by 720 encoded captures are supported");
+        require(version < 3 || version == 5 || width == 1280 && height == 720, "Asynchronous capture requires HD dimensions");
         String[] camera = fields(lines[2], "CAMERA", 8);
         for (int i = 1; i < camera.length; i++) decimal(camera[i]);
         double fov = decimal(camera[7]);
@@ -111,17 +112,25 @@ final class CaptureFrame {
         String[] link = fields(lines[5], "LINK", 7);
         boolean unlinked = link[1].equals("none");
         require(unlinked || link[1].matches("[0-9a-f]{32}"), "Invalid bridge session");
-        require(version != 4 || !unlinked, "Continuous capture requires a terrain session");
+        require(version < 4 || !unlinked, "Continuous capture requires a terrain session");
         long ack = integer(link[2], unlinked ? 0 : 1, Integer.MAX_VALUE);
         require(decimal(link[3]) > 0, "Invalid capture scale");
         double x = decimal(link[4]), y = decimal(link[5]), z = decimal(link[6]);
         require(!unlinked || ack == 0 && x == 0 && y == 0 && z == 0, "Unlinked capture has bridge coordinates");
-        int color = imageLine(lines[6], "COLOR", id, version >= 2 ? "color.bmp" : "color.png", version >= 3);
-        int mask = imageLine(lines[7], "MASK", id, "mask.png", version >= 3);
-        int depth = imageLine(lines[8], "DEPTH", id, "depth.hdr", false);
-        String run = version == 4 ? fields(lines[9], "RUN", 2)[1] : null;
+        int color, mask, depth;
+        if (version == 5) {
+            color = depth = Math.multiplyExact(Math.multiplyExact(width, height), 4);
+            mask = 0;
+            require(lines[6].equals("COLOR raw " + color) && lines[7].equals("MASK none 0")
+                    && lines[8].equals("DEPTH raw " + depth), "Raw capture plane layout mismatch");
+        } else {
+            color = imageLine(lines[6], "COLOR", id, version >= 2 ? "color.bmp" : "color.png", version >= 3);
+            mask = imageLine(lines[7], "MASK", id, "mask.png", version >= 3);
+            depth = imageLine(lines[8], "DEPTH", id, "depth.hdr", false);
+        }
+        String run = version >= 4 ? fields(lines[9], "RUN", 2)[1] : null;
         require(run == null || run.matches("[0-9a-f]{32}"), "Invalid capture run");
-        require(fields(lines[version == 4 ? 10 : 9], "END", 2)[1].equals(id), "Capture footer mismatch");
+        require(fields(lines[version >= 4 ? 10 : 9], "END", 2)[1].equals(id), "Capture footer mismatch");
         return new Metadata(id, time, fov, color, mask, depth,
                 new Camera(new Position(decimal(camera[1]), decimal(camera[2]), decimal(camera[3])),
                         decimal(camera[4]), decimal(camera[5]), decimal(camera[6])),
@@ -170,6 +179,7 @@ final class CaptureFrame {
                                     boolean settleContinuous, boolean continuousOnly) throws IOException {
         byte[] descriptor = readFile(directory, "eve-frame.txt", 2048);
         Metadata metadata = parse(descriptor);
+        require(metadata.version != 5, "Raw capture requires its owned shared mapping");
         if (continuousOnly && metadata.version != 4) return null;
         require(settleContinuous && metadata.version == 4 || fresh(metadata.time, now),
                 "Capture is older than 30 seconds or has a future timestamp");

@@ -15,6 +15,7 @@ final class CaptureSession {
     private String run, session;
     private boolean active, stopPending;
     private long publishedNanos;
+    private int width, height;
 
     CaptureSession(Path directory) { this.directory = directory; }
 
@@ -24,15 +25,25 @@ final class CaptureSession {
         publish("eve-stream.txt", packet(next, session, now, true));
         this.run = next;
         this.session = session;
+        width = height = 0;
         active = true;
         stopPending = false;
         publishedNanos = nowNanos;
         return next;
     }
 
+    synchronized void startRaw(String run, String session, int width, int height, long now, long nowNanos) throws IOException {
+        if (!run.matches("[0-9a-f]{32}") || !session.matches("[0-9a-f]{32}")
+                || width < 1 || width > 3840 || height < 1 || height > 2160)
+            throw new IllegalArgumentException("Invalid raw capture request");
+        publish("eve-stream.txt", packet(run, session, now, true, width, height));
+        this.run = run; this.session = session; this.width = width; this.height = height;
+        active = true; stopPending = false; publishedNanos = nowNanos;
+    }
+
     synchronized void heartbeat(long now, long nowNanos) throws IOException {
         if (run == null || !stopPending && (!active || nowNanos - publishedNanos < 1_000_000_000L)) return;
-        publish("eve-stream.txt", packet(run, session, now, active));
+        publish("eve-stream.txt", packet(run, session, now, active, width, height));
         publishedNanos = nowNanos;
         stopPending = false;
     }
@@ -41,7 +52,7 @@ final class CaptureSession {
         if (run == null || !active && !stopPending) return;
         active = false;
         stopPending = true;
-        publish("eve-stream.txt", packet(run, session, now, false));
+        publish("eve-stream.txt", packet(run, session, now, false, width, height));
         stopPending = false;
     }
 
@@ -54,8 +65,12 @@ final class CaptureSession {
     }
 
     private static String packet(String run, String session, long now, boolean active) {
+        return packet(run, session, now, active, 0, 0);
+    }
+    private static String packet(String run, String session, long now, boolean active, int width, int height) {
         if (now < 0 || now > 9007199254740991L) throw new IllegalArgumentException("Invalid capture session time");
-        return "SBMC_CAPTURE_SESSION 1\nRUN " + run + "\nSESSION " + session + "\nTIME " + now
+        return "SBMC_CAPTURE_SESSION " + (width == 0 ? 1 : 2) + "\nRUN " + run + "\nSESSION " + session + "\nTIME " + now
+                + (width == 0 ? "" : "\nSIZE " + width + " " + height)
                 + "\nSTATE " + (active ? "active" : "stopped") + "\nEND\n";
     }
 

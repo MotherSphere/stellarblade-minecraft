@@ -105,3 +105,24 @@ for index=1,130 do f.api.tick(packet(string.format('%032x',index),100)) end
 f.pose={state='entered',session=session,ack=1,position={x=0,y=0,z=0}}
 assert(not f.api.tick(packet(string.rep('f',32),100)) and f.frames==0,'The bounded replay latch fails closed once full')
 print('PASS continuous HD session framing, exact ACK, restart/stop latching, context, timeout, publication retry and deferred cleanup')
+-- The raw path uses native completion and keeps encoded-frame ACKs out of its hot path.
+do
+ local r={starts=0,ticks=0,clears=0,live=false}
+ local raw={busy=function()return r.live end,cancel=function()r.live=false end,
+  start=function(req)assert(req.version==2 and req.width==64 and req.height==48);r.starts=r.starts+1;r.live=true;return true end,
+  tick=function(link)assert(link.session==session);r.ticks=r.ticks+1;return true,nil,true end,
+  clear=function()r.clears=r.clears+1;r.live=false;return true end}
+ local c={stream_busy=function()return false end,stream_pending=function()return nil end,
+  stream_enable=function(value)assert(not value,'Raw requests must not start encoded exports');return true end,
+  clear=function()return true end,stream_ack=function()return true end}
+ local native=Session.new(c,function()return {state='entered',session=session,ack=1,position={x=0,y=0,z=0}}end,
+  '/unused',100,function()return true end,function()return 100 end,raw)
+ local req={version=2,run=run1,session=session,time=100,state='active',width=64,height=48}
+ assert(native.tick({request=req}) and r.starts==1 and r.ticks==1 and native.binding().run==run1)
+ assert(native.tick({request=req}) and r.ticks==2)
+ req.width=65;assert(native.tick({request=req}) and not native.active() and r.clears==1,'Dimensions cannot mutate inside a raw RUN')
+ assert(native.tick({request=req}) and r.ticks==2,'Stopped RUN must remain latched')
+ req.width=64;req.run=run2;assert(native.tick({request=req}) and r.starts==2)
+ assert(native.stop('F11') and not r.live and not native.binding())
+end
+print('PASS native raw session routing, immutable dimensions, stop and RUN latching')

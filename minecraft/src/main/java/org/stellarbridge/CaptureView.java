@@ -33,6 +33,7 @@ import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
+import org.lwjgl.opengl.GL21;
 import org.lwjgl.opengl.GL30;
 import org.slf4j.LoggerFactory;
 
@@ -44,6 +45,7 @@ public final class CaptureView {
     private static View presented;
     private static CaptureStream stream;
     private static Binding liveBinding;
+    private static RawTextures rawTextures;
 
     static void initialize() {
         stream = new CaptureStream(directory()); // Observe closes before the first command, including while Minecraft is paused.
@@ -101,7 +103,7 @@ public final class CaptureView {
     }
     static CaptureProjection.CameraPose controlCamera(String run, String session, long nowNanos) {
         View view = presented;
-        return view != null && view.live && view.metadata.version() == 4 && run.equals(view.metadata.run())
+        return view != null && view.live && view.metadata.version() >= 4 && run.equals(view.metadata.run())
                 && session.equals(view.metadata.link().session()) && valid(view)
                 && controlFrameFresh(view.receivedNanos, nowNanos) ? view.camera : null;
     }
@@ -158,7 +160,11 @@ public final class CaptureView {
             return 0;
         }
         try {
-            if (hd) stream.startHd(context.session(), context.revision(), context.origin(), System.nanoTime());
+            if (hd) {
+                var window = client.getWindow();
+                int[] size = RawFrameBus.dimensions(window.getFramebufferWidth(), window.getFramebufferHeight());
+                stream.startHd(context.session(), context.revision(), context.origin(), System.nanoTime(), size[0], size[1]);
+            }
             else stream.mailbox.start(context.session(), context.revision(), context.origin(), System.nanoTime());
         } catch (IOException failure) {
             source.sendError(Text.literal("EVE HD request failed: " + failure.getMessage()));
@@ -166,7 +172,7 @@ public final class CaptureView {
         }
         liveBinding = new Binding(client.world, context.session(), context.owner(), context.dimension(), context.origin());
         source.sendFeedback(Text.literal(hd
-                ? "EVE HD stream requested. Native controls remain in Stellar Blade. /stellarview off stops the stream and restores the camera."
+                ? "EVE raw stream requested at the current framebuffer size (up to 4K). /stellarview off restores the camera."
                 : "EVE live diagnostic waiting for native capture. /stellarview off restores the camera; /stellarview status shows observed cadence."));
         return 1;
     }
@@ -211,11 +217,23 @@ public final class CaptureView {
         int previousTexture = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
         try (frame) {
             if (!stream.mailbox.current(frame) || !CaptureStream.fresh(frame.metadata.time(), now())) return;
+            if (frame.raw != null) {
+                if (rawTextures == null) rawTextures = new RawTextures(frame.metadata.width(), frame.metadata.height());
+                rawTextures.upload(frame.raw);
+                View next = new View(frame.metadata, frame.camera, liveBinding.world, liveBinding.owner,
+                        liveBinding.dimension, liveBinding.origin, null, rawTextures.depth, true, frame.receivedNanos, rawTextures);
+                if (!stream.mailbox.current(frame) || !valid(next)) { clearView(); return; }
+                View previous = active;
+                active = next;
+                stream.mailbox.accepted(frame);
+                close(previous);
+                return;
+            }
             texture = new NativeImageBackedTexture(frame.color);
             frame.color = null; // Ownership passes only after the texture constructor succeeds.
             depthTexture = uploadDepth(frame.depth, frame.metadata.width(), frame.metadata.height());
             View next = new View(frame.metadata, frame.camera, liveBinding.world, liveBinding.owner,
-                    liveBinding.dimension, liveBinding.origin, texture, depthTexture, true, frame.receivedNanos);
+                    liveBinding.dimension, liveBinding.origin, texture, depthTexture, true, frame.receivedNanos, null);
             if (!stream.mailbox.current(frame) || !valid(next)) return;
             View previous = active;
             active = next;
@@ -261,7 +279,7 @@ public final class CaptureView {
             color = null;
             depthTexture = uploadDepth(loaded.depth(), loaded.metadata().width(), loaded.metadata().height());
             long uploadNanos = System.nanoTime() - uploadStarted;
-            var next = new View(loaded.metadata(), camera, client.world, context.owner(), context.dimension(), context.origin(), texture, depthTexture, false, System.nanoTime());
+            var next = new View(loaded.metadata(), camera, client.world, context.owner(), context.dimension(), context.origin(), texture, depthTexture, false, System.nanoTime(), null);
             if (!valid(next)) throw new IOException("The active bridge changed while loading");
             active = next;
             texture = null;
@@ -333,10 +351,11 @@ public final class CaptureView {
         rendering = null;
         presented = null;
         close(previous);
+        if (rawTextures != null) { rawTextures.close(); rawTextures = null; }
     }
 
     private static void close(View view) {
-        if (view != null) {
+        if (view != null && view.raw == null) {
             view.color.close();
             GlStateManager._deleteTexture(view.depthTexture);
         }
@@ -374,7 +393,8 @@ public final class CaptureView {
         RenderSystem.activeTexture(activeTexture);
         try {
             var window = MinecraftClient.getInstance().getWindow();
-            float extent = (float) CaptureProjection.horizontalExtent(window.getFramebufferWidth(), window.getFramebufferHeight());
+            float extent = (float) CaptureProjection.horizontalExtent(window.getFramebufferWidth(), window.getFramebufferHeight(),
+                    view.metadata.width(), view.metadata.height());
             RenderSystem.disableCull();
             RenderSystem.enableDepthTest();
             RenderSystem.depthFunc(GL11.GL_LEQUAL);
@@ -382,10 +402,11 @@ public final class CaptureView {
             RenderSystem.enableBlend();
             RenderSystem.defaultBlendFunc();
             RenderSystem.setShader(() -> shader);
-            RenderSystem.setShaderTexture(0, view.color.getGlId());
+            RenderSystem.setShaderTexture(0, view.raw == null ? view.color.getGlId() : view.raw.color);
             RenderSystem.setShaderTexture(1, view.depthTexture);
             shader.getUniform("MinecraftProjection").set(context.projectionMatrix());
             shader.getUniform("UnitsPerBlock").set((float) view.metadata.link().scale());
+            shader.getUniform("AlphaCutoff").set(view.raw == null ? 128f / 255 : 1f / 65536);
             var buffer = Tessellator.getInstance().begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE);
             // Both native exports use top-down rows. V=0 belongs to the top of the NDC quad.
             buffer.vertex(-extent, 1, 0).texture(0, 0);
@@ -415,9 +436,59 @@ public final class CaptureView {
         }
     }
 
+    /** Render-thread owned storage; one complete upload precedes each immutable View publication. */
+    private static final class RawTextures implements AutoCloseable {
+        final int width, height;
+        int color, depth;
+        boolean allocated;
+        RawTextures(int width, int height) { this.width = width; this.height = height; }
+        void upload(RawFrameBus.Frame frame) {
+            if (frame.metadata.width() != width || frame.metadata.height() != height)
+                throw new IllegalArgumentException("Raw frame dimensions changed inside one capture run");
+            int binding = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+            int unpackBuffer = GL11.glGetInteger(GL21.GL_PIXEL_UNPACK_BUFFER_BINDING);
+            int[] parameters = {GL11.GL_UNPACK_ALIGNMENT, GL11.GL_UNPACK_ROW_LENGTH, GL11.GL_UNPACK_SKIP_ROWS,
+                    GL11.GL_UNPACK_SKIP_PIXELS, GL11.GL_UNPACK_SWAP_BYTES};
+            int[] saved = new int[parameters.length];
+            for (int i = 0; i < saved.length; i++) saved[i] = GL11.glGetInteger(parameters[i]);
+            try {
+                GlStateManager._glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
+                for (int i = 0; i < parameters.length; i++) GL11.glPixelStorei(parameters[i], i == 0 ? 4 : 0);
+                if (!allocated) {
+                    color = GlStateManager._genTexture(); depth = GlStateManager._genTexture();
+                    allocate(color, GL11.GL_RGBA8, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, GL11.GL_LINEAR);
+                    allocate(depth, GL30.GL_R32F, GL11.GL_RED, GL11.GL_FLOAT, GL11.GL_NEAREST);
+                    allocated = true;
+                }
+                RenderSystem.bindTexture(color);
+                GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, frame.color);
+                RenderSystem.bindTexture(depth);
+                GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, width, height, GL11.GL_RED, GL11.GL_FLOAT, frame.depth);
+            } finally {
+                RenderSystem.bindTexture(binding);
+                GlStateManager._glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, unpackBuffer);
+                for (int i = 0; i < parameters.length; i++) GL11.glPixelStorei(parameters[i], saved[i]);
+            }
+        }
+        private void allocate(int texture, int internal, int format, int type, int filter) {
+            RenderSystem.bindTexture(texture);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, filter);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, filter);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL12.GL_CLAMP_TO_EDGE);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL12.GL_CLAMP_TO_EDGE);
+            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, internal, width, height, 0, format, type, (java.nio.ByteBuffer) null);
+        }
+        @Override public void close() {
+            if (color != 0) GlStateManager._deleteTexture(color);
+            if (depth != 0) GlStateManager._deleteTexture(depth);
+            color = depth = 0; allocated = false;
+        }
+    }
+
     private static long now() { return System.currentTimeMillis() / 1000; }
     private record View(CaptureFrame.Metadata metadata, CaptureProjection.CameraPose camera, ClientWorld world, UUID owner,
-                        String dimension, CaptureFrame.Position origin, NativeImageBackedTexture color, int depthTexture, boolean live, long receivedNanos) { }
+                        String dimension, CaptureFrame.Position origin, NativeImageBackedTexture color, int depthTexture, boolean live,
+                        long receivedNanos, RawTextures raw) { }
     private record Binding(ClientWorld world, String session, UUID owner, String dimension, CaptureFrame.Position origin) {
         boolean matches(ClientWorld currentWorld, StellarBridge.RenderingContext context) {
             return world == currentWorld && session.equals(context.session()) && owner.equals(context.owner())

@@ -5,10 +5,17 @@ local function bounded(text) return type(text)=='string' and #text<=512 and not 
 function Session.parse_request(text)
     if not bounded(text) then return nil end
     local run,session,time,state=text:match('^SBMC_CAPTURE_SESSION 1\nRUN ([0-9a-f]+)\nSESSION ([0-9a-f]+)\nTIME (%d+)\nSTATE (%a+)\nEND\n$')
+    local version,width,height=1,nil,nil
+    if not run then
+        version=2
+        run,session,time,width,height,state=text:match('^SBMC_CAPTURE_SESSION 2\nRUN ([0-9a-f]+)\nSESSION ([0-9a-f]+)\nTIME (%d+)\nSIZE (%d+) (%d+)\nSTATE (%a+)\nEND\n$')
+        width,height=tonumber(width),tonumber(height)
+        if not width or not height or width<1 or width>3840 or height<1 or height>2160 then return nil end
+    end
     time=tonumber(time)
     if not identity(run) or not identity(session) or not time or time>9007199254740991
         or (state~='active' and state~='stopped') then return nil end
-    return {run=run,session=session,time=time,state=state}
+    return {version=version,run=run,session=session,time=time,state=state,width=width,height=height}
 end
 function Session.parse_ack(text)
     if not bounded(text) then return nil end
@@ -22,18 +29,19 @@ local function read(path,parse)
     local text=file:read(513); file:close()
     return parse(text)
 end
-function Session.new(capture,pose,directory,scale,allowed,clock)
+function Session.new(capture,pose,directory,scale,allowed,clock,raw)
     clock=clock or os.time
     local api={}
     local live,clearing,run,session,last_time,frames=false,false,nil,nil,nil,0
     local stopped,stopped_count={},0
     local reason='explicit stop'
+    local mode,width,height=1,nil,nil
     local function latch(value)
         if value and not stopped[value] and stopped_count<128 then stopped[value]=true; stopped_count=stopped_count+1 end
     end
     function api.active() return live end
     function api.binding() return live and {run=run,session=session} or nil end
-    function api.busy() return capture.stream_busy() end
+    function api.busy() return capture.stream_busy() or raw and raw.busy() or false end
     function api.read()
         return {request=read(directory..'/eve-stream.txt',Session.parse_request),
             ack=read(directory..'/eve-frame-ack.txt',Session.parse_ack)}
@@ -41,12 +49,19 @@ function Session.new(capture,pose,directory,scale,allowed,clock)
     function api.cancel(message)
         live=false; clearing=true; latch(run)
         capture.stream_enable(false)
+        if raw then raw.cancel() end
         reason=message or 'explicit stop'
     end
     local function cleanup()
         local ran,ok,message=pcall(capture.clear)
-        clearing=not (ran and ok)
-        return not clearing,ran and message or tostring(ok)
+        local raw_ok,raw_message=true,nil
+        if raw then
+            local called,result,detail=pcall(raw.clear)
+            raw_ok=called and result
+            raw_message=called and detail or tostring(result)
+        end
+        clearing=not (ran and ok and raw_ok)
+        return not clearing,not raw_ok and raw_message or (ran and message or tostring(ok))
     end
     local function stop_current(message)
         api.cancel(message)
@@ -93,8 +108,9 @@ function Session.new(capture,pose,directory,scale,allowed,clock)
             if live then return stop_current('Minecraft request stopped, expired or invalid') end
             return true
         end
-        if live and (request.run~=run or request.session~=session) then
-            return stop_current('Minecraft capture run changed')
+        if live and (request.run~=run or request.session~=session or (request.version or 1)~=mode
+            or request.width~=width or request.height~=height) then
+            return stop_current('Minecraft capture run or dimensions changed')
         end
         if not live and (stopped[request.run] or pending) then return true end
         local current=pose()
@@ -107,12 +123,24 @@ function Session.new(capture,pose,directory,scale,allowed,clock)
             -- ponytail: retain at most 128 stopped run IDs; restart the game if a session exceeds this bound.
             if stopped_count>=128 then return false,'Continuous HD run limit reached; restart the game.' end
             run=request.run; session=request.session; frames=0
-            local ok,why=capture.stream_enable(true)
+            mode,width,height=request.version or 1,request.width,request.height
+            local ok,why
+            if mode==2 then
+                if not raw then return stop_current('Native raw capture is unavailable') end
+                ok,why=raw.start(request)
+            else ok,why=capture.stream_enable(true) end
             if not ok then return stop_current(tostring(why)) end
             live=true; started=true
         end
         if pending then return true end
-        local ok,why=capture.streamframe({session=session,ack=current.ack,scale=scale,position=current.position},run)
+        local link={session=session,ack=current.ack,scale=scale,position=current.position}
+        if mode==2 then
+            local ok,why,submitted=raw.tick(link)
+            if not ok then return stop_current('native raw frame failed: '..tostring(why)) end
+            if submitted then frames=frames+1 end
+            return true,why or (started and 'Native raw capture started; shared frames, stopped by Minecraft or F11.' or nil)
+        end
+        local ok,why=capture.streamframe(link,run)
         if not ok then return stop_current('frame failed: '..tostring(why)) end
         frames=frames+1
         return true,started and 'Continuous HD started; one pending frame, stopped by Minecraft or F11.' or nil

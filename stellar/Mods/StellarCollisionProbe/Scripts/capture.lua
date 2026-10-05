@@ -172,6 +172,18 @@ local function frame_metadata(id,epoch,camera,link_line,layers,width,height,vers
         layers[1].file,layers[1].size,layers[2].file,layers[2].size,layers[3].file,layers[3].size)
         ..(run and 'RUN '..run..'\n' or '')..'END '..id..'\n'
 end
+-- Raw transport keeps the same validated camera/link description as diagnostic images.
+function Capture.raw_metadata(id,epoch,camera,link,width,height,run)
+    check_camera(camera)
+    assert(type(width)=='number' and width%1==0 and width>=1 and width<=3840
+        and type(height)=='number' and height%1==0 and height>=1 and height<=2160,'Invalid raw capture dimensions.')
+    assert(type(run)=='string' and #run==32 and run:match('^[0-9a-f]+$'),'Invalid raw capture run.')
+    assert(link,'Raw capture requires a terrain link.')
+    local bytes=width*height*4
+    return frame_metadata(id,epoch,camera,check_link(link),{{file='raw',size=bytes},{file='none',size=0},
+        {file='raw',size=bytes}},width,height,5,run)
+end
+Capture.publish_metadata=publish
 -- Logger timestamps bracket each optional HD stage, including failed calls.
 local function stage(trace,name,run)
     if not trace then return run() end

@@ -21,8 +21,12 @@ public final class CaptureProjection {
         return new CameraPose(x, y, z, (float) Math.IEEEremainder(camera.yaw() - 90, 360), (float) -camera.pitch(), vertical);
     }
     static double horizontalExtent(int width, int height) {
+        return horizontalExtent(width, height, 16, 9);
+    }
+    static double horizontalExtent(int width, int height, int captureWidth, int captureHeight) {
         require(width > 0 && height > 0, "Invalid viewport");
-        return (16.0 / 9) / ((double) width / height); // Both bounded capture sizes have this aspect ratio.
+        require(captureWidth > 0 && captureHeight > 0, "Invalid capture dimensions");
+        return ((double) captureWidth / captureHeight) / ((double) width / height);
     }
     static double blocks(double units, double scale) {
         require(Double.isFinite(units) && Double.isFinite(scale) && scale > 0, "Invalid coordinate scale");

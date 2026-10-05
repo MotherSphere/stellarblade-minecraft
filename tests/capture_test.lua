@@ -615,6 +615,12 @@ check('adapter matches reflected API arity and disables automatic rendering befo
     function capture:CaptureScene(...) assert(select('#',...)==0 and self.TextureTarget==target); self.captured=true end
     local actor={IsValid=valid,CaptureComponent2D=capture}
     function actor:K2_DestroyActor(...) assert(select('#',...)==0 and capture.TextureTarget==null); self.destroyed=true end
+    function actor:K2_SetActorLocationAndRotation(...)
+        assert(select('#',...)==5)
+        local position,rotation,sweep,hit,teleport=...
+        assert(position.X==1 and rotation.Pitch==4 and sweep==false and type(hit)=='table' and teleport==true)
+        self.moved=true;return true
+    end
     local world={IsValid=valid,GetAddress=function()return 12 end}
     function world:SpawnActor(...) assert(select('#',...)==3); return actor end
     local pawn={id=11,IsValid=valid,GetAddress=function()return 11 end,GetWorld=function()return world end,
@@ -659,6 +665,10 @@ check('adapter matches reflected API arity and disables automatic rendering befo
     adapter.export_bmp(image,directory,'test.bmp')
     writer.async=true; adapter.export_async(image,directory,'test.bmp',2)
     writer.filename='test.png'; writer.format=0; adapter.export_async(image,directory,'test.png',0)
+    mode.persistent=true;adapter.configure(owned,camera,mode)
+    assert(capture.bAlwaysPersistRenderingState==true,'Raw capture must retain rendering history')
+    adapter.update(owned,camera);assert(owned.moved and capture.FOVAngle==70)
+    writer.filename='depth.exr';writer.format=3;adapter.export_async(image,directory,'depth.exr',3)
     adapter.destroy(owned); adapter.release(image)
     assert(capture.captured and lib.released and writer.called)
 end)

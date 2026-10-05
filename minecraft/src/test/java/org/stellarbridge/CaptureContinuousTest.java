@@ -22,14 +22,14 @@ public final class CaptureContinuousTest {
         Path directory = Files.createTempDirectory("stellar-continuous-capture-");
         try {
             try (var unavailable = new CaptureStream(directory)) {
-                rejects(() -> unavailable.startHd(SESSION, 1, ORIGIN, System.nanoTime()));
+                rejects(() -> unavailable.startEncoded(SESSION, 1, ORIGIN, System.nanoTime()));
                 assert !Files.exists(directory.resolve("eve-stream.txt")) : "Missing watcher must not request native work";
             }
             CaptureFrame.startWatching(directory);
             Files.delete(directory);
             Files.createDirectory(directory);
             try (var invalidated = new CaptureStream(directory)) {
-                rejects(() -> invalidated.startHd(SESSION, 1, ORIGIN, System.nanoTime()));
+                rejects(() -> invalidated.startEncoded(SESSION, 1, ORIGIN, System.nanoTime()));
                 assert !Files.exists(directory.resolve("eve-stream.txt")) : "Invalidated watcher must not request native work";
             }
             CaptureFrame.stopWatching();
@@ -45,7 +45,7 @@ public final class CaptureContinuousTest {
                     Thread.sleep(50);
                 }
                 assert !Files.exists(directory.resolve("eve-frame.txt")) && !Files.exists(directory.resolve("eve-stream.txt"));
-                stream.startHd(SESSION, 1, ORIGIN, System.nanoTime());
+                stream.startEncoded(SESSION, 1, ORIGIN, System.nanoTime());
                 String firstRun = stream.mailbox.request().run();
                 assert firstRun.matches("[0-9a-f]{32}");
                 String request = Files.readString(directory.resolve("eve-stream.txt"));
@@ -98,7 +98,7 @@ public final class CaptureContinuousTest {
                 id = id();
                 String secondRun;
                 try (var color = begin(directory, id, firstRun, 2)) {
-                    stream.startHd(SESSION, 2, ORIGIN, System.nanoTime());
+                    stream.startEncoded(SESSION, 2, ORIGIN, System.nanoTime());
                     secondRun = stream.mailbox.request().run();
                     assert !firstRun.equals(secondRun);
                 }
@@ -136,7 +136,7 @@ public final class CaptureContinuousTest {
             // A stale descriptor still settles; age is an adoption rule, not permission to strand a writer.
             CaptureFrame.startWatching(directory);
             try (var stream = new CaptureStream(directory)) {
-                stream.startHd(SESSION, 1, ORIGIN, System.nanoTime());
+                stream.startEncoded(SESSION, 1, ORIGIN, System.nanoTime());
                 String run = stream.mailbox.request().run(), old = (now() - 60) + "-1";
                 try (var color = begin(directory, old, run, 1)) { }
                 awaitAck(directory, run, old);
@@ -149,7 +149,7 @@ public final class CaptureContinuousTest {
             // Truncated/invalid payloads never ACK even after close.
             CaptureFrame.startWatching(directory);
             try (var stream = new CaptureStream(directory)) {
-                stream.startHd(SESSION, 1, ORIGIN, System.nanoTime());
+                stream.startEncoded(SESSION, 1, ORIGIN, System.nanoTime());
                 String run = stream.mailbox.request().run(), invalid = id();
                 try (var color = begin(directory, invalid, run, 1)) { color.write(0); }
                 Thread.sleep(160);

@@ -22,6 +22,7 @@ java {
 tasks.withType(JavaCompile).configureEach { options.release = 21 }
 
 processResources {
+    from('../THIRD-PARTY-NOTICES.md')
     inputs.property 'version', project.version
     filesMatching('fabric.mod.json') { expand(version: project.version) }
 }
@@ -155,3 +156,11 @@ tasks.register('controlHooksTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn controlHooksTest
+
+tasks.register('rawFrameBusTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.RawFrameBusTest'
+    jvmArgs '-ea'
+}
+check.dependsOn rawFrameBusTest
