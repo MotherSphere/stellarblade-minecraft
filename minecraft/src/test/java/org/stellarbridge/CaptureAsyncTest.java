@@ -37,6 +37,25 @@ public final class CaptureAsyncTest {
         validatePng(mask);
         Path directory = Files.createTempDirectory("stellar-async-capture-");
         try {
+            // Pose/terrain traffic exists before the first capture. A bounded backlog is not lost evidence.
+            try (var watch = new CaptureCloseWatch(directory)) {
+                synchronized (watch) {
+                    for (int i = 0; i < 2000; i++) {
+                        Path temporary = directory.resolve("eve-pose.tmp");
+                        Files.writeString(temporary, "pose " + i);
+                        Files.move(temporary, directory.resolve("eve-pose.txt"), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    try { watch.available(directory); } catch (IOException pending) {
+                        assert pending.getMessage().contains("catching up") : "Backlog must remain retryable: " + pending;
+                    }
+                    watch.available(directory); // A second bounded batch must finish without a poisoned epoch.
+                    Files.write(directory.resolve(PREFIX + "color.bmp"), bmp);
+                    Files.write(directory.resolve(PREFIX + "mask.png"), mask);
+                    Files.write(directory.resolve(PREFIX + "depth.hdr"), depth);
+                    watch.requireReady(directory, ID);
+                }
+            }
+            clear(directory);
             try (var watch = new CaptureCloseWatch(directory)) {
                 // The descriptor may be published before its asynchronous images exist.
                 Files.writeString(directory.resolve("eve-frame.txt"), descriptor);
@@ -126,6 +145,7 @@ public final class CaptureAsyncTest {
                 try (var watch = new CaptureCloseWatch(directory)) {
                     watch.event(failure, "");
                     rejects(watch::drain);
+                    rejects(watch::drain); // Real loss never becomes a retryable backlog.
                 }
             }
             try (var watch = new CaptureCloseWatch(directory)) {

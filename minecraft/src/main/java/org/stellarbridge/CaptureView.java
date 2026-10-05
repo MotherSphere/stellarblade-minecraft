@@ -46,6 +46,7 @@ public final class CaptureView {
     private static Binding liveBinding;
 
     static void initialize() {
+        stream = new CaptureStream(directory()); // Observe closes before the first command, including while Minecraft is paused.
         ControlBridge.initialize();
         CoreShaderRegistrationCallback.EVENT.register(context -> context.register(
                 Identifier.of("stellar_bridge", "eve_composite"), VertexFormats.POSITION_TEXTURE, program -> shader = program));
@@ -156,7 +157,6 @@ public final class CaptureView {
             source.sendError(Text.literal("Enter the linked private creative terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
             return 0;
         }
-        if (stream == null) stream = new CaptureStream(directory());
         try {
             if (hd) stream.startHd(context.session(), context.revision(), context.origin(), System.nanoTime());
             else stream.mailbox.start(context.session(), context.revision(), context.origin(), System.nanoTime());

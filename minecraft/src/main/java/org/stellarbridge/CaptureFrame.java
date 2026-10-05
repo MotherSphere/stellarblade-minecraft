@@ -69,6 +69,15 @@ final class CaptureFrame {
         watch.available(directory);
     }
 
+    static void pollWatching() {
+        var watch = closeWatch;
+        if (watch == null) return;
+        try { watch.drain(); }
+        catch (IOException pendingOrInvalid) {
+            // HD readiness reports a permanent failure; idle polling must not disable legacy image reads.
+        }
+    }
+
     static Metadata parse(byte[] bytes) {
         require(bytes.length > 0 && bytes.length <= 2048, "Capture descriptor exceeds limits");
         for (byte value : bytes)

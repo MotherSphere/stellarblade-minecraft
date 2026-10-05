@@ -82,7 +82,7 @@ final class CaptureCloseWatch implements AutoCloseable {
 
     synchronized void drain() throws IOException {
         check();
-        // ponytail: bounded polling on existing callers; overflow or budget exhaustion aborts this epoch.
+        // Bounded callers resume a backlog on their next poll. Only observed loss invalidates this epoch.
         for (int attempt = 0; attempt < 16; attempt++) {
             long count = ((ssize_t) read.invoke(ssize_t.class, new Object[] {fd, buffer, new size_t(buffer.size())})).longValue();
             if (count < 0) {
@@ -123,8 +123,8 @@ final class CaptureCloseWatch implements AutoCloseable {
                 offset += 16L + length;
             }
         }
-        invalidate("Capture close notification budget exhausted");
-        check();
+        // Do not accept readiness until EAGAIN: a later queued event could still invalidate a closed image.
+        throw new IOException("Capture close notifications are catching up; try again");
     }
 
     synchronized void event(int mask, String name) {

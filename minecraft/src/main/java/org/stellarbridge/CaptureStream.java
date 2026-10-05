@@ -48,6 +48,7 @@ final class CaptureStream implements AutoCloseable {
         Request request = mailbox.request();
         NativeImage color = null;
         try {
+            CaptureFrame.pollWatching(); // Drain unrelated bridge writes even without a descriptor or during ACK retries.
             if (settling != null) { acknowledge(); return; }
             long started = System.nanoTime();
             var frame = CaptureFrame.readForStream(directory, now(), previousReadId, request == null || request.run() != null);

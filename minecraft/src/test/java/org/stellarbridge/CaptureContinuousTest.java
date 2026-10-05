@@ -35,6 +35,16 @@ public final class CaptureContinuousTest {
             CaptureFrame.stopWatching();
             CaptureFrame.startWatching(directory);
             try (var stream = new CaptureStream(directory)) {
+                // Ordinary bridge traffic must drain before the first live command or capture descriptor.
+                for (int wave = 0; wave < 3; wave++) {
+                    for (int i = 0; i < 2000; i++) {
+                        Path temporary = directory.resolve("eve-pose.tmp");
+                        Files.writeString(temporary, "pose " + i);
+                        Files.move(temporary, directory.resolve("eve-pose.txt"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    Thread.sleep(50);
+                }
+                assert !Files.exists(directory.resolve("eve-frame.txt")) && !Files.exists(directory.resolve("eve-stream.txt"));
                 stream.startHd(SESSION, 1, ORIGIN, System.nanoTime());
                 String firstRun = stream.mailbox.request().run();
                 assert firstRun.matches("[0-9a-f]{32}");
