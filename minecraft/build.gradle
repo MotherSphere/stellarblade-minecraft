@@ -115,3 +115,11 @@ tasks.register('captureHdTest', JavaExec) {
     jvmArgs '-ea'
 }
 check.dependsOn captureHdTest
+
+tasks.register('captureBmpTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.CaptureBmpTest'
+    jvmArgs '-ea'
+}
+check.dependsOn captureBmpTest

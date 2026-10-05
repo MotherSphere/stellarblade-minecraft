@@ -69,7 +69,7 @@ final class CapturePreview {
             CaptureFrame.Loaded loaded = CaptureFrame.read(directory, now());
             long readDepthNanos = System.nanoTime() - loadStarted;
             long decodeStarted = System.nanoTime();
-            color = CaptureImages.decodeMasked(loaded.color(), loaded.mask(), loaded.metadata().width(), loaded.metadata().height());
+            color = CaptureImages.decodeMasked(loaded);
             long decodeNanos = System.nanoTime() - decodeStarted;
             CaptureFrame.verifyUnchanged(directory, loaded.descriptor());
             if (!eligible(client) || !CaptureFrame.fresh(loaded.metadata().time(), now()))
@@ -83,8 +83,8 @@ final class CapturePreview {
             frame = loaded.metadata();
             world = client.world;
             org.slf4j.LoggerFactory.getLogger("stellar_bridge").info(
-                    "EVE preview still accepted frame={} width={} height={} read_depth_ms={} png_mask_ms={} upload_submit_ms={} total_ms={}",
-                    frame.id(), frame.width(), frame.height(), readDepthNanos / 1_000_000.0, decodeNanos / 1_000_000.0,
+                    "EVE preview still accepted frame={} version={} width={} height={} read_depth_ms={} color_mask_ms={} upload_submit_ms={} total_ms={}",
+                    frame.id(), frame.version(), frame.width(), frame.height(), readDepthNanos / 1_000_000.0, decodeNanos / 1_000_000.0,
                     uploadNanos / 1_000_000.0, (System.nanoTime() - loadStarted) / 1_000_000.0);
             source.sendFeedback(Text.literal("EVE capture loaded (" + frame.width() + "x" + frame.height() + "): one still, expiring 30 seconds after capture. "
                     + "Cutout preview; partial hair and transparency are unsupported."));

@@ -44,10 +44,12 @@ local function backend()
         write(dir..'/'..name,b.image or (b.bad_export and 'wrong format' or image))
     end
     function b.export_bmp(target,dir,name)
-        assert(target==b.png_target and target.mode.width==1280 and target.mode.height==720 and target.mode.source==2)
+        assert(target.mode.width==1280 and target.mode.height==720 and target.mode.source==2)
+        if name=='eve-exportbmp.bmp' then assert(target==b.png_target) end
         b.bmp_exports=(b.bmp_exports or 0)+1
+        b.files[#b.files+1]=name
         if b.fail_bmp then error('BMP export failed') end
-        write(dir..'/'..name,b.bmp_image or bmp_hd(32))
+        write(dir..'/'..name,b.bmp_image or bmp_hd(24))
     end
     function b.destroy() if b.fail_destroy then error('destroy failed') end; b.actors=b.actors-1 end
     function b.release() if b.fail_release then error('release failed') end; b.targets=b.targets-1 end
@@ -156,12 +158,18 @@ check('BMP exceptions and invalid headers use existing cleanup and resource retr
 end)
 local frame_files={}
 local function track_frame(b) for _,name in ipairs(b.files) do frame_files[name]=true end end
-check('HD frames share paired publication and cleanup while preserving default dimensions',function()
+check('HD BMP v2 and explicit PNG fallback share publication and cleanup',function()
     local b,logs=backend(),{}
     local c=Capture.new(b,directory,function(message) logs[#logs+1]=message end)
     assert(c.frame(nil,'hd')); track_frame(b)
-    assert(read(directory..'/eve-frame.txt'):match('\nSIZE 1280 720\n'))
-    assert(read(directory..'/'..b.files[1])==png_hd and read(directory..'/'..b.files[2])==png_hd)
+    local metadata=read(directory..'/eve-frame.txt')
+    assert(metadata:match('^SBMC_FRAME 2 ') and metadata:match('\nSIZE 1280 720\n'))
+    assert(metadata:match('\nCOLOR eve%-frame%-%d+%-%d+%-color.bmp %d+\n'))
+    for _,label in ipairs({'COLOR','MASK','DEPTH'}) do
+        local name,size=metadata:match('\n'..label..' ([a-z0-9%.%-]+) (%d+)\n')
+        assert(name and #read(directory..'/'..name)==tonumber(size),'Version 2 must publish each actual byte length')
+    end
+    assert(read(directory..'/'..b.files[1])==bmp_hd(24) and read(directory..'/'..b.files[2])==png_hd)
     assert(read(directory..'/'..b.files[3])==hdr_hd and b.camera_reads==1 and b.actors==0 and b.targets==0)
     assert(table.concat(b.sources,',')=='2,0,4' and b.cameras[1]==b.cameras[2] and b.cameras[2]==b.cameras[3])
     local joined=table.concat(logs,'\n')
@@ -170,12 +178,34 @@ check('HD frames share paired publication and cleanup while preserving default d
         'depth allocation','depth capture','depth export','depth validation','cleanup','publication'}) do
         assert(joined:find(stage..' start',1,true) and joined:find(stage..' end',1,true),'Missing HD stage timing: '..stage)
     end
+    local old={table.unpack(b.files)}
+    assert(c.frame(nil,'hd-png')); track_frame(b)
+    metadata=read(directory..'/eve-frame.txt')
+    assert(metadata:match('^SBMC_FRAME 1 ') and metadata:match('\nSIZE 1280 720\n'))
+    assert(metadata:match('\nCOLOR eve%-frame%-%d+%-%d+%-color.png %d+\n'))
+    for _,name in ipairs(old) do assert(not read(directory..'/'..name),'PNG fallback must retire the preceding BMP frame') end
     local log_count=#logs
     assert(c.frame()); track_frame(b)
-    assert(read(directory..'/eve-frame.txt'):match('\nSIZE 320 180\n') and #logs==log_count)
+    metadata=read(directory..'/eve-frame.txt')
+    assert(metadata:match('^SBMC_FRAME 1 ') and metadata:match('\nSIZE 320 180\n') and #logs==log_count)
     local previous=read(directory..'/eve-frame.txt'); local spawned=b.spawned
     assert(not c.frame(nil,'other') and b.spawned==spawned and read(directory..'/eve-frame.txt')==previous)
     assert(c.clear())
+end)
+check('BMP frame failures retain the last complete generation and allow explicit PNG fallback',function()
+    local b=backend(); local c=Capture.new(b,directory); assert(c.frame(nil,'hd')); track_frame(b)
+    local previous=read(directory..'/eve-frame.txt'); local old={table.unpack(b.files)}
+    for _,failure in ipairs({'exception','layout','mask'}) do
+        b.fail_bmp=failure=='exception'
+        b.bmp_image=failure=='layout' and bmp_hd(32) or nil
+        b.fail_export_at=failure=='mask' and b.exports+1 or nil
+        assert(not c.frame(nil,'hd')); track_frame(b)
+        assert(read(directory..'/eve-frame.txt')==previous and b.actors==0 and b.targets==0)
+        for _,name in ipairs(old) do assert(read(directory..'/'..name)) end
+    end
+    b.fail_bmp=true; b.bmp_image=nil; b.fail_export_at=nil
+    assert(c.frame(nil,'hd-png'),'Explicit PNG fallback must not call the BMP exporter'); track_frame(b)
+    assert(read(directory..'/eve-frame.txt'):match('^SBMC_FRAME 1 ')); assert(c.clear())
 end)
 check('HD rejects mismatched headers and oversized files through shared cleanup',function()
     for _,invalid in ipairs({png,png_hd..string.rep('\0',4*1024*1024)}) do
@@ -226,14 +256,15 @@ check('failed frame preserves the previous complete descriptor and images',funct
     for _,name in ipairs(names) do assert(not read(directory..'/'..name),'Old owned images survive successful replacement') end
 end)
 check('descriptor rename failure restores the preceding complete frame',function()
-    local b=backend(); local c=Capture.new(b,directory); assert(c.frame()); track_frame(b)
+    local b=backend(); local c=Capture.new(b,directory); assert(c.frame(nil,'hd')); track_frame(b)
     local previous=assert(read(directory..'/eve-frame.txt')); local names={table.unpack(b.files)}
+    assert(previous:match('^SBMC_FRAME 2 '))
     local rename=os.rename
     os.rename=function(from,to)
         if to==directory..'/eve-frame.txt' then return nil,'simulated rename failure',13 end
         return rename(from,to)
     end
-    local ran,ok=pcall(c.frame)
+    local ran,ok=pcall(c.frame,nil,'hd')
     os.rename=rename
     track_frame(b)
     assert(ran and not ok and read(directory..'/eve-frame.txt')==previous)

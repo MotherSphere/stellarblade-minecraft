@@ -45,7 +45,7 @@ final class CaptureStream implements AutoCloseable {
             if (!fresh(frame.metadata().time(), now())
                     || !CaptureProjection.matches(frame.metadata(), request.session(), request.revision(), now())) return;
             var camera = CaptureProjection.camera(frame.metadata(), request.origin());
-            color = CaptureImages.decodeMasked(frame.color(), frame.mask(), frame.metadata().width(), frame.metadata().height());
+            color = CaptureImages.decodeMasked(frame);
             CaptureFrame.verifyUnchanged(directory, frame.descriptor());
             var prepared = new Prepared(frame.metadata(), camera, color, frame.depth(), System.nanoTime() - started);
             color = null;

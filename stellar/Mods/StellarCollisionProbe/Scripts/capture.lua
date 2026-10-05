@@ -7,14 +7,14 @@
 -- FILE <fixedImageBasename> <byteLength>
 -- END <captureId>
 -- Coordinates use Stellar Blade world units; color alpha is unverified inverse opacity.
--- Paired frame metadata v1: ten ASCII LF lines, with a trailing LF.
--- SBMC_FRAME 1 <unixSeconds-counter> <unixSeconds>
+-- Paired frame metadata v1/v2: ten ASCII LF lines, with a trailing LF.
+-- SBMC_FRAME <1|2> <unixSeconds-counter> <unixSeconds>
 -- SIZE <320 180|1280 720> (HD is an explicit still profile only)
 -- CAMERA <x> <y> <z> <pitch> <yaw> <roll> <horizontalFovDegrees>
 -- PAWN <x> <y> <z> <capsuleHalfHeight>
 -- CONTEXT <pawnAddress> <worldAddress>
 -- LINK <none|32lowerHexSession> <terrainAck> <scale> <relativeFeetX> <relativeFeetY> <relativeFeetZ>
--- COLOR eve-frame-<id>-color.png <byteLength>
+-- COLOR eve-frame-<id>-color.<png|bmp> <byteLength> (v2 uses BMP)
 -- MASK eve-frame-<id>-mask.png <byteLength>
 -- DEPTH eve-frame-<id>-depth.hdr <byteLength>
 -- END <id>
@@ -91,7 +91,7 @@ local function image_size(path,kind,mode)
     end
     return #data
 end
-local function bmp_info(path,width,height)
+local function bmp_info(path,width,height,frame_color)
     local file=assert(io.open(path,'rb'),'Native BMP export is unavailable.')
     local data=file:read(4*1024*1024+1); file:close()
     assert(data and #data>=54 and #data<=4*1024*1024 and data:sub(1,2)=='BM','BMP size or signature is invalid.')
@@ -106,8 +106,14 @@ local function bmp_info(path,width,height)
     local required=((w*bits+31)//32)*4*math.abs(h)
     assert(offset>=14+header and offset+required<=#data and (pixel_size==0 or pixel_size==required),
         'BMP pixel layout is incomplete or inconsistent.')
+    if frame_color then
+        local colors,important=string.unpack('<I4I4',data,47)
+        assert(header==40 and bits==24 and h>0 and offset==54 and offset+required==#data
+            and pixel_size==required and colors==0 and important==0,
+            'Frame v2 requires the validated native 24-bit bottom-up BMP layout.')
+    end
     return string.format('%dx%d, %d bpp, compression %d, %s, %d bytes',w,math.abs(h),bits,compression,
-        h<0 and 'top-down' or 'bottom-up',#data)
+        h<0 and 'top-down' or 'bottom-up',#data),#data
 end
 local function metadata(kind,id,epoch,mode,camera,size)
     local p,r,e=camera.position,camera.rotation,camera.pawn_position
@@ -154,12 +160,12 @@ local function check_link(link)
     assert(type(p)=='table' and finite(p.x) and finite(p.y) and finite(p.z),'Frame link has an invalid relative position.')
     return string.format('LINK %s %d %.9g %.9g %.9g %.9g\n',link.session,link.ack,link.scale,p.x,p.y,p.z)
 end
-local function frame_metadata(id,epoch,camera,link_line,layers,width,height)
+local function frame_metadata(id,epoch,camera,link_line,layers,width,height,version)
     local p,r,e=camera.position,camera.rotation,camera.pawn_position
-    return string.format('SBMC_FRAME 1 %s %d\nSIZE %d %d\n'
+    return string.format('SBMC_FRAME %d %s %d\nSIZE %d %d\n'
         ..'CAMERA %.9g %.9g %.9g %.9g %.9g %.9g %.9g\n'
         ..'PAWN %.9g %.9g %.9g %.9g\nCONTEXT %d %d\n',
-        id,epoch,width,height,p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll,camera.fov,e.X,e.Y,e.Z,camera.half_height,camera.pawn_id,camera.world_id)
+        version,id,epoch,width,height,p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll,camera.fov,e.X,e.Y,e.Z,camera.half_height,camera.pawn_id,camera.world_id)
         ..link_line..string.format('COLOR %s %d\nMASK %s %d\nDEPTH %s %d\nEND %s\n',
         layers[1].file,layers[1].size,layers[2].file,layers[2].size,layers[3].file,layers[3].size,id)
 end
@@ -237,8 +243,17 @@ function Capture.new(engine,directory,log)
         label=label or kind
         local handle=allocate_capture(camera,mode,trace,label)
         stage(trace,label..' capture',function() engine.capture(handle.actor) end)
-        stage(trace,label..' export',function() engine.export(handle.actor,handle.target,directory,mode.file) end)
-        return stage(trace,label..' validation',function() return image_size(directory..'/'..mode.file,kind,mode) end)
+        stage(trace,label..' export',function()
+            if kind=='bmp' then engine.export_bmp(handle.target,directory,mode.file)
+            else engine.export(handle.actor,handle.target,directory,mode.file) end
+        end)
+        return stage(trace,label..' validation',function()
+            if kind=='bmp' then
+                local _,size=bmp_info(directory..'/'..mode.file,mode.width,mode.height,true)
+                return size
+            end
+            return image_size(directory..'/'..mode.file,kind,mode)
+        end)
     end
     function api.exportbmp()
         if api.status()~='idle' then return false,'Capture cleanup is required before the BMP comparison.' end
@@ -290,14 +305,15 @@ function Capture.new(engine,directory,log)
         return true,'Exported '..mode.file..' and paired metadata; isolated pixels still require inspection.'
     end
     function api.frame(link,profile)
-        if profile~=nil and profile~='hd' then return false,'Frame profile must be omitted or hd.' end
+        if profile~=nil and profile~='hd' and profile~='hd-png' then return false,'Frame profile must be omitted, hd or hd-png.' end
         if api.status()~='idle' then return false,'Capture cleanup is required before another frame.' end
         local width,height=320,180
-        if profile=='hd' then width,height=1280,720 end
+        if profile then width,height=1280,720 end
+        local version=profile=='hd' and 2 or 1
         local layers={}
         local result,id
         local trace
-        if profile=='hd' and log then
+        if profile and log then
             trace=function(message) pcall(log,'HD frame '..(id or 'pending')..' '..message) end
         end
         local ok,why=pcall(function()
@@ -310,17 +326,18 @@ function Capture.new(engine,directory,log)
             repeat
                 frame_counter=frame_counter+1; id=string.format('%d-%d',epoch,frame_counter)
                 available=true
-                for _,suffix in ipairs({'color.png','mask.png','depth.hdr'}) do
+                for _,suffix in ipairs({'color.png','color.bmp','mask.png','depth.hdr'}) do
                     local file=io.open(directory..'/eve-frame-'..id..'-'..suffix,'rb')
                     if file then file:close(); available=false end
                 end
             until available
-            for _,spec in ipairs({{'color',2,2,'png'},{'mask',0,2,'png'},{'depth',4,6,'hdr'}}) do
+            for _,spec in ipairs({{'color',2,2,version==2 and 'bmp' or 'png'},{'mask',0,2,'png'},{'depth',4,6,'hdr'}}) do
                 local layer={width=width,height=height,source=spec[2],format=spec[3],file='eve-frame-'..id..'-'..spec[1]..'.'..spec[4]}
                 layers[#layers+1]=layer
-                layer.size=capture_layer(camera,layer,spec[1]=='depth' and 'depth' or 'color',trace,spec[1])
+                local kind=spec[4]=='bmp' and 'bmp' or (spec[1]=='depth' and 'depth' or 'color')
+                layer.size=capture_layer(camera,layer,kind,trace,spec[1])
             end
-            result=frame_metadata(id,epoch,camera,link_line,layers,width,height)
+            result=frame_metadata(id,epoch,camera,link_line,layers,width,height,version)
         end)
         local cleaned,cleanup_message=stage(trace,'cleanup',api.cleanup)
         if not ok or not cleaned then

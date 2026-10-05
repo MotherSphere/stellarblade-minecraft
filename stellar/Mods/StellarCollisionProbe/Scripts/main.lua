@@ -152,7 +152,8 @@ local function paired_still(profile)
     if pose and pose.state=='entered' then
         link={session=pose.session,ack=pose.ack,scale=config.scale,position=pose.position}
     end
-    log(profile=='hd' and 'Native HD frame capture started (1280x720 still).' or 'Native frame capture started.')
+    log(profile=='hd-png' and 'Native HD PNG baseline capture started (1280x720 still).'
+        or profile=='hd' and 'Native HD frame capture started (1280x720 still).' or 'Native frame capture started.')
     return capture.frame(link,profile)
 end
 local actions = {
@@ -192,6 +193,7 @@ local actions = {
     end,
     frame=function() return paired_still() end,
     framehd=function() return paired_still('hd') end,
+    framehdpng=function() return paired_still('hd-png') end,
     capture=function()
         assert(capture,'Install with --bridge-dir to enable native image capture.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
@@ -246,7 +248,7 @@ local function dispatch(name)
         local ok, err = pcall(function()
             if name=='status' then status(); return end
             local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, exportbmp, capture, depth or capturecleanup.')
+            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, exportbmp, capture, depth or capturecleanup.')
             local success, message = action()
             log((success and 'OK: ' or 'STOP: ')..message)
             if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
@@ -316,4 +318,4 @@ if bridge then
         return false
     end)
 end
-log('Loaded revision 18; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc exportbmp compares synchronous color exports. No geometry or capture created at startup.')
+log('Loaded revision 19; idle. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports. No geometry or capture created at startup.')

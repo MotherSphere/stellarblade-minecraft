@@ -2,6 +2,7 @@ package org.stellarbridge;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -20,7 +21,7 @@ final class CaptureFrame {
     record Context(long pawn, long world) { }
     record Link(String session, int ack, double scale, Position feet) { }
     record Metadata(String id, long time, double fov, int colorBytes, int maskBytes, int depthBytes,
-                    Camera camera, Pawn pawn, Context context, Link link, int width, int height) { }
+                    Camera camera, Pawn pawn, Context context, Link link, int width, int height, int version) { }
     record Loaded(Metadata metadata, byte[] descriptor, byte[] color, byte[] mask, float[] depth) { }
 
     static Metadata parse(byte[] bytes) {
@@ -30,7 +31,8 @@ final class CaptureFrame {
         String[] lines = new String(bytes, StandardCharsets.US_ASCII).split("\n", -1);
         require(lines.length == 11 && lines[10].isEmpty(), "Capture descriptor must have exactly ten lines");
         String[] header = fields(lines[0], "SBMC_FRAME", 4);
-        require(header[1].equals("1") && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
+        require((header[1].equals("1") || header[1].equals("2")) && header[2].matches("[0-9]+-[0-9]+"), "Unsupported capture header");
+        int version = Integer.parseInt(header[1]);
         String id = header[2];
         long time = integer(header[3], 0, MAX_INTEGER);
         String[] sequence = id.split("-", -1);
@@ -55,7 +57,7 @@ final class CaptureFrame {
         require(decimal(link[3]) > 0, "Invalid capture scale");
         double x = decimal(link[4]), y = decimal(link[5]), z = decimal(link[6]);
         require(!unlinked || ack == 0 && x == 0 && y == 0 && z == 0, "Unlinked capture has bridge coordinates");
-        int color = imageLine(lines[6], "COLOR", id, "color.png");
+        int color = imageLine(lines[6], "COLOR", id, version == 2 ? "color.bmp" : "color.png");
         int mask = imageLine(lines[7], "MASK", id, "mask.png");
         int depth = imageLine(lines[8], "DEPTH", id, "depth.hdr");
         require(fields(lines[9], "END", 2)[1].equals(id), "Capture footer mismatch");
@@ -64,7 +66,7 @@ final class CaptureFrame {
                         decimal(camera[4]), decimal(camera[5]), decimal(camera[6])),
                 new Pawn(new Position(decimal(pawn[1]), decimal(pawn[2]), decimal(pawn[3])), decimal(pawn[4])),
                 new Context(integer(context[1], 1, MAX_INTEGER), integer(context[2], 1, MAX_INTEGER)),
-                new Link(link[1], (int) ack, decimal(link[3]), new Position(x, y, z)), width, height);
+                new Link(link[1], (int) ack, decimal(link[3]), new Position(x, y, z)), width, height, version);
     }
 
     static boolean supportedSize(int width, int height) {
@@ -97,12 +99,14 @@ final class CaptureFrame {
         require(fresh(metadata.time, now), "Capture is older than 30 seconds or has a future timestamp");
         if (!newer(metadata.id, previousId)) return null;
         String prefix = "eve-frame-" + metadata.id + "-";
-        byte[] color = readFile(directory, prefix + "color.png", MAX_IMAGE_BYTES);
+        byte[] color = readFile(directory, prefix + (metadata.version == 2 ? "color.bmp" : "color.png"), MAX_IMAGE_BYTES);
         byte[] mask = readFile(directory, prefix + "mask.png", MAX_IMAGE_BYTES);
         byte[] depth = readFile(directory, prefix + "depth.hdr", MAX_IMAGE_BYTES);
         require(color.length == metadata.colorBytes && mask.length == metadata.maskBytes && depth.length == metadata.depthBytes,
                 "Capture image size does not match its descriptor");
-        validatePng(color, metadata.width, metadata.height); validatePng(mask, metadata.width, metadata.height);
+        if (metadata.version == 2) validateBmp(color, metadata.width, metadata.height);
+        else validatePng(color, metadata.width, metadata.height);
+        validatePng(mask, metadata.width, metadata.height);
         float[] decodedDepth = decodeDepth(depth, metadata.width, metadata.height);
         verifyUnchanged(directory, descriptor);
         return new Loaded(metadata, descriptor, color, mask, decodedDepth);
@@ -150,6 +154,20 @@ final class CaptureFrame {
             }
         }
         require(pixels && ended, "Incomplete capture PNG");
+    }
+
+    static void validateBmp(byte[] bytes, int width, int height) {
+        require(supportedSize(width, height), "Unsupported capture BMP dimensions");
+        require(bytes.length >= 54 && bytes.length <= MAX_IMAGE_BYTES, "Capture BMP byte count exceeds limits");
+        ByteBuffer input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        require(input.getShort(0) == 0x4d42 && input.getInt(2) == bytes.length && input.getInt(6) == 0
+                && input.getInt(10) == 54 && input.getInt(14) == 40, "Invalid native BMP header");
+        require(input.getInt(18) == width && input.getInt(22) == height && input.getShort(26) == 1
+                && input.getShort(28) == 24 && input.getInt(30) == 0,
+                "Capture BMP must be bottom-up RGB24 BI_RGB and match the descriptor dimensions");
+        int pixelBytes = ((width * 3 + 3) & ~3) * height;
+        require(input.getInt(34) == pixelBytes && bytes.length == 54 + pixelBytes
+                && input.getInt(46) == 0 && input.getInt(50) == 0, "Invalid native BMP pixel layout");
     }
 
     static float[] decodeDepth(byte[] bytes) {

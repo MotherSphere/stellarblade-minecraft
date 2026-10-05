@@ -189,7 +189,7 @@ public final class CaptureView {
                 throw new IOException("Capture LINK does not match the active terrain session and revision");
             var camera = CaptureProjection.camera(loaded.metadata(), context.origin());
             long decodeStarted = System.nanoTime();
-            color = CaptureImages.decodeMasked(loaded.color(), loaded.mask(), loaded.metadata().width(), loaded.metadata().height());
+            color = CaptureImages.decodeMasked(loaded);
             long decodeNanos = System.nanoTime() - decodeStarted;
             CaptureFrame.verifyUnchanged(directory, loaded.descriptor());
             long uploadStarted = System.nanoTime();
@@ -203,8 +203,8 @@ public final class CaptureView {
             texture = null;
             depthTexture = 0;
             LoggerFactory.getLogger("stellar_bridge").info(
-                    "EVE still accepted frame={} width={} height={} read_depth_ms={} png_mask_ms={} upload_submit_ms={} total_ms={}",
-                    loaded.metadata().id(), loaded.metadata().width(), loaded.metadata().height(), readDepthNanos / 1_000_000.0,
+                    "EVE still accepted frame={} version={} width={} height={} read_depth_ms={} color_mask_ms={} upload_submit_ms={} total_ms={}",
+                    loaded.metadata().id(), loaded.metadata().version(), loaded.metadata().width(), loaded.metadata().height(), readDepthNanos / 1_000_000.0,
                     decodeNanos / 1_000_000.0, uploadNanos / 1_000_000.0, (System.nanoTime() - loadStarted) / 1_000_000.0);
             source.sendFeedback(Text.literal("EVE still view loaded (" + loaded.metadata().width() + "x" + loaded.metadata().height()
                     + "): camera and depth from one capture, expires after 30 seconds. /stellarview off restores the camera."));
