@@ -44,7 +44,9 @@ Transport uses bounded versioned text snapshots with session IDs, revisions, tim
 
 This route displays Minecraft block faces inside Stellar Blade, preserving EVE's normal rendering, animation and camera. It avoids the low-resolution EVE frame transport described in the diagnostic sections below. Both games still run: Minecraft owns the world and block changes, while Stellar Blade owns EVE's movement.
 
-This renderer is experimental. Native mesh creation, the corrected upper grass faces and a live wool-block addition have been observed in game. A bounded flat-patch test with both games open averaged 59.7 native engine frames per second over 131 seconds. This is an average engine counter, not a guarantee of frame-time consistency or larger-world performance. Further block-update and traversal checks remain in progress.
+This renderer is experimental. In-game checks confirmed the grass surface and exterior block faces, native traversal, live block addition/removal, and a wool-to-stone appearance change without a collision revision. With both games open, bounded flat-patch checks averaged 59.7 native engine frames per second over 131 seconds, and 57.9 over 147 seconds including block edits and window switching. These are average engine counters, not frame-time consistency measurements or larger-world performance guarantees.
+
+The linked world also remained active with Minecraft's pause menu open and Stellar Blade in focus. F11 returned EVE and cleaned up the native scene; `/stellar stop` restored Minecraft's normal menu pause behavior.
 
 1. In the prepared Minecraft world, run `/stellar start` while standing on the floor.
 2. Load the outdoor Stellar Blade save, then use **F5** to import collision and **F8** to enter the lab.
