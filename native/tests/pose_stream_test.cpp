@@ -240,28 +240,26 @@ int main() {
     assert(!turn_controller(engine, c, 5, 5) && inputs.empty() && "A pawn without a virtual table is never called");
   }
   {
-    // Minecraft's motion goes forward; 15 % of the remaining gap closes per poll.
+    // Minecraft's motion goes forward; 15 % of the remaining yaw gap closes per poll.
     Follow f;
-    auto t = follow(f, 10, 100, 0, 90);
-    assert(t.engaged && std::fabs(t.yaw - 1.5f) < 1e-4f && std::fabs(t.pitch - 1.5f) < 1e-4f && "First poll: gap only");
-    t = follow(f, 10, 110, 0, 100);
+    auto t = follow(f, 10, 100, 90);
+    assert(t.engaged && std::fabs(t.yaw - 1.5f) < 1e-4f && t.pitch == 0 && "First poll: yaw gap only");
+    t = follow(f, 4, 110, 100);
     assert(std::fabs(t.yaw - (10 + 1.5f)) < 1e-4f && "Then Minecraft's motion since the last poll");
+    assert(std::fabs(t.pitch - -6) < 1e-4f && "Pitch gets Minecraft's motion alone");
     Follow wrapped;
-    follow(wrapped, 0, 350, 0, 350);
-    t = follow(wrapped, 0, 10, 0, 355);
+    follow(wrapped, 0, 350, 350);
+    t = follow(wrapped, 0, 10, 355);
     assert(std::fabs(t.yaw - (20 + 0.15f * 15)) < 1e-3f && "Turns take the short way across 0/360");
-    Follow pitch;
-    t = follow(pitch, -20, 0, 350, 0);
-    assert(std::fabs(t.pitch - 0.15f * -10) < 1e-3f && "Controller pitch in [0, 360) compares as signed");
     Follow spin;
-    t = follow(spin, 0, 0, 0, 0);
-    t = follow(spin, 0, 170, 0, 0);
+    t = follow(spin, 0, 0, 0);
+    t = follow(spin, 0, 170, 0);
     assert(t.yaw == MaxTurn && "One poll never turns more than MaxTurn");
     Follow stuck;
     for (uint32_t k = 0; k < FarPolls; k++)
-      t = follow(stuck, 0, 90, 0, 0);
+      t = follow(stuck, 0, 90, 0);
     assert(!t.engaged && t.yaw == 0 && "A camera far away for FarPolls polls is not following: stop");
-    t = follow(stuck, 0, 10, 0, 0);
+    t = follow(stuck, 0, 10, 0);
     assert(t.engaged && "Back within FarDegrees, input resumes");
   }
 
@@ -327,11 +325,15 @@ int main() {
     on_gameplay_poll(std::string(32, '9'));
     assert(controller_status() == RotationValid && inputs.empty() && "Another run's input cannot turn this camera");
     on_gameplay_poll(Run);
-    // Controller (-10, 135), Minecraft (-15, 270): 15 % of the gap, through the scales.
-    assert(controller_status() == (RotationValid | LookApplied) && inputs.size() == 2 &&
+    // Controller yaw 135, Minecraft 270: 15 % of the gap, through the yaw scale; no pitch motion yet.
+    assert(controller_status() == (RotationValid | LookApplied) && inputs.size() == 1 &&
            inputs[0].first == 'y' && std::fabs(inputs[0].second - 0.15f * 135 / 2.5f) < 1e-4f &&
-           inputs[1].first == 'p' && std::fabs(inputs[1].second - 0.15f * -5 / -2.5f) < 1e-4f &&
            "Turned through the pawn's look input");
+    inputs.clear();
+    look(-25, -90, stellar_shared::wall_now(), 1);
+    on_gameplay_poll(Run);
+    assert(inputs.size() == 2 && inputs[1].first == 'p' && std::fabs(inputs[1].second - -10 / -2.5f) < 1e-4f &&
+           "Minecraft's pitch motion goes through the pitch scale");
     float unturned;
     std::memcpy(&unturned, base + Header + SlotBytes * (stellar_shared::load32(base, 128) & 3) + 44, 4);
     assert(unturned == 135 && "The slot carries the rotation read before the turn");

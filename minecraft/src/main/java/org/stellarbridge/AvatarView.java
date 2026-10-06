@@ -258,7 +258,9 @@ public final class AvatarView {
             if (current.controlled) {
                 var player = MinecraftClient.getInstance().player;
                 // Minecraft yaw + 90 and negated pitch are Unreal's; the adapter turns toward them while input is forwarded.
-                if (player != null) current.stream.look(-player.getPitch(), player.getYaw() + 90, System.currentTimeMillis());
+                // Minecraft's yaw keeps counting turns; the adapter takes one turn.
+                if (player != null)
+                    current.stream.look(-player.getPitch(), (float) Math.IEEEremainder(player.getYaw() + 90.0, 360), System.currentTimeMillis());
                 ControlBridge.avatarFrame();
             }
         } catch (IOException | RuntimeException failure) {

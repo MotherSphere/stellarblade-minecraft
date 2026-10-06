@@ -64,8 +64,10 @@ bool read_controller(const Engine &, const Controller &, float *out);
 // class and its virtual table lies in the game image.
 bool turn_controller(const Engine &, const Controller &, float pitch, float yaw);
 // Look input for one gameplay poll: Minecraft's camera motion since the last
-// poll plus a share of the remaining gap to the controller's rotation, so the
-// game's camera follows like it follows a mouse. Degrees.
+// poll, plus for yaw a share of the remaining gap to the controller's rotation,
+// so the game's camera follows like it follows a mouse. The controller's pitch
+// does not track Stellar Blade's camera pitch, so pitch gets the motion alone.
+// Degrees.
 struct Follow {
   bool previous = false;
   float pitch = 0, yaw = 0;
@@ -77,7 +79,7 @@ struct Turn {
   float pitch = 0, yaw = 0;
   bool engaged = false; // False after FarPolls far polls: the camera is not following.
 };
-Turn follow(Follow &, float look_pitch, float look_yaw, float pitch, float yaw);
+Turn follow(Follow &, float look_pitch, float look_yaw, float yaw);
 // Bits of the controller status word in a slot.
 constexpr uint32_t RotationValid = 1, LookApplied = 2;
 

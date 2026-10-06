@@ -288,10 +288,10 @@ bool turn_controller(const Engine &engine, const Controller &c, float pitch, flo
   return true;
 }
 
-Turn follow(Follow &f, float look_pitch, float look_yaw, float pitch, float yaw) {
+Turn follow(Follow &f, float look_pitch, float look_yaw, float yaw) {
   auto wrap = [](float degrees) { return std::remainder(degrees, 360.0f); };
   auto limit = [](float degrees) { return std::clamp(degrees, -MaxTurn, MaxTurn); };
-  float gap_yaw = wrap(look_yaw - yaw), gap_pitch = wrap(look_pitch) - wrap(pitch);
+  float gap_yaw = wrap(look_yaw - yaw);
   Turn turn;
   if (f.previous) {
     turn.yaw = wrap(look_yaw - f.yaw);
@@ -305,7 +305,7 @@ Turn follow(Follow &f, float look_pitch, float look_yaw, float pitch, float yaw)
   // input ignored, or a game that turns differently); stop adding to it.
   turn.engaged = f.apart < FarPolls;
   turn.yaw = turn.engaged ? limit(turn.yaw + FollowGain * gap_yaw) : 0;
-  turn.pitch = turn.engaged ? limit(turn.pitch + FollowGain * gap_pitch) : 0;
+  turn.pitch = turn.engaged ? limit(turn.pitch) : 0;
   return turn;
 }
 
@@ -590,7 +590,7 @@ void on_gameplay_poll(std::string_view owner) {
   bool applied = false;
   float pitch = 0, yaw = 0;
   if (rotated && !owner.empty() && owner == producer.run() && producer.look(wall, pitch, yaw)) {
-    auto turn = follow(following, pitch, yaw, rotation[0], rotation[1]);
+    auto turn = follow(following, pitch, yaw, rotation[1]);
     applied = turn.engaged && guarded_turn(engine, *table->controller, turn.pitch, turn.yaw);
   } else
     following = {};
