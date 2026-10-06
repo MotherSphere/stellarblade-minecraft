@@ -24,6 +24,10 @@ public final class ControlBridge {
     private static ControlFiles files;
     private static boolean build;
     private static double lookX, lookY, gain = 2500;
+    // Avatar control: the pose stream gates input and Minecraft's camera steers Stellar Blade's (yaw only).
+    private static boolean avatar;
+    private static long publishedNanos;
+    static final double STEER_DEGREES = 45; // Yaw error that turns Stellar Blade's camera at full stick.
     private static String failure = "";
 
     static void initialize() {
@@ -46,7 +50,14 @@ public final class ControlBridge {
         clearMinecraftActions(true);
     }
 
+    /** Like start, but gated by the avatar pose stream instead of captured images. */
+    static void startAvatar(Path directory, String run, String session) throws IOException {
+        start(directory, run, session);
+        avatar = true;
+    }
+
     static void stop() {
+        avatar = false;
         if (state != null) {
             state.stop();
             publish();
@@ -87,7 +98,7 @@ public final class ControlBridge {
     }
     static String status() {
         return state == null ? "Minecraft input forwarding is off."
-                : "EVE input: " + (build ? "build" : "EVE") + "; " + state.reason()
+                : "EVE input" + (avatar ? " (avatar)" : "") + ": " + (build ? "build" : "EVE") + "; " + state.reason()
                         + "; look gain " + gain + (failure.isEmpty() ? "" : "; " + failure);
     }
 
@@ -134,6 +145,7 @@ public final class ControlBridge {
     /** Called only at vanilla's sensitivity/invert-Y adjusted gameplay look invocation. */
     public static boolean mouseLook(double x, double y) {
         if (state == null || !windowOwned()) return false;
+        if (avatar) return false; // Minecraft turns its own camera; axes() steers Stellar Blade toward it.
         if (state.active() && frameReady()) {
             lookX = Math.clamp(lookX + x, -1000, 1000);
             lookY = Math.clamp(lookY - y, -1000, 1000); // XInput up is positive.
@@ -194,10 +206,37 @@ public final class ControlBridge {
         for (int i = 4; i < held.length; i++) state.button(BUTTON[i], !build && held[i], time);
     }
 
+    /** Each avatar render frame: refresh the steering and publish at most every 20 ms, the adapter's read period. */
+    static void avatarFrame() {
+        if (state == null || !avatar || !state.active() || !windowOwned()) return;
+        state.axes(axes());
+        if (System.nanoTime() - publishedNanos >= 20_000_000L) publish();
+    }
+
+    /**
+     * Avatar steering: the left stick rotated from Minecraft's camera yaw into Stellar Blade's controller yaw, and a
+     * right stick X proportional to the remaining yaw error. Returns left X, left Y, right X.
+     */
+    static int[] steer(double minecraftYaw, double unrealYaw, int lx, int ly) {
+        double error = Math.IEEEremainder(minecraftYaw + 90 - unrealYaw, 360); // Minecraft yaw + 90 is Unreal yaw.
+        double radians = Math.toRadians(error), cos = Math.cos(radians), sin = Math.sin(radians);
+        int x = (int) Math.round(Math.clamp(lx * cos + ly * sin, -32767, 32767));
+        int y = (int) Math.round(Math.clamp(-lx * sin + ly * cos, -32767, 32767));
+        int turn = Math.abs(error) < 1 ? 0 : (int) Math.round(Math.clamp(error / STEER_DEGREES, -1, 1) * 32767);
+        return new int[] {x, y, turn};
+    }
+
     private static ControlState.Axes axes() {
         int x = build ? 0 : (held[3] ? 1 : 0) - (held[2] ? 1 : 0);
         int y = build ? 0 : (held[0] ? 1 : 0) - (held[1] ? 1 : 0);
         int scale = x != 0 && y != 0 ? 23170 : 32767;
+        if (avatar) {
+            var player = MinecraftClient.getInstance().player;
+            float[] rotation = AvatarView.controllerRotation();
+            if (player == null || rotation == null) return new ControlState.Axes(x * scale, y * scale, 0, 0);
+            int[] steered = steer(player.getYaw(), rotation[1], x * scale, y * scale);
+            return new ControlState.Axes(steered[0], steered[1], steered[2], 0);
+        }
         return new ControlState.Axes(x * scale, y * scale,
                 (int) Math.clamp(Math.round(lookX * gain), -32767, 32767),
                 (int) Math.clamp(Math.round(lookY * gain), -32767, 32767));
@@ -225,11 +264,12 @@ public final class ControlBridge {
                 && !InputUtil.isKeyPressed(client.getWindow().getHandle(), GLFW.GLFW_KEY_F3);
     }
     private static boolean frameReady() {
-        return state != null && CaptureView.controlFrameReady(state.run(), state.session(), System.nanoTime());
+        return state != null && (avatar ? AvatarView.controlReady(state.run(), state.session(), System.nanoTime())
+                : CaptureView.controlFrameReady(state.run(), state.session(), System.nanoTime()));
     }
     private static void publish() {
         if (state == null || files == null) return;
-        try { files.publish(state.packet(System.currentTimeMillis())); failure = ""; }
+        try { files.publish(state.packet(System.currentTimeMillis())); failure = ""; publishedNanos = System.nanoTime(); }
         catch (IOException | IllegalArgumentException error) {
             state.unavailable("controller publication failed");
             failure = error.getMessage(); // Native's independent lease still releases even when this write fails.

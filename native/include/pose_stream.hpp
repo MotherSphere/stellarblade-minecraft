@@ -27,9 +27,15 @@ struct Component {
   uint64_t object = 0, cls = 0, mesh = 0;
   uint32_t bones = 0, morphs = 0;
 };
+// The local player controller; ControlRotation (Pitch, Yaw, Roll) at offset.
+struct Controller {
+  uint64_t object = 0, cls = 0;
+  uint32_t offset = 0;
+};
 struct Table {
   std::string run;
   uint64_t generation = 0;
+  std::optional<Controller> controller;
   std::vector<Component> components;
   uint32_t floats = 0; // 10 world + 10 per bone + 1 per morph, per component.
 };
@@ -48,6 +54,8 @@ struct Engine {
 // invalid) and returns its status bits. The object must still be the live,
 // non-pending-kill object of the published class with the published mesh.
 uint32_t read_component(const Engine &, const Component &, float *out);
+// Copies the controller's Pitch, Yaw and Roll; false (and zeros) unless live.
+bool read_controller(const Engine &, const Controller &, float *out);
 
 // Producer side of eve-pose-<RUN>.bin. The caller serializes every method.
 class Producer {
@@ -65,8 +73,8 @@ public:
   bool active(uint64_t wall) const;
   const std::string &run() const;
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
-               const float *payload, uint32_t floats, uint64_t wall,
-               uint32_t read_us);
+               const float *payload, uint32_t floats, const float *rotation,
+               uint64_t wall, uint32_t read_us);
   void fail(uint32_t);
   void stop();
 };

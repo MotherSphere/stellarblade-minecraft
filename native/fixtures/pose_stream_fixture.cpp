@@ -74,7 +74,7 @@ int main(int argc, char **argv) {
     require(request && request->active, "No active pose request");
     // What Lua would publish for these two components.
     auto table = "SBMC_POSE_COMPONENTS 1\nRUN " + request->run +
-                 "\nGENERATION 1\nSESSION none\nANCHOR none\nCOUNT 2\nCOMPONENT 1 " + hex(body.bytes) +
+                 "\nGENERATION 1\nSESSION none\nANCHOR none\nCONTROLLER none\nCOUNT 2\nCOMPONENT 1 " + hex(body.bytes) +
                  " 0000000000001000 0000000000002000 3 0 CharacterMesh0 CH_P_EVE_52_TypeB -\n"
                  "BONES 1 Root Bip001 Bip001-Head\nCOMPONENT 2 " + hex(face.bytes) +
                  " 0000000000001000 0000000000002000 0 2 Mesh_Face CH_P_EVE_Face_Jali3 CharacterMesh0\n"

@@ -133,6 +133,17 @@ function Adapter.new()
         end)
         return list
     end
+    -- The local player controller and the byte offset of its ControlRotation (Pitch, Yaw, Roll floats).
+    function engine.controller()
+        local controller=valid(UE.GetPlayerController())
+        if not controller then return nil end
+        local property=controller:Reflection():GetProperty('ControlRotation')
+        local pointer=string.format('%p',property:ContainerPtrToValuePtr(controller,0)):gsub('^0[xX]','')
+        local object=controller:GetAddress()
+        local offset=tonumber(pointer,16)-object
+        assert(offset>0 and offset<0x4000 and offset%4==0,'Unexpected ControlRotation offset.')
+        return {object=object,class=valid(controller:GetClass()):GetAddress(),offset=offset}
+    end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)
         local bones,morphs={},{}

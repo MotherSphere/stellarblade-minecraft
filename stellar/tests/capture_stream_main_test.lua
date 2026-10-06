@@ -116,11 +116,12 @@ package.loaded.pose_probe={new=function(engine,directory,clock,logger)
     return {start=function() pose_starts=pose_starts+1; return true,'pose recording' end,
         tick=function(frame) pose_frames[#pose_frames+1]=frame; return true end}
 end}
-local stream_ticks,stream_link,stream_error=0,nil,false
+local stream_ticks,stream_link,stream_error,stream_binding=0,nil,false,nil
 package.loaded.pose_stream={new=function(engine,directory,clock,logger,link)
     assert(type(engine)=='table' and directory=='/unused' and clock==os.time and type(logger)=='function' and type(link)=='function')
     stream_link=link
-    return {tick=function() stream_ticks=stream_ticks+1; if stream_error then error('identities failed') end; return true end}
+    return {tick=function() stream_ticks=stream_ticks+1; if stream_error then error('identities failed') end; return true end,
+        binding=function() return stream_binding end}
 end}
 package.loaded.native_scene={new=function(_,received,directory,scale) assert(received==bridge and directory=='/unused' and scale==100); return scene end}
 package.loaded.scene_adapter={new=function()return {} end}
@@ -306,5 +307,11 @@ assert(place and place.session==string.rep('a',32) and place.anchor.Z==3 and pla
 stream_error=true; loop(); drain(); stream_error=false
 assert(logs[#logs]:find('Pose stream paused',1,true) and logs[#logs]:find('identities failed',1,true),'Stream failures are reported, not fatal')
 loop(); drain(); assert(stream_ticks==ticks+3,'The bridge timer keeps running after a stream failure')
+-- Without continuous capture, the avatar stream's binding grants the native input permit.
+stream_binding={run=string.rep('d',32),session=string.rep('a',32)}
+next_hd_frame(); assert(permit_context and permit_context.pawn==11,'The avatar binding publishes a checked native permit')
+stream_binding={run=string.rep('d',32),session=string.rep('e',32)}
+next_hd_frame(); assert(not permit_context,'A binding for another link session is refused')
+stream_binding=nil; next_hd_frame(); assert(not permit_context,'No binding, no permit')
 keys.F11(); drain()
-print('PASS pose stream wiring: bridge-timer checks, entered placement and nonfatal failures')
+print('PASS pose stream wiring: bridge-timer checks, entered placement, nonfatal failures and avatar input permits')

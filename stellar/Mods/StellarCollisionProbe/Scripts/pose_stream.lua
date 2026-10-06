@@ -18,7 +18,7 @@ function Stream.parse_request(text)
 end
 function Stream.new(engine,directory,clock,log,link)
     local api={}
-    local run,generation,signature,published
+    local run,generation,signature,published,binding
     local function read(name,bound)
         local f=io.open(directory..'/'..name,'rb')
         if not f then return nil end
@@ -36,10 +36,11 @@ function Stream.new(engine,directory,clock,log,link)
         end
         return best
     end
-    local function encode(list,place)
+    local function encode(list,place,controller)
         local lines={'SBMC_POSE_COMPONENTS 1','RUN '..run,'GENERATION '..generation,
             'SESSION '..(place and place.session or 'none'),
             place and string.format('ANCHOR %.17g %.17g %.17g %.17g',place.anchor.X,place.anchor.Y,place.anchor.Z,place.scale) or 'ANCHOR none',
+            controller and string.format('CONTROLLER %s %s %08x',hex(controller.object),hex(controller.class),controller.offset) or 'CONTROLLER none',
             'COUNT '..#list}
         for index,c in ipairs(list) do
             lines[#lines+1]=string.format('COMPONENT %d %s %s %s %d %d %s %s %s',index,hex(c.object),hex(c.class),hex(c.mesh),
@@ -68,6 +69,7 @@ function Stream.new(engine,directory,clock,log,link)
         local request=Stream.parse_request(read('eve-pose-request.txt',512))
         local now=clock()*1000
         if not request or not request.active or math.abs(now-request.time)>LEASE_MS then
+            binding=nil
             if run then run,signature,published=nil,nil,nil; return true,'Pose stream idle.' end
             return true
         end
@@ -80,7 +82,12 @@ function Stream.new(engine,directory,clock,log,link)
         end
         assert(#list>0 and #list<=16,'EVE needs one to sixteen drawable skeletal mesh components.')
         local place=link()
-        local parts={place and string.format('%s %.17g %.17g %.17g %.17g',place.session,place.anchor.X,place.anchor.Y,place.anchor.Z,place.scale) or 'none'}
+        local found,controller=pcall(engine.controller)
+        if not found then controller=nil end
+        -- Minecraft's avatar controls are permitted only for this run and the entered link.
+        binding=place and {run=run,session=place.session} or nil
+        local parts={place and string.format('%s %.17g %.17g %.17g %.17g',place.session,place.anchor.X,place.anchor.Y,place.anchor.Z,place.scale) or 'none',
+            controller and string.format('%d:%d:%d',controller.object,controller.class,controller.offset) or 'no controller'}
         for _,c in ipairs(list) do
             parts[#parts+1]=table.concat({c.name,c.object,c.class,c.mesh,c.mesh_name,c.leader or '-'},':')
         end
@@ -96,16 +103,18 @@ function Stream.new(engine,directory,clock,log,link)
         for _,c in ipairs(list) do floats=floats+10+10*#c.bones+#c.morphs end
         assert(floats<=16352,'EVE pose exceeds one stream slot.')
         generation=generation+1
-        local text=encode(list,place)
+        local text=encode(list,place,controller)
         assert(#text<=65536,'EVE component table exceeds the stream bound.')
         write(text)
         signature=next_signature
         published=generation
-        return true,string.format('Pose stream generation %d: %d components%s%s.',generation,#list,
+        return true,string.format('Pose stream generation %d: %d components%s%s%s.',generation,#list,
             place and ', anchored to the entered link' or ', no entered link',
+            controller and '' or ', no controller rotation',
             #skipped>0 and '; skipped '..table.concat(skipped,', ') or '')
     end
     function api.generation() return published end
+    function api.binding() return binding end
     return api
 end
 return Stream

@@ -25,7 +25,7 @@ struct Fake {
     alignas(16) float space[2][3 * 12]{}; // Two double-buffered 3-bone arrays.
     float morphs[2]{};
   };
-  Object a, b;
+  Object a, b, controller;
   Fake() {
     chunks[0] = items.data();
     auto table = reinterpret_cast<uintptr_t>(chunks);
@@ -34,6 +34,9 @@ struct Fake {
     std::memcpy(objects + 0x24, &count, 4);
     setup(a, 3);
     setup(b, 5);
+    setup(controller, 6);
+    float rotation[3] = {-10, 135, 0};
+    std::memcpy(controller.bytes + 0x318, rotation, sizeof rotation);
   }
   void setup(Object &o, int32_t index) {
     auto self = reinterpret_cast<uintptr_t>(o.bytes);
@@ -74,9 +77,11 @@ static std::string hex(uint64_t value) {
   std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(value));
   return text;
 }
-static std::string components(uint64_t generation, uint64_t a, uint64_t b) {
+static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint64_t controller = 0) {
   return "SBMC_POSE_COMPONENTS 1\nRUN " + Run + "\nGENERATION " +
-         std::to_string(generation) + "\nSESSION none\nANCHOR 1 2 3 100\nCOUNT 2\n"
+         std::to_string(generation) + "\nSESSION none\nANCHOR 1 2 3 100\n" +
+         (controller ? "CONTROLLER " + hex(controller) + " 0000000000001000 00000318\n" : std::string("CONTROLLER none\n")) +
+         "COUNT 2\n"
          "COMPONENT 1 " + hex(a) + " 0000000000001000 0000000000002000 3 2 Body Mesh -\n"
          "BONES 1 Root Hip Head\nMORPHS 1 Smile Blink\n"
          "COMPONENT 2 " + hex(b) + " 0000000000001000 0000000000002000 0 2 Face FaceMesh Body\n"
@@ -119,6 +124,17 @@ int main() {
   assert(broken("END 4", "END 5"));
   assert(broken("0000000000001000 0000000000002000 3", "0000000000001001 0000000000002000 3"));
   assert(broken("ANCHOR 1 2 3 100", "ANCHOR 1 2"));
+  assert(broken("CONTROLLER none", "CONTROLLER"));
+  {
+    auto with = parse_components(components(4, 0x10, 0x20, 0x30));
+    assert(with && with->controller && with->controller->object == 0x30 && with->controller->offset == 0x318);
+    auto text = components(4, 0x10, 0x20, 0x30);
+    for (auto bad : {"00000319", "00004000", "00000000", "318"}) {
+      auto copy = text;
+      copy.replace(copy.find("00000318"), 8, bad);
+      assert(!parse_components(copy) && "Controller offsets are aligned, bounded and eight hex digits");
+    }
+  }
   assert(broken("MORPHS 2 Smile Blink\n", ""));
   assert(broken("3 2 Body", "300 2 Body"));
   // Payload must fit one slot.
@@ -177,6 +193,13 @@ int main() {
   std::memcpy(fake.b.bytes + 0x0c, &outside, 4);
   assert(read_component(engine, Fake::component(fake.b), out.data()) == 0);
   assert(read_component(Engine{}, Fake::component(fake.b), out.data()) == 0);
+  {
+    float rotation[3] = {9, 9, 9};
+    Controller c{reinterpret_cast<uint64_t>(fake.controller.bytes), 0x1000, 0x318};
+    assert(read_controller(engine, c, rotation) && rotation[0] == -10 && rotation[1] == 135 && rotation[2] == 0);
+    c.cls = 0x1008;
+    assert(!read_controller(engine, c, rotation) && rotation[1] == 0 && "Another class is never read");
+  }
 
   // End to end on a real mapping: worker installs the table, game thread publishes.
   Fake live;
@@ -198,7 +221,8 @@ int main() {
     stellar_shared::put(bytes.data(), 264, now);
     std::ofstream(path, std::ios::binary).write(reinterpret_cast<char *>(bytes.data()), bytes.size());
   }
-  auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes));
+  auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
+                          reinterpret_cast<uint64_t>(live.controller.bytes));
   on_gameplay_poll(); // Nothing installed yet.
   poll_files(directory.wstring(), request(now), slots, "", now);
   on_gameplay_poll();
@@ -214,6 +238,8 @@ int main() {
     assert(stellar_shared::plain<uint32_t>(slot, 28) == 2 && stellar_shared::plain<uint32_t>(slot, 32) == 54);
     assert(stellar_shared::plain<uint32_t>(slot, 64) == 7 && stellar_shared::plain<uint32_t>(slot, 68) == (WorldValid | MorphsValid));
     assert(stellar_shared::plain<float>(slot, 128 + 4 * 4) == 100);
+    assert(stellar_shared::plain<uint32_t>(slot, 36) == 1 && stellar_shared::plain<float>(slot, 44) == 135 &&
+           "The controller rotation travels in the slot header");
     assert(stellar_shared::plain<float>(slot, 128 + 4 * (42 + 10)) == 0.25f && "Follower morphs follow its world transform");
     on_gameplay_poll();
     assert(stellar_shared::load64(base, 216) == 2 && stellar_shared::load32(base, 128) == (0 | 4));

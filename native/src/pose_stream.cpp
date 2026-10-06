@@ -70,6 +70,16 @@ bool address(std::string_view s, uint64_t &out) {
   }
   return out != 0 && (out & 7) == 0;
 }
+bool hex32(std::string_view s, uint64_t &out) {
+  out = 0;
+  for (char c : s) {
+    int digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+    if (digit < 0)
+      return false;
+    out = out << 4 | uint64_t(digit);
+  }
+  return !s.empty();
+}
 bool names(std::string_view line, std::string_view key, uint32_t index,
            uint32_t count) {
   auto parts = split(line);
@@ -134,6 +144,20 @@ std::optional<Table> parse_components(std::string_view text) {
   auto anchor = split(lines.rows[lines.at++]);
   bool none = anchor.size() == 2 && anchor[1] == "none";
   if (anchor.empty() || anchor[0] != "ANCHOR" || (!none && anchor.size() != 5))
+    return {};
+  if (lines.at >= lines.rows.size())
+    return {};
+  auto controller = split(lines.rows[lines.at++]);
+  if (controller.size() == 4 && controller[0] == "CONTROLLER") {
+    Controller c;
+    uint64_t offset = 0;
+    if (!address(controller[1], c.object) || !address(controller[2], c.cls) ||
+        controller[3].size() != 8 || !hex32(controller[3], offset) || !offset ||
+        offset >= 0x4000 || offset % 4)
+      return {};
+    c.offset = static_cast<uint32_t>(offset);
+    table.controller = c;
+  } else if (controller.size() != 2 || controller[0] != "CONTROLLER" || controller[1] != "none")
     return {};
   if (!lines.num("COUNT", count) || !count || count > MaxComponents)
     return {};
@@ -208,6 +232,16 @@ uint32_t read_component(const Engine &engine, const Component &c, float *out) {
     }
   }
   return status;
+}
+
+bool read_controller(const Engine &engine, const Controller &c, float *out) {
+  std::memset(out, 0, 3 * sizeof(float));
+  auto object = static_cast<uintptr_t>(c.object);
+  if (!engine.objects || !alive(engine.objects, object) ||
+      at<uint64_t>(object + ClassPrivate) != c.cls)
+    return false;
+  std::memcpy(out, reinterpret_cast<const void *>(object + c.offset), 3 * sizeof(float));
+  return true;
 }
 
 struct Producer::Impl {
@@ -312,7 +346,8 @@ void Producer::heartbeat(uint64_t wall) {
 }
 bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
-                       uint64_t wall, uint32_t read_us) {
+                       const float *rotation, uint64_t wall,
+                       uint32_t read_us) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -326,6 +361,11 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   put(slot, 24, Format);
   put(slot, 28, count);
   put(slot, 32, floats);
+  // Controller rotation: status at 36, Pitch, Yaw, Roll at 40.
+  if (rotation) {
+    put(slot, 36, uint32_t(1));
+    std::memcpy(slot + 40, rotation, 3 * sizeof(float));
+  }
   std::memcpy(slot + 64, status, sizeof(uint32_t) * count);
   std::memcpy(slot + SlotHeader, payload, sizeof(float) * floats);
   // Same back/middle/front exchange as the raw frame mapping.
@@ -396,9 +436,20 @@ uint32_t guarded(const Engine &e, const Component &c, float *out) {
     return 0;
   }
 }
+bool guarded(const Engine &e, const Controller &c, float *out) {
+  __try {
+    return read_controller(e, c, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    std::memset(out, 0, 3 * sizeof(float));
+    return false;
+  }
+}
 #else
 uint32_t guarded(const Engine &e, const Component &c, float *out) {
   return read_component(e, c, out);
+}
+bool guarded(const Engine &e, const Controller &c, float *out) {
+  return read_controller(e, c, out);
 }
 #endif
 } // namespace
@@ -440,8 +491,11 @@ void on_gameplay_poll() {
     status[count++] = guarded(engine, c, payload.data() + offset);
     offset += 10 + 10 * c.bones + c.morphs;
   }
+  float rotation[3];
+  bool rotated = table->controller && guarded(engine, *table->controller, rotation);
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
-                   offset, wall, static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)));
+                   offset, rotated ? rotation : nullptr, wall,
+                   static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)));
 }
 } // namespace stellar_pose

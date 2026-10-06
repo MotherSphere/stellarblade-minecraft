@@ -23,10 +23,17 @@ final class AvatarStream implements AutoCloseable {
     private static final long MAX = 9007199254740991L;
     private static final byte[] MAGIC = "SBMCPOS1".getBytes(StandardCharsets.US_ASCII);
 
-    /** A Lua component table; anchor is Unreal X, Y, Z and units per block, or null without an entered link. */
-    record Table(String run, long generation, String session, double[] anchor, List<AvatarRecording.Component> components, int floats) { }
-    /** One published pose: per component status bits and its floats (world, component-space bones, morph weights). */
-    record Sample(long counter, long publication, long generation, int[] status, float[] payload) { }
+    /**
+     * A Lua component table; anchor is Unreal X, Y, Z and units per block, or null without an entered link.
+     * controller says whether poses carry the player controller's rotation.
+     */
+    record Table(String run, long generation, String session, double[] anchor, boolean controller,
+                 List<AvatarRecording.Component> components, int floats) { }
+    /**
+     * One published pose: per component status bits and its floats (world, component-space bones, morph weights),
+     * and the controller's Unreal Pitch, Yaw, Roll in degrees or null.
+     */
+    record Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation) { }
 
     final String run;
     final Path path;
@@ -122,10 +129,13 @@ final class AvatarStream implements AutoCloseable {
         previousCounter = counter;
         require(map.getInt(at + 24) == 1 && generation > 0 && count >= 1 && count <= 16 && floats >= 0 && floats <= CAPACITY,
                 "Invalid pose slot layout");
-        zeros(at + 36, at + 64);
+        int rotated = map.getInt(at + 36);
+        require(rotated == 0 || rotated == 1, "Invalid controller rotation status");
+        if (rotated == 0) zeros(at + 40, at + 52);
+        zeros(at + 52, at + 64);
         zeros(at + 64 + 4 * count, at + SLOT_HEADER);
         RawFrameBus.LONG.setRelease(map, 272, counter);
-        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null);
+        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null);
         require(count == table.components.size() && floats == table.floats, "Pose slot does not match its component table");
         int[] status = new int[count];
         for (int i = 0; i < count; i++) {
@@ -138,7 +148,12 @@ final class AvatarStream implements AutoCloseable {
         require((int) RawFrameBus.INT.getAcquire(map, 192) == producerPid && (int) RawFrameBus.INT.getAcquire(map, 196) == 1,
                 "Pose producer stopped during the copy");
         for (float value : payload) require(Float.isFinite(value), "Non-finite pose value");
-        return new Sample(counter, publication, generation, status, payload);
+        float[] rotation = null;
+        if (rotated == 1) {
+            rotation = new float[] {map.getFloat(at + 40), map.getFloat(at + 44), map.getFloat(at + 48)};
+            for (float value : rotation) require(Float.isFinite(value), "Non-finite controller rotation");
+        }
+        return new Sample(counter, publication, generation, status, payload, rotation);
     }
 
     /** Producer statistics: published poses, then last, maximum and mean native read microseconds. */
@@ -212,6 +227,13 @@ final class AvatarStream implements AutoCloseable {
                 }
                 require(anchor[3] > 0, "scale");
             } else require(anchorFields.length == 2 && anchorFields[1].equals("none"), "anchor form");
+            String[] controller = lines[at++].split(" ", -1);
+            require(controller[0].equals("CONTROLLER"), "controller");
+            boolean controlled = controller.length == 4;
+            if (controlled) require(controller[1].matches("[0-9a-f]{16}") && controller[2].matches("[0-9a-f]{16}")
+                    && controller[3].matches("[0-9a-f]{8}") && Integer.parseInt(controller[3], 16) % 4 == 0
+                    && Integer.parseInt(controller[3], 16) > 0 && Integer.parseInt(controller[3], 16) < 0x4000, "controller fields");
+            else require(controller.length == 2 && controller[1].equals("none"), "controller form");
             int count = Integer.parseInt(value(lines[at++], "COUNT"));
             require(count >= 1 && count <= 16, "count");
             List<AvatarRecording.Component> components = new ArrayList<>();
@@ -232,7 +254,7 @@ final class AvatarStream implements AutoCloseable {
                 floats += 10 + 10L * bones + morphs;
             }
             require(floats <= CAPACITY && lines[at++].equals("END " + generation) && at == lines.length, "end");
-            return new Table(run, generation, session, anchor, List.copyOf(components), (int) floats);
+            return new Table(run, generation, session, anchor, controlled, List.copyOf(components), (int) floats);
         } catch (IOException | RuntimeException rejected) {
             return null;
         }

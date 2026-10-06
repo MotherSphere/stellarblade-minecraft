@@ -53,11 +53,13 @@ public final class AvatarView {
         AvatarStream.Table table;
         AvatarModel model;
         AvatarRenderer renderer;
-        AvatarRecording.Pose pose;
+        // Displayed pose, blended from the previous display toward the newest sample over one sample interval.
+        AvatarRecording.Pose pose, from, to;
+        float[] rotation; // Stellar Blade's controller Pitch, Yaw, Roll from the newest sample, or null.
         Vector3d relativeOrigin;
-        boolean posed, anchored;
+        boolean posed, anchored, controlled;
         long poses, incomplete, lastPoseNanos, windowPoses, windowNanos;
-        double rate;
+        double rate, interval = 1e9 / 60;
         Live(AvatarStream stream, ClientWorld world, Path pack, Vec3d relativeAnchor) {
             this.stream = stream; this.world = world; this.pack = pack; this.relativeAnchor = relativeAnchor;
             windowNanos = System.nanoTime();
@@ -69,6 +71,7 @@ public final class AvatarView {
                 ClientCommandManager.literal("stellaravatar")
                         .then(ClientCommandManager.literal("replay").executes(context -> replay(context.getSource())))
                         .then(ClientCommandManager.literal("live").executes(context -> live(context.getSource())))
+                        .then(ClientCommandManager.literal("play").executes(context -> play(context.getSource())))
                         .then(ClientCommandManager.literal("status").executes(context -> {
                             context.getSource().sendFeedback(Text.literal(status()));
                             return 1;
@@ -125,6 +128,25 @@ public final class AvatarView {
         } finally {
             if (renderer != null) renderer.close();
         }
+    }
+
+    /** EVE driven from Minecraft without capture: Minecraft's camera, the pose stream gates and steers the controls. */
+    private static int play(FabricClientCommandSource source) {
+        var link = StellarBridge.renderingContext();
+        if (link == null) return error(source, "Run /stellar start, then F5 and F8 in Stellar Blade, before /stellaravatar play.");
+        if (CaptureView.viewing()) return error(source, "Close the captured view first with /stellarview off.");
+        if (live == null && live(source) == 0) return 0;
+        try {
+            ControlBridge.startAvatar(bridgeDirectory(), live.stream.run, link.session());
+            live.controlled = true;
+        } catch (IOException failure) {
+            return error(source, "EVE avatar control failed: " + failure.getMessage());
+        }
+        var options = source.getClient().options;
+        if (options.getPerspective().isFirstPerson()) options.setPerspective(net.minecraft.client.option.Perspective.THIRD_PERSON_BACK);
+        source.sendFeedback(Text.literal("EVE avatar control requested. Release held controls; forwarding starts once her pose is fresh and Stellar Blade"
+                + " grants input. Minecraft owns the camera; Stellar Blade's camera follows its yaw. B switches EVE/build mode."));
+        return 1;
     }
 
     private static int live(FabricClientCommandSource source) {
@@ -187,13 +209,21 @@ public final class AvatarView {
                 AvatarStream.Table table = current.stream.table();
                 if (table != null && table.generation() == sample.generation()) install(current, table);
             } else if (sample != null && current.model != null) {
-                if (AvatarStream.decode(current.table, sample, current.model, current.pose)) {
+                if (AvatarStream.decode(current.table, sample, current.model, current.to)) {
+                    if (current.posed) {
+                        long gap = nanos - current.lastPoseNanos;
+                        if (gap > 0 && gap < 200_000_000L) current.interval = current.interval * 0.8 + gap * 0.2;
+                        copy(current.pose, current.from); // Continue from what is on screen: no jump.
+                    } else copy(current.to, current.from);
+                    current.rotation = sample.rotation();
                     current.posed = true;
                     current.poses++;
                     current.windowPoses++;
                     current.lastPoseNanos = nanos;
                 } else current.incomplete++;
             }
+            if (current.posed) blend(current.from, current.to, alpha(current, nanos), current.pose);
+            if (current.controlled) ControlBridge.avatarFrame();
             if (nanos - current.windowNanos >= 2_000_000_000L) {
                 current.rate = current.windowPoses * 1e9 / (nanos - current.windowNanos);
                 current.windowPoses = 0;
@@ -241,6 +271,8 @@ public final class AvatarView {
         current.model = model;
         current.renderer = renderer;
         current.pose = AvatarStream.emptyPose(table);
+        current.from = AvatarStream.emptyPose(table);
+        current.to = AvatarStream.emptyPose(table);
         current.posed = false;
         int[] sections = renderer.sectionCounts();
         report(String.format("EVE live avatar: generation %d, %d meshes, %d/%d material sections%s.", table.generation(),
@@ -282,6 +314,53 @@ public final class AvatarView {
         return id;
     }
 
+    private static float alpha(Live current, long nanos) {
+        return (float) Math.min(1, Math.max(0, (nanos - current.lastPoseNanos) / current.interval));
+    }
+    private static void copy(AvatarRecording.Pose source, AvatarRecording.Pose target) {
+        for (int i = 0; i < source.world().length; i++) {
+            System.arraycopy(source.world()[i], 0, target.world()[i], 0, source.world()[i].length);
+            if (source.local()[i] != null) System.arraycopy(source.local()[i], 0, target.local()[i], 0, source.local()[i].length);
+            if (source.weights()[i] != null) System.arraycopy(source.weights()[i], 0, target.weights()[i], 0, source.weights()[i].length);
+        }
+    }
+    static void blend(AvatarRecording.Pose a, AvatarRecording.Pose b, float alpha, AvatarRecording.Pose out) {
+        for (int i = 0; i < a.world().length; i++) {
+            AvatarRecording.blend(a.world()[i], b.world()[i], alpha, out.world()[i]);
+            if (a.local()[i] != null) AvatarRecording.blend(a.local()[i], b.local()[i], alpha, out.local()[i]);
+            if (a.weights()[i] != null)
+                for (int k = 0; k < a.weights()[i].length; k++) out.weights()[i][k] = a.weights()[i][k] + (b.weights()[i][k] - a.weights()[i][k]) * alpha;
+        }
+    }
+
+    /** Minecraft-world feet position of the displayed EVE when she stands at the bridged position, else null. */
+    public static Vec3d cameraFeet() {
+        Live current = live;
+        var link = StellarBridge.renderingContext();
+        if (current == null || !current.posed || current.table == null || current.table.anchor() == null || link == null
+                || !current.table.session().equals(link.session())) return null;
+        int component = current.model.parts.get(0).component();
+        float[] root = new float[AvatarRecording.TRANSFORM];
+        AvatarRecording.blend(current.from.world()[component], current.to.world()[component], alpha(current, System.nanoTime()), root);
+        double[] anchor = current.table.anchor();
+        var origin = link.origin();
+        // Unreal (X, Y, Z) to Minecraft (X, Z, Y) relative to the lab anchor, as the terrain link maps EVE's feet.
+        return new Vec3d(origin.x() + (root[4] - anchor[0]) / anchor[3], origin.y() + (root[6] - anchor[2]) / anchor[3],
+                origin.z() + (root[5] - anchor[1]) / anchor[3]);
+    }
+
+    /** Controls may follow Minecraft only while this run's anchored pose is fresh. */
+    static boolean controlReady(String run, String session, long nanos) {
+        Live current = live;
+        return current != null && current.controlled && current.stream.run.equals(run) && current.anchored && current.posed
+                && current.table.session().equals(session) && nanos - current.lastPoseNanos <= 500_000_000L;
+    }
+    /** Stellar Blade's controller Pitch, Yaw, Roll (Unreal degrees) from the newest pose, or null. */
+    static float[] controllerRotation() {
+        Live current = live;
+        return current == null ? null : current.rotation;
+    }
+
     /** True while the live avatar stands in for the local player at the bridged position. */
     public static boolean replaces(Entity entity) {
         Live current = live;
@@ -306,6 +385,7 @@ public final class AvatarView {
         Live current = live;
         if (current == null) return;
         live = null;
+        if (current.controlled) ControlBridge.stop();
         String summary = liveStatus(current);
         if (current.renderer != null) current.renderer.close();
         current.stream.stop();

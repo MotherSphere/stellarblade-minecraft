@@ -101,6 +101,7 @@ public final class CaptureView {
         View view = rendering != null ? rendering : presented;
         return view != null && valid(view) ? view.camera : null;
     }
+    static boolean viewing() { return liveBinding != null || active != null; }
     static boolean controlFrameReady(String run, String session, long nowNanos) {
         return controlCamera(run, session, nowNanos) != null;
     }
