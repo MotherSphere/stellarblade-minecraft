@@ -31,7 +31,8 @@ import org.lwjgl.system.MemoryUtil;
  * {@code .normal} (Unreal tangent space), {@code .surface} (occlusion, roughness, metallic, specular),
  * {@code .emissive}, {@code .hair} (root to tip, strand id, depth; selects hair shading) and {@code .scatter}
  * (subsurface color). A translucent slot ships {@code <slot>.overlay.png} instead: premultiplied color drawn after
- * every opaque section without writing depth.
+ * every opaque section without writing depth. A {@code <slot>.glow.png} slot is such an overlay drawn only while the game
+ * raises the slot's streamed Opacity, its emissive map tinted by Emissive_Color times Emissive_Intensity (and the _2 pair).
  */
 final class AvatarRenderer implements AutoCloseable {
     private static final String[] ATTRIBUTES = {"Position", "Normal", "UV0", "BoneIds", "BoneWeights", "MorphPosition", "MorphNormal"};
@@ -40,10 +41,12 @@ final class AvatarRenderer implements AutoCloseable {
     private static final int[] UNITS = {0, 1, 3, 4, 5, 6};
     private static final float CUTOFF = 0.5f, HAIR_CUTOFF = 0.25f;
     /** GL textures of one slot in UNITS order (base, normal, surface, emissive, hair, scatter); base 0: not drawn. */
-    private record Material(int[] maps, boolean hair, boolean overlay) {
+    private record Material(String slot, int[] maps, boolean hair, boolean overlay, boolean glow) {
         int base() { return maps[0]; }
     }
-    private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, overlayPass;
+    private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, overlayPass,
+            opacity, emissiveTint;
+    private Map<String, float[]> parameters = Map.of();
     private final int[] arrays, vertexBuffers, indexBuffers, morphBuffers;
     private final float[][] appliedWeights; // Morph weights currently uploaded per part.
     private final FloatBuffer[] morphOffsets;
@@ -77,6 +80,8 @@ final class AvatarRenderer implements AutoCloseable {
             fogColor = GL20.glGetUniformLocation(program, "FogColor");
             skyColor = GL20.glGetUniformLocation(program, "SkyColor");
             overlayPass = GL20.glGetUniformLocation(program, "Overlay");
+            opacity = GL20.glGetUniformLocation(program, "Opacity");
+            emissiveTint = GL20.glGetUniformLocation(program, "EmissiveTint");
             hairShading = GL20.glGetUniformLocation(program, "Hair");
             cutoff = GL20.glGetUniformLocation(program, "AlphaCutoff");
             GlStateManager._glUseProgram(program);
@@ -180,6 +185,17 @@ final class AvatarRenderer implements AutoCloseable {
                     for (int s = 0; s < sections.length; s++) {
                         Material material = sectionMaterials[p][s];
                         if (material.base() == 0 || material.overlay() != overlays) continue;
+                        float[] tint = {1, 1, 1};
+                        float shown = 1;
+                        if (material.glow()) {
+                            shown = parameter(material.slot(), "Opacity", 0);
+                            if (shown <= 0.001f) continue;
+                            for (int k = 0; k < 3; k++)
+                                tint[k] = parameter(material.slot(), "Emissive_Color", k) * parameter(material.slot(), "Emissive_Intensity", 0)
+                                        + parameter(material.slot(), "Emissive_Color_2", k) * parameter(material.slot(), "Emissive_Intensity_2", 0);
+                        }
+                        GL20.glUniform1f(opacity, Math.min(shown, 1));
+                        GL20.glUniform3f(emissiveTint, tint[0], tint[1], tint[2]);
                         for (int k = 0; k < UNITS.length; k++) {
                             GlStateManager._activeTexture(GL13.GL_TEXTURE0 + UNITS[k]);
                             GlStateManager._bindTexture(material.maps()[k]);
@@ -205,6 +221,15 @@ final class AvatarRenderer implements AutoCloseable {
             GlStateManager._depthMask(mask0);
             GlStateManager._blendFuncSeparate(blendFunction0[0], blendFunction0[1], blendFunction0[2], blendFunction0[3]);
         }
+    }
+
+    /** The newest streamed material parameters by "slot/name" (empty without a stream). */
+    void parameters(Map<String, float[]> values) {
+        parameters = values;
+    }
+    private float parameter(String slot, String name, int channel) {
+        float[] value = parameters.get(slot + "/" + name);
+        return value == null ? 0 : value[channel];
     }
 
     private void uploadMorphs(int part) {
@@ -250,10 +275,11 @@ final class AvatarRenderer implements AutoCloseable {
         int hair = texture(pack, slot + ".hair.png", 0);
         int base = texture(pack, slot + ".png", hair != 0 ? HAIR_CUTOFF : CUTOFF);
         boolean overlay = base == 0 && (base = texture(pack, slot + ".overlay.png", 0)) != 0;
+        boolean glow = base == 0 && (base = texture(pack, slot + ".glow.png", 0)) != 0;
         int normal = texture(pack, slot + ".normal.png", 0), surface = texture(pack, slot + ".surface.png", 0);
         int emissive = texture(pack, slot + ".emissive.png", 0), scatter = texture(pack, slot + ".scatter.png", 0);
-        Material material = new Material(new int[] {base, normal != 0 ? normal : flatNormal, surface != 0 ? surface : overlay ? matte : plainSurface,
-                emissive != 0 ? emissive : black, hair != 0 ? hair : black, scatter != 0 ? scatter : black}, hair != 0, overlay);
+        Material material = new Material(slot, new int[] {base, normal != 0 ? normal : flatNormal, surface != 0 ? surface : overlay ? matte : plainSurface,
+                emissive != 0 ? emissive : black, hair != 0 ? hair : black, scatter != 0 ? scatter : black}, hair != 0, overlay || glow, glow);
         materials.put(slot, material);
         return material;
     }

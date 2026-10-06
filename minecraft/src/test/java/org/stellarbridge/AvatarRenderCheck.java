@@ -16,8 +16,9 @@ import org.lwjgl.stb.STBImageWrite;
 /**
  * Offline GPU check of a private avatar pack and pose recording: renders EVE with the mod's renderer
  * in a hidden GL 3.2 core context and writes a contact sheet. Not part of the suites (needs a GPU and private files).
- * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees]: the camera
- * (default 3.2 blocks from her front, looking at 0.9 blocks) orbits by degrees around her feet.
+ * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees [glow]]: the camera
+ * (default 3.2 blocks from her front, looking at 0.9 blocks) orbits by degrees around her feet; glow streams an orange
+ * sword-edge glow as a special attack would.
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
@@ -59,6 +60,9 @@ public final class AvatarRenderCheck {
         AvatarRecording recording = AvatarRecording.read(poses);
         AvatarModel model = AvatarModel.load(pack, recording.components, new java.util.HashMap<>());
         try (AvatarRenderer renderer = new AvatarRenderer(model, pack)) {
+            if (args.length > 5 && args[5].equals("glow")) renderer.parameters(java.util.Map.of(
+                    "CH_W_Sword_02_Blade_Edge/Opacity", new float[] {1}, "CH_W_Sword_02_Blade_Edge/Emissive_Intensity", new float[] {4},
+                    "CH_W_Sword_02_Blade_Edge/Emissive_Color", new float[] {1, 0.35f, 0.05f, 1}));
             int[] sections = renderer.sectionCounts();
             System.out.println(model.parts.size() + " meshes, sections drawn " + sections[0] + "/" + sections[1] + ", skipped " + model.skipped);
             GL11.glClearColor(0.47f, 0.65f, 1f, 1);

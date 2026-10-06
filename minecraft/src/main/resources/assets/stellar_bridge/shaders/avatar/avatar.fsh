@@ -9,6 +9,8 @@ uniform sampler2D Sampler5; // Hair: root (1) to tip (0), strand id, depth.
 uniform sampler2D Sampler6; // Subsurface color: light scattered past the terminator; black for none.
 uniform int Hair;
 uniform int Overlay; // Translucent pass: premultiplied output, alpha 0 adds light.
+uniform float Opacity; // Streamed opacity of a glow overlay; 1 otherwise.
+uniform vec3 EmissiveTint; // Streamed emissive color times intensity of a glow overlay; white otherwise.
 uniform vec3 SkyColor;
 uniform float AlphaCutoff;
 uniform ivec2 LightUv;
@@ -116,9 +118,10 @@ void main() {
         vec3 ambient = f0 * (1.0 - 0.6 * roughness) * 0.2 * occlusion;
         lit = (base.rgb * (1.0 - metallic) * diffuse + shine + ambient) * light + reflection;
     }
-    lit += emissive;
+    lit += emissive * EmissiveTint;
     float vertexDistance = length(relative);
     float fog = vertexDistance <= FogStart ? 0.0 : (vertexDistance < FogEnd ? smoothstep(FogStart, FogEnd, vertexDistance) : 1.0);
-    float opacity = Overlay == 1 ? base.a : 1.0;
+    float opacity = Overlay == 1 ? base.a * Opacity : 1.0;
+    if (Overlay == 1) lit *= Opacity;
     fragColor = vec4(mix(lit, FogColor.rgb * opacity, fog * FogColor.a), opacity);
 }

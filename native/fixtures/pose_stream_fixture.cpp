@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
                  " 0000000000001000 0000000000002000 3 0 CharacterMesh0 CH_P_EVE_52_TypeB -\n"
                  "BONES 1 Root Bip001 Bip001-Head\nCOMPONENT 2 " + hex(face.bytes) +
                  " 0000000000001000 0000000000002000 0 2 Mesh_Face CH_P_EVE_Face_Jali3 CharacterMesh0\n"
-                 "MORPHS 2 jawOpen blink\nEND 1\n";
+                 "MORPHS 2 jawOpen blink\nPARAMETERS 0\nEND 1\n";
     std::ofstream(directory / "eve-pose-components.1", std::ios::binary) << table;
     stellar_pose::initialize(reinterpret_cast<uintptr_t>(objects));
     // Publish until Minecraft stops its request; poll_files then releases the run.

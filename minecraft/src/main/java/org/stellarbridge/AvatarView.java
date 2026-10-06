@@ -63,6 +63,7 @@ public final class AvatarView {
         float[] rotation; // Stellar Blade's controller Pitch, Yaw, Roll from the newest sample, or null.
         boolean lookApplied; // The newest sample says the adapter turned that controller's camera toward Minecraft's.
         long gapSamples, turned; // Controlled poses, and those the adapter turned.
+        float glow; // Highest streamed material Opacity so far (the sword edge's glow while the game raises it).
         double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
         Vector3d relativeOrigin;
         boolean posed, anchored, controlled;
@@ -231,6 +232,10 @@ public final class AvatarView {
                     current.newest = slot;
                     current.count = Math.min(current.count + 1, Live.RING);
                     current.rotation = sample.rotation();
+                    var parameters = AvatarStream.parameters(current.table, sample);
+                    current.renderer.parameters(parameters);
+                    for (var entry : parameters.entrySet())
+                        if (entry.getKey().endsWith("/Opacity")) current.glow = Math.max(current.glow, entry.getValue()[0]);
                     current.lookApplied = sample.lookApplied();
                     var player = MinecraftClient.getInstance().player;
                     if (current.controlled && current.rotation != null && player != null) {
@@ -441,7 +446,9 @@ public final class AvatarView {
                 current.posed ? String.format("%.0f ms ago", (System.nanoTime() - current.lastPoseNanos) / 1e6) : "never",
                 native_[1], native_[2], native_[3], native_[0])
                 + (current.gapSamples == 0 ? "" : String.format(" Camera: turned by look input in %.0f%% of controlled poses; yaw gap %.1f deg mean, %.0f max.",
-                        100.0 * current.turned / current.gapSamples, current.gapSum / current.gapSamples, current.gapMax));
+                        100.0 * current.turned / current.gapSamples, current.gapSum / current.gapSamples, current.gapMax))
+                + (current.table == null || current.table.parameters().isEmpty() ? " No streamed material parameters."
+                        : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow));
     }
 
     /** Stops the live stream; a null reason is the user's own off. */

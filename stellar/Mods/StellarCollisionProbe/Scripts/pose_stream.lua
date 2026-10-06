@@ -40,7 +40,7 @@ function Stream.new(engine,directory,clock,log,link)
         end
         return best
     end
-    local function encode(list,place,controller)
+    local function encode(list,place,controller,parameters)
         local lines={'SBMC_POSE_COMPONENTS 1','RUN '..run,'GENERATION '..generation,
             'SESSION '..(place and place.session or 'none'),
             place and string.format('ANCHOR %.17g %.17g %.17g %.17g',place.anchor.X,place.anchor.Y,place.anchor.Z,place.scale) or 'ANCHOR none',
@@ -53,6 +53,11 @@ function Stream.new(engine,directory,clock,log,link)
                 #c.bones,#c.morphs,c.name,c.mesh_name,c.leader or '-')
             if #c.bones>0 then lines[#lines+1]='BONES '..index..' '..table.concat(c.bones,' ') end
             if #c.morphs>0 then lines[#lines+1]='MORPHS '..index..' '..table.concat(c.morphs,' ') end
+        end
+        lines[#lines+1]='PARAMETERS '..#parameters
+        for index,q in ipairs(parameters) do
+            lines[#lines+1]=string.format('PARAMETER %d %d %s %s %s %s %08x %d %d %d',index,q.component,q.slot,q.name,
+                hex(q.object),hex(q.class),q.offset,q.element,q.index,q.floats)
         end
         lines[#lines+1]='END '..generation
         return table.concat(lines,'\n')..'\n'
@@ -90,6 +95,15 @@ function Stream.new(engine,directory,clock,log,link)
         local place=link()
         local found,controller=pcall(engine.controller)
         if not found or not controller or not scale(controller.yaw_scale) or not scale(controller.pitch_scale) then controller=nil end
+        -- Material parameters are optional: a failing lookup publishes none rather than stopping the stream.
+        local read,result=pcall(engine.parameters,list)
+        local parameters={}
+        if read then
+            for _,q in ipairs(result) do
+                if #parameters<32 and token(q.slot) and token(q.name) and math.type(q.index)=='integer' and q.index>0
+                    and q.element>=0 and q.element<1024 then parameters[#parameters+1]=q end
+            end
+        end
         -- Minecraft's avatar controls are permitted only for this run and the entered link.
         binding=place and {run=run,session=place.session} or nil
         local parts={place and string.format('%s %.17g %.17g %.17g %.17g',place.session,place.anchor.X,place.anchor.Y,place.anchor.Z,place.scale) or 'none',
@@ -97,6 +111,9 @@ function Stream.new(engine,directory,clock,log,link)
                 controller.pawn,controller.pawn_class,controller.yaw_scale,controller.pitch_scale) or 'no controller'}
         for _,c in ipairs(list) do
             parts[#parts+1]=table.concat({c.name,c.object,c.class,c.mesh,c.mesh_name,c.leader or '-'},':')
+        end
+        for _,q in ipairs(parameters) do
+            parts[#parts+1]=table.concat({q.component,q.slot,q.name,q.object,q.class,q.offset,q.element,q.index,q.floats},':')
         end
         local next_signature=table.concat(parts,'|')
         if next_signature==signature then return true end
@@ -108,16 +125,18 @@ function Stream.new(engine,directory,clock,log,link)
         end
         local floats=0
         for _,c in ipairs(list) do floats=floats+10+10*#c.bones+#c.morphs end
+        for _,q in ipairs(parameters) do floats=floats+q.floats end
         assert(floats<=16352,'EVE pose exceeds one stream slot.')
         generation=generation+1
-        local text=encode(list,place,controller)
+        local text=encode(list,place,controller,parameters)
         assert(#text<=65536,'EVE component table exceeds the stream bound.')
         write(text)
         signature=next_signature
         published=generation
-        return true,string.format('Pose stream generation %d: %d components%s%s%s.',generation,#list,
+        return true,string.format('Pose stream generation %d: %d components%s%s%s%s.',generation,#list,
             place and ', anchored to the entered link' or ', no entered link',
             controller and '' or ', no controller rotation',
+            #parameters>0 and string.format(', %d material parameters',#parameters) or (read and '' or ', material parameters unavailable: '..tostring(result)),
             #skipped>0 and '; skipped '..table.concat(skipped,', ') or '')
     end
     function api.generation() return published end

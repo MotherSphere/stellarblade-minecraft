@@ -90,7 +90,7 @@ static std::string hex(uint64_t value) {
   return text;
 }
 static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint64_t controller = 0,
-                              uint64_t pawn = 0x40) {
+                              uint64_t pawn = 0x40, std::string parameters = "PARAMETERS 0\n") {
   return "SBMC_POSE_COMPONENTS 1\nRUN " + Run + "\nGENERATION " +
          std::to_string(generation) + "\nSESSION none\nANCHOR 1 2 3 100\n" +
          (controller ? "CONTROLLER " + hex(controller) + " 0000000000001000 00000318 " + hex(pawn) +
@@ -100,7 +100,7 @@ static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint6
          "COMPONENT 1 " + hex(a) + " 0000000000001000 0000000000002000 3 2 Body Mesh -\n"
          "BONES 1 Root Hip Head\nMORPHS 1 Smile Blink\n"
          "COMPONENT 2 " + hex(b) + " 0000000000001000 0000000000002000 0 2 Face FaceMesh Body\n"
-         "MORPHS 2 Smile Blink\nEND " + std::to_string(generation) + "\n";
+         "MORPHS 2 Smile Blink\n" + parameters + "END " + std::to_string(generation) + "\n";
 }
 static std::string request(uint64_t time, const char *state = "active") {
   return "SBMC_POSE_REQUEST 1\nRUN " + Run + "\nTIME " + std::to_string(time) +
@@ -140,6 +140,22 @@ int main() {
   assert(broken("0000000000001000 0000000000002000 3", "0000000000001001 0000000000002000 3"));
   assert(broken("ANCHOR 1 2 3 100", "ANCHOR 1 2"));
   assert(broken("CONTROLLER none", "CONTROLLER"));
+  assert(broken("PARAMETERS 0\n", "") && "The parameter count is required");
+  {
+    // Material parameters: a scalar and a vector of the face's dynamic material instance, after the components.
+    std::string two = "PARAMETERS 2\nPARAMETER 1 2 Edge Opacity 0000000000000050 0000000000003000 00000100 1 77 1\n"
+                      "PARAMETER 2 2 Edge Emissive_Color 0000000000000050 0000000000003000 00000110 0 78 4\n";
+    auto with = parse_components(components(4, 0x10, 0x20, 0, 0x40, two));
+    assert(with && with->parameters.size() == 2 && with->parameters[0].offset == 0x100 && with->parameters[0].index == 1 &&
+           with->parameters[0].name == 77 && with->parameters[1].floats == 4 && with->floats == (10 + 30 + 2) + (10 + 2) + 5);
+    for (auto bad : {std::make_pair("PARAMETER 1 2 ", "PARAMETER 1 3 "), std::make_pair(" 00000100 ", " 00000104 "),
+                     std::make_pair(" 77 1\n", " 77 2\n"), std::make_pair(" 77 1\n", " 0 1\n"),
+                     std::make_pair(" 00000100 1 ", " 00000100 1024 "), std::make_pair("PARAMETERS 2", "PARAMETERS 3")}) {
+      auto text = components(4, 0x10, 0x20, 0, 0x40, two);
+      text.replace(text.find(bad.first), std::string(bad.first).size(), bad.second);
+      assert(!parse_components(text) && "Parameters name a component, an aligned array, an element, a name and a width");
+    }
+  }
   {
     auto with = parse_components(components(4, 0x10, 0x20, 0x30));
     assert(with && with->controller && with->controller->object == 0x30 && with->controller->offset == 0x318 &&
@@ -238,6 +254,48 @@ int main() {
     c.pawn_cls = 0x1000;
     std::memset(fake.pawn.bytes, 0, 8);
     assert(!turn_controller(engine, c, 5, 5) && inputs.empty() && "A pawn without a virtual table is never called");
+  }
+  {
+    // A dynamic material instance (the still-live controller object stands in): scalars and vectors read by
+    // element after checking the element's name.
+    alignas(8) uint8_t scalars[3 * 36]{}, vectors[2 * 48]{};
+    int32_t opacity = 77, glow = 78, other = 5;
+    float half = 0.5f, color[4] = {1, 0.5f, 0.25f, 1};
+    std::memcpy(scalars + 36, &opacity, 4);
+    std::memcpy(scalars + 36 + 16, &half, 4);
+    std::memcpy(vectors, &other, 4);
+    std::memcpy(vectors + 48, &glow, 4);
+    std::memcpy(vectors + 48 + 16, color, 16);
+    auto put_array = [&](size_t at, void *data, int32_t count) {
+      auto pointer = reinterpret_cast<uintptr_t>(data);
+      std::memcpy(fake.controller.bytes + at, &pointer, 8);
+      std::memcpy(fake.controller.bytes + at + 8, &count, 4);
+    };
+    put_array(0x100, scalars, 3);
+    put_array(0x110, vectors, 2);
+    Parameter q;
+    q.object = reinterpret_cast<uint64_t>(fake.controller.bytes);
+    q.cls = 0x1000;
+    q.offset = 0x100;
+    q.index = 1;
+    q.name = 77;
+    q.floats = 1;
+    float value[4] = {9, 9, 9, 9};
+    assert(read_parameter(engine, q, value) && value[0] == 0.5f);
+    Parameter v = q;
+    v.offset = 0x110;
+    v.name = 78;
+    v.floats = 4;
+    assert(read_parameter(engine, v, value) && value[0] == 1 && value[2] == 0.25f && value[3] == 1);
+    v.index = 0;
+    assert(!read_parameter(engine, v, value) && value[0] == 0 && "Another name at the element is never read");
+    q.index = 3;
+    assert(!read_parameter(engine, q, value) && "An element past the array's end is never read");
+    q.index = 1;
+    q.cls = 0x1008;
+    assert(!read_parameter(engine, q, value) && "Another class is never read");
+    put_array(0x100, scalars, 0);
+    put_array(0x110, vectors, 0);
   }
   {
     // Minecraft's motion goes forward; 15 % of the remaining yaw gap closes per poll.
@@ -369,5 +427,5 @@ int main() {
     assert(stellar_shared::load32(base, 196) == 2);
   }
   std::filesystem::remove_all(directory);
-  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, camera input, mapping publication and release\n";
+  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, material parameters, camera input, mapping publication and release\n";
 }

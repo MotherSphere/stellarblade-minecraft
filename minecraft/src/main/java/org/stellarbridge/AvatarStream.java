@@ -28,7 +28,16 @@ final class AvatarStream implements AutoCloseable {
      * controller says whether poses carry the player controller's rotation (and the adapter may turn its camera).
      */
     record Table(String run, long generation, String session, double[] anchor, boolean controller,
-                 List<AvatarRecording.Component> components, int floats) { }
+                 List<AvatarRecording.Component> components, List<Parameter> parameters, int floats) {
+        /** Payload floats of the components; the parameters' floats follow them. */
+        int componentFloats() {
+            int total = floats;
+            for (Parameter parameter : parameters) total -= parameter.floats();
+            return total;
+        }
+    }
+    /** A material parameter the game animates (scalar: 1 float, vector: 4) on a component's material slot. */
+    record Parameter(int component, String slot, String name, int floats) { }
     /**
      * One published pose: per component status bits and its floats (world, component-space bones, morph weights),
      * the controller's Unreal Pitch, Yaw, Roll in degrees or null (read before this frame's turn), and whether the
@@ -202,6 +211,17 @@ final class AvatarStream implements AutoCloseable {
         return complete;
     }
 
+    /** The sample's material parameters by "slot/name", from the floats after the components. */
+    static java.util.Map<String, float[]> parameters(Table table, Sample sample) {
+        java.util.Map<String, float[]> values = new java.util.HashMap<>();
+        int offset = table.componentFloats();
+        for (Parameter parameter : table.parameters) {
+            values.put(parameter.slot() + "/" + parameter.name(), java.util.Arrays.copyOfRange(sample.payload, offset, offset + parameter.floats()));
+            offset += parameter.floats();
+        }
+        return values;
+    }
+
     static AvatarRecording.Pose emptyPose(Table table) {
         int n = table.components.size();
         float[][] world = new float[n][10], local = new float[n][], weights = new float[n][];
@@ -273,8 +293,23 @@ final class AvatarStream implements AutoCloseable {
                         morphNames, morphs));
                 floats += 10 + 10L * bones + morphs;
             }
+            int parameterCount = Integer.parseInt(value(lines[at++], "PARAMETERS"));
+            require(parameterCount >= 0 && parameterCount <= 32, "parameter count");
+            List<Parameter> parameters = new ArrayList<>();
+            for (int i = 1; i <= parameterCount; i++) {
+                String[] f = lines[at++].split(" ", -1);
+                require(f.length == 11 && f[0].equals("PARAMETER") && f[1].equals(Integer.toString(i)), "parameter");
+                int component = Integer.parseInt(f[2]), width = Integer.parseInt(f[10]);
+                require(component >= 1 && component <= count && !f[3].isEmpty() && !f[4].isEmpty() && f[5].matches("[0-9a-f]{16}")
+                        && f[6].matches("[0-9a-f]{16}") && f[7].matches("[0-9a-f]{8}") && Integer.parseInt(f[7], 16) % 8 == 0
+                        && Integer.parseInt(f[7], 16) > 0 && Integer.parseInt(f[7], 16) < 0x4000 && Integer.parseInt(f[8]) >= 0
+                        && Integer.parseInt(f[8]) < 1024 && Long.parseLong(f[9]) > 0 && Long.parseLong(f[9]) <= Integer.MAX_VALUE
+                        && (width == 1 || width == 4), "parameter fields");
+                parameters.add(new Parameter(component, f[3], f[4], width));
+                floats += width;
+            }
             require(floats <= CAPACITY && lines[at++].equals("END " + generation) && at == lines.length, "end");
-            return new Table(run, generation, session, anchor, controlled, List.copyOf(components), (int) floats);
+            return new Table(run, generation, session, anchor, controlled, List.copyOf(components), List.copyOf(parameters), (int) floats);
         } catch (IOException | RuntimeException rejected) {
             return null;
         }

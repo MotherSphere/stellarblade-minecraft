@@ -62,4 +62,23 @@ assert(fallback.method=='sockets' and fallback.fallback:find('out%-param') and f
 assert(fallback.weights[1]==0 and fallback.weights[2]==0.5)
 assert(engine.snapshot(list[2].handle).method=='sockets','A failed snapshot is not retried every frame')
 assert(engine.world(list[1].handle).z==100)
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback and failing components')
+-- Glow parameters: only named scalars and vectors of dynamic instances, with their array offset and element.
+local function named(text,index) local n=fname(text); n.GetComparisonIndex=function() return index end; return n end
+local midClass=object('MaterialInstanceDynamic')
+local mid=object('MID',{ScalarParameterValues=tarray({{ParameterInfo={Name=named('Roughness',7)},ParameterValue=0.5},
+    {ParameterInfo=wrap({Name=named('Opacity',9)}),ParameterValue=0}},true),VectorParameterValues=tarray({{ParameterInfo={Name=named('Emissive_Color',11)}}})})
+mid.GetAddress=function() return 0x7f0000010000 end
+mid.GetClass=function() return midClass end
+midClass.GetAddress=function() return 0x7f0000020000 end
+local offsets={ScalarParameterValues=0x168,VectorParameterValues=0x178}
+mid.Reflection=function() return {GetProperty=function(_,name) return {ContainerPtrToValuePtr=function() return 0x7f0000010000+offsets[name] end} end} end
+local plain=object('MI'); plain.GetClass=function() return object('MaterialInstanceConstant') end
+local sword=object('Sword')
+function sword:GetMaterialSlotNames() return tarray({fname('Body'),fname('Blade_Edge')}) end
+function sword:GetNumMaterials() return 2 end
+function sword:GetMaterial(i) return i==1 and mid or plain end
+local glow=engine.parameters({{handle=sword}})
+assert(#glow==2 and glow[1].slot=='Blade_Edge' and glow[1].name=='Opacity' and glow[1].element==1 and glow[1].index==9
+    and glow[1].offset==0x168 and glow[1].floats==1 and glow[1].class==0x7f0000020000,'The scalar names its element')
+assert(glow[2].name=='Emissive_Color' and glow[2].floats==4 and glow[2].offset==0x178 and glow[2].element==0)
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components and glow parameters')

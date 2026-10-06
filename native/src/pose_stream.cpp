@@ -38,6 +38,10 @@ constexpr size_t InternalIndex = 0x0c, ClassPrivate = 0x10, WorldTransform = 0x1
 constexpr size_t ChunkTable = 0x10, ElementCount = 0x24, ItemBytes = 24,
                  ItemFlags = 8;
 constexpr int32_t PendingKill = 1 << 29, Unreachable = 1 << 28;
+// FScalarParameterValue (FMaterialParameterInfo, float, FGuid) and
+// FVectorParameterValue (FMaterialParameterInfo, FLinearColor, FGuid) without
+// editor data; FMaterialParameterInfo starts with the FName.
+constexpr size_t ScalarStride = 36, VectorStride = 48, ParameterValue = 16;
 
 bool fresh(uint64_t value, uint64_t now) {
   return value && (value <= now ? now - value <= Lease : value - now <= 100);
@@ -195,6 +199,30 @@ std::optional<Table> parse_components(std::string_view text) {
     floats += 10 + 10 * uint64_t(c.bones) + c.morphs;
     table.components.push_back(c);
   }
+  uint64_t parameters = 0;
+  if (!lines.num("PARAMETERS", parameters) || parameters > MaxParameters)
+    return {};
+  for (uint32_t i = 1; i <= parameters; i++) {
+    if (lines.at >= lines.rows.size())
+      return {};
+    // PARAMETER index component slot name object class offset element nameIndex floats
+    auto f = split(lines.rows[lines.at++]);
+    Parameter q;
+    uint64_t index = 0, component = 0, offset = 0, element = 0, name = 0, width = 0;
+    if (f.size() != 11 || f[0] != "PARAMETER" || !number(f[1], index) || index != i ||
+        !number(f[2], component) || !component || component > count || f[3].empty() ||
+        f[4].empty() || !address(f[5], q.object) || !address(f[6], q.cls) ||
+        f[7].size() != 8 || !hex32(f[7], offset) || !offset || offset >= 0x4000 ||
+        offset % 8 || !number(f[8], element) || element >= 1024 || !number(f[9], name) ||
+        !name || name > INT32_MAX || !number(f[10], width) || (width != 1 && width != 4))
+      return {};
+    q.offset = static_cast<uint32_t>(offset);
+    q.index = static_cast<uint32_t>(element);
+    q.name = static_cast<int32_t>(name);
+    q.floats = static_cast<uint32_t>(width);
+    floats += q.floats;
+    table.parameters.push_back(q);
+  }
   if (floats > Capacity || !lines.end(table.generation))
     return {};
   table.floats = static_cast<uint32_t>(floats);
@@ -242,6 +270,28 @@ uint32_t read_component(const Engine &engine, const Component &c, float *out) {
     }
   }
   return status;
+}
+
+bool read_parameter(const Engine &engine, const Parameter &q, float *out) {
+  std::memset(out, 0, sizeof(float) * q.floats);
+  auto object = static_cast<uintptr_t>(q.object);
+  if (!engine.objects || !alive(engine.objects, object) ||
+      at<uint64_t>(object + ClassPrivate) != q.cls)
+    return false;
+  auto data = at<uintptr_t>(object + q.offset);
+  auto count = at<int32_t>(object + q.offset + 8);
+  if (!data || count <= int32_t(q.index) || count > 1024)
+    return false;
+  auto element = data + uintptr_t(q.index) * (q.floats == 1 ? ScalarStride : VectorStride);
+  if (at<int32_t>(element) != q.name)
+    return false;
+  float values[4];
+  std::memcpy(values, reinterpret_cast<const void *>(element + ParameterValue), sizeof(float) * q.floats);
+  for (uint32_t k = 0; k < q.floats; k++)
+    if (!std::isfinite(values[k]))
+      return false;
+  std::memcpy(out, values, sizeof(float) * q.floats);
+  return true;
 }
 
 bool read_controller(const Engine &engine, const Controller &c, float *out) {
@@ -522,6 +572,14 @@ uint32_t guarded(const Engine &e, const Component &c, float *out) {
     return 0;
   }
 }
+bool guarded(const Engine &e, const Parameter &q, float *out) {
+  __try {
+    return read_parameter(e, q, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    std::memset(out, 0, sizeof(float) * q.floats);
+    return false;
+  }
+}
 bool guarded(const Engine &e, const Controller &c, float *out) {
   __try {
     return read_controller(e, c, out);
@@ -547,6 +605,9 @@ uint32_t guarded(const Engine &e, const Component &c, float *out) {
 }
 bool guarded(const Engine &e, const Controller &c, float *out) {
   return read_controller(e, c, out);
+}
+bool guarded(const Engine &e, const Parameter &q, float *out) {
+  return read_parameter(e, q, out);
 }
 #endif
 } // namespace
@@ -598,6 +659,11 @@ void on_gameplay_poll(std::string_view owner) {
   for (const auto &c : table->components) {
     status[count++] = guarded(engine, c, payload.data() + offset);
     offset += 10 + 10 * c.bones + c.morphs;
+  }
+  // Unreadable parameters publish zeros: an instance's glow reads as off.
+  for (const auto &q : table->parameters) {
+    guarded(engine, q, payload.data() + offset);
+    offset += q.floats;
   }
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),

@@ -34,6 +34,11 @@ local function each(array,callback)
     end
     array:ForEach(function(index,element) callback(index,value_of(element:get())) end)
 end
+-- A reflected value pointer (light userdata in UE4SS) as an integer address.
+local function address(pointer)
+    if math.type(pointer)=='integer' then return pointer end
+    return tonumber((string.format('%p',pointer):gsub('^0[xX]','')),16)
+end
 local function text(name)
     name=value_of(name)
     return type(name)=='string' and name or name:ToString()
@@ -139,15 +144,46 @@ function Adapter.new()
         local controller=valid(UE.GetPlayerController())
         if not controller then return nil end
         local property=controller:Reflection():GetProperty('ControlRotation')
-        local pointer=string.format('%p',property:ContainerPtrToValuePtr(controller,0)):gsub('^0[xX]','')
         local object=controller:GetAddress()
-        local offset=tonumber(pointer,16)-object
+        local offset=address(property:ContainerPtrToValuePtr(controller,0))-object
         assert(offset>0 and offset<0x4000 and offset%4==0,'Unexpected ControlRotation offset.')
         local pawn=valid(controller:K2_GetPawn())
         assert(pawn,'The player controller has no pawn.')
         return {object=object,class=valid(controller:GetClass()):GetAddress(),offset=offset,
             pawn=pawn:GetAddress(),pawn_class=valid(pawn:GetClass()):GetAddress(),
             yaw_scale=controller.InputYawScale,pitch_scale=controller.InputPitchScale}
+    end
+    -- Glow parameters the game animates on dynamic material instances (Stellar Blade's material-parameter notifies),
+    -- with their float count: the native adapter reads them each frame by array element and name.
+    local GLOW={Opacity=1,Emissive_Intensity=1,Emissive_Intensity_2=1,Emissive_Color=4,Emissive_Color_2=4}
+    local ARRAYS={{'ScalarParameterValues',1},{'VectorParameterValues',4}}
+    function engine.parameters(list)
+        local found={}
+        for index,entry in ipairs(list) do
+            local component=entry.handle
+            local slots={}
+            each(component:GetMaterialSlotNames(),function(k,name) slots[k]=text(name) end)
+            for m=0,component:GetNumMaterials()-1 do
+                local mid=valid(component:GetMaterial(m))
+                if mid and text(valid(mid:GetClass()):GetFName())=='MaterialInstanceDynamic' then
+                    for _,array in ipairs(ARRAYS) do
+                        local property=mid:Reflection():GetProperty(array[1])
+                        local offset=address(property:ContainerPtrToValuePtr(mid,0))-mid:GetAddress()
+                        assert(offset>0 and offset<0x4000 and offset%8==0,'Unexpected material parameter array offset.')
+                        each(mid[array[1]],function(element,value)
+                            local name=value_of(value_of(value.ParameterInfo).Name)
+                            local label=text(name)
+                            if GLOW[label]==array[2] then
+                                found[#found+1]={component=index,slot=slots[m+1] or tostring(m),name=label,object=mid:GetAddress(),
+                                    class=valid(mid:GetClass()):GetAddress(),offset=offset,element=element-1,
+                                    index=name:GetComparisonIndex(),floats=array[2]}
+                            end
+                        end)
+                    end
+                end
+            end
+        end
+        return found
     end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)

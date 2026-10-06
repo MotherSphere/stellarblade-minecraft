@@ -9,6 +9,7 @@ local function request(state,time) write('eve-pose-request.txt','SBMC_POSE_REQUE
 local components,names_calls={},0
 local engine={}
 function engine.identities() return components end
+function engine.parameters() return {} end
 function engine.names(c)
     names_calls=names_calls+1
     if c.leader then return {},{'jawOpen','blink'} end
@@ -75,6 +76,22 @@ engine.controller=function() return {object=0x7f0000005000,class=0x7f0000006000,
     pawn=0x7f0000007000,pawn_class=0x7f0000008000,yaw_scale=0,pitch_scale=-2.5} end
 RUN=string.rep('e',32); request(); reloaded.tick()
 assert(read('eve-pose-components.1'):find('\nCONTROLLER none\n',1,true))
+-- Glow parameters of dynamic material instances follow the components; a failing lookup publishes none.
+engine.controller=function() return nil end
+engine.parameters=function(list)
+    assert(#list==1,'Parameters are looked up on the published components')
+    return {{component=1,slot='Blade_Edge',name='Opacity',object=0x7f0000009000,class=0x7f000000a000,offset=0x168,element=2,index=4711,floats=1},
+        {component=1,slot='Blade_Edge',name='Emissive Color',object=0x7f0000009000,class=0x7f000000a000,offset=0x178,element=0,index=4712,floats=4}}
+end
+RUN=string.rep('d',32); request()
+local _,glow=reloaded.tick()
+assert(glow:find('1 material parameters',1,true),glow)
+assert(read('eve-pose-components.1'):find('\nPARAMETERS 1\nPARAMETER 1 1 Blade_Edge Opacity 00007f0000009000 00007f000000a000 00000168 2 4711 1\nEND ',1,true),
+    'A name the wire cannot carry is dropped')
+engine.parameters=function() error('GetComparisonIndex unavailable') end
+RUN=string.rep('9',32); request()
+local _,without_glow=reloaded.tick()
+assert(without_glow:find('material parameters unavailable: ',1,true) and read('eve-pose-components.1'):find('\nPARAMETERS 0\nEND ',1,true),without_glow)
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
-print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding')
+print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters')

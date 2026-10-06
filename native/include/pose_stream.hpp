@@ -9,7 +9,7 @@
 #include <vector>
 
 namespace stellar_pose {
-constexpr uint32_t MaxComponents = 16, MaxBones = 256, MaxMorphs = 1024;
+constexpr uint32_t MaxComponents = 16, MaxBones = 256, MaxMorphs = 1024, MaxParameters = 32;
 constexpr uint32_t Header = 4096, SlotBytes = 65536, SlotHeader = 128;
 constexpr uint32_t Capacity = (SlotBytes - SlotHeader) / 4; // Payload floats.
 constexpr uint32_t TotalBytes = Header + 3 * SlotBytes;
@@ -34,12 +34,22 @@ struct Controller {
   uint32_t offset = 0;
   float yaw_scale = 0, pitch_scale = 0;
 };
+// One scalar (1 float) or vector (4 floats) parameter of a component's dynamic
+// material instance: the TArray of FScalarParameterValue or FVectorParameterValue
+// at offset, the element at index, whose name has this FName comparison index.
+struct Parameter {
+  uint64_t object = 0, cls = 0;
+  uint32_t offset = 0, index = 0, floats = 0;
+  int32_t name = 0;
+};
 struct Table {
   std::string run;
   uint64_t generation = 0;
   std::optional<Controller> controller;
   std::vector<Component> components;
-  uint32_t floats = 0; // 10 world + 10 per bone + 1 per morph, per component.
+  std::vector<Parameter> parameters;
+  // 10 world + 10 per bone + 1 per morph, per component, then the parameters' floats.
+  uint32_t floats = 0;
 };
 std::optional<Table> parse_components(std::string_view);
 // The newer valid table of two alternating Lua slots for this run.
@@ -56,6 +66,9 @@ struct Engine {
 // invalid) and returns its status bits. The object must still be the live,
 // non-pending-kill object of the published class with the published mesh.
 uint32_t read_component(const Engine &, const Component &, float *out);
+// Copies a material parameter; false (and zeros) unless the instance is live
+// with its class and the element still carries the published name.
+bool read_parameter(const Engine &, const Parameter &, float *out);
 // Copies the controller's Pitch, Yaw and Roll; false (and zeros) unless live.
 bool read_controller(const Engine &, const Controller &, float *out);
 // Turns the camera by pitch and yaw degrees through the pawn's

@@ -27,6 +27,18 @@ public final class AvatarStreamTest {
         for (String offset : new String[] {"00000319", "00004000", "00000000", "318"})
             assert AvatarStream.parse(fixture.replace("CONTROLLER none", controller.replace("00000318", offset))) == null;
         assert table.floats() == 52 && table.components().size() == 2;
+        // Material parameters follow the components in the table and in the payload.
+        String glowLine = "PARAMETER 1 1 Edge Opacity 00007f0000009000 00007f000000a000 00000168 2 4711 1\n";
+        var glowing = AvatarStream.parse(fixture.replace("PARAMETERS 0\n", "PARAMETERS 1\n" + glowLine));
+        assert glowing != null && glowing.parameters().size() == 1 && glowing.floats() == 53 && glowing.componentFloats() == 52;
+        for (String bad : new String[] {glowLine.replace(" 1 1 Edge", " 1 3 Edge"), glowLine.replace("00000168", "00000164"),
+                glowLine.replace(" 4711 1", " 4711 2"), glowLine.replace(" 4711 1", " 0 1"), glowLine.replace(" 2 4711", " 1024 4711")})
+            assert AvatarStream.parse(fixture.replace("PARAMETERS 0\n", "PARAMETERS 1\n" + bad)) == null : bad;
+        assert AvatarStream.parse(fixture.replace("PARAMETERS 0\n", "")) == null : "The parameter count is required";
+        float[] glowPayload = new float[53];
+        glowPayload[52] = 0.75f;
+        var glowSample = new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, glowPayload, null, false);
+        assert AvatarStream.parameters(glowing, glowSample).get("Edge/Opacity")[0] == 0.75f;
         var body = table.components().get(0);
         var face = table.components().get(1);
         assert body.recorded() && body.bones().length == 3 && body.bones()[2].equals("Bip001-Head") && body.weights() == 0;
@@ -68,7 +80,7 @@ public final class AvatarStreamTest {
 
         // Display interpolation between two poses.
         var single = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(new AvatarRecording.Component("C", "M", null,
-                new String[] {"Root"}, new String[] {"m"}, 1)), 21);
+                new String[] {"Root"}, new String[] {"m"}, 1)), java.util.List.of(), 21);
         var start = AvatarStream.emptyPose(single);
         var end = AvatarStream.emptyPose(single);
         var mid = AvatarStream.emptyPose(single);
@@ -135,7 +147,7 @@ public final class AvatarStreamTest {
                     AvatarMesh mesh = AvatarMesh.parse("CH_P_EVE_52_TypeB", AvatarModelTest.mesh("Bip001", b -> { }));
                     var renamed = new AvatarRecording.Component("CharacterMesh0", "CH_P_EVE_52_TypeB", null,
                             new String[] {"Root", "Bip001"}, new String[0], 0);
-                    var twoBones = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed), 30);
+                    var twoBones = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed), java.util.List.of(), 30);
                     AvatarModel model = new AvatarModel(twoBones.components(), Map.of("CH_P_EVE_52_TypeB", mesh));
                     var pose = AvatarStream.emptyPose(twoBones);
                     float[] values = new float[30];
