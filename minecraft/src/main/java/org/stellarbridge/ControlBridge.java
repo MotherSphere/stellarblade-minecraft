@@ -27,6 +27,7 @@ public final class ControlBridge {
     // Avatar control: the pose stream gates input and Minecraft's camera steers Stellar Blade's (yaw only).
     private static boolean avatar;
     private static long publishedNanos;
+    private static double unwrappedYaw = Double.NaN, lastUnrealYaw; // Stellar Blade's controller yaw, turns counted.
     static final double STEER_DEGREES = 45; // Yaw error that turns Stellar Blade's camera at full stick.
     private static String failure = "";
 
@@ -54,7 +55,10 @@ public final class ControlBridge {
     static void startAvatar(Path directory, String run, String session) throws IOException {
         start(directory, run, session);
         avatar = true;
+        resetSteering();
     }
+
+    static void resetSteering() { unwrappedYaw = Double.NaN; }
 
     static void stop() {
         avatar = false;
@@ -216,12 +220,30 @@ public final class ControlBridge {
     }
 
     /**
-     * Avatar steering: the left stick rotated from Minecraft's camera yaw into Stellar Blade's controller yaw, and a
-     * right stick X proportional to the remaining yaw error. Returns left X, left Y, right X.
+     * Yaw error from Stellar Blade's controller to Minecraft's camera (Minecraft yaw + 90 is Unreal yaw), with Stellar
+     * Blade's yaw unwrapped across samples. During a spin faster than Stellar Blade can turn, the error keeps its sign
+     * instead of flipping at 180 degrees; more than one full turn behind is dropped, since it ends at the same view.
      */
-    static int[] steer(double minecraftYaw, double unrealYaw, int lx, int ly) {
-        double error = Math.IEEEremainder(minecraftYaw + 90 - unrealYaw, 360); // Minecraft yaw + 90 is Unreal yaw.
-        double radians = Math.toRadians(error), cos = Math.cos(radians), sin = Math.sin(radians);
+    static double yawError(double minecraftYaw, double unrealYaw) {
+        double desired = minecraftYaw + 90;
+        if (Double.isNaN(unwrappedYaw)) unwrappedYaw = desired - Math.IEEEremainder(desired - unrealYaw, 360); // Shortest start.
+        else unwrappedYaw += Math.IEEEremainder(unrealYaw - lastUnrealYaw, 360);
+        lastUnrealYaw = unrealYaw;
+        double error = desired - unwrappedYaw;
+        if (Math.abs(error) >= 360) {
+            double turns = Math.copySign(360 * Math.floor(Math.abs(error) / 360), error);
+            unwrappedYaw += turns;
+            error -= turns;
+        }
+        return error;
+    }
+
+    /**
+     * Avatar steering for a yaw error: the left stick rotated into Stellar Blade's camera frame by the actual angle,
+     * and a right stick X proportional to the error. Returns left X, left Y, right X.
+     */
+    static int[] steer(double error, int lx, int ly) {
+        double radians = Math.toRadians(Math.IEEEremainder(error, 360)), cos = Math.cos(radians), sin = Math.sin(radians);
         int x = (int) Math.round(Math.clamp(lx * cos + ly * sin, -32767, 32767));
         int y = (int) Math.round(Math.clamp(-lx * sin + ly * cos, -32767, 32767));
         int turn = Math.abs(error) < 1 ? 0 : (int) Math.round(Math.clamp(error / STEER_DEGREES, -1, 1) * 32767);
@@ -236,7 +258,7 @@ public final class ControlBridge {
             var player = MinecraftClient.getInstance().player;
             float[] rotation = AvatarView.controllerRotation();
             if (player == null || rotation == null) return new ControlState.Axes(x * scale, y * scale, 0, 0);
-            int[] steered = steer(player.getYaw(), rotation[1], x * scale, y * scale);
+            int[] steered = steer(yawError(player.getYaw(), rotation[1]), x * scale, y * scale);
             return new ControlState.Axes(steered[0], steered[1], steered[2], 0);
         }
         return new ControlState.Axes(x * scale, y * scale,

@@ -39,15 +39,30 @@ public final class AvatarStreamTest {
         assert AvatarStream.select(fixture, second, RUN).generation() == 2 && AvatarStream.select(second, null, RUN).generation() == 2;
         assert AvatarStream.select(fixture.replace(RUN, "c".repeat(32)), null, RUN) == null : "Another run's table is ignored";
 
-        // Steering: Minecraft yaw + 90 is Unreal yaw; the left stick turns by the error, the right stick closes it.
-        assert java.util.Arrays.equals(ControlBridge.steer(0, 90, 0, 32767), new int[] {0, 32767, 0});
-        assert java.util.Arrays.equals(ControlBridge.steer(0, 0, 0, 32767), new int[] {32767, 0, 32767}) : "Camera 90 degrees left: forward is stick right";
-        assert java.util.Arrays.equals(ControlBridge.steer(0, 180, 0, 32767), new int[] {-32767, 0, -32767});
-        assert java.util.Arrays.equals(ControlBridge.steer(350, 80, 23170, 23170), new int[] {23170, 23170, 0}) : "Angles wrap";
-        assert ControlBridge.steer(0, 80, 0, 0)[2] == (int) Math.round(10 / ControlBridge.STEER_DEGREES * 32767);
-        assert ControlBridge.steer(0, 89.5, 0, 0)[2] == 0 : "A sub-degree error is not chased";
-        int[] diagonal = ControlBridge.steer(0, 45, 23170, 23170);
+        // Steering: the left stick turns by the actual angle, the right stick closes the (unwrapped) error.
+        assert java.util.Arrays.equals(ControlBridge.steer(0, 0, 32767), new int[] {0, 32767, 0});
+        assert java.util.Arrays.equals(ControlBridge.steer(90, 0, 32767), new int[] {32767, 0, 32767}) : "Camera 90 degrees left: forward is stick right";
+        assert java.util.Arrays.equals(ControlBridge.steer(-90, 0, 32767), new int[] {-32767, 0, -32767});
+        assert ControlBridge.steer(10, 0, 0)[2] == (int) Math.round(10 / ControlBridge.STEER_DEGREES * 32767);
+        assert ControlBridge.steer(0.5, 0, 0)[2] == 0 : "A sub-degree error is not chased";
+        int[] diagonal = ControlBridge.steer(45, 23170, 23170);
         assert Math.abs(diagonal[0] - 32767) <= 1 && Math.abs(diagonal[1]) <= 1 : "Rotation keeps the diagonal's length";
+        int[] behind = ControlBridge.steer(270, 0, 32767);
+        assert behind[0] == -32767 && behind[2] == 32767 : "Movement uses the real angle while the camera keeps turning right";
+        // Yaw error: Minecraft yaw + 90 is Unreal yaw; the start takes the shortest way, a fast spin never flips direction.
+        ControlBridge.resetSteering();
+        assert Math.abs(ControlBridge.yawError(350, 80) - 0) < 1e-9 : "Angles wrap at the start";
+        ControlBridge.resetSteering();
+        assert Math.abs(ControlBridge.yawError(0, 350) - 100) < 1e-9;
+        double unreal = 350, minecraft = 0, error = 0;
+        for (int frame = 0; frame < 20; frame++) { // Minecraft spins right 40 degrees per frame, Stellar Blade 10.
+            minecraft += 40;
+            unreal = (unreal + 10) % 360;
+            error = ControlBridge.yawError(minecraft, unreal);
+            assert error > 0 : "The camera never reverses during a fast right spin (frame " + frame + ", error " + error + ")";
+        }
+        assert error < 360 : "At most one turn behind";
+
         // Display interpolation between two poses.
         var single = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(new AvatarRecording.Component("C", "M", null,
                 new String[] {"Root"}, new String[] {"m"}, 1)), 21);
