@@ -342,9 +342,11 @@ public final class AvatarView {
         Vector3d feet = placement.transformPosition(new Vector3d(root[4], root[5], root[6])).add(camera.x, camera.y, camera.z);
         int light = WorldRenderer.getLightmapCoordinates(context.world(), BlockPos.ofFloored(feet.x, feet.y + 1, feet.z));
         Matrix4f projectionView = new Matrix4f(context.projectionMatrix()).mul(context.positionMatrix());
+        Vec3d sky = context.world().getSkyColor(context.camera().getPos(), context.tickCounter().getTickDelta(false));
         renderer.draw(projectionView, lightmap(context.lightmapTextureManager()),
                 LightmapTextureManager.getBlockLightCoordinates(light), LightmapTextureManager.getSkyLightCoordinates(light),
-                RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(), RenderSystem.getShaderFogColor());
+                RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(), RenderSystem.getShaderFogColor(),
+                new float[] {(float) sky.x, (float) sky.y, (float) sky.z});
     }
 
     /** The lightmap's GL texture; enable() also binds it on the active unit, so that binding is restored. */

@@ -79,7 +79,9 @@ public final class AvatarRenderCheck {
                 Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(40), (float) tileWidth / tileHeight, 0.05f, 100);
                 GL11.glViewport(i * tileWidth, 0, tileWidth, tileHeight);
                 long started = System.nanoTime();
-                renderer.draw(projection.mul(view), lightmap, 15, 15, 1000, 2000, new float[] {0, 0, 0, 0});
+                // Daylight: the clear color as sky, a pale horizon as fog color (fog itself starts beyond the scene).
+                renderer.draw(projection.mul(view), lightmap, 15, 15, 1000, 2000, new float[] {0.75f, 0.84f, 1f, 1f},
+                        new float[] {0.47f, 0.65f, 1f});
                 GL11.glFinish();
                 System.out.printf("t=%s s: draw + finish %.2f ms%n", times[i], (System.nanoTime() - started) / 1e6);
             }

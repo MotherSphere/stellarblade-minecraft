@@ -15,6 +15,7 @@ import org.joml.Matrix4f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL21;
@@ -28,26 +29,28 @@ import org.lwjgl.system.MemoryUtil;
  * everything changed by a draw is restored, so Minecraft's own rendering continues unchanged.
  * A material slot draws with its base texture {@code <slot>.png} and optional maps beside it:
  * {@code .normal} (Unreal tangent space), {@code .surface} (occlusion, roughness, metallic, specular),
- * {@code .emissive} and {@code .hair} (root to tip, strand id, depth; selects hair shading).
+ * {@code .emissive}, {@code .hair} (root to tip, strand id, depth; selects hair shading) and {@code .scatter}
+ * (subsurface color). A translucent slot ships {@code <slot>.overlay.png} instead: premultiplied color drawn after
+ * every opaque section without writing depth.
  */
 final class AvatarRenderer implements AutoCloseable {
     private static final String[] ATTRIBUTES = {"Position", "Normal", "UV0", "BoneIds", "BoneWeights", "MorphPosition", "MorphNormal"};
     private final AvatarModel model;
-    // Texture units: base 0, normal 1, Minecraft's lightmap 2, surface 3, emissive 4, hair 5.
-    private static final int[] UNITS = {0, 1, 3, 4, 5};
+    // Texture units: base 0, normal 1, Minecraft's lightmap 2, surface 3, emissive 4, hair 5, scatter 6.
+    private static final int[] UNITS = {0, 1, 3, 4, 5, 6};
     private static final float CUTOFF = 0.5f, HAIR_CUTOFF = 0.25f;
-    /** GL textures of one material slot in UNITS order (base, normal, surface, emissive, hair); base 0: not drawn. */
-    private record Material(int[] maps, boolean hair) {
+    /** GL textures of one slot in UNITS order (base, normal, surface, emissive, hair, scatter); base 0: not drawn. */
+    private record Material(int[] maps, boolean hair, boolean overlay) {
         int base() { return maps[0]; }
     }
-    private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, hairShading, cutoff;
+    private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, overlayPass;
     private final int[] arrays, vertexBuffers, indexBuffers, morphBuffers;
     private final float[][] appliedWeights; // Morph weights currently uploaded per part.
     private final FloatBuffer[] morphOffsets;
     private final Material[][] sectionMaterials;
     private final Map<String, Material> materials = new HashMap<>();
     private final Map<String, Integer> textures = new HashMap<>();
-    private int flatNormal, plainSurface, black;
+    private int flatNormal, plainSurface, matte, black;
     final FloatBuffer[] palettes;
 
     AvatarRenderer(AvatarModel model, Path pack) throws IOException {
@@ -72,13 +75,16 @@ final class AvatarRenderer implements AutoCloseable {
             fogStart = GL20.glGetUniformLocation(program, "FogStart");
             fogEnd = GL20.glGetUniformLocation(program, "FogEnd");
             fogColor = GL20.glGetUniformLocation(program, "FogColor");
+            skyColor = GL20.glGetUniformLocation(program, "SkyColor");
+            overlayPass = GL20.glGetUniformLocation(program, "Overlay");
             hairShading = GL20.glGetUniformLocation(program, "Hair");
             cutoff = GL20.glGetUniformLocation(program, "AlphaCutoff");
             GlStateManager._glUseProgram(program);
-            for (int unit = 0; unit <= 5; unit++) GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler" + unit), unit);
+            for (int unit = 0; unit <= 6; unit++) GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler" + unit), unit);
             // Defaults for missing maps: flat normal; full occlusion, roughness 0.8, no metal, 4 % reflectance; black.
             flatNormal = solid(128, 128, 255, 255);
             plainSurface = solid(255, 204, 0, 128);
+            matte = solid(255, 255, 0, 0); // Overlays without a surface map: no highlight, no reflection.
             black = solid(0, 0, 0, 255);
             for (int p = 0; p < count; p++) {
                 AvatarMesh mesh = model.parts.get(p).mesh();
@@ -122,11 +128,16 @@ final class AvatarRenderer implements AutoCloseable {
         }
     }
 
-    /** Draws every part with the palettes filled by AvatarModel.palettes; positions are camera-relative blocks. */
-    void draw(Matrix4f projectionView, int lightmap, int blockLight, int skyLight, float start, float end, float[] fog) {
+    /**
+     * Draws every part with the palettes filled by AvatarModel.palettes; positions are camera-relative blocks. Sky is
+     * Minecraft's sky color, reflected by glossy surfaces in proportion to the sky light.
+     */
+    void draw(Matrix4f projectionView, int lightmap, int blockLight, int skyLight, float start, float end, float[] fog, float[] sky) {
         int program0 = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), array0 = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
         int active0 = GlStateManager._getActiveTexture();
-        int[] bound0 = new int[6];
+        int[] bound0 = new int[7];
+        int[] blendFunction0 = {GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB), GL11.glGetInteger(GL14.GL_BLEND_DST_RGB),
+                GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA), GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA)};
         boolean depth0 = GL11.glIsEnabled(GL11.GL_DEPTH_TEST), cull0 = GL11.glIsEnabled(GL11.GL_CULL_FACE), blend0 = GL11.glIsEnabled(GL11.GL_BLEND);
         boolean mask0 = GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK);
         int function0 = GL11.glGetInteger(GL11.GL_DEPTH_FUNC);
@@ -150,23 +161,33 @@ final class AvatarRenderer implements AutoCloseable {
             GL20.glUniform1f(fogStart, start);
             GL20.glUniform1f(fogEnd, end);
             GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
+            GL20.glUniform3f(skyColor, sky[0], sky[1], sky[2]);
             GL20.glVertexAttrib3f(5, 0, 0, 0);
             GL20.glVertexAttrib3f(6, 0, 0, 0);
-            for (int p = 0; p < arrays.length; p++) {
-                if (morphBuffers[p] != 0) uploadMorphs(p);
-                GlStateManager._glBindVertexArray(arrays[p]);
-                GL21.glUniformMatrix3x4fv(bones, false, palettes[p]);
-                AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
-                for (int s = 0; s < sections.length; s++) {
-                    Material material = sectionMaterials[p][s];
-                    if (material.base() == 0) continue;
-                    for (int k = 0; k < UNITS.length; k++) {
-                        GlStateManager._activeTexture(GL13.GL_TEXTURE0 + UNITS[k]);
-                        GlStateManager._bindTexture(material.maps()[k]);
+            for (int p = 0; p < arrays.length; p++) if (morphBuffers[p] != 0) uploadMorphs(p);
+            // Opaque and cut-out sections first; translucent overlays then blend over them without writing depth.
+            for (boolean overlays : new boolean[] {false, true}) {
+                if (overlays) {
+                    GlStateManager._enableBlend();
+                    GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ZERO, GL11.GL_ONE);
+                    GlStateManager._depthMask(false);
+                }
+                GL20.glUniform1i(overlayPass, overlays ? 1 : 0);
+                for (int p = 0; p < arrays.length; p++) {
+                    GlStateManager._glBindVertexArray(arrays[p]);
+                    GL21.glUniformMatrix3x4fv(bones, false, palettes[p]);
+                    AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
+                    for (int s = 0; s < sections.length; s++) {
+                        Material material = sectionMaterials[p][s];
+                        if (material.base() == 0 || material.overlay() != overlays) continue;
+                        for (int k = 0; k < UNITS.length; k++) {
+                            GlStateManager._activeTexture(GL13.GL_TEXTURE0 + UNITS[k]);
+                            GlStateManager._bindTexture(material.maps()[k]);
+                        }
+                        GL20.glUniform1i(hairShading, material.hair() ? 1 : 0);
+                        GL20.glUniform1f(cutoff, material.hair() ? HAIR_CUTOFF : overlays ? 0 : CUTOFF);
+                        GL11.glDrawElements(GL11.GL_TRIANGLES, sections[s].indexCount(), GL11.GL_UNSIGNED_INT, 4L * sections[s].firstIndex());
                     }
-                    GL20.glUniform1i(hairShading, material.hair() ? 1 : 0);
-                    GL20.glUniform1f(cutoff, material.hair() ? HAIR_CUTOFF : CUTOFF);
-                    GL11.glDrawElements(GL11.GL_TRIANGLES, sections[s].indexCount(), GL11.GL_UNSIGNED_INT, 4L * sections[s].firstIndex());
                 }
             }
         } finally {
@@ -182,6 +203,7 @@ final class AvatarRenderer implements AutoCloseable {
             if (blend0) GlStateManager._enableBlend(); else GlStateManager._disableBlend();
             GlStateManager._depthFunc(function0);
             GlStateManager._depthMask(mask0);
+            GlStateManager._blendFuncSeparate(blendFunction0[0], blendFunction0[1], blendFunction0[2], blendFunction0[3]);
         }
     }
 
@@ -209,8 +231,8 @@ final class AvatarRenderer implements AutoCloseable {
     public void close() {
         for (int texture : textures.values()) if (texture != 0) GlStateManager._deleteTexture(texture);
         textures.clear();
-        for (int texture : new int[] {flatNormal, plainSurface, black}) if (texture != 0) GlStateManager._deleteTexture(texture);
-        flatNormal = plainSurface = black = 0;
+        for (int texture : new int[] {flatNormal, plainSurface, matte, black}) if (texture != 0) GlStateManager._deleteTexture(texture);
+        flatNormal = plainSurface = matte = black = 0;
         for (int i = 0; i < arrays.length; i++) {
             if (arrays[i] != 0) GL30.glDeleteVertexArrays(arrays[i]);
             if (vertexBuffers[i] != 0) GL15.glDeleteBuffers(vertexBuffers[i]);
@@ -227,10 +249,11 @@ final class AvatarRenderer implements AutoCloseable {
         if (known != null) return known;
         int hair = texture(pack, slot + ".hair.png", 0);
         int base = texture(pack, slot + ".png", hair != 0 ? HAIR_CUTOFF : CUTOFF);
+        boolean overlay = base == 0 && (base = texture(pack, slot + ".overlay.png", 0)) != 0;
         int normal = texture(pack, slot + ".normal.png", 0), surface = texture(pack, slot + ".surface.png", 0);
-        int emissive = texture(pack, slot + ".emissive.png", 0);
-        Material material = new Material(new int[] {base, normal != 0 ? normal : flatNormal, surface != 0 ? surface : plainSurface,
-                emissive != 0 ? emissive : black, hair != 0 ? hair : black}, hair != 0);
+        int emissive = texture(pack, slot + ".emissive.png", 0), scatter = texture(pack, slot + ".scatter.png", 0);
+        Material material = new Material(new int[] {base, normal != 0 ? normal : flatNormal, surface != 0 ? surface : overlay ? matte : plainSurface,
+                emissive != 0 ? emissive : black, hair != 0 ? hair : black, scatter != 0 ? scatter : black}, hair != 0, overlay);
         materials.put(slot, material);
         return material;
     }
