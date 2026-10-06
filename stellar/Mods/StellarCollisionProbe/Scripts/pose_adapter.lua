@@ -185,6 +185,30 @@ function Adapter.new()
         end
         return found
     end
+    -- Active particle effects (Cascade and Niagara components) on EVE's actor: asset, attach parent and socket. A
+    -- diagnostic for which of the game's show effects play, and where; nothing is drawn from it yet.
+    local EFFECT_CLASSES={'/Script/Engine.ParticleSystemComponent','/Script/Niagara.NiagaraComponent'}
+    function engine.effects()
+        local pawn=valid(UE.GetPlayer())
+        if not pawn then return {} end
+        local found={}
+        for _,path in ipairs(EFFECT_CLASSES) do
+            local class=valid(StaticFindObject(path))
+            if class then
+                each(pawn:K2_GetComponentsByClass(class),function(_,component)
+                    component=valid(component)
+                    if component and component:IsActive() then
+                        local ok,asset=pcall(function() return valid(component.Template or component.Asset) end)
+                        local parent=valid(component:GetAttachParent())
+                        found[#found+1]=string.format('%s@%s:%s',ok and asset and text(asset:GetFName()) or text(component:GetFName()),
+                            parent and text(parent:GetFName()) or '-',text(component:GetAttachSocketName()))
+                    end
+                end)
+            end
+        end
+        table.sort(found)
+        return found
+    end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)
         local bones,morphs={},{}

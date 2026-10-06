@@ -118,7 +118,22 @@ public final class AvatarModelTest {
         assert AvatarRenderer.coverage(half, 4, 1, 192) == 0.5 && (half.get(4 * 1 + 3) & 0xff) == 0 : "Coverage kept, gaps stay cut";
         org.lwjgl.system.MemoryUtil.memFree(half);
         org.lwjgl.system.MemoryUtil.memFree(strands);
-        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning and cut-out mipmaps");
+        // Weapon trail: the pack's socket description, and strength from the blade's turn rate in the chest frame.
+        String trail = "SBAVTRAIL 1\nBEGIN Weapon_Root 22.4 0 2.3\nEND AB_WP02_Top 0 -33.9 0\nHELD CH_P_EVE_52_TypeB Bip001-R-Hand 30 Bip001-Spine2\n";
+        var spec = AvatarTrail.Spec.parse(trail);
+        assert spec.endBone().equals("AB_WP02_Top") && spec.end().y == -33.9 && spec.reach() == 30 && spec.chestBone().equals("Bip001-Spine2");
+        for (String bad : new String[] {trail.replace("SBAVTRAIL 1", "SBAVTRAIL 2"), trail.replace(" 30 ", " 0 "),
+                trail.replace(" Bip001-Spine2", ""), trail.replace("22.4", "NaN")}) {
+            try {
+                AvatarTrail.Spec.parse(bad);
+                throw new AssertionError("Accepted " + bad);
+            } catch (IllegalArgumentException expected) { }
+        }
+        assert AvatarTrail.strength(AvatarTrail.SWING_START) == 0 && AvatarTrail.strength(AvatarTrail.SWING_FULL) == 1
+                && AvatarTrail.strength(1) == 0 && AvatarTrail.strength(100) == 1;
+        double middle = AvatarTrail.strength((AvatarTrail.SWING_START + AvatarTrail.SWING_FULL) / 2);
+        assert Math.abs(middle - 0.5) < 1e-9 : "Smooth ramp between the thresholds";
+        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cut-out mipmaps and weapon trails");
     }
 
     /** Applies bone row matrices (GLSL mat3x4 layout) to an Unreal reference-space point. */

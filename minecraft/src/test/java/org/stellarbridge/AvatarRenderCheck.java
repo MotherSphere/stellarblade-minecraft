@@ -68,6 +68,16 @@ public final class AvatarRenderCheck {
             GL11.glClearColor(0.47f, 0.65f, 1f, 1);
             GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
             AvatarRecording.Pose pose = recording.emptyPose();
+            // Swings in the recording: when the weapon trail would show.
+            StringBuilder swings = new StringBuilder();
+            for (double t = 0; t < recording.duration(); t += 1 / 120.0) {
+                recording.sample(t, pose);
+                Matrix4d at = new Matrix4d().mul(AvatarModel.UNREAL_TO_MINECRAFT);
+                model.palettes(pose, at, renderer.palettes, false);
+                renderer.sampleTrail(pose, at, 0, 0, 0, t);
+                if (renderer.trailStrength() > 0.5) swings.append(String.format("%.2f ", t));
+            }
+            System.out.println("trail above half strength at: " + (swings.length() == 0 ? "never" : swings));
             for (int i = 0; i < times.length; i++) {
                 recording.sample(Double.parseDouble(times[i]), pose);
                 float[] root = pose.world()[model.parts.get(0).component()];
@@ -77,7 +87,16 @@ public final class AvatarRenderCheck {
                 forward.rotateY(Math.toRadians(camera[2]));
                 Vector3d eye = new Vector3d(forward).mul(camera[0]).add(0, camera[1] + 0.1, 0), target = new Vector3d(0, camera[1], 0);
                 Matrix4d placement = new Matrix4d().translation(-eye.x, -eye.y, -eye.z).mul(AvatarModel.UNREAL_TO_MINECRAFT).translate(-root[4], -root[5], -root[6]);
+                // The trail's last 0.3 s, sampled as Minecraft frames would.
+                double now = Double.parseDouble(times[i]);
+                for (double t = Math.max(0, now - 0.3); t < now; t += 1 / 120.0) {
+                    recording.sample(t, pose);
+                    model.palettes(pose, placement, renderer.palettes, false);
+                    renderer.sampleTrail(pose, placement, eye.x, eye.y, eye.z, t);
+                }
+                recording.sample(now, pose);
                 model.palettes(pose, placement, renderer.palettes, false);
+                renderer.sampleTrail(pose, placement, eye.x, eye.y, eye.z, now);
                 for (int p = 0; p < model.parts.size(); p++) System.out.println("  " + bounds(model.parts.get(p).mesh(), model.morphWeights[p], renderer.palettes[p], eye));
                 Matrix4f view = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
                 Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(40), (float) tileWidth / tileHeight, 0.05f, 100);

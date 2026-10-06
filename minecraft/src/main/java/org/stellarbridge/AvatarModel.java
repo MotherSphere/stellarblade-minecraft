@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.joml.Matrix4d;
+import org.joml.Vector3d;
 
 /** Binds recorded EVE components to pack meshes and turns one pose into per-bone skinning matrices. */
 final class AvatarModel {
@@ -30,7 +31,7 @@ final class AvatarModel {
     final List<String> skipped;
     final float[][] morphWeights; // Per part, in mesh morph order; filled by palettes.
     private final Matrix4d[][] componentSpace; // Per recorded component, reused every frame.
-    private final Matrix4d world = new Matrix4d(), bone = new Matrix4d();
+    private final Matrix4d world = new Matrix4d(), bone = new Matrix4d(), socket = new Matrix4d();
 
     /** Components come from a pose recording or a stream table; recorded ones carry their bone names. */
     AvatarModel(List<AvatarRecording.Component> components, Map<String, AvatarMesh> meshes) {
@@ -143,6 +144,16 @@ final class AvatarModel {
             }
             target.flip();
         }
+    }
+
+    /** After palettes with the same placement: a point in a part's bone space (Unreal units) as camera-relative blocks. */
+    Vector3d point(AvatarRecording.Pose pose, Matrix4d placement, int part, int bone, Vector3d local, Vector3d out) {
+        Part p = parts.get(part);
+        int source = p.leaderBones == null ? bone : p.leaderBones[bone];
+        AvatarMesh.transform(pose.world()[p.component], 0, socket);
+        placement.mul(socket, socket);
+        if (source >= 0) socket.mul(componentSpace[p.driver][source]);
+        return socket.transformPosition(local, out);
     }
 
     private AvatarMesh driverMesh(int component) {

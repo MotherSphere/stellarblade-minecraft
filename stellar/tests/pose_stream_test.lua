@@ -76,6 +76,18 @@ engine.controller=function() return {object=0x7f0000005000,class=0x7f0000006000,
     pawn=0x7f0000007000,pawn_class=0x7f0000008000,yaw_scale=0,pitch_scale=-2.5} end
 RUN=string.rep('e',32); request(); reloaded.tick()
 assert(read('eve-pose-components.1'):find('\nCONTROLLER none\n',1,true))
+-- Active effects are logged when they change, and a failing lookup only once.
+local logged={}
+local logging=Stream.new(engine,directory,function() return now end,function(line) logged[#logged+1]=line end,function() return place end)
+local active={'NS_A_WeaponFX_SwordFlame_01@SBSkeletalMeshComponent_1:FX_WeaponFX_Begin'}
+engine.effects=function() return active end
+RUN=string.rep('8',32); request(); logging.tick(); logging.tick()
+active={}; logging.tick()
+engine.effects=function() error('Niagara unavailable') end
+logging.tick(); logging.tick()
+assert(#logged==3 and logged[1]=='EVE effects: NS_A_WeaponFX_SwordFlame_01@SBSkeletalMeshComponent_1:FX_WeaponFX_Begin'
+    and logged[2]=='EVE effects: none' and logged[3]:find('unavailable: ',1,true),table.concat(logged,'\n'))
+engine.effects=nil
 -- Glow parameters of dynamic material instances follow the components; a failing lookup publishes none.
 engine.controller=function() return nil end
 engine.parameters=function(list)
@@ -94,4 +106,4 @@ local _,without_glow=reloaded.tick()
 assert(without_glow:find('material parameters unavailable: ',1,true) and read('eve-pose-components.1'):find('\nPARAMETERS 0\nEND ',1,true),without_glow)
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
-print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters')
+print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log')

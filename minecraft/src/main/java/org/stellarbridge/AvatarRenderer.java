@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
@@ -47,6 +48,7 @@ final class AvatarRenderer implements AutoCloseable {
     private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, overlayPass,
             opacity, emissiveTint;
     private Map<String, float[]> parameters = Map.of();
+    private AvatarTrail trail; // The weapon's swing trail, when the pack describes one.
     private final int[] arrays, vertexBuffers, indexBuffers, morphBuffers;
     private final float[][] appliedWeights; // Morph weights currently uploaded per part.
     private final FloatBuffer[] morphOffsets;
@@ -69,7 +71,7 @@ final class AvatarRenderer implements AutoCloseable {
         morphOffsets = new FloatBuffer[count];
         sectionMaterials = new Material[count][];
         palettes = new FloatBuffer[count];
-        program = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"));
+        program = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES);
         boolean complete = false;
         try {
             bones = GL20.glGetUniformLocation(program, "Bones");
@@ -124,6 +126,7 @@ final class AvatarRenderer implements AutoCloseable {
                 sectionMaterials[p] = new Material[mesh.sections.length];
                 for (int s = 0; s < mesh.sections.length; s++) sectionMaterials[p][s] = material(pack, mesh.sections[s].material());
             }
+            trail = AvatarTrail.load(model, pack, name -> texture(pack, name, 0));
             complete = true;
         } finally {
             GlStateManager._glBindVertexArray(previousArray);
@@ -206,6 +209,7 @@ final class AvatarRenderer implements AutoCloseable {
                     }
                 }
             }
+            if (trail != null) trail.draw(projectionView, start, end, fog);
         } finally {
             GlStateManager._glBindVertexArray(array0);
             GlStateManager._glUseProgram(program0);
@@ -221,6 +225,16 @@ final class AvatarRenderer implements AutoCloseable {
             GlStateManager._depthMask(mask0);
             GlStateManager._blendFuncSeparate(blendFunction0[0], blendFunction0[1], blendFunction0[2], blendFunction0[3]);
         }
+    }
+
+    /** Records the weapon trail's sockets for the displayed pose, after palettes with the same placement. */
+    void sampleTrail(AvatarRecording.Pose pose, Matrix4d placement, double cameraX, double cameraY, double cameraZ, double seconds) {
+        if (trail != null) trail.sample(model, pose, placement, cameraX, cameraY, cameraZ, seconds);
+    }
+
+    /** The weapon trail's newest strength, 0 to 1 (0 without a trail). */
+    double trailStrength() {
+        return trail == null ? 0 : trail.strength();
     }
 
     /** The newest streamed material parameters by "slot/name" (empty without a stream). */
@@ -266,6 +280,8 @@ final class AvatarRenderer implements AutoCloseable {
             arrays[i] = vertexBuffers[i] = indexBuffers[i] = morphBuffers[i] = 0;
         }
         if (program != 0) GL20.glDeleteProgram(program);
+        if (trail != null) trail.close();
+        trail = null;
     }
 
     /** A slot's textures; a slot without a base texture is not drawn, missing maps fall back to defaults. */
@@ -403,7 +419,7 @@ final class AvatarRenderer implements AutoCloseable {
         return out;
     }
 
-    private static int shader(int type, String name) throws IOException {
+    static int shader(int type, String name) throws IOException {
         String source;
         try (InputStream in = AvatarRenderer.class.getResourceAsStream("/assets/stellar_bridge/shaders/avatar/" + name)) {
             if (in == null) throw new IOException("Missing avatar shader " + name);
@@ -420,11 +436,11 @@ final class AvatarRenderer implements AutoCloseable {
         return shader;
     }
 
-    private static int link(int vertex, int fragment) throws IOException {
+    static int link(int vertex, int fragment, String[] attributes) throws IOException {
         int program = GL20.glCreateProgram();
         GL20.glAttachShader(program, vertex);
         GL20.glAttachShader(program, fragment);
-        for (int i = 0; i < ATTRIBUTES.length; i++) GL20.glBindAttribLocation(program, i, ATTRIBUTES[i]);
+        for (int i = 0; i < attributes.length; i++) GL20.glBindAttribLocation(program, i, attributes[i]);
         GL20.glLinkProgram(program);
         GL20.glDeleteShader(vertex);
         GL20.glDeleteShader(fragment);

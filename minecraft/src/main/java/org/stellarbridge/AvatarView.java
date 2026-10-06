@@ -347,6 +347,7 @@ public final class AvatarView {
         Vector3d feet = placement.transformPosition(new Vector3d(root[4], root[5], root[6])).add(camera.x, camera.y, camera.z);
         int light = WorldRenderer.getLightmapCoordinates(context.world(), BlockPos.ofFloored(feet.x, feet.y + 1, feet.z));
         Matrix4f projectionView = new Matrix4f(context.projectionMatrix()).mul(context.positionMatrix());
+        renderer.sampleTrail(pose, placement, camera.x, camera.y, camera.z, System.nanoTime() / 1e9);
         Vec3d sky = context.world().getSkyColor(context.camera().getPos(), context.tickCounter().getTickDelta(false));
         renderer.draw(projectionView, lightmap(context.lightmapTextureManager()),
                 LightmapTextureManager.getBlockLightCoordinates(light), LightmapTextureManager.getSkyLightCoordinates(light),

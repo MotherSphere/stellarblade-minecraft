@@ -23,6 +23,7 @@ end
 function Stream.new(engine,directory,clock,log,link)
     local api={}
     local run,generation,signature,published,binding
+    local effects,effect_lines='',0 -- Last logged active effects; at most 400 log lines per Lua lifetime.
     local function read(name,bound)
         local f=io.open(directory..'/'..name,'rb')
         if not f then return nil end
@@ -102,6 +103,16 @@ function Stream.new(engine,directory,clock,log,link)
             for _,q in ipairs(result) do
                 if #parameters<32 and token(q.slot) and token(q.name) and math.type(q.index)=='integer' and q.index>0
                     and q.element>=0 and q.element<1024 then parameters[#parameters+1]=q end
+            end
+        end
+        -- Diagnostic: log the set of EVE's active particle effects whenever it changes.
+        if effects and engine.effects then
+            local seen,active=pcall(engine.effects)
+            local now_effects=seen and table.concat(active,' ') or ('unavailable: '..tostring(active))
+            if now_effects~=effects and effect_lines<400 then
+                effect_lines=effect_lines+1
+                log('EVE effects: '..(now_effects=='' and 'none' or now_effects))
+                effects=seen and now_effects or nil -- An unavailable lookup is logged once, then left alone.
             end
         end
         -- Minecraft's avatar controls are permitted only for this run and the entered link.
