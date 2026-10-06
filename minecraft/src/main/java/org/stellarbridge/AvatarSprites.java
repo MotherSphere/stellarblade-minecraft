@@ -70,6 +70,13 @@ final class AvatarSprites implements AutoCloseable {
         if (asset.contains("SpinTrail") || asset.contains("MeshTrail") || asset.contains("ChargeSlash") || asset.contains("Wind"))
             return List.of(new Emitter("T_A_StreakSwirl_01", 1, Shape.FACING, Place.AROUND, 4, 10, 0.3, 0.5, 0.8, 1.4, 0, 0.5, 0,
                     0.55f, 0.6f, 0.7f, false)); // Swirling wind of spins and slashes.
+        if (asset.contains("Evade")) return List.of( // A perfect dodge: a cold flash and the air torn around EVE.
+                flare("T_A_ShineFlare_01", Shape.FACING, 0.35, 0.6, 2.2, 0.8f, 1.1f, 1.8f),
+                new Emitter("T_A_StreakSwirl_01", 1, Shape.FACING, Place.AROUND, 8, 0, 0.3, 0.5, 0.7, 1.6, 0, 0.6, 0, 0.6f, 0.8f, 1.4f, false));
+        if (asset.contains("JustParry")) return List.of( // A perfect parry: a white flash, a shock ring and sparks.
+                flare("T_A_LensFlare_01", Shape.FACING, 0.25, 1.2, 0.5, 1.4f, 1.4f, 1.6f),
+                flare("Ring", Shape.FACING, 0.3, 0.2, 1.4, 1.1f, 1.2f, 1.5f),
+                sparks(28, 0, 1.4f, 1.3f, 1.2f));
         if (asset.contains("Kick")) return List.of( // A kick's glow and the streak it leaves.
                 new Emitter("T_A_LensFlare_01", 1, Shape.FACING, Place.POINT, 1, 30, 0.12, 0.18, 0.35, 0.1, 0, 0, 0, 0.9f, 1.0f, 1.5f, false),
                 new Emitter("T_A_ShineFlare_01", 1, Shape.FACING, Place.POINT, 0, 60, 0.2, 0.3, 0.12, 0.0, 0, 0.2, 0, 0.7f, 0.85f, 1.3f, false));
@@ -102,7 +109,8 @@ final class AvatarSprites implements AutoCloseable {
     /** Sprites for a pack's fx textures, or null when the pack has none. */
     static AvatarSprites load(AvatarTrail.TextureLoader loader) throws IOException {
         Set<String> names = new HashSet<>();
-        for (String asset : new String[] {"NS_A_ParTrail", "HoldBurst_Signal", "HoldBurst_SwordFX", "Electric", "FastDraw", "SpinTrail", "Kick", ""})
+        for (String asset : new String[] {"NS_A_ParTrail", "HoldBurst_Signal", "HoldBurst_SwordFX", "Electric", "FastDraw", "SpinTrail", "Evade",
+                "JustParry", "Kick", ""})
             for (Emitter e : recipe(asset)) names.add(e.texture());
         Map<String, Integer> loaded = new HashMap<>();
         for (String name : names) {

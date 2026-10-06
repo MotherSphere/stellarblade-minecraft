@@ -16,6 +16,8 @@ abstract class BridgePauseMixin {
             target = "Lnet/minecraft/client/MinecraftClient;paused:Z", opcode = Opcodes.PUTFIELD), require = 1, allow = 1)
     private void stellarKeepBridgeRunning(MinecraftClient client, boolean requestedPause) {
         // Modify the single assignment before both client tick timing and IntegratedServer observe it.
-        paused = requestedPause && !StellarBridge.keepsWorldRunning(client);
+        boolean running = requestedPause && StellarBridge.keepsWorldRunning(client);
+        StellarBridge.pauseOverridden(running);
+        paused = requestedPause && !running;
     }
 }

@@ -10,6 +10,7 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.Tameable;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.damage.DamageTypes;
+import net.minecraft.registry.tag.DamageTypeTags;
 import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
@@ -27,8 +28,9 @@ import org.joml.Vector3d;
  * through Minecraft's own damage, so every mob reacts with its own hurt, knockback, sounds and loot. Every damage the
  * bridged player takes is judged at the moment of impact against her latest dodge and guard presses, so any melee
  * swing or projectile counts, however long its animation: a dodge just before the impact is perfect (no damage, and
- * Minecraft's world slows while Stellar Blade keeps animating EVE at full speed), a later dodge still avoids it, a guard
- * pressed just before parries (no damage, a melee attacker staggers), a held guard lets a quarter through.
+ * Minecraft's world slows for 1.5 s, Stellar Blade's for the moment of the dodge), a later dodge still avoids it, a guard
+ * pressed just before parries (no damage, a melee attacker staggers), a held guard lets a quarter through. While the
+ * bridge session lasts but EVE cannot answer (a pause menu over a running world, no live link), nothing hurts her.
  */
 public final class AvatarCombat {
     // Strike damage per Stellar Blade trail style (SWING: no effect data, the swing heuristic), doubled for a charged
@@ -50,7 +52,10 @@ public final class AvatarCombat {
     private static volatile boolean guarding;
     private static final AtomicIntegerArray counts = new AtomicIntegerArray(1 + Defense.values().length); // Strikes, then per Defense.
     private static boolean defending; // Server thread: inside a guarded hit's own damage call.
-    private static MinecraftServer slowed; // Server thread: the server whose tick rate a perfect dodge lowered.
+    // Server thread: the last judged attack's origin entity, the server tick then and its verdict.
+    private static int lastOrigin = -1, lastJudged;
+    private static Defense lastDefense = Defense.HIT;
+    private static volatile MinecraftServer slowed; // The server whose tick rate a perfect dodge lowered; the HUD reads it.
     private static float normalRate;
     private static long slowUntil;
 
@@ -74,13 +79,41 @@ public final class AvatarCombat {
      * to let Minecraft apply the damage.
      */
     public static Boolean defend(ServerPlayerEntity player, DamageSource source, float amount) {
-        if (defending || !StellarBridge.overrides(player)) return null;
+        if (defending || source.isIn(DamageTypeTags.BYPASSES_INVULNERABILITY)) return null;
+        if (StellarBridge.defenseless(player)) return false;
+        if (!StellarBridge.overrides(player)) return null;
         // Stellar Blade owns EVE's position; Minecraft's collisions with it never hurt her.
         if (source.isOf(DamageTypes.IN_WALL) || source.isOf(DamageTypes.FALL) || source.isOf(DamageTypes.FLY_INTO_WALL)
                 || source.isOf(DamageTypes.CRAMMING)) return false;
-        if (source.getAttacker() == null && source.getSource() == null || player.isInvulnerableTo(source)) return null;
+        if (source.getAttacker() == null && source.getSource() == null || player.isInvulnerableTo(source)
+                || player.getAbilities().invulnerable) return null;
+        // Some attacks repeat within vanilla's half-second immunity (contact damage, a deflected arrow): the first
+        // verdict holds for them, as immunity would after a hit.
+        Entity origin = source.getSource() != null ? source.getSource() : source.getAttacker();
+        int now = player.getServer().getTicks();
+        if (origin.getId() == lastOrigin && now - lastJudged < 10) return switch (lastDefense) {
+            case HIT -> null;
+            case GUARD -> applied(player, source, amount * GUARD_SHARE);
+            default -> false;
+        };
         Defense defense = defense(System.nanoTime(), dodged, guarded, guarding);
+        lastOrigin = origin.getId();
+        lastJudged = now;
+        lastDefense = defense;
+        if (defense == Defense.HIT) {
+            // Minecraft decides (immunity, difficulty); only a hit that lands reaches Stellar Blade.
+            boolean hurt = applied(player, source, amount);
+            if (hurt) {
+                counts.incrementAndGet(1 + defense.ordinal());
+                StellarBridge.combatEvent("hit", source.getPosition());
+            }
+            return hurt;
+        }
         counts.incrementAndGet(1 + defense.ordinal());
+        // Stellar Blade answers with its own time and effects; the action bar names the verdict.
+        String name = defense.name().toLowerCase(java.util.Locale.ROOT);
+        if (defense != Defense.DODGE) StellarBridge.combatEvent(name, source.getPosition());
+        player.sendMessage(net.minecraft.text.Text.translatable("stellar_bridge.combat." + name), true);
         switch (defense) {
             case PERFECT_PARRY -> {
                 if (source.isDirect() && source.getAttacker() instanceof LivingEntity attacker) {
@@ -96,15 +129,22 @@ public final class AvatarCombat {
                 return false;
             }
             case DODGE -> { return false; }
-            case GUARD -> {
+            default -> { // GUARD
                 sound(player, SoundEvents.ITEM_SHIELD_BLOCK, 0.9f);
-                defending = true;
-                try { return player.damage(source, amount * GUARD_SHARE); }
-                finally { defending = false; }
+                return applied(player, source, amount * GUARD_SHARE);
             }
-            default -> { return null; }
         }
     }
+
+    /** Minecraft's own damage, from inside the hook. */
+    private static boolean applied(ServerPlayerEntity player, DamageSource source, float amount) {
+        defending = true;
+        try { return player.damage(source, amount); }
+        finally { defending = false; }
+    }
+
+    /** Whether a perfect dodge's slow motion runs; any thread. */
+    static boolean slowMotion() { return slowed != null; }
 
     private static void slow(MinecraftServer server) {
         if (slowed == null) {

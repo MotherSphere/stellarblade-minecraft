@@ -15,5 +15,9 @@
   "key.stellar_bridge.item": "EVE item (D-pad down)",
   "key.stellar_bridge.interact": "EVE interact (RT)",
   "key.stellar_bridge.scan": "EVE scan (Back)",
-  "key.stellar_bridge.lock_on": "EVE lock-on (R3)"
+  "key.stellar_bridge.lock_on": "EVE lock-on (R3; avatar: nearest mob)",
+  "stellar_bridge.combat.perfect_parry": "Perfect parry",
+  "stellar_bridge.combat.perfect_dodge": "Perfect dodge",
+  "stellar_bridge.combat.dodge": "Dodged",
+  "stellar_bridge.combat.guard": "Guarded"
 }

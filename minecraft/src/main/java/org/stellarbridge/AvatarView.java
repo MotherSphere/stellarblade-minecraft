@@ -95,6 +95,12 @@ public final class AvatarView {
                             return 1;
                         }))));
         WorldRenderEvents.AFTER_ENTITIES.register(AvatarView::render);
+        // While a perfect dodge slows Minecraft's world, a cold tint shows it.
+        net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((context, tick) -> {
+            var client = MinecraftClient.getInstance();
+            if (client.world != null && AvatarCombat.slowMotion() && replaces(client.player))
+                context.fill(0, 0, context.getScaledWindowWidth(), context.getScaledWindowHeight(), 0x302050A0);
+        });
         ClientTickEvents.END_CLIENT_TICK.register(client -> tick());
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(AvatarView::off));
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> { off(); reap(); });
@@ -268,6 +274,8 @@ public final class AvatarView {
             current.anchored = current.table.anchor() != null && link != null && current.table.session().equals(link.session());
             if (current.controlled) {
                 var player = MinecraftClient.getInstance().player;
+                // A locked target turns Minecraft's camera first; Stellar Blade's follows it. Without the link no EVE aims.
+                if (current.anchored) AvatarLock.frame(nanos); else AvatarLock.release();
                 // Minecraft yaw + 90 and negated pitch are Unreal's; the adapter turns toward them while input is forwarded.
                 // Minecraft's yaw keeps counting turns; the adapter takes one turn.
                 if (player != null)
@@ -481,6 +489,7 @@ public final class AvatarView {
         Live current = live;
         if (current == null) return;
         live = null;
+        AvatarLock.release();
         if (current.controlled) {
             current.stream.lookOff();
             ControlBridge.stop();

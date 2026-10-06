@@ -48,6 +48,13 @@ public final class BridgeProtocolTest {
         rejects(() -> encodeTerrain(terrain(List.of(new Box(1,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(-5,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(0,0,0,Double.NaN,1,1)))));
+        // Combat events for Stellar Blade follow the shared fixture; bad events, yaws and sessions are refused.
+        assert encodeCombat("a".repeat(32), 7, 1760000000000L, "hit", -135).equals(Files.readString(root.resolve("protocol/fixtures/combat-event.txt")));
+        assert encodeCombat("a".repeat(32), 1, 0, "perfect_dodge", Double.NaN).contains("\nEVENT perfect_dodge none\n");
+        rejects(() -> encodeCombat("a".repeat(32), 1, 0, "dodge", 0));
+        rejects(() -> encodeCombat("a".repeat(32), 1, 0, "hit", 181));
+        rejects(() -> encodeCombat("A".repeat(32), 1, 0, "hit", 0));
+        rejects(() -> encodeCombat("a".repeat(32), 0, 0, "hit", 0));
         rejects(() -> encodeTerrain(terrain(Collections.nCopies(257,new Box(0,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(new Terrain("BAD",7,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
         rejects(() -> encodeTerrain(new Terrain(terrain.session(),0,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));

@@ -39,6 +39,7 @@ public final class StellarBridge implements ClientModInitializer {
     private static Session session; // Integrated server thread only.
     private static volatile Control control; // Immutable publication to client and packet threads.
     private static volatile PauseBinding pauseBinding; // Independent of EVE pose freshness; never exposes Session.
+    private static volatile boolean pauseOverridden; // A pause menu is open while the bridge keeps the world running.
 
     @Override
     public void onInitializeClient() {
@@ -183,6 +184,17 @@ public final class StellarBridge implements ClientModInitializer {
                 && !client.player.isSpectator() && client.player.isAlive() && !client.player.hasVehicle();
     }
 
+    public static void pauseOverridden(boolean overridden) { pauseOverridden = overridden; }
+
+    /**
+     * Server thread: the bridge session's player while EVE cannot answer, behind a pause menu the world keeps running
+     * through or without a live link (EVE outside the patch, stale packets). A Stellar Blade pause keeps the link live.
+     */
+    static boolean defenseless(ServerPlayerEntity player) {
+        PauseBinding current = pauseBinding;
+        return current != null && player.getUuid().equals(current.owner) && (pauseOverridden || !overrides(player));
+    }
+
     private record PauseBinding(IntegratedServer server, UUID owner, String dimension) { }
 
     /** Immutable server publication; no live Session or entity is exposed to the renderer. */
@@ -205,6 +217,22 @@ public final class StellarBridge implements ClientModInitializer {
     public static boolean overrides(ServerPlayerEntity player) {
         Control current = control;
         return live(current) && current.owner == player && !current.server.isRemote();
+    }
+
+    /**
+     * Server thread: tells Stellar Blade the defense at an impact (eve-combat.txt), with the direction of the attack's
+     * origin when known, so EVE's own game can answer it.
+     */
+    static void combatEvent(String event, Vec3d from) {
+        Session current = session;
+        if (current == null) return;
+        double yaw = from == null ? Double.NaN // Unreal X, Y are Minecraft X, Z; yaw turns from +X toward +Y.
+                : Math.toDegrees(Math.atan2(from.z - current.player.getZ(), from.x - current.player.getX()));
+        try {
+            current.files.write("eve-combat.txt", BridgeProtocol.encodeCombat(current.id, ++current.combatSeq, System.currentTimeMillis(), event, yaw));
+        } catch (IOException | IllegalArgumentException failure) {
+            LOG.warn("Combat event not delivered to Stellar Blade: {}", failure.toString());
+        }
     }
 
     /** EVE's blade struck an entity the client saw: Minecraft damages it as the bridged player's attack, on the server thread. */
@@ -253,6 +281,7 @@ public final class StellarBridge implements ClientModInitializer {
         List<BridgeProtocol.Box> boxes = List.of();
         int revision;
         int ticks;
+        long combatSeq;
 
         Session(IntegratedServer server, ServerPlayerEntity player, BridgeFiles files) {
             this.server = server;

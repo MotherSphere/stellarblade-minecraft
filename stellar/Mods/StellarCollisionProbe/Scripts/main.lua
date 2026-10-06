@@ -139,6 +139,7 @@ local scene
 local raw
 local pose_recorder
 local pose_stream
+local combat
 local last_hd_frame
 local configured,config = pcall(require,'bridge_config')
 if configured then
@@ -160,10 +161,13 @@ if configured then
     control_permit=require('control_permit').new(config.directory)
     pose_recorder=require('pose_probe').new(require('pose_adapter').new(),config.directory,os.clock,log)
     -- Minecraft's avatar view requests the stream; the entered link fixes the Unreal-to-Minecraft placement.
-    pose_stream=require('pose_stream').new(require('pose_adapter').new(),config.directory,os.time,log,function()
+    local function entered_link()
         local pose=active==bridge and bridge.pose() or nil
         return pose and pose.state=='entered' and pose.anchor and {session=pose.session,anchor=pose.anchor,scale=config.scale} or nil
-    end)
+    end
+    pose_stream=require('pose_stream').new(require('pose_adapter').new(),config.directory,os.time,log,entered_link)
+    -- Minecraft's combat verdicts at EVE's impacts; os.clock is wall time under the MSVC runtime.
+    combat=require('combat_events').new(require('pose_adapter').new(),config.directory,os.time,os.clock,log,entered_link)
 end
 local function cancel_hd(message)
     hd_session.cancel(message)
@@ -451,6 +455,8 @@ if bridge then
             report_result('hd',hd_session.tick(read_ok and packet or {}))
             report_result('input',update_control_permit())
             report_result('pose',pose_recorder.tick(frame))
+            local fought,fight_error=pcall(combat.tick) -- Combat answers never cancel capture or input.
+            if not fought then report_result('combat',false,'Combat events paused: '..tostring(fight_error)) end
             pcall(report_cadence,frame) -- Optional diagnostics never cancel capture or input.
         end)
         hd_pending=false
@@ -461,4 +467,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 41; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 42; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

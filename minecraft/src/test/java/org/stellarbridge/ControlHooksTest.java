@@ -118,6 +118,11 @@ public final class ControlHooksTest {
         held[ControlBridge.GUARD] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x100 : "The inventory key guards (LB)";
         held[ControlBridge.GUARD] = false;
+        // Lock-on: the pinned outline query the locked target answers, and the camera angles toward it.
+        assert hasMethod(read("net/minecraft/client/MinecraftClient"), "hasOutline", "(Lnet/minecraft/entity/Entity;)Z");
+        float[] south = AvatarLock.angles(0, 0, 1), westUp = AvatarLock.angles(-1, 1, 0);
+        assert Math.abs(south[0]) < 1e-4 && Math.abs(south[1]) < 1e-4 : "Minecraft yaw 0 faces +Z";
+        assert Math.abs(westUp[0] - 90) < 1e-4 && Math.abs(westUp[1] + 45) < 1e-4 : "Yaw 90 faces -X; looking up is negative pitch";
         held[20] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x40 : "The EVE sprint key is L3";
         held[20] = false;

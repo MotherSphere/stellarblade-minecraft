@@ -74,7 +74,10 @@ final class BridgeFiles {
         }
     }
 
-    void stop() throws IOException { Files.deleteIfExists(checked("terrain.txt")); }
+    void stop() throws IOException {
+        Files.deleteIfExists(checked("terrain.txt"));
+        Files.deleteIfExists(checked("eve-combat.txt"));
+    }
 
     Path checked(String filename) throws IOException {
         for (Path current = directory; current != null; current = current.getParent()) {

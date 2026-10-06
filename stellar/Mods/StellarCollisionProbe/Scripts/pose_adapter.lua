@@ -254,7 +254,8 @@ function Adapter.new()
         'WeaponFX/NS_A_Weapon_Electric_01','WeaponFX/NS_A_WeaponFX_SwordFlame_01','WeaponFX/NS_A_Weapon_FastDraw_01','WeaponFX/NS_A_Weapon_Fold_02',
         'Common/SkillFX/Wind/NS_PC_SpinTrail_01','Common/SkillFX/Wind/NS_MeshWind_02','Common/SkillFX/MeshTrails/NS_A_MeshTrail_03',
         'Common/SkillFX/Kick/NS_PC_KickTrail_02','Skill/ShieldBreakKick/NS_A_KickCharge','Skill/ShieldBreakKick/NS_A_ChargeKickTrail',
-        'Skill/ChargeSlash/NS_ChargeSlash_MeshTrail_02'}) do
+        'Skill/ChargeSlash/NS_ChargeSlash_MeshTrail_02','Skill/Evade/NS_A_EvadeBody_01','Skill/Evade/NS_A_EvadeParticle_02',
+        'Skill/Parry/NS_JustParry_02'}) do
         local name=path:match('[^/]+$')
         KNOWN_EFFECTS[#KNOWN_EFFECTS+1]=FX..path..'.'..name
     end
@@ -294,6 +295,70 @@ function Adapter.new()
             if component then scan(valid(component:GetClass())) end
         end)
         return names
+    end
+    local function pawn()
+        local found=valid(valid(UE.GetPlayerController()):K2_GetPawn())
+        assert(found,'The player controller has no pawn.')
+        return found
+    end
+    -- Stellar Blade's global time dilation (UGameplayStatics); returns the previous value. The controller is the world
+    -- context, so time can be restored while it has no pawn.
+    function engine.time_dilation(value)
+        local controller=valid(UE.GetPlayerController())
+        assert(controller,'No player controller.')
+        local statics=valid(StaticFindObject('/Script/Engine.Default__GameplayStatics'))
+        local previous=tonumber(value_of(statics:GetGlobalTimeDilation(controller)))
+        assert(previous,'Unreadable time dilation.')
+        statics:SetGlobalTimeDilation(controller,value)
+        return previous
+    end
+    -- Plays one of Stellar Blade's Niagara systems on EVE's body mesh (UNiagaraFunctionLibrary::SpawnSystemAttached,
+    -- snapped to the mesh, destroyed when done); the system must be loaded or loadable.
+    function engine.play_effect(path)
+        local system=valid(StaticFindObject(path))
+        if not system and type(LoadAsset)=='function' then system=valid(LoadAsset(path)) end
+        assert(system,'not loaded')
+        local mesh=valid(pawn().Mesh)
+        assert(mesh,'EVE has no mesh.')
+        local library=valid(StaticFindObject('/Script/Niagara.Default__NiagaraFunctionLibrary'))
+        local SNAP_TO_TARGET,NO_POOLING=2,0
+        assert(valid(library:SpawnSystemAttached(system,mesh,FName('None'),{X=0,Y=0,Z=0},{Pitch=0,Yaw=0,Roll=0},
+            SNAP_TO_TARGET,true,true,NO_POOLING,true)),'nothing spawned')
+    end
+    -- EVE's own hit reaction toward an attack from yaw (Unreal degrees): her stock light-hit Show through her
+    -- SBShowActorInterface (animation and actor keys only, no effect or skill-result key: HP untouched), or the matching
+    -- light-hit animation through the same interface. Returns a description and a sample for hit_sample.
+    local HIT_SHOW='/Game/Art/Show/Hit/Result_Hit_Stand_LightAttack.Result_Hit_Stand_LightAttack'
+    local HIT_ANIMATION='/Game/Art/Character/PC/CH_P_EVE_01/Animation/Result_Hit_Stand_Light_%s.Result_Hit_Stand_Light_%s'
+    local HIT_SIDES={front='Bw',back='Fw_Uw',left='Lw',right='Rw'}
+    local COMPONENT_SPACE=2 -- ERelativeTransformSpace::RTS_Component
+    local function head(mesh) return value_of(value_of(mesh:GetSocketTransform(FName('Bip001-Head'),COMPONENT_SPACE)).Translation) end
+    function engine.hit_reaction(yaw,method)
+        local eve=pawn()
+        -- The interface call reaches its implementation unchecked: only an SBCharacter has one.
+        assert(eve:IsA(valid(StaticFindObject('/Script/SB.SBCharacter'))),'EVE is not an SBCharacter.')
+        local mesh=valid(eve.Mesh)
+        assert(mesh,'EVE has no mesh.')
+        local at,facing=value_of(eve:K2_GetActorLocation()),value_of(eve:K2_GetActorRotation()).Yaw
+        local relative=(yaw-facing+180)%360-180 -- Unreal is left-handed: positive is to EVE's right.
+        local side=math.abs(relative)<=45 and 'front' or math.abs(relative)>=135 and 'back' or relative>0 and 'right' or 'left'
+        local sample={mesh=mesh,head=head(mesh)}
+        if method=='show' then
+            local r=math.rad(yaw)
+            eve:PlaySingleShow(HIT_SHOW,true,{X=at.X+300*math.cos(r),Y=at.Y+300*math.sin(r),Z=at.Z})
+            return string.format('show, attack from the %s (%.0f deg)',side,relative),sample
+        end
+        local path=HIT_ANIMATION:format(HIT_SIDES[side],HIT_SIDES[side])
+        local sequence=valid(StaticFindObject(path)) or (type(LoadAsset)=='function' and valid(LoadAsset(path)) or nil)
+        assert(sequence,path..' is not loaded')
+        eve:ActorPlayCustomAnimSequence(sequence,FName('None'),0.1,1.6,1.0,0.05,0.2,false,100.0,false)
+        return string.format('animation %s, attack from the %s (%.0f deg)',HIT_SIDES[side],side,relative),sample
+    end
+    -- How far EVE's head moved in her mesh's space since the reaction started: a reaction moves it far more than idling.
+    function engine.hit_sample(sample)
+        if not valid(sample.mesh) then return 'mesh gone' end
+        local now,before=head(sample.mesh),sample.head
+        return string.format('head moved %.1f cm',math.sqrt((now.X-before.X)^2+(now.Y-before.Y)^2+(now.Z-before.Z)^2))
     end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)

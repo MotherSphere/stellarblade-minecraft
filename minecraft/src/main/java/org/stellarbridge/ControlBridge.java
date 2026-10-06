@@ -26,7 +26,7 @@ public final class ControlBridge {
     // Minecraft's own sprint key (6) does nothing in EVE mode, where the EVE sprint key sprints.
     private static final int[] BUTTON = {0, 0, 0, 0, A, B, 0, X, Y,
             Y, RB, LT, RT, R3, UP, LB, 0, 0, 0, 0, L3, 0, LT, 0, UP, DOWN, RT, BACK, R3};
-    static final int DODGE = 5, ATTACK = 7, GUARD = 15, SKILLS = 16, WALK = 21, AIM = 22, BURST = 23;
+    static final int DODGE = 5, ATTACK = 7, EXTRA_R3 = 13, GUARD = 15, SKILLS = 16, WALK = 21, AIM = 22, BURST = 23, LOCK = 28;
     static final double WALK_TILT = 0.35; // Stick deflection while the walk key is held: Stellar Blade walks.
     private static final int[] SKILL_FACE = {X, Y, A, B}; // BetaSkill1..4: face left, top, bottom, right.
     static final long SKILL_DELAY = 40_000_000L; // LB leads a skill's face button by 40 ms, as a player's thumb would.
@@ -87,6 +87,7 @@ public final class ControlBridge {
 
     static void stop() {
         avatar = false;
+        AvatarLock.release();
         AvatarCombat.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false);
         if (state != null) {
             state.stop();
@@ -111,6 +112,7 @@ public final class ControlBridge {
     static void build(boolean enabled) {
         if (state == null || build == enabled) return;
         build = enabled;
+        if (enabled) AvatarLock.release();
         suspend();
         clearMinecraftActions(!enabled);
     }
@@ -263,6 +265,7 @@ public final class ControlBridge {
         catch (IOException | IllegalArgumentException error) { state.unavailable("native input acknowledgement unavailable"); }
         boolean allowed = windowOwned() && frameReady();
         state.eligibility(allowed, allReleased, now, nanos);
+        if (!state.active()) AvatarCombat.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false); // No stale guard or dodge.
         if (state.active()) apply(now);
         publish();
         lookX = lookY = 0;
@@ -274,10 +277,14 @@ public final class ControlBridge {
         state.axes(axes());
         long nanos = System.nanoTime();
         for (int i = 0; i < held.length; i++) {
-            if (held[i] && !wasHeld[i]) heldSince[i] = nanos;
+            if (held[i] && !wasHeld[i]) {
+                heldSince[i] = nanos;
+                if (i == LOCK && avatar && !build) AvatarLock.toggle(); // Minecraft's entities have no Stellar Blade lock-on.
+            }
             wasHeld[i] = held[i];
         }
         int mask = build ? 0 : buttons(held, heldSince, nanos);
+        if (avatar && held[LOCK] && !held[EXTRA_R3]) mask &= ~R3; // Stellar Blade's own lock-on would recenter its camera.
         // The dodge and guard keys' latest presses, for Minecraft's damage to meet at the impact.
         if (!build) AvatarCombat.inputs(heldSince[DODGE], heldSince[GUARD], held[GUARD]);
         for (int bit : new int[] {A, B, L3, X, Y, RB, LT, RT, R3, UP, DOWN, BACK, LB}) state.button(bit, (mask & bit) != 0, time);

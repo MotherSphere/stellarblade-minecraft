@@ -15,5 +15,9 @@
   "key.stellar_bridge.item": "Objet d'EVE (croix bas)",
   "key.stellar_bridge.interact": "Interaction d'EVE (RT)",
   "key.stellar_bridge.scan": "Scan d'EVE (Back)",
-  "key.stellar_bridge.lock_on": "Verrouillage d'EVE (R3)"
+  "key.stellar_bridge.lock_on": "Verrouillage d'EVE (R3 ; avatar : mob le plus proche)",
+  "stellar_bridge.combat.perfect_parry": "Parade parfaite",
+  "stellar_bridge.combat.perfect_dodge": "Esquive parfaite",
+  "stellar_bridge.combat.dodge": "Esquivé",
+  "stellar_bridge.combat.guard": "Paré"
 }
