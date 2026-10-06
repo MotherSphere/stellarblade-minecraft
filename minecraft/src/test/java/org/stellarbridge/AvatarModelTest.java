@@ -106,7 +106,19 @@ public final class AvatarModelTest {
         } catch (IllegalArgumentException expected) { }
         AvatarModel bodyOnly = new AvatarModel(recording.components, Map.of("Body", body));
         assert bodyOnly.parts.size() == 1 && bodyOnly.skipped.equals(java.util.List.of("Mesh_Face (Face not in pack)"));
-        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping and Minecraft-space skinning");
+        // Cut-out mipmaps: a one-texel strand on every other column averages to half alpha and would vanish at the cutoff;
+        // the level's alpha scales back so the same share of texels passes.
+        ByteBuffer strands = org.lwjgl.system.MemoryUtil.memAlloc(4 * 4 * 4);
+        for (int i = 0; i < 16; i++) strands.putInt(4 * i, 0).put(4 * i, (byte) 200).put(4 * i + 3, (byte) (i % 4 < 2 && i % 2 == 0 ? 255 : 0));
+        ByteBuffer half = AvatarRenderer.halve(strands, 4, 4);
+        assert (half.get(0) & 0xff) == 200 && (half.get(3) & 0xff) == 128 && (half.get(4 * 1 + 3) & 0xff) == 0 : "Box filter";
+        double before = AvatarRenderer.coverage(strands, 16, 1, 192);
+        assert before == 0.25 && AvatarRenderer.coverage(half, 4, 1, 192) == 0 : "Plain mipmaps lose the strands";
+        AvatarRenderer.preserve(half, 4, 192, before);
+        assert AvatarRenderer.coverage(half, 4, 1, 192) == 0.5 && (half.get(4 * 1 + 3) & 0xff) == 0 : "Coverage kept, gaps stay cut";
+        org.lwjgl.system.MemoryUtil.memFree(half);
+        org.lwjgl.system.MemoryUtil.memFree(strands);
+        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning and cut-out mipmaps");
     }
 
     /** Applies bone row matrices (GLSL mat3x4 layout) to an Unreal reference-space point. */

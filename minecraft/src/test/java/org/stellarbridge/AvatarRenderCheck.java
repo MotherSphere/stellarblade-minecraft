@@ -16,12 +16,15 @@ import org.lwjgl.stb.STBImageWrite;
 /**
  * Offline GPU check of a private avatar pack and pose recording: renders EVE with the mod's renderer
  * in a hidden GL 3.2 core context and writes a contact sheet. Not part of the suites (needs a GPU and private files).
- * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...>
+ * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees]: the camera
+ * (default 3.2 blocks from her front, looking at 0.9 blocks) orbits by degrees around her feet.
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
         Path pack = Path.of(args[0]), poses = Path.of(args[1]), out = Path.of(args[2]);
         String[] times = args[3].split(",");
+        double[] camera = args.length > 4 ? java.util.Arrays.stream(args[4].split(",")).mapToDouble(Double::parseDouble).toArray()
+                : new double[] {3.2, 0.9, 0};
         int tileWidth = 600, tileHeight = 900, width = tileWidth * times.length;
         if (!GLFW.glfwInit()) throw new IllegalStateException("GLFW unavailable");
         GLFW.glfwWindowHint(GLFW.GLFW_VISIBLE, GLFW.GLFW_FALSE);
@@ -67,7 +70,8 @@ public final class AvatarRenderCheck {
                 // EVE's feet at the Minecraft origin; the camera faces her front (body component +X) from 3.2 blocks.
                 Matrix4d body = AvatarMesh.transform(root, 0, new Matrix4d());
                 Vector3d forward = AvatarModel.UNREAL_TO_MINECRAFT.transformDirection(body.transformDirection(new Vector3d(1, 0, 0))).setComponent(1, 0).normalize();
-                Vector3d eye = new Vector3d(forward).mul(3.2).add(0, 1.0, 0), target = new Vector3d(0, 0.9, 0);
+                forward.rotateY(Math.toRadians(camera[2]));
+                Vector3d eye = new Vector3d(forward).mul(camera[0]).add(0, camera[1] + 0.1, 0), target = new Vector3d(0, camera[1], 0);
                 Matrix4d placement = new Matrix4d().translation(-eye.x, -eye.y, -eye.z).mul(AvatarModel.UNREAL_TO_MINECRAFT).translate(-root[4], -root[5], -root[6]);
                 model.palettes(pose, placement, renderer.palettes, false);
                 for (int p = 0; p < model.parts.size(); p++) System.out.println("  " + bounds(model.parts.get(p).mesh(), model.morphWeights[p], renderer.palettes[p], eye));
