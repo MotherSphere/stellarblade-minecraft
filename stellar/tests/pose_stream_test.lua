@@ -88,6 +88,13 @@ logging.tick(); logging.tick()
 assert(#logged==3 and logged[1]=='EVE effects: NS_A_WeaponFX_SwordFlame_01@SBSkeletalMeshComponent_1:FX_WeaponFX_Begin'
     and logged[2]=='EVE effects: none' and logged[3]:find('unavailable: ',1,true),table.concat(logged,'\n'))
 engine.effects=nil
+-- EVE's combat-named members are logged once per Lua lifetime, after the effects.
+engine.combat_names=function() return {'function SBCharacter.ApplyDamage','property SBCharacter.bJustParry'} end
+logged={}
+local combat=Stream.new(engine,directory,function() return now end,function(line) logged[#logged+1]=line end,function() return place end)
+RUN=string.rep('6',32); request(); combat.tick(); combat.tick()
+assert(#logged==3 and logged[1]=='EVE combat: function SBCharacter.ApplyDamage' and logged[3]=='EVE combat: 2 names',table.concat(logged,'\n'))
+engine.combat_names=nil
 -- Effects: the reading layout and the known assets, then assets seen active, follow the parameters.
 engine.effect_layout=function() return {children=0x130,asset=0x6a8,template=0x4b0,active_byte=0x88,active_mask=0x10,
     niagara=0x7f000000b000,particle=0x7f000000c000} end

@@ -11,6 +11,7 @@ uniform int Hair;
 uniform int Overlay; // Translucent pass: premultiplied output, alpha 0 adds light.
 uniform float Opacity; // Streamed opacity of a glow overlay; 1 otherwise.
 uniform vec3 EmissiveTint; // Streamed emissive color times intensity of a glow overlay; white otherwise.
+uniform float Hurt; // 1 while EVE flashes red after a hit, as Minecraft tints a hurt entity.
 uniform vec3 SkyColor;
 uniform float AlphaCutoff;
 uniform ivec2 LightUv;
@@ -61,6 +62,7 @@ void main() {
     vec3 dp1 = dFdx(relative), dp2 = dFdy(relative);
     vec2 duv1 = dFdx(texCoord), duv2 = dFdy(texCoord);
     if (base.a < AlphaCutoff) discard;
+    if (Overlay == 0) base.rgb = mix(base.rgb, vec3(1.0, 0.0, 0.0), 0.3 * Hurt);
 
     vec3 view = normalize(-relative);
     vec3 n = normalize(normal);

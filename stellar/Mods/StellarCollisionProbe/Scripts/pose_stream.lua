@@ -25,6 +25,7 @@ function Stream.new(engine,directory,clock,log,link)
     local run,generation,signature,published,binding
     local effects,effect_lines='',0 -- Last logged active effects; at most 400 log lines per Lua lifetime.
     local layout,assets,asset_seen=nil,{},{} -- Effect reading layout; effect assets in first-seen order (at most 32).
+    local combat_logged=false -- EVE's combat-named functions and properties, logged once per Lua lifetime (at most 300 lines).
     local function remember(found)
         for _,a in ipairs(found or {}) do
             if #assets<32 and not asset_seen[a.object] and token(a.name) and math.type(a.object)=='integer' and a.object%8==0 then
@@ -140,6 +141,14 @@ function Stream.new(engine,directory,clock,log,link)
                 log('EVE effects: '..(now_effects=='' and 'none' or now_effects))
                 effects=seen and now_effects or nil -- An unavailable lookup is logged once, then left alone.
             end
+        end
+        if not combat_logged and engine.combat_names then
+            combat_logged=true
+            local ok,names=pcall(engine.combat_names)
+            if ok then
+                for index=1,math.min(#names,300) do log('EVE combat: '..names[index]) end
+                log(string.format('EVE combat: %d names%s',#names,#names>300 and ', first 300 logged' or ''))
+            else log('EVE combat names unavailable: '..tostring(names)) end
         end
         -- Minecraft's avatar controls are permitted only for this run and the entered link.
         binding=place and {run=run,session=place.session} or nil

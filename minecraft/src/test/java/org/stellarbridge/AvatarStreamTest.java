@@ -69,6 +69,21 @@ public final class AvatarStreamTest {
         assert AvatarTrail.Style.of("P_A_AnimTrail_SwordStrongAtk_01") == AvatarTrail.Style.STRONG
                 && AvatarTrail.Style.of("P_A_AnimTrail_SwordThrust_01") == AvatarTrail.Style.THRUST
                 && AvatarTrail.Style.of("P_A_AnimTrail_SwordLightAtk_01") == AvatarTrail.Style.LIGHT && AvatarTrail.Style.of("NS_A_KickCharge") == null;
+        // Combat: the defense at an impact from the latest presses, strike damage, and the blade's sweep through a box.
+        long impact = 10_000_000_000L;
+        assert AvatarCombat.defense(impact, impact - 200_000_000L, Long.MIN_VALUE, false) == AvatarCombat.Defense.PERFECT_DODGE
+                : "A dodge at 2.8 s against an attack landing at 3 s";
+        assert AvatarCombat.defense(impact, impact - 400_000_000L, Long.MIN_VALUE, false) == AvatarCombat.Defense.DODGE;
+        assert AvatarCombat.defense(impact, impact - 900_000_000L, Long.MIN_VALUE, true) == AvatarCombat.Defense.GUARD;
+        assert AvatarCombat.defense(impact, impact - 200_000_000L, impact - 100_000_000L, true) == AvatarCombat.Defense.PERFECT_PARRY;
+        assert AvatarCombat.defense(impact, Long.MIN_VALUE, Long.MIN_VALUE, false) == AvatarCombat.Defense.HIT;
+        assert AvatarCombat.defense(impact, impact + 1, Long.MIN_VALUE, false) == AvatarCombat.Defense.HIT : "A press after the impact";
+        assert AvatarCombat.damage(AvatarTrail.Style.STRONG, true) == 2 * AvatarCombat.STRONG && AvatarCombat.damage(null, false) == AvatarCombat.SWING;
+        var zombie = new net.minecraft.util.math.Box(-0.3, 0, -0.3, 0.3, 1.95, 0.3);
+        assert !AvatarCombat.sweeps(zombie, new org.joml.Vector3d(-1, 1, -1), new org.joml.Vector3d(-1, 1, -2),
+                new org.joml.Vector3d(1, 1, -1), new org.joml.Vector3d(1, 1, -2)) : "A swing in front of the box";
+        assert AvatarCombat.sweeps(zombie, new org.joml.Vector3d(-0.5, 1, 1), new org.joml.Vector3d(-0.5, 1, -1),
+                new org.joml.Vector3d(0.5, 1, 1), new org.joml.Vector3d(0.5, 1, -1)) : "A blade crossing the box between two frames";
         var body = table.components().get(0);
         var face = table.components().get(1);
         assert body.recorded() && body.bones().length == 3 && body.bones()[2].equals("Bip001-Head") && body.weights() == 0;
@@ -218,7 +233,7 @@ public final class AvatarStreamTest {
         } finally {
             try (var files = Files.walk(directory)) { files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
         }
-        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering and display interpolation");
+        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation and combat");
     }
 
     /** Reads poses from the external native fixture (pose_stream_fixture), which plays Lua and the game thread. */

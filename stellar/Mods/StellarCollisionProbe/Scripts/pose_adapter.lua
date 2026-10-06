@@ -266,6 +266,35 @@ function Adapter.new()
         end
         return loaded
     end
+    -- Research for EVE's hit reactions and real defensive state: functions and properties named like combat on EVE's
+    -- class chain and her components' classes, as 'function Class.Name' or 'property Class.Name'.
+    local COMBAT={'Damage','Hit','Evade','Dodge','Parry','Guard','Invinc','Reaction','ActorState','SlowMotion','Dilation','Groggy','Knock'}
+    function engine.combat_names()
+        local pawn=valid(valid(UE.GetPlayerController()):K2_GetPawn())
+        assert(pawn,'The player controller has no pawn.')
+        local names,seen={},{}
+        local function scan(class)
+            while class and not seen[class:GetAddress()] do
+                seen[class:GetAddress()]=true
+                local owner=text(class:GetFName())
+                local function keep(what,member)
+                    local name=text(member:GetFName())
+                    for _,word in ipairs(COMBAT) do
+                        if name:find(word,1,true) then names[#names+1]=what..' '..owner..'.'..name; return end
+                    end
+                end
+                class:ForEachFunction(function(f) keep('function',f) end)
+                class:ForEachProperty(function(p) keep('property',p) end)
+                class=valid(class:GetSuperStruct())
+            end
+        end
+        scan(valid(pawn:GetClass()))
+        each(pawn:K2_GetComponentsByClass(valid(StaticFindObject('/Script/Engine.ActorComponent'))),function(_,component)
+            component=valid(component)
+            if component then scan(valid(component:GetClass())) end
+        end)
+        return names
+    end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)
         local bones,morphs={},{}

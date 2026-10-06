@@ -108,6 +108,16 @@ public final class ControlHooksTest {
         held[ControlBridge.AIM] = false;
         assert ControlBridge.buttons(held, since, 0) == 0x4000 : "Attack alone is the light attack";
         held[ControlBridge.ATTACK] = false;
+        // EVE's defense: the pinned server player's damage defers to AvatarCombat; the sneak key dodges (B), the inventory key guards.
+        assert hasMethod(read("net/minecraft/server/network/ServerPlayerEntity"), "damage", "(Lnet/minecraft/entity/damage/DamageSource;F)Z");
+        assert calls(read("org/stellarbridge/mixin/AvatarDefenseMixin"), "stellarEveDefends", "org/stellarbridge/AvatarCombat", "defend",
+                "(Lnet/minecraft/server/network/ServerPlayerEntity;Lnet/minecraft/entity/damage/DamageSource;F)Ljava/lang/Boolean;") == 1;
+        held[ControlBridge.DODGE] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x2000 : "The sneak key dodges (B)";
+        held[ControlBridge.DODGE] = false;
+        held[ControlBridge.GUARD] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x100 : "The inventory key guards (LB)";
+        held[ControlBridge.GUARD] = false;
         held[20] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x40 : "The EVE sprint key is L3";
         held[20] = false;

@@ -26,7 +26,7 @@ public final class ControlBridge {
     // Minecraft's own sprint key (6) does nothing in EVE mode, where the EVE sprint key sprints.
     private static final int[] BUTTON = {0, 0, 0, 0, A, B, 0, X, Y,
             Y, RB, LT, RT, R3, UP, LB, 0, 0, 0, 0, L3, 0, LT, 0, UP, DOWN, RT, BACK, R3};
-    static final int ATTACK = 7, SKILLS = 16, WALK = 21, AIM = 22, BURST = 23;
+    static final int DODGE = 5, ATTACK = 7, GUARD = 15, SKILLS = 16, WALK = 21, AIM = 22, BURST = 23;
     static final double WALK_TILT = 0.35; // Stick deflection while the walk key is held: Stellar Blade walks.
     private static final int[] SKILL_FACE = {X, Y, A, B}; // BetaSkill1..4: face left, top, bottom, right.
     static final long SKILL_DELAY = 40_000_000L; // LB leads a skill's face button by 40 ms, as a player's thumb would.
@@ -87,6 +87,7 @@ public final class ControlBridge {
 
     static void stop() {
         avatar = false;
+        AvatarCombat.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false);
         if (state != null) {
             state.stop();
             publish();
@@ -101,6 +102,7 @@ public final class ControlBridge {
     public static void suspend() {
         if (state == null) return;
         rememberHeld();
+        AvatarCombat.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false);
         state.neutral("release physical controls before resuming");
         lookX = lookY = 0;
         publish();
@@ -276,6 +278,8 @@ public final class ControlBridge {
             wasHeld[i] = held[i];
         }
         int mask = build ? 0 : buttons(held, heldSince, nanos);
+        // The dodge and guard keys' latest presses, for Minecraft's damage to meet at the impact.
+        if (!build) AvatarCombat.inputs(heldSince[DODGE], heldSince[GUARD], held[GUARD]);
         for (int bit : new int[] {A, B, L3, X, Y, RB, LT, RT, R3, UP, DOWN, BACK, LB}) state.button(bit, (mask & bit) != 0, time);
     }
 

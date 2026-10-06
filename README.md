@@ -4,11 +4,11 @@ Experimental passthrough for playing EVE in Minecraft Java on Linux, with Stella
 
 **Minecraft is the primary game and renderer.** Minecraft owns the world, inventory, menus and block interactions. Stellar Blade supplies EVE's native controller, animations and rendered appearance. The bridge composites her captured color and depth into Minecraft; it does not reimplement her combat system in Java. An experimental [avatar view](docs/diagnostics.md#avatar-view-experimental) draws her own meshes in Minecraft from recorded or live bone poses.
 
-The prototype supports a bounded terrain/collision link, continuous framebuffer-sized EVE capture and keyboard/mouse forwarding from Minecraft. Cross-game mob damage, general world streaming and Iris/shader-pack compatibility are not implemented. Hair/transparency and capture latency still need work. Minecraft's displayed FPS is distinct from the rate of new EVE images.
+The prototype supports a bounded terrain/collision link, continuous framebuffer-sized EVE capture and keyboard/mouse forwarding from Minecraft. With the avatar view, EVE fights Minecraft's mobs, including mods' mobs ([combat](#combat)). General world streaming and Iris/shader-pack compatibility are not implemented. Hair/transparency and capture latency still need work. Minecraft's displayed FPS is distinct from the rate of new EVE images.
 
 ## Start a session
 
-First follow [setup and build instructions](docs/setup.md). Use a private creative test world, Fast/Fancy graphics without Iris, and a backed-up Stellar Blade save in a clear outdoor location.
+First follow [setup and build instructions](docs/setup.md). Use a private creative or survival test world, Fast/Fancy graphics without Iris, and a backed-up Stellar Blade save in a clear outdoor location.
 
 1. In Minecraft, stand on a full block and run `/stellar start`.
 2. In Stellar Blade, load EVE, press **F5** to import collision, then **F8** to enter the elevated lab. The lab must be clear of existing level geometry.
@@ -18,7 +18,7 @@ First follow [setup and build instructions](docs/setup.md). Use a private creati
 
 Do not save, travel, load another save or reload Lua while EVE is in the lab. The bridge does not disable autosave. If returning fails, supporting collision stays in place so F11 can be retried.
 
-The patch is fixed around the starting anchor: **9 × 6 × 9 blocks**, at most 256 merged collision boxes, at 100 Unreal units per block. An active session keeps the private Minecraft world running through pause menus and focus changes. Stopping or disconnecting restores normal pause behavior. This is not a multiplayer or survival integration.
+The patch is fixed around the starting anchor: **9 × 6 × 9 blocks**, at most 256 merged collision boxes, at 100 Unreal units per block. An active session keeps the private Minecraft world running through pause menus and focus changes. Stopping or disconnecting restores normal pause behavior. This is not a multiplayer integration.
 
 ## Controls
 
@@ -52,6 +52,16 @@ EVE mode follows Stellar Blade's default controller layout:
 The EVE keys default to Stellar Blade's own keyboard keys (its `DefaultInput.ini`) and are rebindable under Stellar Bridge in Minecraft's controls; Minecraft's own sprint key does nothing for EVE. Six extra controller buttons (Y, RB, LT, RT, R3, D-pad up) are initially unbound. Actions follow Stellar Blade's controller settings. In EVE mode Minecraft actions bound to the inventory key, hotbar 1–4 or an EVE key (inventory, hotbar, drop, swap hands, pick block) wait for build mode. Build mode keeps camera look, neutralizes EVE's actions and restores normal Minecraft clicks, sneak interactions, inventory and hotbar. Chat and the other hotbar slots remain Minecraft-owned.
 
 Lost focus, menus, stale frames, native pause or an invalid context neutralize forwarded controls. Held keys must be released before control resumes.
+
+## Combat
+
+With `/stellaravatar play` at the bridged position, EVE fights any living entity Minecraft knows, from vanilla or a mod, through Minecraft's own damage, so each mob keeps its own reactions, sounds and loot:
+
+- **Strikes.** While her sword swings (Stellar Blade's own blade trail plays), every living entity it sweeps through takes damage: 6 for a light slash, 9 for a strong one, 8 for a thrust, doubled after a charged attack's signal, with more knockback for strong attacks. Players, armor stands and the player's own pets are spared.
+- **Dodge and guard.** Every hit on EVE, melee or projectile, is judged at its impact against the latest presses: guard pressed within 0.25 s is a perfect parry (no damage; a melee attacker is pushed back and slowed); dodge within 0.3 s is a perfect dodge (no damage, and Minecraft's world runs at 6 ticks per second for 1.5 s while Stellar Blade keeps EVE at full speed); a dodge within 0.5 s still avoids the hit; a held guard lets a quarter through. The timing follows the impact, not a mob's animation: a dodge 0.2 s before a three-second wind-up lands is perfect.
+- **Health.** In survival, Minecraft's hearts are EVE's health, with armor, effects and mods. She flashes red when hurt. Mobs ignore creative players. Minecraft's suffocation, fall and cramming damage do not apply while Stellar Blade owns her position. Her death stops the bridge; run `/stellar start` again after respawning.
+
+Judgement uses the presses, not Stellar Blade's own state, and EVE plays no hit reaction in Stellar Blade yet. A mod that applies damage before its attack animation shows can only be dodged before the damage.
 
 ## Repository layout
 

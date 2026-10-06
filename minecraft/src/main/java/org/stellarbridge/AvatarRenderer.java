@@ -48,8 +48,9 @@ final class AvatarRenderer implements AutoCloseable {
         int base() { return maps[0]; }
     }
     private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, overlayPass,
-            opacity, emissiveTint;
+            opacity, emissiveTint, hurtTint;
     private Map<String, float[]> parameters = Map.of();
+    private boolean hurt;
     private AvatarTrail trail; // The weapon's swing trail, when the pack describes one.
     private AvatarSprites sprites; // The game's effects as sprites, when the pack has their textures.
     private final Vector3d hilt = new Vector3d(), tip = new Vector3d();
@@ -88,6 +89,7 @@ final class AvatarRenderer implements AutoCloseable {
             overlayPass = GL20.glGetUniformLocation(program, "Overlay");
             opacity = GL20.glGetUniformLocation(program, "Opacity");
             emissiveTint = GL20.glGetUniformLocation(program, "EmissiveTint");
+            hurtTint = GL20.glGetUniformLocation(program, "Hurt");
             hairShading = GL20.glGetUniformLocation(program, "Hair");
             cutoff = GL20.glGetUniformLocation(program, "AlphaCutoff");
             GlStateManager._glUseProgram(program);
@@ -175,6 +177,7 @@ final class AvatarRenderer implements AutoCloseable {
             GL20.glUniform1f(fogEnd, end);
             GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
             GL20.glUniform3f(skyColor, sky[0], sky[1], sky[2]);
+            GL20.glUniform1f(hurtTint, hurt ? 1 : 0);
             GL20.glVertexAttrib3f(5, 0, 0, 0);
             GL20.glVertexAttrib3f(6, 0, 0, 0);
             for (int p = 0; p < arrays.length; p++) if (morphBuffers[p] != 0) uploadMorphs(p);
@@ -232,6 +235,9 @@ final class AvatarRenderer implements AutoCloseable {
             GlStateManager._blendFuncSeparate(blendFunction0[0], blendFunction0[1], blendFunction0[2], blendFunction0[3]);
         }
     }
+
+    /** Whether EVE flashes red as a hurt Minecraft entity does, from the next draw. */
+    void hurt(boolean flashing) { hurt = flashing; }
 
     /** Records the weapon trail's sockets for the displayed pose, after palettes with the same placement. */
     void sampleTrail(AvatarRecording.Pose pose, Matrix4d placement, double cameraX, double cameraY, double cameraZ, double seconds) {

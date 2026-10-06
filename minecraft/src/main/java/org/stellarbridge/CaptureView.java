@@ -160,7 +160,7 @@ public final class CaptureView {
         MinecraftClient client = source.getClient();
         var context = StellarBridge.renderingContext();
         if (context == null || !supported(client)) {
-            source.sendError(Text.literal("Enter the linked private creative terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
+            source.sendError(Text.literal("Enter the linked private terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
             return 0;
         }
         try {
@@ -264,7 +264,7 @@ public final class CaptureView {
         MinecraftClient client = source.getClient();
         var context = StellarBridge.renderingContext();
         if (context == null || !supported(client)) {
-            source.sendError(Text.literal("Enter the linked private creative terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
+            source.sendError(Text.literal("Enter the linked private terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
             return 0;
         }
         NativeImage color = null;

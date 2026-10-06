@@ -7,7 +7,7 @@
 - A game-compatible UE4SS installation with `LoopInGameThreadWithDelay`. The development baseline is v3.0.1 Beta #0 (`08a0733`). Stock or newer loaders are not assumed interchangeable.
 - Proton baseline: `proton-cachyos-11.0-20261005-slr-x86_64_v3`. Other versions require validation.
 
-Use a separate private creative Minecraft world without LAN players, fluids, vehicles or player effects. Use Fast/Fancy graphics without Iris. Back up Stellar Blade saves outside the game before using the lab. The prototype does not suppress autosaves.
+Use a separate private creative or survival Minecraft world without LAN players, fluids, vehicles or player effects. In survival, EVE can die: use `keepInventory` or an empty inventory there. Use Fast/Fancy graphics without Iris. Back up Stellar Blade saves outside the game before using the lab. The prototype does not suppress autosaves.
 
 ## Build and check
 

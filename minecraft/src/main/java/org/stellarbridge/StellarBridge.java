@@ -72,13 +72,13 @@ public final class StellarBridge implements ClientModInitializer {
             Control current = control;
             if (client.player != null && permits(client.player, current)) move(client.player, current.position);
         });
-        LOG.info("Stellar Bridge loaded; use /stellar start in a private creative test world");
+        LOG.info("Stellar Bridge loaded; use /stellar start in a private test world");
     }
 
     private static int start(ServerCommandSource source) {
         ServerPlayerEntity player = source.getPlayer();
         if (!(source.getServer() instanceof IntegratedServer server) || !eligible(server, player))
-            return error(source, "Use a private, non-LAN singleplayer creative world as its local owner.");
+            return error(source, "Use a private, non-LAN singleplayer world in creative or survival as its local owner.");
         if (session != null) return error(source, "A bridge session is already active. Use /stellar stop first.");
         if (!player.isOnGround() || Math.abs(player.getY() - Math.floor(player.getY())) > 0.05)
             return error(source, "Stand on a full block floor before starting the bridge.");
@@ -101,7 +101,7 @@ public final class StellarBridge implements ClientModInitializer {
     private static boolean eligible(IntegratedServer server, ServerPlayerEntity player) {
         return player != null && MinecraftClient.getInstance().getServer() == server && !server.isRemote()
                 && server.getPlayerManager().getCurrentPlayerCount() == 1 && server.isHost(player.getGameProfile())
-                && player.isCreative() && player.isAlive() && !player.hasVehicle();
+                && !player.isSpectator() && player.isAlive() && !player.hasVehicle();
     }
 
     private static int stopCommand(ServerCommandSource source) {
@@ -129,6 +129,7 @@ public final class StellarBridge implements ClientModInitializer {
         session = null;
         control = null;
         pauseBinding = null;
+        AvatarCombat.restoreTime(true);
         NativeSceneExport.stop();
         if (previous == null) return;
         try { previous.files.stop(); }
@@ -138,11 +139,12 @@ public final class StellarBridge implements ClientModInitializer {
     }
 
     private static void tick(MinecraftServer server) {
+        AvatarCombat.restoreTime(false);
         Session current = session;
         if (current == null || current.server != server) return;
         if (!eligible(current.server, current.player) || current.player.getServerWorld() != current.world
                 || current.server.getPlayerManager().getPlayer(current.player.getUuid()) != current.player) {
-            stop("The original private creative session is no longer available");
+            stop("The original private session is no longer available");
             return;
         }
         try {
@@ -178,7 +180,7 @@ public final class StellarBridge implements ClientModInitializer {
         return current != null && server == current.server && !server.isRemote()
                 && client.world != null && client.player != null && client.player.getUuid().equals(current.owner)
                 && client.world.getRegistryKey().getValue().toString().equals(current.dimension)
-                && client.player.isCreative() && client.player.isAlive() && !client.player.hasVehicle();
+                && !client.player.isSpectator() && client.player.isAlive() && !client.player.hasVehicle();
     }
 
     private record PauseBinding(IntegratedServer server, UUID owner, String dimension) { }
@@ -187,7 +189,7 @@ public final class StellarBridge implements ClientModInitializer {
     static RenderingContext renderingContext() {
         Control current = control;
         MinecraftClient client = MinecraftClient.getInstance();
-        return client.player != null && permits(client.player, current) && client.player.isCreative()
+        return client.player != null && permits(client.player, current) && !client.player.isSpectator()
                 && client.player.isAlive() && !client.player.hasVehicle()
                 && current.server.getPlayerManager().getCurrentPlayerCount() == 1 ? current.rendering : null;
     }
@@ -203,6 +205,15 @@ public final class StellarBridge implements ClientModInitializer {
     public static boolean overrides(ServerPlayerEntity player) {
         Control current = control;
         return live(current) && current.owner == player && !current.server.isRemote();
+    }
+
+    /** EVE's blade struck an entity the client saw: Minecraft damages it as the bridged player's attack, on the server thread. */
+    static void strike(int entityId, float amount, double knockback, boolean charged) {
+        Control current = control;
+        if (current == null) return;
+        current.server.execute(() -> {
+            if (overrides(current.owner)) AvatarCombat.strike(current.owner, entityId, amount, knockback, charged);
+        });
     }
 
     public static void keepLocalLook(ServerPlayerEntity player, PlayerMoveC2SPacket packet) {

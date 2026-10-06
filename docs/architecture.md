@@ -34,7 +34,9 @@ Stale data, lost focus, menus and unsupported native contexts neutralize control
 
 ## Scope and references
 
-The implementation currently limits terrain to one 9 × 6 × 9 patch and 256 merged collision boxes. Terrain is not streamed around a moving player. Combat against Minecraft mobs, survival rules, multiplayer, Iris and arbitrary mod compatibility require additional integration. Native outfit/accessory/effect capture is not universally supported.
+Combat with the avatar works through Minecraft's damage pipeline only, so it applies to any living entity a mod adds. On the render thread, the displayed blade (the weapon trail's newest sockets) is swept each frame against the client world's living entities while the game's trail plays; each hit entity id goes to the integrated server thread, which validates the session, the entity and its reach, and damages it as the bridged player's attack (style-based amount, immunity frames cleared per strike, extra knockback). A server-player `damage` hook judges every damage with an attacker or projectile at its impact against the latest dodge and guard presses that ControlBridge publishes; a perfect dodge lowers the server tick rate for a fixed real time and restores it, also when the bridge stops. Minecraft's own collisions with EVE's forced position (suffocation, fall, cramming) are ignored.
+
+The implementation currently limits terrain to one 9 × 6 × 9 patch and 256 merged collision boxes. Terrain is not streamed around a moving player. Stellar Blade's own hit reactions and defensive state, multiplayer, Iris and arbitrary mod compatibility require additional integration. Native outfit/accessory/effect capture is not universally supported.
 
 [SkyCraft](https://github.com/chasmlol/SkyCraft/tree/bfcaf178524b92c2cdeb88e4ce0f13ef9ded6f32) supplies the adapted triple-buffer exchange and useful examples of persistent staging/textures and newest-ready consumption. [PR 26](https://github.com/chasmlol/SkyCraft/pull/26) illustrates Linux file-backed transport. This bridge keeps fresh run identities and explicit release acknowledgements instead of resetting an in-use mapping.
 
