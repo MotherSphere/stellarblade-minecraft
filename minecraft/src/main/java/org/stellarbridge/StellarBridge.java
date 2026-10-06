@@ -54,6 +54,7 @@ public final class StellarBridge implements ClientModInitializer {
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> CaptureFrame.stopWatching());
         CapturePreview.initialize();
         CaptureView.initialize();
+        AvatarView.initialize();
         NativeSceneExport.initialize();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             if (environment != CommandManager.RegistrationEnvironment.INTEGRATED) return;

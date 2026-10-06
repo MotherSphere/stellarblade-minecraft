@@ -20,6 +20,10 @@ A single Java worker checks raw availability after a 1 ms delay; encoded and ina
 
 This removes repeated image encoding/decoding and avoids per-frame buffer allocation once reusable storage is available. It does **not** remove Unreal's GPU surface readback: the hook runs after that readback, which blocks Unreal's render thread for each plane. Its cost grows with captured pixels and is the dominant cost per generation. GPU staging needs separate resource ownership and fence integration; lowering delays alone cannot provide it. Capture timing, accepted image cadence and Minecraft rendering FPS measure different things; see [diagnostics](diagnostics.md#performance-measurements).
 
+## Avatar rendering (experimental)
+
+The avatar path inverts the capture: Minecraft draws EVE's meshes itself from her bone poses, so her image follows Minecraft's camera and frame rate instead of Stellar Blade's capture cadence. Poses are local bone transforms per skeletal mesh component plus component world transforms; followers that use a leader pose (face, ponytail) map bones to the leader by name. Java composes component-space transforms, multiplies by inverse reference poses and the Unreal-to-Minecraft axis mapping (X, Z, Y at 100 units per block, as the terrain link uses), and uploads one affine matrix per bone. A GLSL 1.50 vertex shader blends four influences and summed morph deltas; textures, buffers and the shader program belong to the renderer and every GL state change is restored after drawing. The first pose source is a recorded probe; a native pose stream is the next step.
+
 ## Input and lifetimes
 
 EVE mode forwards Minecraft's actual configured controls. Build mode retains native look but returns click/sneak interactions to Minecraft. Input has its own heartbeat and bounded ordered press/release queue, independent of image-write completion. It requires a fresh displayed frame, matching terrain session, native permit and neutral handshake. Acknowledgement means a native gameplay poll consumed the input, not that a skill dealt damage.

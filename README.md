@@ -2,7 +2,7 @@
 
 Experimental passthrough for playing EVE in Minecraft Java on Linux, with Stellar Blade running through Proton.
 
-**Minecraft is the primary game and renderer.** Minecraft owns the world, inventory, menus and block interactions. Stellar Blade supplies EVE's native controller, animations and rendered appearance. The bridge composites her captured color and depth into Minecraft; it does not import her mesh or reimplement her combat system in Java.
+**Minecraft is the primary game and renderer.** Minecraft owns the world, inventory, menus and block interactions. Stellar Blade supplies EVE's native controller, animations and rendered appearance. The bridge composites her captured color and depth into Minecraft; it does not reimplement her combat system in Java. An experimental [avatar replay](docs/diagnostics.md#avatar-replay-experimental) draws her own meshes in Minecraft from recorded bone poses.
 
 The prototype supports a bounded terrain/collision link, continuous framebuffer-sized EVE capture and keyboard/mouse forwarding from Minecraft. Cross-game mob damage, general world streaming and Iris/shader-pack compatibility are not implemented. Hair/transparency and capture latency still need work. Minecraft's displayed FPS is distinct from the rate of new EVE images.
 

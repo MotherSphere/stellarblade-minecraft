@@ -18,7 +18,7 @@ The gameplay path is [`/stellarview play`](../README.md#start-a-session). The co
 | Shift+F7 | `sbmc texture` | Toggle a non-colliding stone-texture probe |
 | Shift+F8 | `sbmc visuals` | Toggle native Minecraft terrain visuals inside Stellar Blade |
 
-`sbmc posetest` records EVE's skeletal mesh components for up to 15 seconds or 900 frames: bone transforms relative to their parents (`SnapshotPose`, with a per-bone fallback), face morph weights and component world transforms. It writes private `eve-pose-probe.txt` (components, bones, method, timing) and `eve-pose-probe.bin` (per frame: frame number, seconds, then each component's world transform followed by its bones and weights, 10 floats per transform). It changes nothing in the scene and is input to the avatar experiment.
+`sbmc posetest` records EVE's skeletal mesh components for up to 15 seconds or 900 frames: bone transforms relative to their parents (`SnapshotPose`, with a per-bone fallback), face morph weights and component world transforms. It writes private `eve-pose-probe.txt` (components, bones, method, timing) and `eve-pose-probe.bin` (per frame: frame number, seconds, then each component's world transform followed by its bones and weights, 10 floats per transform). It changes nothing in the scene; Minecraft can replay it with [`/stellaravatar replay`](#avatar-replay-experimental).
 
 `sbmc frame` retains the 320 × 180 PNG still; `sbmc framehdpng` retains HD PNG color. `sbmc capture` is an independent color probe. `sbmc capturecleanup` retries failed capture cleanup.
 
@@ -36,6 +36,19 @@ Read `SB/Binaries/Win64/ue4ss/UE4SS.log`, prefix `[StellarCollisionProbe]`, and 
 Still captures expire 30 seconds after capture. Legacy live startup times out after five seconds; two seconds without a fresh generation stops an established view. A repeated frame does not renew freshness. Revision changes hide incompatible frames. Unsupported effects, session/world changes or invalid data stop composition.
 
 A high Minecraft FPS counter with slow EVE motion indicates a different capture/transfer cadence; compare accepted frames over the same interval and framebuffer size. A small checkerboard preview does not show the full capture resolution. Hair noise can originate in native capture, not only the Minecraft compositor.
+
+## Avatar replay (experimental)
+
+`/stellaravatar replay` draws EVE with her own meshes in the current Minecraft world, two blocks ahead of the player, looping the latest `sbmc posetest` recording from the bridge directory. Stellar Blade does not need to run. Minecraft keeps its own camera, frame rate, lighting (lightmap at EVE's position, entity-style directional shading) and fog; poses between recorded frames are interpolated. `/stellaravatar off` removes her. The command reports drawn material sections, meshes missing from the pack and loading time.
+
+The renderer reads a private avatar pack from `~/.local/share/stellar-blade-minecraft/avatar` (override with `-Dstellarbridge.avatar=<dir>`). The pack is built from the user's own game installation and is never part of this repository:
+
+- `<mesh>.sbav` for each mesh named in the recording's `COMPONENT` lines. Components without a mesh in the pack are skipped and listed.
+- `<material slot>.png`: one baked RGBA base texture per drawn section; alpha below 0.5 is cut out. Sections without a PNG are not drawn.
+
+`SBAVMESH` version 2 is little-endian, in Unreal space (centimeters, Z up): magic `SBAVMESH`, `u32` version; `u32` bone count (at most 256), then per bone a `u16`-length UTF-8 name, `i32` parent (earlier bone or -1) and the reference local transform (10 floats: quaternion xyzw, translation, scale); `u32` vertex count, then 56-byte vertices (position, normal, UV, four `u16` bone indices, four float weights); `u32` index count and `u32` triangle indices; `u32` section count, then per section a material slot name, first index and triangle count; `u32` morph count, then per morph a name, `u32` delta count and per delta a `u32` vertex with position and normal deltas (6 floats). Morphs follow the mesh's Unreal `MorphTargets` order and are matched to recorded weights by name. Recorded bone names must equal the mesh's bones in order; leader-pose followers (face, ponytail) map bones by name to their leader.
+
+Not yet represented: face expressions (followers record no morph weights), material parameters changed at runtime (for example the sword's edge glow), translucent overlays and hair shading beyond an alpha-cut base texture. `./gradlew avatarRenderCheck -PavatarCheck="<pack> <recording dir> <out.png> <seconds,...>"` in `minecraft/` renders a pack and recording offscreen with the same renderer and prints per-mesh extents; it needs a GPU and is not part of `tools/check.py`.
 
 ## Performance measurements
 

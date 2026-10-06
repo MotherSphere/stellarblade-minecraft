@@ -46,6 +46,7 @@ processResources {
     controlStateTest: 'ControlStateTest',
     controlHooksTest: 'ControlHooksTest',
     rawFrameBusTest: 'RawFrameBusTest',
+    avatarModelTest: 'AvatarModelTest',
 ].each { taskName, testClass ->
     def suite = tasks.register(taskName, JavaExec) {
         dependsOn testClasses
@@ -55,4 +56,13 @@ processResources {
         jvmArgs '-ea'
     }
     check.dependsOn suite
+}
+
+// Offline GPU check of a private avatar pack; not part of check. -PavatarCheck="<pack> <recording dir> <out.png> <seconds,...>"
+tasks.register('avatarRenderCheck', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.AvatarRenderCheck'
+    args = (project.findProperty('avatarCheck') ?: '').toString().tokenize(' ')
+    jvmArgs '-ea'
 }
