@@ -196,7 +196,8 @@ function Adapter.new()
             if not (name:find('Particle',1,true) or name:find('Niagara',1,true)) or seen[component:GetAddress()] then return end
             seen[component:GetAddress()]=true
             if not component:IsActive() then return end
-            local ok,asset=pcall(function() return valid(component.Template or component.Asset) end)
+            -- Niagara components name their system Asset, Cascade ones their Template.
+            local ok,asset=pcall(function() return valid(name:find('Niagara',1,true) and component.Asset or component.Template) end)
             local parent=valid(component:GetAttachParent())
             found[#found+1]=string.format('%s[%s]@%s:%s',ok and asset and text(asset:GetFName()) or text(component:GetFName()),name,
                 parent and text(parent:GetFName()) or '-',text(component:GetAttachSocketName()))

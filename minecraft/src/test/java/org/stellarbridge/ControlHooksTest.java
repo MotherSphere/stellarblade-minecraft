@@ -82,8 +82,8 @@ public final class ControlHooksTest {
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setYaw", "(F)V") == 1;
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setPitch", "(F)V") == 1;
         // EVE combat layout: use is the heavy attack (Y), the inventory key blocks (LB), hotbar 1 holds LB then adds X.
-        boolean[] held = new boolean[22];
-        long[] since = new long[22];
+        boolean[] held = new boolean[29];
+        long[] since = new long[29];
         held[8] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x8000 : "Use (right click) is Y, not LB";
         held[8] = false;
@@ -96,7 +96,10 @@ public final class ControlHooksTest {
         assert ControlBridge.buttons(held, since, 1_000 + ControlBridge.SKILL_DELAY) == (0x100 | 0x4000) : "then adds its face button";
         held[ControlBridge.SKILLS] = false;
         held[ControlBridge.SKILLS + 3] = true;
-        assert ControlBridge.buttons(held, since, ControlBridge.SKILL_DELAY) == (0x100 | 0x1000) : "Skill 4 is LB with A";
+        assert ControlBridge.buttons(held, since, ControlBridge.SKILL_DELAY) == (0x100 | 0x2000) : "Skill 4 is LB with B (face right)";
+        held[ControlBridge.BURST] = true;
+        assert ControlBridge.buttons(held, since, ControlBridge.SKILL_DELAY) == (0x200 | 0x2000) : "With the burst key, RB leads";
+        held[ControlBridge.BURST] = false;
         held[ControlBridge.SKILLS + 3] = false;
         held[ControlBridge.AIM] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x10000 : "Minecraft's sprint key aims the drone (LT)";
@@ -110,6 +113,16 @@ public final class ControlHooksTest {
         held[20] = false;
         held[ControlBridge.WALK] = true;
         assert ControlBridge.buttons(held, since, 0) == 0 : "Walk only shapes the stick";
+        held[ControlBridge.WALK] = false;
+        held[6] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0 : "Minecraft's own sprint key does nothing for EVE";
+        held[6] = false;
+        int[] expected = {0x1, 0x2, 0x20000, 0x20, 0x80}; // Heal, item, interact, scan, lock-on.
+        for (int k = 0; k < expected.length; k++) {
+            held[24 + k] = true;
+            assert ControlBridge.buttons(held, since, 0) == expected[k] : "EVE key " + k;
+            held[24 + k] = false;
+        }
         System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery, narrow movement authority and EVE's combat layout (skills, drone aim, sprint, walk)");
     }
     private static boolean hasMethod(ClassNode node, String name, String descriptor) {
