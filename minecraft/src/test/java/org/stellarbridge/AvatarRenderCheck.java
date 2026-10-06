@@ -16,9 +16,10 @@ import org.lwjgl.stb.STBImageWrite;
 /**
  * Offline GPU check of a private avatar pack and pose recording: renders EVE with the mod's renderer
  * in a hidden GL 3.2 core context and writes a contact sheet. Not part of the suites (needs a GPU and private files).
- * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees [glow]]: the camera
- * (default 3.2 blocks from her front, looking at 0.9 blocks) orbits by degrees around her feet; glow streams an orange
- * sword-edge glow as a special attack would.
+ * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees [glow | fx=A+B]]: the
+ * camera (default 3.2 blocks from her front, looking at 0.9 blocks) orbits by degrees around her feet; glow streams an
+ * orange sword-edge glow as a special attack would; fx plays those effect assets for 0.2 s before each frame, at the blade
+ * tip for NS_A_ParTrail ones and at the hilt otherwise.
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
@@ -97,6 +98,17 @@ public final class AvatarRenderCheck {
                 recording.sample(now, pose);
                 model.palettes(pose, placement, renderer.palettes, false);
                 renderer.sampleTrail(pose, placement, eye.x, eye.y, eye.z, now);
+                if (args.length > 5 && args[5].startsWith("fx=")) {
+                    Matrix4f look = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
+                    org.joml.Quaternionf facing = look.getNormalizedRotation(new org.joml.Quaternionf()).conjugate();
+                    Vector3d hilt = new Vector3d(), tip = new Vector3d();
+                    for (double t = now - 0.2; t <= now + 1e-9; t += 1 / 120.0) {
+                        java.util.Map<String, Vector3d> active = new java.util.HashMap<>();
+                        if (renderer.blade(hilt, tip))
+                            for (String asset : args[5].substring(3).split("\\+")) active.put(asset, new Vector3d(asset.startsWith("NS_A_ParTrail") ? tip : hilt));
+                        renderer.effects(active, eye, facing, t);
+                    }
+                }
                 for (int p = 0; p < model.parts.size(); p++) System.out.println("  " + bounds(model.parts.get(p).mesh(), model.morphWeights[p], renderer.palettes[p], eye));
                 Matrix4f view = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
                 Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(40), (float) tileWidth / tileHeight, 0.05f, 100);

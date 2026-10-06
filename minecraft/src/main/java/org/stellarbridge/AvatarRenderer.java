@@ -13,6 +13,8 @@ import java.util.HashMap;
 import java.util.Map;
 import org.joml.Matrix4d;
 import org.joml.Matrix4f;
+import org.joml.Quaternionf;
+import org.joml.Vector3d;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
@@ -49,6 +51,8 @@ final class AvatarRenderer implements AutoCloseable {
             opacity, emissiveTint;
     private Map<String, float[]> parameters = Map.of();
     private AvatarTrail trail; // The weapon's swing trail, when the pack describes one.
+    private AvatarSprites sprites; // The game's effects as sprites, when the pack has their textures.
+    private final Vector3d hilt = new Vector3d(), tip = new Vector3d();
     private final int[] arrays, vertexBuffers, indexBuffers, morphBuffers;
     private final float[][] appliedWeights; // Morph weights currently uploaded per part.
     private final FloatBuffer[] morphOffsets;
@@ -127,6 +131,7 @@ final class AvatarRenderer implements AutoCloseable {
                 for (int s = 0; s < mesh.sections.length; s++) sectionMaterials[p][s] = material(pack, mesh.sections[s].material());
             }
             trail = AvatarTrail.load(model, pack, name -> texture(pack, name, 0));
+            sprites = AvatarSprites.load(name -> texture(pack, name, 0));
             complete = true;
         } finally {
             GlStateManager._glBindVertexArray(previousArray);
@@ -210,6 +215,7 @@ final class AvatarRenderer implements AutoCloseable {
                 }
             }
             if (trail != null) trail.draw(projectionView, start, end, fog);
+            if (sprites != null) sprites.draw(projectionView, start, end, fog);
         } finally {
             GlStateManager._glBindVertexArray(array0);
             GlStateManager._glUseProgram(program0);
@@ -230,6 +236,34 @@ final class AvatarRenderer implements AutoCloseable {
     /** Records the weapon trail's sockets for the displayed pose, after palettes with the same placement. */
     void sampleTrail(AvatarRecording.Pose pose, Matrix4d placement, double cameraX, double cameraY, double cameraZ, double seconds) {
         if (trail != null) trail.sample(model, pose, placement, cameraX, cameraY, cameraZ, seconds);
+    }
+
+    /**
+     * The game's active effects for this frame, by asset name at absolute Minecraft positions, or null when effects are
+     * not streamed: the weapon trail follows the game's Cascade trail, sprites advance to the time in seconds. False
+     * when the pack has no effect sprites.
+     */
+    boolean effects(Map<String, Vector3d> active, Vector3d camera, Quaternionf rotation, double seconds) {
+        if (trail != null) {
+            if (active == null) trail.followSwings();
+            else {
+                AvatarTrail.Style playing = null;
+                for (String asset : active.keySet()) {
+                    AvatarTrail.Style style = AvatarTrail.Style.of(asset);
+                    if (style != null) playing = style;
+                }
+                trail.follow(playing);
+            }
+        }
+        if (sprites == null) return false;
+        boolean blade = trail != null && trail.blade(hilt, tip);
+        sprites.update(active == null ? Map.of() : active, blade ? hilt : null, blade ? tip : null, camera, rotation, seconds);
+        return true;
+    }
+
+    /** The weapon trail's newest hilt and tip sockets; false without a trail sample. */
+    boolean blade(Vector3d hiltOut, Vector3d tipOut) {
+        return trail != null && trail.blade(hiltOut, tipOut);
     }
 
     /** The weapon trail's newest strength, 0 to 1 (0 without a trail). */
@@ -282,6 +316,8 @@ final class AvatarRenderer implements AutoCloseable {
         if (program != 0) GL20.glDeleteProgram(program);
         if (trail != null) trail.close();
         trail = null;
+        if (sprites != null) sprites.close();
+        sprites = null;
     }
 
     /** A slot's textures; a slot without a base texture is not drawn, missing maps fall back to defaults. */

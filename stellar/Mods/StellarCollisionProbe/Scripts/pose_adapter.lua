@@ -245,10 +245,19 @@ function Adapter.new()
             niagara=valid(StaticFindObject(EFFECT_CLASSES[2])):GetAddress(),particle=valid(StaticFindObject(EFFECT_CLASSES[1])):GetAddress()}
     end
     -- Effect assets loaded right now among the ones Minecraft knows how to draw, as {name=, object=}.
-    local KNOWN_EFFECTS={'/Game/Art/FX/Char/PC/Skill/Attack/NS_A_ParTrail_SwordDefaultAtk_01.NS_A_ParTrail_SwordDefaultAtk_01',
-        '/Game/Art/FX/Char/PC/WeaponFX/NS_A_Weapon_Signal_Sword.NS_A_Weapon_Signal_Sword',
-        '/Game/Art/FX/Char/PC/WeaponFX/NS_A_Weapon_Electric_01.NS_A_Weapon_Electric_01',
-        '/Game/Art/FX/Char/PC/WeaponFX/NS_A_WeaponFX_SwordFlame_01.NS_A_WeaponFX_SwordFlame_01'}
+    -- EVE's sword and body effects seen in combat (2026-10-06 effect log), so the first one already streams.
+    local FX='/Game/Art/FX/Char/PC/'
+    local KNOWN_EFFECTS={}
+    for _,path in ipairs({'Skill/Attack/NS_A_ParTrail_SwordDefaultAtk_01','Skill/Attack/NS_A_ParTrail_SwordThrustAtk_01',
+        'Skill/Attack/P_A_AnimTrail_SwordLightAtk_01','Skill/Attack/P_A_AnimTrail_SwordStrongAtk_01','Skill/Attack/P_A_AnimTrail_SwordThrust_01',
+        'Skill/HoldBurst/NS_A_HoldBurst_Signal','Skill/HoldBurst/NS_A_HoldBurst_SwordFX','WeaponFX/NS_A_Weapon_Signal_Sword',
+        'WeaponFX/NS_A_Weapon_Electric_01','WeaponFX/NS_A_WeaponFX_SwordFlame_01','WeaponFX/NS_A_Weapon_FastDraw_01','WeaponFX/NS_A_Weapon_Fold_02',
+        'Common/SkillFX/Wind/NS_PC_SpinTrail_01','Common/SkillFX/Wind/NS_MeshWind_02','Common/SkillFX/MeshTrails/NS_A_MeshTrail_03',
+        'Common/SkillFX/Kick/NS_PC_KickTrail_02','Skill/ShieldBreakKick/NS_A_KickCharge','Skill/ShieldBreakKick/NS_A_ChargeKickTrail',
+        'Skill/ChargeSlash/NS_ChargeSlash_MeshTrail_02'}) do
+        local name=path:match('[^/]+$')
+        KNOWN_EFFECTS[#KNOWN_EFFECTS+1]=FX..path..'.'..name
+    end
     function engine.known_effects()
         local loaded={}
         for _,path in ipairs(KNOWN_EFFECTS) do

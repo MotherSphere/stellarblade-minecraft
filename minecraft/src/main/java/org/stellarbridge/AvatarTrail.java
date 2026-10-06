@@ -18,13 +18,32 @@ import org.lwjgl.system.MemoryStack;
 
 /**
  * Stellar Blade's sword trails. Its attack shows stretch an anim trail between two weapon sockets for about a quarter
- * second; those show keys are not streamed, but the swings are, so a trail shows while the held blade turns fast
- * relative to EVE's chest (a flip turns both together): a ribbon over the last LIFETIME seconds, white at its head and
- * fading to blue, drawn additively with the game's trail texture. The pack describes it beside the weapon mesh in {@code <mesh>.trail.txt} with {@code <mesh>.trail.png}.
+ * second. While the streamed effects say which Cascade trail plays, the ribbon follows it in that trail's style;
+ * without them a trail shows while the held blade turns fast relative to EVE's chest (a flip turns both together).
+ * The ribbon covers the style's lifetime, from its head color to its faded one, drawn additively with the game's
+ * trail texture. The pack describes it beside the weapon mesh in {@code <mesh>.trail.txt} with {@code <mesh>.trail.png}.
  * Render thread only; AvatarRenderer saves and restores the GL state around draw.
  */
 final class AvatarTrail implements AutoCloseable {
     static final double LIFETIME = 0.12; // Seconds: the game's main trail emitter lives 0.1 s, its others up to 0.2 s.
+    /**
+     * The game's Cascade trails, from their emitters: head and faded color and lifetime. While Minecraft knows which one
+     * plays, the trail follows the game instead of the swing.
+     */
+    enum Style {
+        LIGHT(1, 1, 1, 0, 0.1f, 0.3f, 0.12), STRONG(1, 1, 1.05f, 0.1f, 0.12f, 0.18f, 0.25), THRUST(0.85f, 0.95f, 1.2f, 0, 0.1f, 0.5f, 0.3);
+
+        final float r, g, b, fadedR, fadedG, fadedB;
+        final double lifetime;
+        Style(float r, float g, float b, float fadedR, float fadedG, float fadedB, double lifetime) {
+            this.r = r; this.g = g; this.b = b; this.fadedR = fadedR; this.fadedG = fadedG; this.fadedB = fadedB; this.lifetime = lifetime;
+        }
+        /** The style of a Cascade trail asset, or null for another asset. */
+        static Style of(String asset) {
+            if (!asset.startsWith("P_A_AnimTrail")) return null;
+            return asset.contains("Strong") ? STRONG : asset.contains("Thrust") ? THRUST : LIGHT;
+        }
+    }
     static final double SWING_START = 9, SWING_FULL = 18; // Blade turn rate in the chest's frame, radians per second.
     static final float BRIGHTNESS = 0.9f;
     private static final int CAPACITY = 128, FLOATS = 9; // Samples kept; per vertex position, UV and RGBA.
@@ -73,6 +92,8 @@ final class AvatarTrail implements AutoCloseable {
     private final Vector3d begin = new Vector3d(), end = new Vector3d(), root = new Vector3d(), hand = new Vector3d(), camera = new Vector3d();
     private final Vector3d chest = new Vector3d(), chestX = new Vector3d(), chestY = new Vector3d(), blade = new Vector3d(), previousBlade = new Vector3d();
     private boolean bladeKnown;
+    private Style style = Style.LIGHT;
+    private boolean followsGame, gameTrail; // Whether the game's trail state is known, and whether one plays.
     private int newest = -1, count;
 
     /** The trail of the first pack mesh with a description, or null. The texture belongs to the caller. */
@@ -157,7 +178,8 @@ final class AvatarTrail implements AutoCloseable {
             bladeKnown = false;
         }
         double strength = 0;
-        if (count > 0 && bladeKnown && root.distance(hand) * 100 <= spec.reach) {
+        if (followsGame) strength = gameTrail ? 1 : 0;
+        else if (count > 0 && bladeKnown && root.distance(hand) * 100 <= spec.reach) {
             double turn = previousBlade.angle(blade) / (seconds - times[newest]);
             if (Double.isFinite(turn)) strength = strength(turn);
         }
@@ -169,6 +191,27 @@ final class AvatarTrail implements AutoCloseable {
         strengths[newest] = strength;
         begins[newest].set(begin);
         ends[newest].set(end);
+    }
+
+    /** The game's trail for the coming samples: a style while one plays, null while none does. */
+    void follow(Style playing) {
+        followsGame = true;
+        gameTrail = playing != null;
+        if (playing != null) style = playing;
+    }
+
+    /** Without the game's trail state, swings decide again. */
+    void followSwings() {
+        followsGame = false;
+        style = Style.LIGHT;
+    }
+
+    /** The newest blade sockets (absolute Minecraft coordinates); false before any sample. */
+    boolean blade(Vector3d hiltOut, Vector3d tipOut) {
+        if (count == 0) return false;
+        hiltOut.set(begins[newest]);
+        tipOut.set(ends[newest]);
+        return true;
     }
 
     /** Strength of the newest sample, 0 to 1. */
@@ -189,11 +232,12 @@ final class AvatarTrail implements AutoCloseable {
         for (int i = 0; i < count; i++) {
             int at = Math.floorMod(newest - i, CAPACITY);
             double age = now - times[at];
-            if (age > LIFETIME) break;
-            float life = (float) Math.max(age / LIFETIME, 0), intensity = (float) (strengths[at] * (1 - life));
+            if (age > style.lifetime) break;
+            float life = (float) Math.max(age / style.lifetime, 0), intensity = (float) (strengths[at] * (1 - life));
             visible |= intensity > 0.01f;
-            // White at the head, then the game's blue (0, 0.1, 0.3) as it fades.
-            float r = BRIGHTNESS * (1 - life), g = BRIGHTNESS * (1 - 0.9f * life), b = BRIGHTNESS * (1 - 0.7f * life);
+            // The style's head color, fading to its faded color.
+            float r = BRIGHTNESS * (style.r + (style.fadedR - style.r) * life), g = BRIGHTNESS * (style.g + (style.fadedG - style.g) * life),
+                    b = BRIGHTNESS * (style.b + (style.fadedB - style.b) * life);
             put(begins[at], life, 0, r, g, b, intensity);
             put(ends[at], life, 1, r, g, b, intensity);
             drawn += 2;

@@ -59,6 +59,16 @@ public final class AvatarStreamTest {
         assert AvatarEffects.look("NS_A_Weapon_Signal_Sword") == AvatarEffects.Look.SIGNAL && AvatarEffects.look("P_A_AnimTrail_SwordLightAtk_01") == null
                 && AvatarEffects.look("NS_A_ParTrail_SwordDefaultAtk_01") == AvatarEffects.Look.SPARKS
                 && AvatarEffects.look("NS_PC_SpinTrail_01") == AvatarEffects.Look.SWEEP && AvatarEffects.look("NS_Unknown") == AvatarEffects.Look.GLINT;
+        // Sprite recipes and trail styles follow the game's effect assets.
+        assert AvatarSprites.recipe("P_A_AnimTrail_SwordLightAtk_01").isEmpty() : "Cascade trails are the ribbon's";
+        assert AvatarSprites.recipe("NS_A_ParTrail_SwordDefaultAtk_01").getFirst().shape() == AvatarSprites.Shape.STREAK;
+        var signal = AvatarSprites.recipe("NS_A_HoldBurst_Signal");
+        assert signal.size() == 4 && signal.getFirst().shape() == AvatarSprites.Shape.HORIZON && signal.getFirst().r() > signal.getFirst().g() * 5
+                : "The charged attack's signal is a red horizontal flare first";
+        assert AvatarSprites.recipe("NS_A_Weapon_Electric_01").getFirst().place() == AvatarSprites.Place.BLADE;
+        assert AvatarTrail.Style.of("P_A_AnimTrail_SwordStrongAtk_01") == AvatarTrail.Style.STRONG
+                && AvatarTrail.Style.of("P_A_AnimTrail_SwordThrust_01") == AvatarTrail.Style.THRUST
+                && AvatarTrail.Style.of("P_A_AnimTrail_SwordLightAtk_01") == AvatarTrail.Style.LIGHT && AvatarTrail.Style.of("NS_A_KickCharge") == null;
         var body = table.components().get(0);
         var face = table.components().get(1);
         assert body.recorded() && body.bones().length == 3 && body.bones()[2].equals("Bip001-Head") && body.weights() == 0;

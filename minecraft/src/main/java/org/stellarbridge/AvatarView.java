@@ -303,8 +303,17 @@ public final class AvatarView {
                         .mul(AvatarModel.UNREAL_TO_MINECRAFT).translate(-current.relativeOrigin.x, -current.relativeOrigin.y, -current.relativeOrigin.z);
             }
             current.model.palettes(current.pose, placement, current.renderer.palettes, true);
+            // The game's effects at absolute positions; Minecraft particles stand in when the pack has no effect sprites.
+            Map<String, Vector3d> effects = null;
+            if (current.table.effectRecords()) {
+                effects = new HashMap<>();
+                for (AvatarStream.Effect effect : current.effects)
+                    effects.put(effect.name(), placement.transformPosition(new Vector3d(effect.x(), effect.y(), effect.z())).add(camera.x, camera.y, camera.z));
+            }
+            long nanos = System.nanoTime();
+            if (!current.renderer.effects(effects, new Vector3d(camera.x, camera.y, camera.z), context.camera().getRotation(), nanos / 1e9))
+                current.particles.spawn(current.effects, placement, camera, nanos);
             draw(context, current.model, current.renderer, current.pose, placement, camera);
-            current.particles.spawn(current.effects, placement, camera, System.nanoTime());
         } catch (RuntimeException failure) {
             stopLive(failure.getMessage());
             LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
