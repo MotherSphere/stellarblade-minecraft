@@ -4,8 +4,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
 
 /** Small local snapshots only; neither packet contents nor paths are executable. */
@@ -80,9 +82,15 @@ final class BridgeFiles {
                 throw new IOException("Bridge directory changed or became a symlink");
         }
         Path path = directory.resolve(filename);
-        if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)
-                && (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(path)))
-            throw new IOException("Bridge snapshot must be a regular file");
+        // One stat: Stellar Blade's writer removes a slot before renaming its replacement (MSVC rename refuses an existing
+        // destination), so a file seen to exist may be gone a moment later. Missing is fine; anything else must be a
+        // regular file, never a symlink.
+        try {
+            if (!Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS).isRegularFile())
+                throw new IOException("Bridge snapshot must be a regular file");
+        } catch (NoSuchFileException missing) {
+            // Absent or between a removal and a rename: callers treat it as absent.
+        }
         return path;
     }
 }

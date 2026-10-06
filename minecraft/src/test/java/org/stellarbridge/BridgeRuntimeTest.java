@@ -40,6 +40,12 @@ public final class BridgeRuntimeTest {
             assert files.readEve(SESSION).seq() == 3;
             Files.writeString(directory.resolve("eve.1"), "x".repeat(65537));
             assert files.readEve(SESSION).seq() == 3;
+            Files.delete(directory.resolve("eve.1")); // Stellar Blade's writer between removing a slot and renaming its replacement.
+            assert files.readEve(SESSION).seq() == 3;
+            Files.createDirectory(directory.resolve("eve.1"));
+            try { files.readEve(SESSION); throw new AssertionError("Non-regular slot accepted"); }
+            catch (java.io.IOException expected) { }
+            Files.delete(directory.resolve("eve.1"));
             files.stop();
             assert !Files.exists(directory.resolve("terrain.txt"));
             Path outside = temporary.resolve("outside.txt");
