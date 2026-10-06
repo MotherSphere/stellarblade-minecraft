@@ -248,7 +248,7 @@ function Terrain.new(engine,scale)
         local ok,now=pcall(same_context)
         if not ok then return nil,tostring(now) end
         local a=fixture.anchor
-        return {session=fixture.packet.session,ack=fixture.packet.seq,
+        return {session=fixture.packet.session,ack=fixture.packet.seq,anchor={X=a.X,Y=a.Y,Z=a.Z},
             state=fixture.complete and (fixture.entered and 'entered' or 'ready') or 'idle',
             position={x=(now.position.X-a.X)/scale,
                 y=(now.position.Z-now.half_height-a.Z)/scale,z=(now.position.Y-a.Y)/scale}}

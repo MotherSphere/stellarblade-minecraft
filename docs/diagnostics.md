@@ -18,7 +18,7 @@ The gameplay path is [`/stellarview play`](../README.md#start-a-session). The co
 | Shift+F7 | `sbmc texture` | Toggle a non-colliding stone-texture probe |
 | Shift+F8 | `sbmc visuals` | Toggle native Minecraft terrain visuals inside Stellar Blade |
 
-`sbmc posetest` records EVE's skeletal mesh components for up to 15 seconds or 900 frames: bone transforms relative to their parents (`SnapshotPose`, with a per-bone fallback), face morph weights and component world transforms. It writes private `eve-pose-probe.txt` (components, bones, method, timing) and `eve-pose-probe.bin` (per frame: frame number, seconds, then each component's world transform followed by its bones and weights, 10 floats per transform). It changes nothing in the scene; Minecraft can replay it with [`/stellaravatar replay`](#avatar-replay-experimental).
+`sbmc posetest` records EVE's skeletal mesh components for up to 15 seconds or 900 frames: bone transforms relative to their parents (`SnapshotPose`, with a per-bone fallback), face morph weights and component world transforms. It writes private `eve-pose-probe.txt` (components, bones, method, timing) and `eve-pose-probe.bin` (per frame: frame number, seconds, then each component's world transform followed by its bones and weights, 10 floats per transform). It changes nothing in the scene; Minecraft can replay it with [`/stellaravatar replay`](#avatar-view-experimental).
 
 `sbmc frame` retains the 320 × 180 PNG still; `sbmc framehdpng` retains HD PNG color. `sbmc capture` is an independent color probe. `sbmc capturecleanup` retries failed capture cleanup.
 
@@ -37,9 +37,16 @@ Still captures expire 30 seconds after capture. Legacy live startup times out af
 
 A high Minecraft FPS counter with slow EVE motion indicates a different capture/transfer cadence; compare accepted frames over the same interval and framebuffer size. A small checkerboard preview does not show the full capture resolution. Hair noise can originate in native capture, not only the Minecraft compositor.
 
-## Avatar replay (experimental)
+## Avatar view (experimental)
 
-`/stellaravatar replay` draws EVE with her own meshes in the current Minecraft world, two blocks ahead of the player, looping the latest `sbmc posetest` recording from the bridge directory. Stellar Blade does not need to run. Minecraft keeps its own camera, frame rate, lighting (lightmap at EVE's position, entity-style directional shading) and fog; poses between recorded frames are interpolated. `/stellaravatar off` removes her. The command reports drawn material sections, meshes missing from the pack and loading time.
+These commands draw EVE with her own meshes in Minecraft. Minecraft keeps its own camera, frame rate, lighting (lightmap at EVE's position, entity-style directional shading) and fog.
+
+- `/stellaravatar replay` loops the latest `sbmc posetest` recording from the bridge directory two blocks ahead of the player, interpolating between recorded frames. Stellar Blade does not need to run.
+- `/stellaravatar live` streams EVE's current pose from Stellar Blade (Lua revision 32 and the matching adapter) once per native frame. After `/stellar start`, F5 and F8 she stands where the bridge places EVE and replaces the player's body in third person; Minecraft hides her in first person, where the camera is inside her head. Without an entered link she stands two blocks ahead of where the command ran. A changed composition (outfit, weapon, hair) briefly reloads meshes and textures.
+- `/stellaravatar status` reports the stream: component-table generation, poses received per second, incomplete poses, the age of the last pose and the adapter's read time (last, maximum and mean microseconds per native frame).
+- `/stellaravatar off` removes her and releases the stream.
+
+Each command reports drawn material sections, meshes missing from the pack and, for a replay, loading time. The live avatar does not yet forward input or replace the captured view: drive EVE in Stellar Blade, or with `/stellarview play`, whose captured image and camera then also appear.
 
 The renderer reads a private avatar pack from `~/.local/share/stellar-blade-minecraft/avatar` (override with `-Dstellarbridge.avatar=<dir>`). The pack is built from the user's own game installation and is never part of this repository:
 

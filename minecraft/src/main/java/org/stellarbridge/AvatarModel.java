@@ -14,7 +14,11 @@ import org.joml.Matrix4d;
 /** Binds recorded EVE components to pack meshes and turns one pose into per-bone skinning matrices. */
 final class AvatarModel {
     /** Unreal centimeters (X forward, Y right, Z up) to Minecraft blocks (X, Y up, Z): the bridge's axis mapping. */
-    static final Matrix4d UNREAL_TO_MINECRAFT = new Matrix4d().zero().m00(0.01).m21(0.01).m12(0.01).m33(1);
+    static final Matrix4d UNREAL_TO_MINECRAFT = unrealToMinecraft(100);
+    static Matrix4d unrealToMinecraft(double unitsPerBlock) {
+        double s = 1 / unitsPerBlock;
+        return new Matrix4d().zero().m00(s).m21(s).m12(s).m33(1);
+    }
 
     /**
      * A drawn component: its mesh, for leader-pose followers the leader bone for each mesh bone (-1: reference pose),
@@ -28,12 +32,13 @@ final class AvatarModel {
     private final Matrix4d[][] componentSpace; // Per recorded component, reused every frame.
     private final Matrix4d world = new Matrix4d(), bone = new Matrix4d();
 
-    AvatarModel(AvatarRecording recording, Map<String, AvatarMesh> meshes) {
+    /** Components come from a pose recording or a stream table; recorded ones carry their bone names. */
+    AvatarModel(List<AvatarRecording.Component> components, Map<String, AvatarMesh> meshes) {
         List<Part> parts = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
-        componentSpace = new Matrix4d[recording.components.size()][];
-        for (int i = 0; i < recording.components.size(); i++) {
-            AvatarRecording.Component c = recording.components.get(i);
+        componentSpace = new Matrix4d[components.size()][];
+        for (int i = 0; i < components.size(); i++) {
+            AvatarRecording.Component c = components.get(i);
             AvatarMesh mesh = meshes.get(c.mesh());
             if (mesh == null) {
                 if (!c.mesh().equals("none")) skipped.add(c.name() + " (" + c.mesh() + " not in pack)");
@@ -46,10 +51,10 @@ final class AvatarModel {
                 continue;
             }
             int leader = -1;
-            for (int k = 0; k < recording.components.size(); k++)
-                if (recording.components.get(k).name().equals(c.leader())) leader = k;
-            AvatarMesh leaderMesh = leader < 0 ? null : meshes.get(recording.components.get(leader).mesh());
-            if (leaderMesh == null || !recording.components.get(leader).recorded()) {
+            for (int k = 0; k < components.size(); k++)
+                if (components.get(k).name().equals(c.leader())) leader = k;
+            AvatarMesh leaderMesh = leader < 0 ? null : meshes.get(components.get(leader).mesh());
+            if (leaderMesh == null || !components.get(leader).recorded()) {
                 skipped.add(c.name() + " (leader " + c.leader() + " not drawable)");
                 continue;
             }
@@ -60,7 +65,7 @@ final class AvatarModel {
             parts.add(new Part(i, mesh, leader, map, morphSources(mesh, c)));
         }
         for (Part part : parts) {
-            AvatarMesh driver = meshes.get(recording.components.get(part.driver).mesh());
+            AvatarMesh driver = meshes.get(components.get(part.driver).mesh());
             if (componentSpace[part.driver] == null) {
                 componentSpace[part.driver] = new Matrix4d[driver.bones.length];
                 for (int k = 0; k < driver.bones.length; k++) componentSpace[part.driver][k] = new Matrix4d();
@@ -75,32 +80,41 @@ final class AvatarModel {
     /** Recorded weights are in the component's MORPHS order; map them to mesh morphs by name. */
     private static int[] morphSources(AvatarMesh mesh, AvatarRecording.Component component) {
         Map<String, Integer> recorded = new HashMap<>();
-        if (component.recorded() && component.weights() == component.morphs().length)
+        if (component.weights() == component.morphs().length)
             for (int k = 0; k < component.morphs().length; k++) recorded.put(component.morphs()[k], k);
         int[] sources = new int[mesh.morphs.length];
         for (int m = 0; m < sources.length; m++) sources[m] = recorded.getOrDefault(mesh.morphs[m].name(), -1);
         return sources;
     }
 
-    static AvatarModel load(Path pack, AvatarRecording recording) throws IOException {
+    /** Loads the pack meshes the components name; cache keeps meshes already read for a later table. */
+    static AvatarModel load(Path pack, List<AvatarRecording.Component> components, Map<String, AvatarMesh> cache) throws IOException {
         Map<String, AvatarMesh> meshes = new HashMap<>();
-        for (AvatarRecording.Component c : recording.components) {
+        for (AvatarRecording.Component c : components) {
             Path file = pack.resolve(c.mesh() + ".sbav");
-            if (!c.mesh().equals("none") && !meshes.containsKey(c.mesh()) && Files.isRegularFile(file))
-                meshes.put(c.mesh(), AvatarMesh.read(file));
+            if (c.mesh().equals("none") || meshes.containsKey(c.mesh()) || !file.normalize().startsWith(pack.normalize())) continue;
+            AvatarMesh mesh = cache.get(c.mesh());
+            if (mesh == null && Files.isRegularFile(file)) cache.put(c.mesh(), mesh = AvatarMesh.read(file));
+            if (mesh != null) meshes.put(c.mesh(), mesh);
         }
         try {
-            return new AvatarModel(recording, meshes);
+            return new AvatarModel(components, meshes);
         } catch (IllegalArgumentException failure) {
             throw new IOException(failure.getMessage(), failure);
         }
     }
 
+    boolean draws(int component) {
+        for (Part part : parts) if (part.component == component) return true;
+        return false;
+    }
+
     /**
      * Writes each part's skinning matrices as Minecraft-space affine rows (12 floats per bone, the GLSL mat3x4 layout).
-     * placement maps Unreal world space to the target space, e.g. camera-relative Minecraft blocks.
+     * placement maps Unreal world space to the target space, e.g. camera-relative Minecraft blocks. Bone transforms are
+     * parent-relative (recordings) or already in component space (the native stream).
      */
-    void palettes(AvatarRecording.Pose pose, Matrix4d placement, FloatBuffer[] out) {
+    void palettes(AvatarRecording.Pose pose, Matrix4d placement, FloatBuffer[] out, boolean componentSpaceBones) {
         for (int c = 0; c < componentSpace.length; c++) {
             Matrix4d[] cs = componentSpace[c];
             if (cs == null) continue;
@@ -109,7 +123,7 @@ final class AvatarModel {
             for (int k = 0; k < cs.length; k++) {
                 AvatarMesh.transform(local, k * AvatarRecording.TRANSFORM, cs[k]);
                 int parent = mesh.bones[k].parent();
-                if (parent >= 0) cs[parent].mul(cs[k], cs[k]);
+                if (parent >= 0 && !componentSpaceBones) cs[parent].mul(cs[k], cs[k]);
             }
         }
         for (int p = 0; p < parts.size(); p++) {

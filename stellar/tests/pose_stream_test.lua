@@ -1,0 +1,57 @@
+package.path='stellar/Mods/StellarCollisionProbe/Scripts/?.lua;'..package.path
+local Stream=require('pose_stream')
+local directory=os.tmpname();os.remove(directory);assert(os.execute('mkdir '..directory))
+local function read(name) local f=io.open(directory..'/'..name,'rb'); if not f then return nil end local v=f:read('a');f:close();return v end
+local function write(name,text) local f=assert(io.open(directory..'/'..name,'wb'));f:write(text);f:close() end
+local RUN=string.rep('a',32)
+local now=1791300000
+local function request(state,time) write('eve-pose-request.txt','SBMC_POSE_REQUEST 1\nRUN '..RUN..'\nTIME '..(time or now*1000)..'\nSTATE '..(state or 'active')..'\nEND\n') end
+local components,names_calls={},0
+local engine={}
+function engine.identities() return components end
+function engine.names(c)
+    names_calls=names_calls+1
+    if c.leader then return {},{'jawOpen','blink'} end
+    return {'Root','Bip001','Bip001-Head'},{}
+end
+local place
+local stream=Stream.new(engine,directory,function() return now end,print,function() return place end)
+components={{name='CharacterMesh0',object=0x7f0000001000,class=0x7f0000002000,mesh=0x7f0000003000,mesh_name='CH_P_EVE_52_TypeB'},
+    {name='Mesh_Face',object=0x7f0000001800,class=0x7f0000002000,mesh=0x7f0000003800,mesh_name='CH_P_EVE_Face_Jali3',leader='CharacterMesh0'}}
+
+assert(Stream.parse_request('SBMC_POSE_REQUEST 1\nRUN '..RUN..'\nTIME 5\nSTATE active\nEND\n').active)
+assert(not Stream.parse_request('SBMC_POSE_REQUEST 1\nRUN abc\nTIME 5\nSTATE active\nEND\n'))
+assert(stream.tick() and not read('eve-pose-components.1'),'No request, no publication')
+request(nil,(now-10)*1000)
+assert(stream.tick() and not read('eve-pose-components.1'),'A stale request publishes nothing')
+request()
+local ok,message=stream.tick()
+assert(ok and message:find('generation 1: 2 components, no entered link',1,true),message)
+local fixture=assert(io.open('protocol/fixtures/pose-components.txt','rb')); local expected=fixture:read('a'); fixture:close()
+assert(read('eve-pose-components.1')==expected,'The published table matches the shared fixture byte for byte')
+local ok2,quiet=stream.tick()
+assert(ok2 and quiet==nil and names_calls==2,'An unchanged composition is not described again')
+-- Entering the link changes the placement: a new generation in the other slot.
+place={session=string.rep('b',32),anchor={X=1.5,Y=-2,Z=3},scale=100}
+assert(select(2,stream.tick()):find('generation 2',1,true))
+assert(read('eve-pose-components.0'):find('SESSION '..string.rep('b',32)..'\nANCHOR 1.5 -2 3 100\n',1,true))
+-- A swapped mesh is a new composition; a name the wire cannot carry is skipped.
+components[2]={name='Mesh Face',object=0x7f0000001800,class=0x7f0000002000,mesh=0x7f0000004000,mesh_name='X',leader='CharacterMesh0'}
+local _,changed=stream.tick()
+assert(changed:find('generation 3: 1 components',1,true) and changed:find('skipped Mesh Face',1,true),changed)
+-- A Lua reload continues after the published generation of the same run.
+local reloaded=Stream.new(engine,directory,function() return now end,print,function() return place end)
+assert(select(2,reloaded.tick()):find('generation 4',1,true))
+-- A different run restarts its own numbering.
+RUN=string.rep('c',32); request()
+assert(select(2,reloaded.tick()):find('generation 1',1,true))
+-- Stopping goes idle once.
+request('stopped')
+assert(select(2,reloaded.tick())=='Pose stream idle.' and select(2,reloaded.tick())==nil)
+-- Unaligned addresses or oversized compositions fail loudly instead of publishing.
+request()
+components={{name='Body',object=0x7f0000001001,class=0x10,mesh=0x20,mesh_name='M'}}
+assert(not pcall(reloaded.tick))
+for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
+assert(os.execute('rmdir '..directory))
+print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering')

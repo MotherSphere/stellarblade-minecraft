@@ -79,11 +79,11 @@ public final class AvatarModelTest {
         assert flipped[3] == 1 : "q and -q are the same rotation";
 
         AvatarMesh face = AvatarMesh.parse("Face", mesh("Jaw", b -> { }));
-        AvatarModel model = new AvatarModel(recording, Map.of("Body", body, "Face", face));
+        AvatarModel model = new AvatarModel(recording.components, Map.of("Body", body, "Face", face));
         assert model.parts.size() == 2 && model.skipped.isEmpty() && model.parts.get(1).leaderBones()[0] == 0 && model.parts.get(1).leaderBones()[1] == -1;
         FloatBuffer[] palettes = {FloatBuffer.allocate(24), FloatBuffer.allocate(24)};
         Matrix4d placement = new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT);
-        model.palettes(recording.sample(0, recording.emptyPose()), placement, palettes);
+        model.palettes(recording.sample(0, recording.emptyPose()), placement, palettes, false);
         // Reference pose: the tip vertex (0, 0, 100) lands at body world (100, 200, 400) cm, i.e. Minecraft (1, 4, 2).
         assertPoint(palettes[0], 1, 0, 0, 100, 1, 4, 2);
         assert model.morphWeights[0][0] == 0.25f && model.morphWeights[1][0] == 0 : "Followers without recorded weights stay neutral";
@@ -91,7 +91,7 @@ public final class AvatarModelTest {
         body.morph(model.morphWeights[0], offsets);
         assert offsets.get(7) == 2.5f && offsets.get(11) == 0.125f && offsets.get(1) == 0 && offsets.remaining() == 12;
         assert recording.sample(0.25, recording.emptyPose()).weights()[0][0] == 0.5f : "Weights interpolate linearly";
-        model.palettes(recording.frames[1], placement, palettes);
+        model.palettes(recording.frames[1], placement, palettes, false);
         // Root turned 90 degrees about X keeps the body vertex (100, 0, 0), plus world (100, 300, 300);
         // the tip, child of the turned root, swings from (0, 0, 100) to (0, -100, 0).
         assertPoint(palettes[0], 0, 100, 0, 0, 2, 3, 3);
@@ -101,10 +101,10 @@ public final class AvatarModelTest {
         assertPoint(palettes[1], 1, 100, 0, 100, 2, 4, 3);
 
         try {
-            new AvatarModel(recording, Map.of("Body", face));
+            new AvatarModel(recording.components, Map.of("Body", face));
             throw new AssertionError("Recorded bone names must match the mesh");
         } catch (IllegalArgumentException expected) { }
-        AvatarModel bodyOnly = new AvatarModel(recording, Map.of("Body", body));
+        AvatarModel bodyOnly = new AvatarModel(recording.components, Map.of("Body", body));
         assert bodyOnly.parts.size() == 1 && bodyOnly.skipped.equals(java.util.List.of("Mesh_Face (Face not in pack)"));
         System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping and Minecraft-space skinning");
     }

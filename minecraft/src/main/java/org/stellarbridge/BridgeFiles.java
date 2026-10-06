@@ -26,11 +26,14 @@ final class BridgeFiles {
         Files.setPosixFilePermissions(this.directory, PosixFilePermissions.fromString("rwx------"));
     }
 
-    void publish(String packet) throws IOException {
+    void publish(String packet) throws IOException { write("terrain.txt", packet); }
+
+    /** Atomic replacement of one bounded private snapshot. */
+    void write(String filename, String packet) throws IOException {
         byte[] data = packet.getBytes(StandardCharsets.UTF_8);
-        if (data.length > MAX_BYTES) throw new IOException("Terrain snapshot exceeds 64 KiB");
-        Path target = checked("terrain.txt");
-        Path temporary = Files.createTempFile(directory, "terrain-", ".tmp",
+        if (data.length > MAX_BYTES) throw new IOException(filename + " exceeds 64 KiB");
+        Path target = checked(filename);
+        Path temporary = Files.createTempFile(directory, "snapshot-", ".tmp",
                 PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
         try {
             Files.write(temporary, data);
@@ -55,6 +58,18 @@ final class BridgeFiles {
             }
         }
         return newest;
+    }
+
+    /** A bounded snapshot, or null when it is missing, oversized or not a regular file. */
+    String read(String filename) throws IOException {
+        Path path = checked(filename);
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return null;
+        try (var input = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
+            byte[] bytes = input.readNBytes(MAX_BYTES + 1);
+            return bytes.length > MAX_BYTES ? null : new String(bytes, StandardCharsets.UTF_8);
+        } catch (java.nio.file.NoSuchFileException replaced) {
+            return null;
+        }
     }
 
     void stop() throws IOException { Files.deleteIfExists(checked("terrain.txt")); }

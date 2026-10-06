@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "input.hpp"
+#include "pose_stream.hpp"
 #include "raw_capture.hpp"
 #include <array>
 #include <bcrypt.h>
@@ -27,6 +28,8 @@ DWORD packet_number = 0;
 // Pinned shipping build: only the slot-0 gameplay poll advances edges.
 // Its separate device-discovery calls may only observe the cached state.
 constexpr uintptr_t return_rva = 0x2bf7a3b, check_rva = 0x2bf7a28;
+// GUObjectArray of the same pinned build (inlined FUObjectArray::IndexToObject).
+constexpr uintptr_t objects_rva = 0x6dd7230;
 constexpr std::array<unsigned char, 19> call_bytes = {
     0x0f, 0x57, 0xc0, 0x48, 0x8d, 0x55, 0x90, 0x33, 0xc9, 0x0f,
     0x11, 0x45, 0x90, 0xff, 0x15, 0x3d, 0x6f, 0x9b, 0x02};
@@ -132,6 +135,7 @@ bool verify_host() {
       !hash_matches(module_path(module)))
     return false;
   gameplay_return = reinterpret_cast<uintptr_t>(base) + return_rva;
+  stellar_pose::initialize(reinterpret_cast<uintptr_t>(base) + objects_rva);
   return true;
 #endif
 }
@@ -220,6 +224,16 @@ void worker() {
     auto capture_request =
         read_file(directory + L"eve-stream.txt", 512).value_or("");
     stellar_raw::poll_raw_capture(capture_request, wall_ms());
+    try {
+      stellar_pose::poll_files(
+          directory,
+          read_file(directory + L"eve-pose-request.txt", 512).value_or(""),
+          read_file(directory + L"eve-pose-components.0", 65536).value_or(""),
+          read_file(directory + L"eve-pose-components.1", 65536).value_or(""),
+          wall_ms());
+    } catch (...) {
+      // The pose stream is optional and must never stop input forwarding.
+    }
     Sleep(20);
   }
 }
@@ -265,10 +279,17 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
   if (!verified || index != 0)
     return backend_get ? backend_get(index, state) : ERROR_DEVICE_NOT_CONNECTED;
   stellar_input::Core::Result result;
+  bool gameplay = reinterpret_cast<uintptr_t>(caller) == gameplay_return;
+  if (gameplay) {
+    // Game thread, between frames: last frame's animation and physics are final.
+    try {
+      stellar_pose::on_gameplay_poll();
+    } catch (...) {
+    }
+  }
   {
     std::lock_guard<std::mutex> lock(state_lock);
-    result = core.poll(reinterpret_cast<uintptr_t>(caller) == gameplay_return,
-                       wall_ms(), GetTickCount64());
+    result = core.poll(gameplay, wall_ms(), GetTickCount64());
     if (result.override) {
       if (result.pad != previous_pad) {
         previous_pad = result.pad;

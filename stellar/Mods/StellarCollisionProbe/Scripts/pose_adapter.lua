@@ -115,6 +115,33 @@ function Adapter.new()
         return value
     end
     function engine.world(component) return transform(component:K2_GetComponentToWorld()) end
+    -- Pose stream: cheap identities every check, names only when the composition changes.
+    function engine.identities()
+        local pawn=valid(UE.GetPlayer())
+        assert(pawn,'Load a playable save before streaming EVE.')
+        local class=valid(StaticFindObject('/Script/Engine.SkeletalMeshComponent'))
+        assert(class,'SkeletalMeshComponent is unavailable in this game build.')
+        local list={}
+        each(pawn:K2_GetComponentsByClass(class),function(_,component)
+            component=valid(component)
+            local mesh=component and valid(component.SkeletalMesh)
+            if not mesh then return end
+            local found,leader=pcall(function() return valid(value_of(component.MasterPoseComponent):Get()) end)
+            list[#list+1]={handle=component,name=text(component:GetFName()),object=component:GetAddress(),
+                class=valid(component:GetClass()):GetAddress(),mesh=mesh:GetAddress(),mesh_name=text(mesh:GetFName()),
+                leader=found and leader and text(leader:GetFName()) or nil,mesh_handle=mesh}
+        end)
+        return list
+    end
+    -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
+    function engine.names(entry)
+        local bones,morphs={},{}
+        if not entry.leader then
+            for index=0,entry.handle:GetNumBones()-1 do bones[#bones+1]=text(entry.handle:GetBoneName(index)) end
+        end
+        each(entry.mesh_handle.MorphTargets,function(_,morph) morph=valid(morph); if morph then morphs[#morphs+1]=text(morph:GetFName()) end end)
+        return bones,morphs
+    end
     return engine
 end
 Adapter.value_of,Adapter.each=value_of,each

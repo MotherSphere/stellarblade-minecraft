@@ -1,0 +1,81 @@
+#pragma once
+// EVE pose stream: Lua names the skeletal mesh components, the game-thread
+// gameplay poll copies their transforms, Minecraft reads a v1 pose mapping.
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace stellar_pose {
+constexpr uint32_t MaxComponents = 16, MaxBones = 256, MaxMorphs = 1024;
+constexpr uint32_t Header = 4096, SlotBytes = 65536, SlotHeader = 128;
+constexpr uint32_t Capacity = (SlotBytes - SlotHeader) / 4; // Payload floats.
+constexpr uint32_t TotalBytes = Header + 3 * SlotBytes;
+// Status bits per component in a published slot.
+constexpr uint32_t WorldValid = 1, BonesValid = 2, MorphsValid = 4;
+
+struct Request {
+  std::string run;
+  uint64_t time = 0;
+  bool active = false;
+};
+std::optional<Request> parse_request(std::string_view);
+
+struct Component {
+  uint64_t object = 0, cls = 0, mesh = 0;
+  uint32_t bones = 0, morphs = 0;
+};
+struct Table {
+  std::string run;
+  uint64_t generation = 0;
+  std::vector<Component> components;
+  uint32_t floats = 0; // 10 world + 10 per bone + 1 per morph, per component.
+};
+std::optional<Table> parse_components(std::string_view);
+// The newer valid table of two alternating Lua slots for this run.
+std::optional<Table> select_components(std::string_view slot0,
+                                       std::string_view slot1,
+                                       std::string_view run);
+
+// Engine memory of the pinned build. Reads must run on the game thread, where
+// garbage collection cannot free objects concurrently.
+struct Engine {
+  uintptr_t objects = 0; // FUObjectArray (GUObjectArray).
+};
+// Copies one component into out (10 + 10 * bones + morphs floats, zeroed when
+// invalid) and returns its status bits. The object must still be the live,
+// non-pending-kill object of the published class with the published mesh.
+uint32_t read_component(const Engine &, const Component &, float *out);
+
+// Producer side of eve-pose-<RUN>.bin. The caller serializes every method.
+class Producer {
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+
+public:
+  Producer();
+  ~Producer();
+  Producer(const Producer &) = delete;
+  Producer &operator=(const Producer &) = delete;
+  bool open(const std::wstring &directory, const Request &, uint32_t pid,
+            uint64_t wall);
+  void heartbeat(uint64_t wall);
+  bool active(uint64_t wall) const;
+  const std::string &run() const;
+  bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
+               const float *payload, uint32_t floats, uint64_t wall,
+               uint32_t read_us);
+  void fail(uint32_t);
+  void stop();
+};
+
+// Adapter entry points. initialize receives GUObjectArray's address. The
+// worker passes the request file and both component slots; the verified
+// gameplay XInput poll reads and publishes. None of them throws.
+void initialize(uintptr_t objects);
+void poll_files(const std::wstring &directory, std::string_view request,
+                std::string_view slot0, std::string_view slot1, uint64_t wall);
+void on_gameplay_poll();
+} // namespace stellar_pose

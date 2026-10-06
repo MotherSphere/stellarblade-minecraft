@@ -47,6 +47,7 @@ processResources {
     controlHooksTest: 'ControlHooksTest',
     rawFrameBusTest: 'RawFrameBusTest',
     avatarModelTest: 'AvatarModelTest',
+    avatarStreamTest: 'AvatarStreamTest',
 ].each { taskName, testClass ->
     def suite = tasks.register(taskName, JavaExec) {
         dependsOn testClasses
@@ -64,5 +65,15 @@ tasks.register('avatarRenderCheck', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'org.stellarbridge.AvatarRenderCheck'
     args = (project.findProperty('avatarCheck') ?: '').toString().tokenize(' ')
+    jvmArgs '-ea'
+}
+
+// Cross-process pose mapping check with the native fixture; not part of check. -PposeInterop="<directory> <poses>"
+tasks.register('avatarStreamInterop', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.AvatarStreamTest'
+    workingDir projectDir.parentFile
+    args = (project.findProperty('poseInterop') ?: '').toString().tokenize(' ')
     jvmArgs '-ea'
 }

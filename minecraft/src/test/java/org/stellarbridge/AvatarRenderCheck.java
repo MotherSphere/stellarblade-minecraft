@@ -54,7 +54,7 @@ public final class AvatarRenderCheck {
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
 
         AvatarRecording recording = AvatarRecording.read(poses);
-        AvatarModel model = AvatarModel.load(pack, recording);
+        AvatarModel model = AvatarModel.load(pack, recording.components, new java.util.HashMap<>());
         try (AvatarRenderer renderer = new AvatarRenderer(model, pack)) {
             int[] sections = renderer.sectionCounts();
             System.out.println(model.parts.size() + " meshes, sections drawn " + sections[0] + "/" + sections[1] + ", skipped " + model.skipped);
@@ -69,7 +69,7 @@ public final class AvatarRenderCheck {
                 Vector3d forward = AvatarModel.UNREAL_TO_MINECRAFT.transformDirection(body.transformDirection(new Vector3d(1, 0, 0))).setComponent(1, 0).normalize();
                 Vector3d eye = new Vector3d(forward).mul(3.2).add(0, 1.0, 0), target = new Vector3d(0, 0.9, 0);
                 Matrix4d placement = new Matrix4d().translation(-eye.x, -eye.y, -eye.z).mul(AvatarModel.UNREAL_TO_MINECRAFT).translate(-root[4], -root[5], -root[6]);
-                model.palettes(pose, placement, renderer.palettes);
+                model.palettes(pose, placement, renderer.palettes, false);
                 for (int p = 0; p < model.parts.size(); p++) System.out.println("  " + bounds(model.parts.get(p).mesh(), model.morphWeights[p], renderer.palettes[p], eye));
                 Matrix4f view = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
                 Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(40), (float) tileWidth / tileHeight, 0.05f, 100);

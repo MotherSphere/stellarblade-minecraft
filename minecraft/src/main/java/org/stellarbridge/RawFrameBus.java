@@ -29,7 +29,7 @@ final class RawFrameBus implements AutoCloseable {
         int munmap(Pointer address, NativeLong length);
         int close(int fd);
     }
-    private static final LibC C = Native.load("c", LibC.class);
+    static final LibC C = Native.load("c", LibC.class); // Shared with AvatarStream's pose mapping.
     final Path path;
     final String run, session;
     final int width, height, planeBytes, stride, bytes;

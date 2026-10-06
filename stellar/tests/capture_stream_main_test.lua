@@ -34,7 +34,7 @@ function bridge.restore() returns=returns+1; state='idle'; return true,'returned
 function bridge.tick() if tick_error then error('bridge failed') end end
 function bridge.pose()
     if state~='entered' then return nil end
-    return {session=string.rep('a',32),ack=1,state=state,position={x=0,y=0,z=0}}
+    return {session=string.rep('a',32),ack=1,state=state,position={x=0,y=0,z=0},anchor={X=1,Y=2,Z=3}}
 end
 local world={IsValid=function()return true end,GetAddress=function()return 12 end,GetFullName=function()return 'TestWorld' end}
 local pawn={IsValid=function()return true end,GetWorld=function()return world end,GetAddress=function()return 11 end,
@@ -115,6 +115,12 @@ package.loaded.pose_probe={new=function(engine,directory,clock,logger)
     assert(type(engine)=='table' and directory=='/unused' and clock==os.clock and type(logger)=='function')
     return {start=function() pose_starts=pose_starts+1; return true,'pose recording' end,
         tick=function(frame) pose_frames[#pose_frames+1]=frame; return true end}
+end}
+local stream_ticks,stream_link,stream_error=0,nil,false
+package.loaded.pose_stream={new=function(engine,directory,clock,logger,link)
+    assert(type(engine)=='table' and directory=='/unused' and clock==os.time and type(logger)=='function' and type(link)=='function')
+    stream_link=link
+    return {tick=function() stream_ticks=stream_ticks+1; if stream_error then error('identities failed') end; return true end}
 end}
 package.loaded.native_scene={new=function(_,received,directory,scale) assert(received==bridge and directory=='/unused' and scale==100); return scene end}
 package.loaded.scene_adapter={new=function()return {} end}
@@ -291,3 +297,14 @@ print('PASS bounded native cadence reports: idle and live, wall-second gate, non
 command('posetest'); assert(pose_starts==1 and logs[#logs]:find('OK: pose recording',1,true),'The console command starts one pose recording')
 next_hd_frame(); assert(pose_frames[#pose_frames]==native_frame,'Each native frame ticks the pose probe once with its frame count')
 print('PASS pose probe console command and per-frame tick')
+local ticks=stream_ticks
+loop(); drain(); assert(stream_ticks==ticks+1,'The bridge timer checks the pose stream')
+assert(stream_link()==nil,'No placement before the link is entered')
+command('mirror'); command('enter')
+local place=stream_link()
+assert(place and place.session==string.rep('a',32) and place.anchor.Z==3 and place.scale==100,'The entered link fixes the placement')
+stream_error=true; loop(); drain(); stream_error=false
+assert(logs[#logs]:find('Pose stream paused',1,true) and logs[#logs]:find('identities failed',1,true),'Stream failures are reported, not fatal')
+loop(); drain(); assert(stream_ticks==ticks+3,'The bridge timer keeps running after a stream failure')
+keys.F11(); drain()
+print('PASS pose stream wiring: bridge-timer checks, entered placement and nonfatal failures')
