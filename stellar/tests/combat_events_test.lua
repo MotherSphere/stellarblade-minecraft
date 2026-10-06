@@ -85,21 +85,21 @@ place={session=SESSION}
 takes=true
 -- Hits: the variants take turns until one animates EVE, which is then kept; each one is undone after it.
 real=real+1; event('hit'); combat.tick()
-assert(reactions[1]=='library' and last():find('reaction library toward 90',1,true),last())
+assert(reactions[1]=='gate' and last():find('reaction gate toward 90',1,true),last())
 real=real+0.3; combat.tick()
 assert(last():find('alpha 0.00',1,true) and not last():find('kept',1,true),last())
 real=real+0.4; event('hit'); combat.tick()
 assert(#reactions==1,'One reaction at a time, even past the gap')
 real=real+0.4; combat.tick()
 assert(restores==1,'The variant is undone after it plays')
-alphas.gate=0.8
+alphas.library=0.8
 event('hit'); combat.tick()
-assert(reactions[2]=='gate')
+assert(reactions[2]=='library')
 real=real+0.3; combat.tick()
 assert(last():find('reaction kept',1,true),last())
 real=real+0.8; combat.tick()
 real=real+1; event('hit'); combat.tick()
-assert(reactions[3]=='gate','The animating variant is kept')
+assert(reactions[3]=='library','The animating variant is kept')
 real=real+1.1; combat.tick()
 -- A failed undo is retried every frame.
 local undo=engine.hit_restore
@@ -110,13 +110,13 @@ engine.hit_restore=undo; combat.tick()
 assert(restores==4,'The undo succeeds once it can')
 -- A try while EVE already animates or moves tells nothing: not counted, the same variant comes back.
 local function probe_combat() return Combat.new(engine,directory,function() return wall end,function() return real end,function(line) logged[#logged+1]=line end,function() return place end) end
-alphas,reactions,busy={gate=1},{},true
+alphas,reactions,busy={library=1},{},true
 local probe=probe_combat()
 real=real+2; event('hit'); probe.tick(); real=real+0.3; probe.tick()
 assert(last():find('inconclusive, EVE was already animating',1,true) and not last():find('kept',1,true),last())
 busy,speed=false,250; real=real+1.2; probe.tick()
 real=real+1; event('hit'); probe.tick(); real=real+0.3; probe.tick()
-assert(reactions[2]=='library' and last():find('inconclusive, EVE was moving',1,true),last())
+assert(reactions[2]=='gate' and last():find('inconclusive, EVE was moving',1,true),last())
 speed=0
 -- Twelve reactions that never animate EVE turn reactions off.
 alphas,reactions={},{}

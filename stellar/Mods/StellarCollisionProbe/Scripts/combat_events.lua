@@ -15,7 +15,8 @@ local SLOW,SLOW_SECONDS=0.3,0.5
 local FRESH_MS=2500 -- The wall clock here has whole seconds.
 local DODGE_CHECK=0.2
 local REACTION_GAP,REACTION_SAMPLE,REACTION_RESTORE=0.6,0.3,1.1
-local VARIANTS,PROBES={'library','gate','tag'},12 -- Reactions tried before giving up when none animates EVE.
+-- The lifted gate first: it animated EVE in game (2026-10-07) and keeps the attack's side; the library call plays from the front.
+local VARIANTS,PROBES={'gate','library','tag'},12 -- Reactions tried before giving up when none animates EVE.
 local SHOW='/Game/Art/Show/'
 local JUST_EVADE=SHOW..'CH_P_EVE_01/Skill/P_Eve_Sword_Normal_JustEvade1.P_Eve_Sword_Normal_JustEvade1'
 local MOVING=10 -- cm/s: EVE moving cancels a hit reaction.

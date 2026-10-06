@@ -331,7 +331,7 @@ function Adapter.new()
     local function head(mesh) return value_of(value_of(mesh:GetSocketTransform(FName('Bip001-Head'),COMPONENT_SPACE)).Translation) end
     local function loaded(path)
         local object=valid(StaticFindObject(path)) or (type(LoadAsset)=='function' and valid(LoadAsset(path)) or nil)
-        return assert(object,path..' is not loaded')
+        return (assert(object,path..' is not loaded')) -- One value: assert also returns its message.
     end
     -- EVE, checked: SBShowActorInterface calls reach their implementation unchecked, and only an SBCharacter has one.
     local function character()
