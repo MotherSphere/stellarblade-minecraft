@@ -3,6 +3,7 @@
 #include "shared_memory.hpp"
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -80,6 +81,13 @@ bool hex32(std::string_view s, uint64_t &out) {
   }
   return !s.empty();
 }
+// InputYawScale or InputPitchScale: finite, nonzero, magnitude 0.01 to 100.
+bool scale(std::string_view s, float &out) {
+  auto end = s.data() + s.size();
+  auto [last, error] = std::from_chars(s.data(), end, out);
+  return error == std::errc() && last == end && std::isfinite(out) &&
+         std::fabs(out) >= 0.01f && std::fabs(out) <= 100;
+}
 bool names(std::string_view line, std::string_view key, uint32_t index,
            uint32_t count) {
   auto parts = split(line);
@@ -148,12 +156,14 @@ std::optional<Table> parse_components(std::string_view text) {
   if (lines.at >= lines.rows.size())
     return {};
   auto controller = split(lines.rows[lines.at++]);
-  if (controller.size() == 4 && controller[0] == "CONTROLLER") {
+  if (controller.size() == 8 && controller[0] == "CONTROLLER") {
     Controller c;
     uint64_t offset = 0;
     if (!address(controller[1], c.object) || !address(controller[2], c.cls) ||
         controller[3].size() != 8 || !hex32(controller[3], offset) || !offset ||
-        offset >= 0x4000 || offset % 4)
+        offset >= 0x4000 || offset % 4 || !address(controller[4], c.pawn) ||
+        !address(controller[5], c.pawn_cls) || !scale(controller[6], c.yaw_scale) ||
+        !scale(controller[7], c.pitch_scale))
       return {};
     c.offset = static_cast<uint32_t>(offset);
     table.controller = c;
@@ -244,14 +254,59 @@ bool read_controller(const Engine &engine, const Controller &c, float *out) {
   return true;
 }
 
-bool write_controller(const Engine &engine, const Controller &c, float pitch, float yaw) {
-  auto object = static_cast<uintptr_t>(c.object);
-  if (!engine.objects || !alive(engine.objects, object) ||
-      at<uint64_t>(object + ClassPrivate) != c.cls)
+// APawn virtual table slots of AddControllerPitchInput and
+// AddControllerYawInput in the pinned build (execAddControllerPitchInput,
+// execAddControllerYawInput).
+constexpr size_t AddPitchSlot = 0x798, AddYawSlot = 0x7a0;
+static bool in_image(uintptr_t where) {
+#ifdef _WIN32
+  // The executable's image: base and SizeOfImage from its PE header.
+  static const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  static const auto size = at<uint32_t>(base + at<int32_t>(base + 0x3c) + 0x50);
+  return where >= base && where - base < size;
+#else
+  return where != 0;
+#endif
+}
+bool turn_controller(const Engine &engine, const Controller &c, float pitch, float yaw) {
+  auto pawn = static_cast<uintptr_t>(c.pawn);
+  if (!engine.objects || !alive(engine.objects, pawn) ||
+      at<uint64_t>(pawn + ClassPrivate) != c.pawn_cls)
     return false;
-  float rotation[2] = {pitch, yaw};
-  std::memcpy(reinterpret_cast<void *>(object + c.offset), rotation, sizeof rotation);
+  auto table = at<uintptr_t>(pawn);
+  if (!in_image(table))
+    return false;
+  using Input = void (*)(void *, float); // this in the first register, the value in the second.
+  auto add_pitch = at<uintptr_t>(table + AddPitchSlot), add_yaw = at<uintptr_t>(table + AddYawSlot);
+  if (!in_image(add_pitch) || !in_image(add_yaw))
+    return false;
+  // APlayerController::AddYawInput multiplies by InputYawScale (likewise pitch).
+  if (yaw != 0)
+    reinterpret_cast<Input>(add_yaw)(reinterpret_cast<void *>(pawn), yaw / c.yaw_scale);
+  if (pitch != 0)
+    reinterpret_cast<Input>(add_pitch)(reinterpret_cast<void *>(pawn), pitch / c.pitch_scale);
   return true;
+}
+
+Turn follow(Follow &f, float look_pitch, float look_yaw, float pitch, float yaw) {
+  auto wrap = [](float degrees) { return std::remainder(degrees, 360.0f); };
+  auto limit = [](float degrees) { return std::clamp(degrees, -MaxTurn, MaxTurn); };
+  float gap_yaw = wrap(look_yaw - yaw), gap_pitch = wrap(look_pitch) - wrap(pitch);
+  Turn turn;
+  if (f.previous) {
+    turn.yaw = wrap(look_yaw - f.yaw);
+    turn.pitch = wrap(look_pitch) - wrap(f.pitch);
+  }
+  f.previous = true;
+  f.pitch = look_pitch;
+  f.yaw = look_yaw;
+  f.apart = std::fabs(gap_yaw) > FarDegrees ? f.apart + 1 : 0;
+  // A camera that stays far for a second is not following this input (look
+  // input ignored, or a game that turns differently); stop adding to it.
+  turn.engaged = f.apart < FarPolls;
+  turn.yaw = turn.engaged ? limit(turn.yaw + FollowGain * gap_yaw) : 0;
+  turn.pitch = turn.engaged ? limit(turn.pitch + FollowGain * gap_pitch) : 0;
+  return turn;
 }
 
 struct Producer::Impl {
@@ -408,12 +463,9 @@ bool Producer::look(uint64_t wall, float &pitch, float &yaw) const {
   if (!std::isfinite(pitch) || !std::isfinite(yaw) || pitch < -90 || pitch > 90 ||
       std::fabs(yaw) > 1e6f)
     return false;
-  // Unreal keeps ControlRotation axes in [0, 360).
   yaw = std::fmod(yaw, 360.0f);
   if (yaw < 0)
     yaw += 360;
-  if (pitch < 0)
-    pitch += 360;
   return true;
 }
 void Producer::fail(uint32_t error) {
@@ -439,6 +491,7 @@ Producer producer;
 std::optional<Table> table;
 std::vector<float> payload(Capacity);
 std::array<uint32_t, MaxComponents> status{};
+Follow following;
 uint32_t process_id() {
 #ifdef _WIN32
   return GetCurrentProcessId();
@@ -477,16 +530,17 @@ bool guarded(const Engine &e, const Controller &c, float *out) {
     return false;
   }
 }
-bool guarded_write(const Engine &e, const Controller &c, float pitch, float yaw) {
+// A pawn freed after Lua published it faults before any call; contained.
+bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   __try {
-    return write_controller(e, c, pitch, yaw);
+    return turn_controller(e, c, pitch, yaw);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
 }
 #else
-bool guarded_write(const Engine &e, const Controller &c, float pitch, float yaw) {
-  return write_controller(e, c, pitch, yaw);
+bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
+  return turn_controller(e, c, pitch, yaw);
 }
 uint32_t guarded(const Engine &e, const Component &c, float *out) {
   return read_component(e, c, out);
@@ -529,20 +583,22 @@ void on_gameplay_poll(std::string_view owner) {
   if (!producer.active(wall))
     return;
   auto started = micros();
-  // Minecraft's camera drives Stellar Blade's only while this stream's run
-  // owns forwarded input; the frame's own controller update then follows it.
+  float rotation[3];
+  bool rotated = table->controller && guarded(engine, *table->controller, rotation);
+  // Minecraft's camera turns Stellar Blade's only while this stream's run owns
+  // forwarded input; the frame's own input processing then applies the turn.
   bool applied = false;
   float pitch = 0, yaw = 0;
-  if (table->controller && !owner.empty() && owner == producer.run() &&
-      producer.look(wall, pitch, yaw))
-    applied = guarded_write(engine, *table->controller, pitch, yaw);
+  if (rotated && !owner.empty() && owner == producer.run() && producer.look(wall, pitch, yaw)) {
+    auto turn = follow(following, pitch, yaw, rotation[0], rotation[1]);
+    applied = turn.engaged && guarded_turn(engine, *table->controller, turn.pitch, turn.yaw);
+  } else
+    following = {};
   uint32_t offset = 0, count = 0;
   for (const auto &c : table->components) {
     status[count++] = guarded(engine, c, payload.data() + offset);
     offset += 10 + 10 * c.bones + c.morphs;
   }
-  float rotation[3];
-  bool rotated = table->controller && guarded(engine, *table->controller, rotation);
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
                    offset, rotated ? rotation : nullptr, applied, wall,

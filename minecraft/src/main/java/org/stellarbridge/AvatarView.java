@@ -61,7 +61,9 @@ public final class AvatarView {
         final double[] times = new double[RING];
         int newest = -1, count;
         float[] rotation; // Stellar Blade's controller Pitch, Yaw, Roll from the newest sample, or null.
-        boolean lookApplied; // The newest sample says Minecraft's camera was applied to that controller.
+        boolean lookApplied; // The newest sample says the adapter turned that controller's camera toward Minecraft's.
+        long gapSamples, turned; // Controlled poses, and those the adapter turned.
+        double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
         Vector3d relativeOrigin;
         boolean posed, anchored, controlled;
         long poses, incomplete, lastPoseNanos, windowPoses, windowNanos;
@@ -230,6 +232,14 @@ public final class AvatarView {
                     current.count = Math.min(current.count + 1, Live.RING);
                     current.rotation = sample.rotation();
                     current.lookApplied = sample.lookApplied();
+                    var player = MinecraftClient.getInstance().player;
+                    if (current.controlled && current.rotation != null && player != null) {
+                        double gap = Math.abs(Math.IEEEremainder(player.getYaw() + 90 - current.rotation[1], 360));
+                        current.gapSamples++;
+                        current.gapSum += gap;
+                        current.gapMax = Math.max(current.gapMax, gap);
+                        if (current.lookApplied) current.turned++;
+                    }
                     current.posed = true;
                     current.poses++;
                     current.windowPoses++;
@@ -247,7 +257,7 @@ public final class AvatarView {
             current.anchored = current.table.anchor() != null && link != null && current.table.session().equals(link.session());
             if (current.controlled) {
                 var player = MinecraftClient.getInstance().player;
-                // Minecraft yaw + 90 and negated pitch are Unreal's; the adapter applies them while input is forwarded.
+                // Minecraft yaw + 90 and negated pitch are Unreal's; the adapter turns toward them while input is forwarded.
                 if (player != null) current.stream.look(-player.getPitch(), player.getYaw() + 90, System.currentTimeMillis());
                 ControlBridge.avatarFrame();
             }
@@ -398,7 +408,7 @@ public final class AvatarView {
         return current != null && current.controlled && current.stream.run.equals(run) && current.anchored && current.posed
                 && current.table.session().equals(session) && nanos - current.lastPoseNanos <= 500_000_000L;
     }
-    /** Whether the adapter applies Minecraft's camera to Stellar Blade's controller. */
+    /** Whether the adapter turns Stellar Blade's camera toward Minecraft's through look input. */
     static boolean lookApplied() {
         Live current = live;
         return current != null && current.lookApplied;
@@ -425,7 +435,9 @@ public final class AvatarView {
                 current.table == null ? "waiting for Lua's component table" : current.anchored ? "anchored to the bridge link" : "two blocks ahead (no entered link)",
                 current.table == null ? "-" : Long.toString(current.table.generation()), current.poses, current.rate, current.interval, current.incomplete,
                 current.posed ? String.format("%.0f ms ago", (System.nanoTime() - current.lastPoseNanos) / 1e6) : "never",
-                native_[1], native_[2], native_[3], native_[0]);
+                native_[1], native_[2], native_[3], native_[0])
+                + (current.gapSamples == 0 ? "" : String.format(" Camera: turned by look input in %.0f%% of controlled poses; yaw gap %.1f deg mean, %.0f max.",
+                        100.0 * current.turned / current.gapSamples, current.gapSum / current.gapSamples, current.gapMax));
     }
 
     /** Stops the live stream; a null reason is the user's own off. */

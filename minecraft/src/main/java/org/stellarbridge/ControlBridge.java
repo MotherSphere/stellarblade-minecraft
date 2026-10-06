@@ -24,8 +24,8 @@ public final class ControlBridge {
     private static ControlFiles files;
     private static boolean build;
     private static double lookX, lookY, gain = 2500;
-    // Avatar control: the pose stream gates input; Minecraft's camera is applied to Stellar Blade's controller natively,
-    // with right-stick steering as the fallback when it is not.
+    // Avatar control: the pose stream gates input; the adapter turns Stellar Blade's camera toward Minecraft's through
+    // look input, with right-stick steering as the fallback when it does not.
     private static boolean avatar;
     private static long publishedNanos;
     private static double unwrappedYaw = Double.NaN, lastUnrealYaw; // Stellar Blade's controller yaw, turns counted.
@@ -260,7 +260,7 @@ public final class ControlBridge {
             float[] rotation = AvatarView.controllerRotation();
             if (player == null || rotation == null) return new ControlState.Axes(x * scale, y * scale, 0, 0);
             int[] steered = steer(yawError(player.getYaw(), rotation[1]), x * scale, y * scale);
-            // When the adapter sets the controller's rotation itself, the right stick stays neutral.
+            // While the adapter turns the camera through look input, the right stick stays neutral.
             return new ControlState.Axes(steered[0], steered[1], AvatarView.lookApplied() ? 0 : steered[2], 0);
         }
         return new ControlState.Axes(x * scale, y * scale,

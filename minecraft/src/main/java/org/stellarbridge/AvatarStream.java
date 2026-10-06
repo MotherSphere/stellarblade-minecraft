@@ -25,13 +25,14 @@ final class AvatarStream implements AutoCloseable {
 
     /**
      * A Lua component table; anchor is Unreal X, Y, Z and units per block, or null without an entered link.
-     * controller says whether poses carry the player controller's rotation.
+     * controller says whether poses carry the player controller's rotation (and the adapter may turn its camera).
      */
     record Table(String run, long generation, String session, double[] anchor, boolean controller,
                  List<AvatarRecording.Component> components, int floats) { }
     /**
      * One published pose: per component status bits and its floats (world, component-space bones, morph weights),
-     * the controller's Unreal Pitch, Yaw, Roll in degrees or null, and whether Minecraft's camera was applied to it.
+     * the controller's Unreal Pitch, Yaw, Roll in degrees or null (read before this frame's turn), and whether the
+     * adapter turned Stellar Blade's camera toward Minecraft's this frame.
      */
     record Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation,
                   boolean lookApplied) { }
@@ -158,9 +159,9 @@ final class AvatarStream implements AutoCloseable {
     }
 
     /**
-     * Minecraft's camera for Stellar Blade's controller (Unreal degrees), applied natively while this run owns forwarded
-     * input. Written only after the producer claimed the mapping: time at 288, Pitch and Yaw as one 64-bit word at 296,
-     * state at 304.
+     * Minecraft's camera (Unreal degrees), which the adapter turns Stellar Blade's camera toward through look input while
+     * this run owns forwarded input. Written only after the producer claimed the mapping: time at 288, Pitch and Yaw as
+     * one 64-bit word at 296, state at 304.
      */
     void look(float pitch, float yaw, long nowMs) {
         if (map == null || stopped || producerPid == 0 || (int) RawFrameBus.INT.getAcquire(map, 196) != 1) return;
@@ -246,10 +247,12 @@ final class AvatarStream implements AutoCloseable {
             } else require(anchorFields.length == 2 && anchorFields[1].equals("none"), "anchor form");
             String[] controller = lines[at++].split(" ", -1);
             require(controller[0].equals("CONTROLLER"), "controller");
-            boolean controlled = controller.length == 4;
+            boolean controlled = controller.length == 8;
             if (controlled) require(controller[1].matches("[0-9a-f]{16}") && controller[2].matches("[0-9a-f]{16}")
                     && controller[3].matches("[0-9a-f]{8}") && Integer.parseInt(controller[3], 16) % 4 == 0
-                    && Integer.parseInt(controller[3], 16) > 0 && Integer.parseInt(controller[3], 16) < 0x4000, "controller fields");
+                    && Integer.parseInt(controller[3], 16) > 0 && Integer.parseInt(controller[3], 16) < 0x4000
+                    && controller[4].matches("[0-9a-f]{16}") && controller[5].matches("[0-9a-f]{16}")
+                    && scale(controller[6]) && scale(controller[7]), "controller fields");
             else require(controller.length == 2 && controller[1].equals("none"), "controller form");
             int count = Integer.parseInt(value(lines[at++], "COUNT"));
             require(count >= 1 && count <= 16, "count");
@@ -274,6 +277,15 @@ final class AvatarStream implements AutoCloseable {
             return new Table(run, generation, session, anchor, controlled, List.copyOf(components), (int) floats);
         } catch (IOException | RuntimeException rejected) {
             return null;
+        }
+    }
+    /** A look input scale the adapter accepts: finite, magnitude 0.01 to 100. */
+    private static boolean scale(String text) {
+        try {
+            float value = Math.abs(Float.parseFloat(text));
+            return text.matches("[-+0-9.eE]+") && value >= 0.01f && value <= 100;
+        } catch (NumberFormatException failure) {
+            return false;
         }
     }
     private static String value(String line, String key) throws IOException {

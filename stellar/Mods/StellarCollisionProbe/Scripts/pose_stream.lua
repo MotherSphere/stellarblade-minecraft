@@ -7,6 +7,10 @@ local function hex(address)
     assert(math.type(address)=='integer' and address>0 and address%8==0,'Invalid object address.')
     return string.format('%016x',address)
 end
+-- A look input scale the native adapter accepts: finite, magnitude 0.01 to 100.
+local function scale(value)
+    return type(value)=='number' and value==value and math.abs(value)>=0.01 and math.abs(value)<=100
+end
 local function token(value)
     return type(value)=='string' and #value>0 and value:match('^[!-~]+$')~=nil
 end
@@ -40,7 +44,9 @@ function Stream.new(engine,directory,clock,log,link)
         local lines={'SBMC_POSE_COMPONENTS 1','RUN '..run,'GENERATION '..generation,
             'SESSION '..(place and place.session or 'none'),
             place and string.format('ANCHOR %.17g %.17g %.17g %.17g',place.anchor.X,place.anchor.Y,place.anchor.Z,place.scale) or 'ANCHOR none',
-            controller and string.format('CONTROLLER %s %s %08x',hex(controller.object),hex(controller.class),controller.offset) or 'CONTROLLER none',
+            controller and string.format('CONTROLLER %s %s %08x %s %s %.9g %.9g',hex(controller.object),hex(controller.class),
+                controller.offset,hex(controller.pawn),hex(controller.pawn_class),
+                controller.yaw_scale,controller.pitch_scale) or 'CONTROLLER none',
             'COUNT '..#list}
         for index,c in ipairs(list) do
             lines[#lines+1]=string.format('COMPONENT %d %s %s %s %d %d %s %s %s',index,hex(c.object),hex(c.class),hex(c.mesh),
@@ -83,11 +89,12 @@ function Stream.new(engine,directory,clock,log,link)
         assert(#list>0 and #list<=16,'EVE needs one to sixteen drawable skeletal mesh components.')
         local place=link()
         local found,controller=pcall(engine.controller)
-        if not found then controller=nil end
+        if not found or not controller or not scale(controller.yaw_scale) or not scale(controller.pitch_scale) then controller=nil end
         -- Minecraft's avatar controls are permitted only for this run and the entered link.
         binding=place and {run=run,session=place.session} or nil
         local parts={place and string.format('%s %.17g %.17g %.17g %.17g',place.session,place.anchor.X,place.anchor.Y,place.anchor.Z,place.scale) or 'none',
-            controller and string.format('%d:%d:%d',controller.object,controller.class,controller.offset) or 'no controller'}
+            controller and string.format('%d:%d:%d:%d:%d:%.9g:%.9g',controller.object,controller.class,controller.offset,
+                controller.pawn,controller.pawn_class,controller.yaw_scale,controller.pitch_scale) or 'no controller'}
         for _,c in ipairs(list) do
             parts[#parts+1]=table.concat({c.name,c.object,c.class,c.mesh,c.mesh_name,c.leader or '-'},':')
         end

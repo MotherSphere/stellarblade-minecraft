@@ -20,9 +20,12 @@ public final class AvatarStreamTest {
         String fixture = Files.readString(Path.of("protocol/fixtures/pose-components.txt"));
         AvatarStream.Table table = AvatarStream.parse(fixture);
         assert table != null && table.generation() == 1 && table.anchor() == null && table.session().equals("none") && !table.controller();
-        assert AvatarStream.parse(fixture.replace("CONTROLLER none", "CONTROLLER 00007f0000005000 00007f0000006000 00000318")).controller();
+        String controller = "CONTROLLER 00007f0000005000 00007f0000006000 00000318 00007f0000007000 00007f0000008000 2.5 -2.5";
+        assert AvatarStream.parse(fixture.replace("CONTROLLER none", controller)).controller();
+        for (String scales : new String[] {"2.5 0", "NaN -2.5", "2.5 1e9", "2.5 0x1p1", "2.5"})
+            assert AvatarStream.parse(fixture.replace("CONTROLLER none", controller.replace("2.5 -2.5", scales))) == null;
         for (String offset : new String[] {"00000319", "00004000", "00000000", "318"})
-            assert AvatarStream.parse(fixture.replace("CONTROLLER none", "CONTROLLER 00007f0000005000 00007f0000006000 " + offset)) == null;
+            assert AvatarStream.parse(fixture.replace("CONTROLLER none", controller.replace("00000318", offset))) == null;
         assert table.floats() == 52 && table.components().size() == 2;
         var body = table.components().get(0);
         var face = table.components().get(1);

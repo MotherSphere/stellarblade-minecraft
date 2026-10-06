@@ -52,13 +52,15 @@ assert(select(2,reloaded.tick())=='Pose stream idle.' and select(2,reloaded.tick
 request()
 components={{name='Body',object=0x7f0000001001,class=0x10,mesh=0x20,mesh_name='M'}}
 assert(not pcall(reloaded.tick))
--- The controller's rotation offset is published, and the avatar control binding exists only for an entered link.
+-- The controller's rotation offset, pawn and look scales are published, and the avatar control binding exists only
+-- for an entered link.
 components={{name='Body',object=0x7f0000001000,class=0x7f0000002000,mesh=0x7f0000003000,mesh_name='M'}}
 place=nil
-engine.controller=function() return {object=0x7f0000005000,class=0x7f0000006000,offset=0x318} end
+engine.controller=function() return {object=0x7f0000005000,class=0x7f0000006000,offset=0x318,
+    pawn=0x7f0000007000,pawn_class=0x7f0000008000,yaw_scale=2.5,pitch_scale=-2.5} end
 RUN=string.rep('f',32); request()
 assert(reloaded.tick() and reloaded.binding()==nil,'No link, no control binding')
-assert(read('eve-pose-components.1'):find('\nCONTROLLER 00007f0000005000 00007f0000006000 00000318\nCOUNT 1\n',1,true))
+assert(read('eve-pose-components.1'):find('\nCONTROLLER 00007f0000005000 00007f0000006000 00000318 00007f0000007000 00007f0000008000 2.5 -2.5\nCOUNT 1\n',1,true))
 place={session=string.rep('b',32),anchor={X=0,Y=0,Z=0},scale=100}
 reloaded.tick()
 local binding=reloaded.binding()
@@ -68,6 +70,11 @@ assert(reloaded.binding()==nil,'A stopped request revokes the binding')
 engine.controller=function() error('reflection unavailable') end
 request(); local _,without=reloaded.tick()
 assert(without:find('no controller rotation',1,true) and read('eve-pose-components.1'):find('\nCONTROLLER none\n',1,true),without)
+-- An unusable look scale publishes no controller rather than one the adapter would reject.
+engine.controller=function() return {object=0x7f0000005000,class=0x7f0000006000,offset=0x318,
+    pawn=0x7f0000007000,pawn_class=0x7f0000008000,yaw_scale=0,pitch_scale=-2.5} end
+RUN=string.rep('e',32); request(); reloaded.tick()
+assert(read('eve-pose-components.1'):find('\nCONTROLLER none\n',1,true))
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
-print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation and control binding')
+print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding')

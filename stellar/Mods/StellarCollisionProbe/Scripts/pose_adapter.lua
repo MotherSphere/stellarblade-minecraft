@@ -133,7 +133,8 @@ function Adapter.new()
         end)
         return list
     end
-    -- The local player controller and the byte offset of its ControlRotation (Pitch, Yaw, Roll floats).
+    -- The local player controller, the byte offset of its ControlRotation (Pitch, Yaw, Roll floats), its pawn
+    -- and its look input scales.
     function engine.controller()
         local controller=valid(UE.GetPlayerController())
         if not controller then return nil end
@@ -142,7 +143,11 @@ function Adapter.new()
         local object=controller:GetAddress()
         local offset=tonumber(pointer,16)-object
         assert(offset>0 and offset<0x4000 and offset%4==0,'Unexpected ControlRotation offset.')
-        return {object=object,class=valid(controller:GetClass()):GetAddress(),offset=offset}
+        local pawn=valid(controller:K2_GetPawn())
+        assert(pawn,'The player controller has no pawn.')
+        return {object=object,class=valid(controller:GetClass()):GetAddress(),offset=offset,
+            pawn=pawn:GetAddress(),pawn_class=valid(pawn:GetClass()):GetAddress(),
+            yaw_scale=controller.InputYawScale,pitch_scale=controller.InputPitchScale}
     end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)

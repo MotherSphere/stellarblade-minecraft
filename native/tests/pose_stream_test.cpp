@@ -14,6 +14,13 @@
 using namespace stellar_pose;
 static const std::string Run = "33333333333333333333333333333333";
 
+// The pawn's virtual table: AddControllerPitchInput at 0x798 and
+// AddControllerYawInput at 0x7a0 record the values they receive.
+static std::vector<std::pair<char, float>> inputs;
+static void add_pitch(void *, float value) { inputs.push_back({'p', value}); }
+static void add_yaw(void *, float value) { inputs.push_back({'y', value}); }
+static uintptr_t pawn_table[0x7a0 / 8 + 1];
+
 // Fake engine memory with the pinned build's offsets: a GUObjectArray with one
 // chunk of FUObjectItems and skeletal mesh components that point into it.
 struct Fake {
@@ -25,7 +32,7 @@ struct Fake {
     alignas(16) float space[2][3 * 12]{}; // Two double-buffered 3-bone arrays.
     float morphs[2]{};
   };
-  Object a, b, controller;
+  Object a, b, controller, pawn;
   Fake() {
     chunks[0] = items.data();
     auto table = reinterpret_cast<uintptr_t>(chunks);
@@ -37,6 +44,11 @@ struct Fake {
     setup(controller, 6);
     float rotation[3] = {-10, 135, 0};
     std::memcpy(controller.bytes + 0x318, rotation, sizeof rotation);
+    setup(pawn, 7);
+    pawn_table[0x798 / 8] = reinterpret_cast<uintptr_t>(&add_pitch);
+    pawn_table[0x7a0 / 8] = reinterpret_cast<uintptr_t>(&add_yaw);
+    auto vtable = reinterpret_cast<uintptr_t>(pawn_table);
+    std::memcpy(pawn.bytes, &vtable, 8);
   }
   void setup(Object &o, int32_t index) {
     auto self = reinterpret_cast<uintptr_t>(o.bytes);
@@ -77,10 +89,13 @@ static std::string hex(uint64_t value) {
   std::snprintf(text, sizeof text, "%016llx", static_cast<unsigned long long>(value));
   return text;
 }
-static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint64_t controller = 0) {
+static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint64_t controller = 0,
+                              uint64_t pawn = 0x40) {
   return "SBMC_POSE_COMPONENTS 1\nRUN " + Run + "\nGENERATION " +
          std::to_string(generation) + "\nSESSION none\nANCHOR 1 2 3 100\n" +
-         (controller ? "CONTROLLER " + hex(controller) + " 0000000000001000 00000318\n" : std::string("CONTROLLER none\n")) +
+         (controller ? "CONTROLLER " + hex(controller) + " 0000000000001000 00000318 " + hex(pawn) +
+                           " 0000000000001000 2.5 -2.5\n"
+                     : std::string("CONTROLLER none\n")) +
          "COUNT 2\n"
          "COMPONENT 1 " + hex(a) + " 0000000000001000 0000000000002000 3 2 Body Mesh -\n"
          "BONES 1 Root Hip Head\nMORPHS 1 Smile Blink\n"
@@ -127,8 +142,16 @@ int main() {
   assert(broken("CONTROLLER none", "CONTROLLER"));
   {
     auto with = parse_components(components(4, 0x10, 0x20, 0x30));
-    assert(with && with->controller && with->controller->object == 0x30 && with->controller->offset == 0x318);
+    assert(with && with->controller && with->controller->object == 0x30 && with->controller->offset == 0x318 &&
+           with->controller->pawn == 0x40 && with->controller->yaw_scale == 2.5f &&
+           with->controller->pitch_scale == -2.5f);
     auto text = components(4, 0x10, 0x20, 0x30);
+    for (auto bad : {" 2.5 -2.5", " 2.5 0", " nan -2.5", " 2.5 -2.5x", " 2.5 1e9", " 2.5"}) {
+      auto copy = text;
+      copy.replace(copy.find(" 2.5 -2.5"), 9, bad);
+      assert((std::string(bad) == " 2.5 -2.5") == bool(parse_components(copy)) &&
+             "Input scales are finite, nonzero and bounded");
+    }
     for (auto bad : {"00000319", "00004000", "00000000", "318"}) {
       auto copy = text;
       copy.replace(copy.find("00000318"), 8, bad);
@@ -195,14 +218,51 @@ int main() {
   assert(read_component(Engine{}, Fake::component(fake.b), out.data()) == 0);
   {
     float rotation[3] = {9, 9, 9};
-    Controller c{reinterpret_cast<uint64_t>(fake.controller.bytes), 0x1000, 0x318};
+    Controller c;
+    c.object = reinterpret_cast<uint64_t>(fake.controller.bytes);
+    c.cls = 0x1000;
+    c.offset = 0x318;
     assert(read_controller(engine, c, rotation) && rotation[0] == -10 && rotation[1] == 135 && rotation[2] == 0);
     c.cls = 0x1008;
     assert(!read_controller(engine, c, rotation) && rotation[1] == 0 && "Another class is never read");
-    assert(!write_controller(engine, c, 1, 2) && "Another class is never written");
-    c.cls = 0x1000;
-    assert(write_controller(engine, c, 350, 20) && read_controller(engine, c, rotation) && rotation[0] == 350 &&
-           rotation[1] == 20 && rotation[2] == 0 && "Pitch and yaw change, roll stays");
+    c.pawn = reinterpret_cast<uint64_t>(fake.pawn.bytes);
+    c.pawn_cls = 0x1000;
+    c.yaw_scale = 2.5f;
+    c.pitch_scale = -2.5f;
+    assert(turn_controller(engine, c, 5, -10) && inputs.size() == 2 && inputs[0] == std::make_pair('y', -4.0f) &&
+           inputs[1] == std::make_pair('p', -2.0f) && "Degrees become input through the controller's scales");
+    inputs.clear();
+    assert(turn_controller(engine, c, 0, 0) && inputs.empty() && "No turn, no input");
+    c.pawn_cls = 0x1008;
+    assert(!turn_controller(engine, c, 5, 5) && inputs.empty() && "Another pawn class is never called");
+    c.pawn_cls = 0x1000;
+    std::memset(fake.pawn.bytes, 0, 8);
+    assert(!turn_controller(engine, c, 5, 5) && inputs.empty() && "A pawn without a virtual table is never called");
+  }
+  {
+    // Minecraft's motion goes forward; 15 % of the remaining gap closes per poll.
+    Follow f;
+    auto t = follow(f, 10, 100, 0, 90);
+    assert(t.engaged && std::fabs(t.yaw - 1.5f) < 1e-4f && std::fabs(t.pitch - 1.5f) < 1e-4f && "First poll: gap only");
+    t = follow(f, 10, 110, 0, 100);
+    assert(std::fabs(t.yaw - (10 + 1.5f)) < 1e-4f && "Then Minecraft's motion since the last poll");
+    Follow wrapped;
+    follow(wrapped, 0, 350, 0, 350);
+    t = follow(wrapped, 0, 10, 0, 355);
+    assert(std::fabs(t.yaw - (20 + 0.15f * 15)) < 1e-3f && "Turns take the short way across 0/360");
+    Follow pitch;
+    t = follow(pitch, -20, 0, 350, 0);
+    assert(std::fabs(t.pitch - 0.15f * -10) < 1e-3f && "Controller pitch in [0, 360) compares as signed");
+    Follow spin;
+    t = follow(spin, 0, 0, 0, 0);
+    t = follow(spin, 0, 170, 0, 0);
+    assert(t.yaw == MaxTurn && "One poll never turns more than MaxTurn");
+    Follow stuck;
+    for (uint32_t k = 0; k < FarPolls; k++)
+      t = follow(stuck, 0, 90, 0, 0);
+    assert(!t.engaged && t.yaw == 0 && "A camera far away for FarPolls polls is not following: stop");
+    t = follow(stuck, 0, 10, 0, 0);
+    assert(t.engaged && "Back within FarDegrees, input resumes");
   }
 
   // End to end on a real mapping: worker installs the table, game thread publishes.
@@ -226,7 +286,7 @@ int main() {
     std::ofstream(path, std::ios::binary).write(reinterpret_cast<char *>(bytes.data()), bytes.size());
   }
   auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
-                          reinterpret_cast<uint64_t>(live.controller.bytes));
+                          reinterpret_cast<uint64_t>(live.controller.bytes), reinterpret_cast<uint64_t>(live.pawn.bytes));
   on_gameplay_poll(); // Nothing installed yet.
   poll_files(directory.wstring(), request(now), slots, "", now);
   on_gameplay_poll();
@@ -260,28 +320,31 @@ int main() {
       auto middle = stellar_shared::load32(base, 128) & 3;
       return stellar_shared::plain<uint32_t>(base + Header + SlotBytes * middle, 36);
     };
-    auto rotation_now = [&](int axis) {
-      float value;
-      std::memcpy(&value, live.controller.bytes + 0x318 + 4 * axis, 4);
-      return value;
-    };
+    inputs.clear();
     look(-15, -90, stellar_shared::wall_now(), 1);
     on_gameplay_poll();
-    assert(controller_status() == RotationValid && rotation_now(1) == 135 && "No forwarded input, no camera write");
+    assert(controller_status() == RotationValid && inputs.empty() && "No forwarded input, no camera input");
     on_gameplay_poll(std::string(32, '9'));
-    assert(controller_status() == RotationValid && rotation_now(1) == 135 && "Another run's input cannot steer this camera");
+    assert(controller_status() == RotationValid && inputs.empty() && "Another run's input cannot turn this camera");
     on_gameplay_poll(Run);
-    assert(controller_status() == (RotationValid | LookApplied) && rotation_now(0) == 345 && rotation_now(1) == 270 &&
-           rotation_now(2) == 0 && "Applied and normalized to [0, 360)");
+    // Controller (-10, 135), Minecraft (-15, 270): 15 % of the gap, through the scales.
+    assert(controller_status() == (RotationValid | LookApplied) && inputs.size() == 2 &&
+           inputs[0].first == 'y' && std::fabs(inputs[0].second - 0.15f * 135 / 2.5f) < 1e-4f &&
+           inputs[1].first == 'p' && std::fabs(inputs[1].second - 0.15f * -5 / -2.5f) < 1e-4f &&
+           "Turned through the pawn's look input");
+    float unturned;
+    std::memcpy(&unturned, base + Header + SlotBytes * (stellar_shared::load32(base, 128) & 3) + 44, 4);
+    assert(unturned == 135 && "The slot carries the rotation read before the turn");
+    inputs.clear();
     look(10, 30, stellar_shared::wall_now() - 1000, 1);
     on_gameplay_poll(Run);
-    assert(controller_status() == RotationValid && rotation_now(1) == 270 && "A stale look is ignored");
+    assert(controller_status() == RotationValid && inputs.empty() && "A stale look is ignored");
     look(95, 30, stellar_shared::wall_now(), 1);
     on_gameplay_poll(Run);
-    assert(rotation_now(1) == 270 && "Pitch beyond the poles is ignored");
+    assert(inputs.empty() && "Pitch beyond the poles is ignored");
     look(10, 30, stellar_shared::wall_now(), 0);
     on_gameplay_poll(Run);
-    assert(rotation_now(1) == 270 && "An inactive look is ignored");
+    assert(inputs.empty() && "An inactive look is ignored");
 #ifdef _WIN32
     // An object freed after Lua published it may fault; the read is contained.
     auto before = stellar_shared::load64(base, 216);
@@ -304,5 +367,5 @@ int main() {
     assert(stellar_shared::load32(base, 196) == 2);
   }
   std::filesystem::remove_all(directory);
-  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, camera application, mapping publication and release\n";
+  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, camera input, mapping publication and release\n";
 }
