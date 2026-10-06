@@ -56,6 +56,11 @@ struct Engine {
 uint32_t read_component(const Engine &, const Component &, float *out);
 // Copies the controller's Pitch, Yaw and Roll; false (and zeros) unless live.
 bool read_controller(const Engine &, const Controller &, float *out);
+// Sets the controller's ControlRotation Pitch and Yaw (Roll kept) if it is the
+// live object of the published class.
+bool write_controller(const Engine &, const Controller &, float pitch, float yaw);
+// Bits of the controller status word in a slot.
+constexpr uint32_t RotationValid = 1, LookApplied = 2;
 
 // Producer side of eve-pose-<RUN>.bin. The caller serializes every method.
 class Producer {
@@ -74,16 +79,21 @@ public:
   const std::string &run() const;
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
-               uint64_t wall, uint32_t read_us);
+               bool applied, uint64_t wall, uint32_t read_us);
+  // Minecraft's requested camera (Unreal Pitch, Yaw in degrees), if active,
+  // fresh within 200 ms and finite; pitch within [-90, 90].
+  bool look(uint64_t wall, float &pitch, float &yaw) const;
   void fail(uint32_t);
   void stop();
 };
 
 // Adapter entry points. initialize receives GUObjectArray's address. The
 // worker passes the request file and both component slots; the verified
-// gameplay XInput poll reads and publishes. None of them throws.
+// gameplay XInput poll applies Minecraft's camera when owner (the run whose
+// input is forwarded) is this stream's run, then reads and publishes. None of
+// them throws.
 void initialize(uintptr_t objects);
 void poll_files(const std::wstring &directory, std::string_view request,
                 std::string_view slot0, std::string_view slot1, uint64_t wall);
-void on_gameplay_poll();
+void on_gameplay_poll(std::string_view owner = {});
 } // namespace stellar_pose

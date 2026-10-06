@@ -244,6 +244,16 @@ bool read_controller(const Engine &engine, const Controller &c, float *out) {
   return true;
 }
 
+bool write_controller(const Engine &engine, const Controller &c, float pitch, float yaw) {
+  auto object = static_cast<uintptr_t>(c.object);
+  if (!engine.objects || !alive(engine.objects, object) ||
+      at<uint64_t>(object + ClassPrivate) != c.cls)
+    return false;
+  float rotation[2] = {pitch, yaw};
+  std::memcpy(reinterpret_cast<void *>(object + c.offset), rotation, sizeof rotation);
+  return true;
+}
+
 struct Producer::Impl {
   stellar_shared::Mapping file;
   uint8_t *base = nullptr;
@@ -346,8 +356,8 @@ void Producer::heartbeat(uint64_t wall) {
 }
 bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
-                       const float *rotation, uint64_t wall,
-                       uint32_t read_us) {
+                       const float *rotation, bool applied,
+                       uint64_t wall, uint32_t read_us) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -363,7 +373,7 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   put(slot, 32, floats);
   // Controller rotation: status at 36, Pitch, Yaw, Roll at 40.
   if (rotation) {
-    put(slot, 36, uint32_t(1));
+    put(slot, 36, RotationValid | (applied ? LookApplied : 0u));
     std::memcpy(slot + 40, rotation, 3 * sizeof(float));
   }
   std::memcpy(slot + 64, status, sizeof(uint32_t) * count);
@@ -381,6 +391,29 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   put(self.base, 228, self.max_us);
   store64(self.base, 232, self.total_us);
   store64(self.base, 216, self.counter);
+  return true;
+}
+bool Producer::look(uint64_t wall, float &pitch, float &yaw) const {
+  const auto &self = *impl_;
+  // Consumer look: time (u64) at 288, Pitch and Yaw (f32) at 296 as one
+  // atomic 64-bit word, state 1 at 304.
+  if (!self.base || !self.owned || load32(self.base, 304) != 1)
+    return false;
+  auto time = load64(self.base, 288);
+  if (!time || (time <= wall ? wall - time > 200 : time - wall > 100))
+    return false;
+  auto packed = load64(self.base, 296);
+  std::memcpy(&pitch, &packed, 4);
+  std::memcpy(&yaw, reinterpret_cast<const uint8_t *>(&packed) + 4, 4);
+  if (!std::isfinite(pitch) || !std::isfinite(yaw) || pitch < -90 || pitch > 90 ||
+      std::fabs(yaw) > 1e6f)
+    return false;
+  // Unreal keeps ControlRotation axes in [0, 360).
+  yaw = std::fmod(yaw, 360.0f);
+  if (yaw < 0)
+    yaw += 360;
+  if (pitch < 0)
+    pitch += 360;
   return true;
 }
 void Producer::fail(uint32_t error) {
@@ -444,7 +477,17 @@ bool guarded(const Engine &e, const Controller &c, float *out) {
     return false;
   }
 }
+bool guarded_write(const Engine &e, const Controller &c, float pitch, float yaw) {
+  __try {
+    return write_controller(e, c, pitch, yaw);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
 #else
+bool guarded_write(const Engine &e, const Controller &c, float pitch, float yaw) {
+  return write_controller(e, c, pitch, yaw);
+}
 uint32_t guarded(const Engine &e, const Component &c, float *out) {
   return read_component(e, c, out);
 }
@@ -478,7 +521,7 @@ void poll_files(const std::wstring &directory, std::string_view request_text,
     table = std::move(next);
 }
 
-void on_gameplay_poll() {
+void on_gameplay_poll(std::string_view owner) {
   std::unique_lock<std::mutex> guard(lock, std::try_to_lock);
   if (!guard.owns_lock() || !table || !engine.objects)
     return;
@@ -486,6 +529,13 @@ void on_gameplay_poll() {
   if (!producer.active(wall))
     return;
   auto started = micros();
+  // Minecraft's camera drives Stellar Blade's only while this stream's run
+  // owns forwarded input; the frame's own controller update then follows it.
+  bool applied = false;
+  float pitch = 0, yaw = 0;
+  if (table->controller && !owner.empty() && owner == producer.run() &&
+      producer.look(wall, pitch, yaw))
+    applied = guarded_write(engine, *table->controller, pitch, yaw);
   uint32_t offset = 0, count = 0;
   for (const auto &c : table->components) {
     status[count++] = guarded(engine, c, payload.data() + offset);
@@ -495,7 +545,7 @@ void on_gameplay_poll() {
   bool rotated = table->controller && guarded(engine, *table->controller, rotation);
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
-                   offset, rotated ? rotation : nullptr, wall,
+                   offset, rotated ? rotation : nullptr, applied, wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)));
 }
 } // namespace stellar_pose

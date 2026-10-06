@@ -116,9 +116,18 @@ public final class AvatarStreamTest {
                     publish(map, 1, 1, 1, now, new int[] {7, 5}, payload());
                     map.putInt(AvatarStream.HEADER + AvatarStream.SLOT + 36, 1).putFloat(AvatarStream.HEADER + AvatarStream.SLOT + 44, 135);
                     var sample = stream.poll(table, now, System.nanoTime());
-                    assert sample.counter() == 1 && sample.status()[0] == 7 && sample.payload()[4] == 100 && sample.rotation()[1] == 135;
+                    assert sample.counter() == 1 && sample.status()[0] == 7 && sample.payload()[4] == 100 && sample.rotation()[1] == 135
+                            && !sample.lookApplied();
                     assert (long) RawFrameBus.LONG.getAcquire(map, 272) == 1 : "Accepted counter is acknowledged";
                     assert stream.poll(table, now, System.nanoTime()) == null : "No new slot";
+                    // Minecraft's camera goes to the adapter as one atomic word once the producer claimed the mapping.
+                    stream.look(-15, 270, now);
+                    assert map.getLong(288) == now && map.getInt(304) == 1 && map.getFloat(296) == -15 && map.getFloat(300) == 270;
+                    publish(map, 2, 2, 1, now, new int[] {7, 5}, payload());
+                    map.putInt(AvatarStream.HEADER + 2 * AvatarStream.SLOT + 36, 3);
+                    assert stream.poll(table, now, System.nanoTime()).lookApplied();
+                    stream.lookOff();
+                    assert map.getInt(304) == 0;
 
                     AvatarMesh mesh = AvatarMesh.parse("CH_P_EVE_52_TypeB", AvatarModelTest.mesh("Bip001", b -> { }));
                     var renamed = new AvatarRecording.Component("CharacterMesh0", "CH_P_EVE_52_TypeB", null,
@@ -132,15 +141,15 @@ public final class AvatarStreamTest {
                     // Component space: root turned 90 degrees about X; the child's component transform already includes it.
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, 0, 0, 1, 1, 1}, 0, values, 10, 10);
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, -100, 0, 1, 1, 1}, 0, values, 20, 10);
-                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null), model, pose);
+                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false), model, pose);
                     FloatBuffer[] palettes = {FloatBuffer.allocate(24)};
                     model.palettes(pose, new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT), palettes, true);
                     AvatarModelTest.assertPoint(palettes[0], 1, 0, 0, 100, 1, 3, 1);
-                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null), model, pose)
+                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false), model, pose)
                             : "A drawn component without bones is incomplete";
 
                     // A slot of another generation asks the caller to reload the table.
-                    publish(map, 0, 2, 2, now, new int[] {7, 5}, payload());
+                    publish(map, 0, 3, 2, now, new int[] {7, 5}, payload());
                     var newer = stream.poll(table, now, System.nanoTime());
                     assert newer.generation() == 2 && newer.payload() == null;
                     // Native statistics.

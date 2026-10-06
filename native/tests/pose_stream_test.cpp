@@ -199,6 +199,10 @@ int main() {
     assert(read_controller(engine, c, rotation) && rotation[0] == -10 && rotation[1] == 135 && rotation[2] == 0);
     c.cls = 0x1008;
     assert(!read_controller(engine, c, rotation) && rotation[1] == 0 && "Another class is never read");
+    assert(!write_controller(engine, c, 1, 2) && "Another class is never written");
+    c.cls = 0x1000;
+    assert(write_controller(engine, c, 350, 20) && read_controller(engine, c, rotation) && rotation[0] == 350 &&
+           rotation[1] == 20 && rotation[2] == 0 && "Pitch and yaw change, roll stays");
   }
 
   // End to end on a real mapping: worker installs the table, game thread publishes.
@@ -243,16 +247,53 @@ int main() {
     assert(stellar_shared::plain<float>(slot, 128 + 4 * (42 + 10)) == 0.25f && "Follower morphs follow its world transform");
     on_gameplay_poll();
     assert(stellar_shared::load64(base, 216) == 2 && stellar_shared::load32(base, 128) == (0 | 4));
+    // Minecraft's camera: applied only for the run that owns forwarded input, fresh and in range.
+    auto look = [&](float pitch, float yaw, uint64_t time, uint32_t state) {
+      uint64_t packed;
+      float pair[2] = {pitch, yaw};
+      std::memcpy(&packed, pair, 8);
+      stellar_shared::store64(base, 296, packed);
+      stellar_shared::store64(base, 288, time);
+      stellar_shared::exchange32(base, 304, state);
+    };
+    auto controller_status = [&]() {
+      auto middle = stellar_shared::load32(base, 128) & 3;
+      return stellar_shared::plain<uint32_t>(base + Header + SlotBytes * middle, 36);
+    };
+    auto rotation_now = [&](int axis) {
+      float value;
+      std::memcpy(&value, live.controller.bytes + 0x318 + 4 * axis, 4);
+      return value;
+    };
+    look(-15, -90, stellar_shared::wall_now(), 1);
+    on_gameplay_poll();
+    assert(controller_status() == RotationValid && rotation_now(1) == 135 && "No forwarded input, no camera write");
+    on_gameplay_poll(std::string(32, '9'));
+    assert(controller_status() == RotationValid && rotation_now(1) == 135 && "Another run's input cannot steer this camera");
+    on_gameplay_poll(Run);
+    assert(controller_status() == (RotationValid | LookApplied) && rotation_now(0) == 345 && rotation_now(1) == 270 &&
+           rotation_now(2) == 0 && "Applied and normalized to [0, 360)");
+    look(10, 30, stellar_shared::wall_now() - 1000, 1);
+    on_gameplay_poll(Run);
+    assert(controller_status() == RotationValid && rotation_now(1) == 270 && "A stale look is ignored");
+    look(95, 30, stellar_shared::wall_now(), 1);
+    on_gameplay_poll(Run);
+    assert(rotation_now(1) == 270 && "Pitch beyond the poles is ignored");
+    look(10, 30, stellar_shared::wall_now(), 0);
+    on_gameplay_poll(Run);
+    assert(rotation_now(1) == 270 && "An inactive look is ignored");
 #ifdef _WIN32
     // An object freed after Lua published it may fault; the read is contained.
+    auto before = stellar_shared::load64(base, 216);
     poll_files(directory.wstring(), request(now),
                components(8, reinterpret_cast<uint64_t>(live.a.bytes), 0x1000), "", now);
     on_gameplay_poll();
-    auto *third = base + Header + SlotBytes * 1;
-    assert(stellar_shared::load64(base, 216) == 3 && stellar_shared::plain<uint64_t>(third, 16) == 8);
+    auto *third = base + Header + SlotBytes * (stellar_shared::load32(base, 128) & 3);
+    assert(stellar_shared::load64(base, 216) == before + 1 && stellar_shared::plain<uint64_t>(third, 16) == 8);
     assert(stellar_shared::plain<uint32_t>(third, 64) == 7 && stellar_shared::plain<uint32_t>(third, 68) == 0);
 #endif
     // A stopped request releases the run (state 2), after which nothing is published.
+    look(0, 0, 0, 0);
     auto published = stellar_shared::load64(base, 216);
     poll_files(directory.wstring(), request(now, "stopped"), slots, "", now);
     assert(stellar_shared::load32(base, 196) == 2);
@@ -263,5 +304,5 @@ int main() {
     assert(stellar_shared::load32(base, 196) == 2);
   }
   std::filesystem::remove_all(directory);
-  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, mapping publication and release\n";
+  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, camera application, mapping publication and release\n";
 }

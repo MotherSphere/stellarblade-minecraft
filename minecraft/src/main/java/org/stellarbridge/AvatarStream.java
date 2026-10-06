@@ -31,9 +31,10 @@ final class AvatarStream implements AutoCloseable {
                  List<AvatarRecording.Component> components, int floats) { }
     /**
      * One published pose: per component status bits and its floats (world, component-space bones, morph weights),
-     * and the controller's Unreal Pitch, Yaw, Roll in degrees or null.
+     * the controller's Unreal Pitch, Yaw, Roll in degrees or null, and whether Minecraft's camera was applied to it.
      */
-    record Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation) { }
+    record Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation,
+                  boolean lookApplied) { }
 
     final String run;
     final Path path;
@@ -130,12 +131,12 @@ final class AvatarStream implements AutoCloseable {
         require(map.getInt(at + 24) == 1 && generation > 0 && count >= 1 && count <= 16 && floats >= 0 && floats <= CAPACITY,
                 "Invalid pose slot layout");
         int rotated = map.getInt(at + 36);
-        require(rotated == 0 || rotated == 1, "Invalid controller rotation status");
+        require(rotated == 0 || rotated == 1 || rotated == 3, "Invalid controller rotation status");
         if (rotated == 0) zeros(at + 40, at + 52);
         zeros(at + 52, at + 64);
         zeros(at + 64 + 4 * count, at + SLOT_HEADER);
         RawFrameBus.LONG.setRelease(map, 272, counter);
-        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null);
+        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null, false);
         require(count == table.components.size() && floats == table.floats, "Pose slot does not match its component table");
         int[] status = new int[count];
         for (int i = 0; i < count; i++) {
@@ -149,11 +150,27 @@ final class AvatarStream implements AutoCloseable {
                 "Pose producer stopped during the copy");
         for (float value : payload) require(Float.isFinite(value), "Non-finite pose value");
         float[] rotation = null;
-        if (rotated == 1) {
+        if (rotated != 0) {
             rotation = new float[] {map.getFloat(at + 40), map.getFloat(at + 44), map.getFloat(at + 48)};
             for (float value : rotation) require(Float.isFinite(value), "Non-finite controller rotation");
         }
-        return new Sample(counter, publication, generation, status, payload, rotation);
+        return new Sample(counter, publication, generation, status, payload, rotation, rotated == 3);
+    }
+
+    /**
+     * Minecraft's camera for Stellar Blade's controller (Unreal degrees), applied natively while this run owns forwarded
+     * input. Written only after the producer claimed the mapping: time at 288, Pitch and Yaw as one 64-bit word at 296,
+     * state at 304.
+     */
+    void look(float pitch, float yaw, long nowMs) {
+        if (map == null || stopped || producerPid == 0 || (int) RawFrameBus.INT.getAcquire(map, 196) != 1) return;
+        long packed = Integer.toUnsignedLong(Float.floatToRawIntBits(pitch)) | (long) Float.floatToRawIntBits(yaw) << 32;
+        RawFrameBus.LONG.setRelease(map, 296, packed);
+        RawFrameBus.LONG.setRelease(map, 288, nowMs);
+        RawFrameBus.INT.setRelease(map, 304, 1);
+    }
+    void lookOff() {
+        if (map != null && !stopped) RawFrameBus.INT.setRelease(map, 304, 0);
     }
 
     /** Producer statistics: published poses, then last, maximum and mean native read microseconds. */
@@ -277,7 +294,8 @@ final class AvatarStream implements AutoCloseable {
         for (int i = 0; i < identity.length; i++) require(map.get(32 + i) == identity[i], "Pose mapping identity changed");
         require(map.getInt(8) == 1 && map.getInt(12) == HEADER && map.getInt(16) == SLOT && map.getInt(20) == CAPACITY
                 && map.getInt(28) == TOTAL, "Pose mapping layout changed");
-        zeros(24, 28); zeros(64, 96); zeros(100, 128); zeros(132, 192); zeros(204, 208); zeros(240, 256); zeros(260, 264); zeros(280, HEADER);
+        zeros(24, 28); zeros(64, 96); zeros(100, 128); zeros(132, 192); zeros(204, 208); zeros(240, 256); zeros(260, 264);
+        zeros(280, 288); zeros(308, HEADER); // 288..308: Minecraft's camera for the controller.
     }
     private void zeros(int from, int to) throws IOException {
         for (int i = from; i < to; i++) require(map.get(i) == 0, "Pose mapping reserved bytes changed");

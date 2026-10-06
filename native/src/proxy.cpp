@@ -290,7 +290,12 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
   if (gameplay) {
     // Game thread, between frames: last frame's animation and physics are final.
     try {
-      stellar_pose::on_gameplay_poll();
+      std::string owner;
+      {
+        std::lock_guard<std::mutex> lock(state_lock);
+        owner = core.forwarding_run();
+      }
+      stellar_pose::on_gameplay_poll(owner);
     } catch (...) {
     }
   }

@@ -439,6 +439,10 @@ public:
     return {true, current_};
   }
   bool owns_remote() const { return enabled_ || release_pending_; }
+  // The run whose Minecraft input is currently forwarded, or empty.
+  std::string forwarding_run() const {
+    return enabled_ && input_ ? input_->run : std::string();
+  }
   std::optional<Ack> receipt(uint64_t wall) const {
     if (!has_receipt_ || !input_)
       return {};
