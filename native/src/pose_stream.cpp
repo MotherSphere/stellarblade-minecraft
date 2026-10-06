@@ -407,6 +407,33 @@ bool turn_controller(const Engine &engine, const Controller &c, float pitch, flo
   return true;
 }
 
+// The game world's actor manager (+0xc8) holds the actors (+0x28) and the
+// player's index (+0x3c, below the count at +0x30); an actor's stats are floats
+// at +0x118 + 4 * ESBActorStatType, live while its life state (+0x2600) is
+// Spawn (1) or Spawning (6). From the pinned build's HUD (FSBUILogicHUDHint).
+bool read_gauges(uintptr_t world, float *out) {
+  if (!world)
+    return false;
+  auto manager = at<uintptr_t>(world + 0xc8);
+  if (!manager)
+    return false;
+  auto index = at<int32_t>(manager + 0x3c), count = at<int32_t>(manager + 0x30);
+  auto actors = at<uintptr_t>(manager + 0x28);
+  if (!actors || index < 0 || index >= count)
+    return false;
+  auto actor = at<uintptr_t>(actors + 8 * uintptr_t(index));
+  auto life = actor ? at<int32_t>(actor + 0x2600) : 0;
+  if (life != 1 && life != 6)
+    return false;
+  constexpr uint32_t Stats[GaugeFloats] = {14, 15, 18, 19, 116}; // Beta, max, Burst, max, Burst unlocked.
+  for (uint32_t i = 0; i < GaugeFloats; i++) {
+    out[i] = at<float>(actor + 0x118 + 4 * uintptr_t(Stats[i]));
+    if (!std::isfinite(out[i]) || out[i] < 0 || out[i] > GaugeLimit)
+      return false;
+  }
+  return out[0] <= out[1] && out[2] <= out[3];
+}
+
 Turn follow(Follow &f, float look_pitch, float look_yaw, float yaw) {
   auto wrap = [](float degrees) { return std::remainder(degrees, 360.0f); };
   auto limit = [](float degrees) { return std::clamp(degrees, -MaxTurn, MaxTurn); };
@@ -531,7 +558,7 @@ void Producer::heartbeat(uint64_t wall) {
 bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
                        const float *rotation, bool applied,
-                       uint64_t wall, uint32_t read_us) {
+                       uint64_t wall, uint32_t read_us, const float *gauges) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -561,6 +588,11 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   self.back = previous & 3u;
   self.total_us += read_us;
   self.max_us = std::max(self.max_us, read_us);
+  // EVE's gauges in the header, beside the slots: floats at 324, then state 1
+  // (or 0 when unreadable) at 320.
+  if (gauges)
+    std::memcpy(self.base + 324, gauges, sizeof(float) * GaugeFloats);
+  exchange32(self.base, 320, gauges ? 1 : 0);
   put(self.base, 224, read_us);
   put(self.base, 228, self.max_us);
   store64(self.base, 232, self.total_us);
@@ -668,6 +700,22 @@ uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
     return 0;
   }
 }
+// A stale chain faults at worst; contained like unreadable gauges.
+bool guarded_gauges(uintptr_t world, float *out) {
+  __try {
+    return read_gauges(world, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+uintptr_t game_world() {
+  static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  __try {
+    return at<uintptr_t>(image + GameWorldRva);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0;
+  }
+}
 // A pawn freed after Lua published it faults before any call; contained.
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   __try {
@@ -677,6 +725,8 @@ bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) 
   }
 }
 #else
+bool guarded_gauges(uintptr_t world, float *out) { return read_gauges(world, out); }
+uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
 uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
   return read_effects(e, t, out);
 }
@@ -752,9 +802,12 @@ void on_gameplay_poll(std::string_view owner) {
     guarded_effects(engine, *table, payload.data() + offset);
     offset += MaxEffects * EffectFloats;
   }
+  float gauges[GaugeFloats];
+  bool gauged = guarded_gauges(game_world(), gauges);
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
                    offset, rotated ? rotation : nullptr, applied, wall,
-                   static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)));
+                   static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
+                   gauged ? gauges : nullptr);
 }
 } // namespace stellar_pose

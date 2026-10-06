@@ -84,6 +84,11 @@ public final class AvatarStreamTest {
                 new org.joml.Vector3d(1, 1, -1), new org.joml.Vector3d(1, 1, -2)) : "A swing in front of the box";
         assert AvatarCombat.sweeps(zombie, new org.joml.Vector3d(-0.5, 1, 1), new org.joml.Vector3d(-0.5, 1, -1),
                 new org.joml.Vector3d(0.5, 1, 1), new org.joml.Vector3d(0.5, 1, -1)) : "A blade crossing the box between two frames";
+        // Stellar Blade's HUD: a bar's lit columns, a gauge's cubes and quarters.
+        assert AvatarHud.lit(20, 20) == 27 && AvatarHud.lit(1, 20) == 2 && AvatarHud.lit(0, 20) == 0 && AvatarHud.lit(5, 0) == 0;
+        assert java.util.Arrays.equals(AvatarHud.cubes(450, 1000, 16), new int[] {5, 2, 1}) : "Two cubes, then a quarter of the third";
+        assert java.util.Arrays.equals(AvatarHud.cubes(130, 1600, 20), new int[] {8, 0, 2}) : "A perfect dodge's 130 Burst";
+        assert java.util.Arrays.equals(AvatarHud.cubes(1000, 1000, 16), new int[] {5, 5, 0}) && AvatarHud.cubes(0, 5000, 20)[0] == 20;
         var body = table.components().get(0);
         var face = table.components().get(1);
         assert body.recorded() && body.bones().length == 3 && body.bones()[2].equals("Bip001-Head") && body.weights() == 0;
@@ -218,6 +223,15 @@ public final class AvatarStreamTest {
                     RawFrameBus.LONG.setRelease(map, 232, 120L);
                     long[] statistics = stream.statistics();
                     assert statistics[0] == 2 && statistics[1] == 40 && statistics[2] == 90 && statistics[3] == 60;
+                    // EVE's gauges travel in the header once the adapter reads them.
+                    assert stream.gauges() == null : "Unread gauges";
+                    map.putFloat(324, 400).putFloat(328, 1000).putFloat(332, 130).putFloat(336, 1600).putFloat(340, 1);
+                    RawFrameBus.INT.setRelease(map, 320, 1);
+                    float[] gauges = stream.gauges();
+                    assert gauges != null && gauges[0] == 400 && gauges[2] == 130 && gauges[3] == 1600 && gauges[4] == 1;
+                    map.putFloat(332, 2000);
+                    assert stream.gauges() == null : "A gauge above its maximum is not shown";
+                    RawFrameBus.INT.setRelease(map, 320, 0);
                     // Native release, then reaping deletes the mapping and the request says stopped.
                     RawFrameBus.INT.setRelease(map, 196, 2);
                     try { stream.poll(table, now, System.nanoTime()); throw new AssertionError("A stopped producer must end the stream"); }

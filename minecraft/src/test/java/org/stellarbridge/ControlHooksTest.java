@@ -118,6 +118,9 @@ public final class ControlHooksTest {
         held[ControlBridge.GUARD] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x100 : "The inventory key guards (LB)";
         held[ControlBridge.GUARD] = false;
+        // Stellar Blade's HUD replaces the pinned health bar.
+        assert hasMethod(read("net/minecraft/client/gui/hud/InGameHud"), "renderHealthBar",
+                "(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/entity/player/PlayerEntity;IIIIFIIIZ)V");
         // Lock-on: the pinned outline query the locked target answers, and the camera angles toward it.
         assert hasMethod(read("net/minecraft/client/MinecraftClient"), "hasOutline", "(Lnet/minecraft/entity/Entity;)Z");
         float[] south = AvatarLock.angles(0, 0, 1), westUp = AvatarLock.angles(-1, 1, 0);

@@ -392,6 +392,34 @@ int main() {
   }
   auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
                           reinterpret_cast<uint64_t>(live.controller.bytes), reinterpret_cast<uint64_t>(live.pawn.bytes));
+  {
+    // EVE's gauges: game world -> actor manager -> player actor -> stats at +0x118 + 4 * stat.
+    std::vector<uint8_t> world(0x100), manager(0x100), actor(0x2700);
+    uintptr_t actors[2] = {0, reinterpret_cast<uintptr_t>(actor.data())};
+    auto put_ptr = [](std::vector<uint8_t> &b, size_t at, uintptr_t v) { std::memcpy(b.data() + at, &v, 8); };
+    auto put_i32 = [](std::vector<uint8_t> &b, size_t at, int32_t v) { std::memcpy(b.data() + at, &v, 4); };
+    auto stat = [&](uint32_t index, float v) { std::memcpy(actor.data() + 0x118 + 4 * index, &v, 4); };
+    put_ptr(world, 0xc8, reinterpret_cast<uintptr_t>(manager.data()));
+    put_ptr(manager, 0x28, reinterpret_cast<uintptr_t>(actors));
+    put_i32(manager, 0x30, 2);
+    put_i32(manager, 0x3c, 1);
+    put_i32(actor, 0x2600, 1);
+    stat(14, 400); stat(15, 1000); stat(18, 130); stat(19, 1600); stat(116, 1);
+    float g[GaugeFloats];
+    auto w = reinterpret_cast<uintptr_t>(world.data());
+    assert(read_gauges(w, g) && g[0] == 400 && g[1] == 1000 && g[2] == 130 && g[3] == 1600 && g[4] == 1 && "Beta, Burst and their maximums");
+    assert(!read_gauges(0, g) && "No game world, no gauges");
+    put_i32(actor, 0x2600, 3);
+    assert(!read_gauges(w, g) && "A dead or despawned player has none");
+    put_i32(actor, 0x2600, 6);
+    stat(18, 2000);
+    assert(!read_gauges(w, g) && "A gauge above its maximum is not trusted");
+    stat(18, std::nanf(""));
+    assert(!read_gauges(w, g) && "Nor a non-finite one");
+    stat(18, 130);
+    put_i32(manager, 0x3c, 2);
+    assert(!read_gauges(w, g) && "The player index stays within the actor count");
+  }
   on_gameplay_poll(); // Nothing installed yet.
   poll_files(directory.wstring(), request(now), slots, "", now);
   on_gameplay_poll();
@@ -410,6 +438,7 @@ int main() {
     assert(stellar_shared::plain<uint32_t>(slot, 36) == 1 && stellar_shared::plain<float>(slot, 44) == 135 &&
            "The controller rotation travels in the slot header");
     assert(stellar_shared::plain<float>(slot, 128 + 4 * (42 + 10)) == 0.25f && "Follower morphs follow its world transform");
+    assert(stellar_shared::load32(base, 320) == 0 && "Without the pinned game world the gauges stay unreadable");
     on_gameplay_poll();
     assert(stellar_shared::load64(base, 216) == 2 && stellar_shared::load32(base, 128) == (0 | 4));
     // Minecraft's camera: applied only for the run that owns forwarded input, fresh and in range.

@@ -94,6 +94,17 @@ bool read_controller(const Engine &, const Controller &, float *out);
 // Blade's own mouse look, if the pawn is the live object of its published
 // class and its virtual table lies in the game image.
 bool turn_controller(const Engine &, const Controller &, float pitch, float yaw);
+
+// EVE's Beta and Burst gauges, kept by Stellar Blade only in its native player
+// actor (FSBActor, not a UObject). world is the pinned build's game world
+// pointer (the global at GameWorldRva). Writes Beta, its maximum, Burst, its
+// maximum and the Burst unlock stat; false unless the player actor is spawned
+// and every value is finite, within 0..GaugeLimit, the gauges within their
+// maximums.
+constexpr uintptr_t GameWorldRva = 0x7032570;
+constexpr uint32_t GaugeFloats = 5;
+constexpr float GaugeLimit = 100000;
+bool read_gauges(uintptr_t world, float *out);
 // Look input for one gameplay poll: Minecraft's camera motion since the last
 // poll, plus for yaw a share of the remaining gap to the controller's rotation,
 // so the game's camera follows like it follows a mouse. The controller's pitch
@@ -131,7 +142,8 @@ public:
   const std::string &run() const;
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
-               bool applied, uint64_t wall, uint32_t read_us);
+               bool applied, uint64_t wall, uint32_t read_us,
+               const float *gauges = nullptr);
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
   bool look(uint64_t wall, float &pitch, float &yaw) const;

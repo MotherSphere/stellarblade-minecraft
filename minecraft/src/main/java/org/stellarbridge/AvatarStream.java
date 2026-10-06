@@ -38,7 +38,7 @@ final class AvatarStream implements AutoCloseable {
         }
     }
     /** Up to MAX_EFFECTS active effects per pose: an index into Table.effects, then a world transform (11 floats). */
-    static final int MAX_EFFECTS = 8, EFFECT_FLOATS = 11;
+    static final int MAX_EFFECTS = 8, EFFECT_FLOATS = 11, GAUGES = 5;
     /** An active effect of a pose: its asset name and Unreal world position. */
     record Effect(String name, double x, double y, double z) { }
     /** A material parameter the game animates (scalar: 1 float, vector: 4) on a component's material slot. */
@@ -186,6 +186,20 @@ final class AvatarStream implements AutoCloseable {
     }
     void lookOff() {
         if (map != null && !stopped) RawFrameBus.INT.setRelease(map, 304, 0);
+    }
+
+    /**
+     * EVE's gauges from the header (state 1 at 320, floats at 324): Beta, its maximum, Burst, its maximum and the Burst
+     * unlock stat, or null when the adapter could not read them. Checked as the adapter checks them.
+     */
+    float[] gauges() {
+        if (map == null || stopped || (int) RawFrameBus.INT.getAcquire(map, 320) != 1) return null;
+        float[] values = new float[GAUGES];
+        for (int i = 0; i < GAUGES; i++) {
+            values[i] = map.getFloat(324 + 4 * i);
+            if (!Float.isFinite(values[i]) || values[i] < 0 || values[i] > 100000) return null;
+        }
+        return values[0] <= values[1] && values[2] <= values[3] ? values : null;
     }
 
     /** Producer statistics: published poses, then last, maximum and mean native read microseconds. */
@@ -380,7 +394,7 @@ final class AvatarStream implements AutoCloseable {
         require(map.getInt(8) == 1 && map.getInt(12) == HEADER && map.getInt(16) == SLOT && map.getInt(20) == CAPACITY
                 && map.getInt(28) == TOTAL, "Pose mapping layout changed");
         zeros(24, 28); zeros(64, 96); zeros(100, 128); zeros(132, 192); zeros(204, 208); zeros(240, 256); zeros(260, 264);
-        zeros(280, 288); zeros(308, HEADER); // 288..308: Minecraft's camera for the controller.
+        zeros(280, 288); zeros(308, 320); zeros(344, HEADER); // 288..308: Minecraft's camera; 320..344: EVE's gauges.
     }
     private void zeros(int from, int to) throws IOException {
         for (int i = from; i < to; i++) require(map.get(i) == 0, "Pose mapping reserved bytes changed");

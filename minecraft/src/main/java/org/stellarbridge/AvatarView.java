@@ -458,6 +458,15 @@ public final class AvatarView {
         return current == null ? null : current.rotation;
     }
 
+    /** Draws Stellar Blade's health bar and gauges in place of the hearts while EVE replaces the player; false otherwise. */
+    public static boolean drawsHud(net.minecraft.client.gui.DrawContext context, Entity player, int x, int y, int lines, float maxHealth,
+                                   int health, int shown, int absorption, boolean blinking) {
+        Live current = live;
+        if (!replaces(player)) return false;
+        AvatarHud.render(context, x, y, lines, maxHealth, health, shown, absorption, blinking, current.stream.gauges());
+        return true;
+    }
+
     /** True while the live avatar stands in for the local player at the bridged position. */
     public static boolean replaces(Entity entity) {
         Live current = live;
@@ -481,7 +490,12 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + AvatarCombat.status();
+                + AvatarCombat.status() + gaugeStatus(current.stream.gauges());
+    }
+
+    private static String gaugeStatus(float[] gauges) {
+        return gauges == null ? " Gauges not read." : String.format(" Gauges: Beta %.0f/%.0f, Burst %.0f/%.0f%s.", gauges[0], gauges[1], gauges[2],
+                gauges[3], gauges[4] > 0 ? "" : " (locked)");
     }
 
     /** Stops the live stream; a null reason is the user's own off. */
