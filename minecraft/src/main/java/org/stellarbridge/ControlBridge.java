@@ -11,11 +11,23 @@ import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import org.lwjgl.glfw.GLFW;
 
-/** Minecraft owns menus and hardware events; only this explicit session forwards controller states. */
+/**
+ * Minecraft owns menus and hardware events; only this explicit session forwards controller states. In EVE mode,
+ * Stellar Blade's controller layout: movement on the left stick, jump A, sneak B (dodge), sprint L3, attack X (light),
+ * use Y (heavy), the inventory key LB (block, parry) and hotbar keys 1 to 4 the Beta skills, which hold LB and then
+ * press X, Y, B or A; Minecraft's own inventory and hotbar 1 to 4 wait for build mode.
+ */
 public final class ControlBridge {
-    private static final int[] BUTTON = {0, 0, 0, 0, 0x1000, 0x2000, 0x40, 0x4000, 0x100,
-            0x8000, 0x200, 0x10000, 0x20000, 0x80, 0x1};
-    private static final boolean[] held = new boolean[15];
+    private static final int LB = 0x100, X = 0x4000, Y = 0x8000, A = 0x1000, B = 0x2000;
+    // Per binding index: the movement keys (0-3) steer; skills (16-19) are sequenced by buttons().
+    private static final int[] BUTTON = {0, 0, 0, 0, A, B, 0x40, X, Y,
+            Y, 0x200, 0x10000, 0x20000, 0x80, 0x1, LB, 0, 0, 0, 0};
+    static final int SKILLS = 16;
+    private static final int[] SKILL_FACE = {X, Y, B, A};
+    static final long SKILL_DELAY = 40_000_000L; // LB leads a skill's face button by 40 ms, as a player's thumb would.
+    private static final boolean[] held = new boolean[20];
+    private static final long[] heldSince = new long[20];
+    private static final boolean[] wasHeld = new boolean[20];
     private static final Set<Integer> scanCodes = new HashSet<>();
     private static final Set<InputUtil.Key> blocked = new HashSet<>();
     private static KeyBinding mode;
@@ -111,7 +123,31 @@ public final class ControlBridge {
         var options = MinecraftClient.getInstance().options;
         return new KeyBinding[] {options.forwardKey, options.backKey, options.leftKey, options.rightKey,
                 options.jumpKey, options.sneakKey, options.sprintKey, options.attackKey, options.useKey,
-                extra[0], extra[1], extra[2], extra[3], extra[4], extra[5]};
+                extra[0], extra[1], extra[2], extra[3], extra[4], extra[5], options.inventoryKey,
+                options.hotbarKeys[0], options.hotbarKeys[1], options.hotbarKeys[2], options.hotbarKeys[3]};
+    }
+
+    /**
+     * Controller buttons for held bindings (indices as bindings()) held since the given nanosecond times. A skill holds
+     * LB and adds its face button once held for SKILL_DELAY.
+     */
+    static int buttons(boolean[] held, long[] since, long nowNanos) {
+        int mask = 0;
+        for (int i = 4; i < SKILLS; i++) if (held[i]) mask |= BUTTON[i];
+        for (int k = 0; k < SKILL_FACE.length; k++) {
+            if (!held[SKILLS + k]) continue;
+            mask |= LB;
+            if (nowNanos - since[SKILLS + k] >= SKILL_DELAY) mask |= SKILL_FACE[k];
+        }
+        return mask;
+    }
+
+    /** In EVE mode, Minecraft's inventory key and hotbar 1 to 4 drive EVE: drop their queued Minecraft presses. */
+    public static void consumeEveKeys() {
+        if (state == null || build) return;
+        var options = MinecraftClient.getInstance().options;
+        while (options.inventoryKey.wasPressed()) { }
+        for (int k = 0; k < SKILL_FACE.length; k++) while (options.hotbarKeys[k].wasPressed()) { }
     }
 
     public static void keyboard(long window, int key, int scan, int action, int modifiers) {
@@ -210,13 +246,19 @@ public final class ControlBridge {
     private static void apply(long time) {
         if (!frameReady()) { suspend(); return; }
         state.axes(axes());
-        for (int i = 4; i < held.length; i++) state.button(BUTTON[i], !build && held[i], time);
+        long nanos = System.nanoTime();
+        for (int i = 0; i < held.length; i++) {
+            if (held[i] && !wasHeld[i]) heldSince[i] = nanos;
+            wasHeld[i] = held[i];
+        }
+        int mask = build ? 0 : buttons(held, heldSince, nanos);
+        for (int bit : new int[] {A, B, 0x40, X, Y, 0x200, 0x10000, 0x20000, 0x80, 0x1, LB}) state.button(bit, (mask & bit) != 0, time);
     }
 
     /** Each avatar render frame: refresh the steering and publish at most every 20 ms, the adapter's read period. */
     static void avatarFrame() {
         if (state == null || !avatar || !state.active() || !windowOwned()) return;
-        state.axes(axes());
+        apply(System.currentTimeMillis()); // Also presses a skill's face button once its delay has passed.
         if (System.nanoTime() - publishedNanos >= 20_000_000L) publish();
     }
 

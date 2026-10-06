@@ -20,7 +20,7 @@ public final class ControlHooksTest {
         ClassNode client = read("net/minecraft/client/MinecraftClient");
         for (String[] method : new String[][] {{"setScreen", "(Lnet/minecraft/client/gui/screen/Screen;)V"},
                 {"setOverlay", "(Lnet/minecraft/client/gui/screen/Overlay;)V"}, {"onWindowFocusChanged", "(Z)V"},
-                {"doAttack", "()Z"}, {"doItemUse", "()V"}, {"handleBlockBreaking", "(Z)V"}})
+                {"doAttack", "()Z"}, {"doItemUse", "()V"}, {"handleBlockBreaking", "(Z)V"}, {"handleInputEvents", "()V"}})
             assert hasMethod(client, method[0], method[1]);
         ClassNode keyboard = read("net/minecraft/client/Keyboard"), mouse = read("net/minecraft/client/Mouse");
         assert hasMethod(keyboard, "onKey", "(JIIII)V") && hasMethod(mouse, "onMouseButton", "(JIII)V");
@@ -81,7 +81,23 @@ public final class ControlHooksTest {
                 "(Ljava/lang/String;Ljava/lang/String;J)Lorg/stellarbridge/CaptureProjection$CameraPose;") == 1;
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setYaw", "(F)V") == 1;
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setPitch", "(F)V") == 1;
-        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery and narrow movement authority");
+        // EVE combat layout: use is the heavy attack (Y), the inventory key blocks (LB), hotbar 1 holds LB then adds X.
+        boolean[] held = new boolean[20];
+        long[] since = new long[20];
+        held[8] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x8000 : "Use (right click) is Y, not LB";
+        held[8] = false;
+        held[15] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x100 : "The inventory key is LB";
+        held[15] = false;
+        held[ControlBridge.SKILLS] = true;
+        since[ControlBridge.SKILLS] = 1_000;
+        assert ControlBridge.buttons(held, since, 1_000) == 0x100 : "A skill first holds LB";
+        assert ControlBridge.buttons(held, since, 1_000 + ControlBridge.SKILL_DELAY) == (0x100 | 0x4000) : "then adds its face button";
+        held[ControlBridge.SKILLS] = false;
+        held[ControlBridge.SKILLS + 3] = true;
+        assert ControlBridge.buttons(held, since, ControlBridge.SKILL_DELAY) == (0x100 | 0x1000) : "Skill 4 is LB with A";
+        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery, narrow movement authority and EVE's combat layout");
     }
     private static boolean hasMethod(ClassNode node, String name, String descriptor) {
         return node.methods.stream().anyMatch(method -> method.name.equals(name) && method.desc.equals(descriptor));

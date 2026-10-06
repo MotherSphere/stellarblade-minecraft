@@ -34,7 +34,17 @@ The patch is fixed around the starting anchor: **9 × 6 × 9 blocks**, at most 2
 | `/stellaravatar play` | Experimental: EVE drawn by Minecraft from her streamed pose, Minecraft camera, no capture |
 | `/stellaravatar live`, `/stellaravatar status`, `/stellaravatar off` | Avatar without input forwarding, stream statistics, stop |
 
-EVE mode maps Minecraft movement, jump, sneak, sprint, attack and use bindings to left stick, A, B, L3, X and LB. Six extra controller buttons (Y, RB, LT, RT, R3, D-pad up) are initially unbound. Their actions follow Stellar Blade's controller settings. Build mode keeps camera look, neutralizes EVE's actions and restores normal Minecraft clicks and sneak interactions. Inventory, chat and hotbar remain Minecraft-owned.
+EVE mode follows Stellar Blade's default controller layout:
+
+| Minecraft binding (default key) | Controller | Stellar Blade |
+|---|---|---|
+| Movement (W, A, S, D) | Left stick | Move |
+| Jump (Space), Sneak (Shift), Sprint (Ctrl) | A, B, L3 | Jump, dodge, sprint |
+| Attack (left click), Use (right click) | X, Y | Light attack, heavy attack |
+| Inventory (E) | LB | Block, parry |
+| Hotbar 1, 2, 3, 4 | LB, then X, Y, B or A 40 ms later | Beta skills |
+
+Six extra controller buttons (Y, RB, LT, RT, R3, D-pad up) are initially unbound. Actions follow Stellar Blade's controller settings. In EVE mode Minecraft's own inventory and hotbar 1–4 wait for build mode. Build mode keeps camera look, neutralizes EVE's actions and restores normal Minecraft clicks, sneak interactions, inventory and hotbar. Chat and the other hotbar slots remain Minecraft-owned.
 
 Lost focus, menus, stale frames, native pause or an invalid context neutralize forwarded controls. Held keys must be released before control resumes.
 
