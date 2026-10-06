@@ -22,10 +22,12 @@ import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.world.ChunkTicketType;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -78,7 +80,7 @@ public final class StellarBridge implements ClientModInitializer {
 
     private static int start(ServerCommandSource source) {
         ServerPlayerEntity player = source.getPlayer();
-        if (!(source.getServer() instanceof IntegratedServer server) || !eligible(server, player))
+        if (!(source.getServer() instanceof IntegratedServer server) || !eligible(server, player) || !player.isAlive())
             return error(source, "Use a private, non-LAN singleplayer world in creative or survival as its local owner.");
         if (session != null) return error(source, "A bridge session is already active. Use /stellar stop first.");
         if (!player.isOnGround() || Math.abs(player.getY() - Math.floor(player.getY())) > 0.05)
@@ -102,7 +104,7 @@ public final class StellarBridge implements ClientModInitializer {
     private static boolean eligible(IntegratedServer server, ServerPlayerEntity player) {
         return player != null && MinecraftClient.getInstance().getServer() == server && !server.isRemote()
                 && server.getPlayerManager().getCurrentPlayerCount() == 1 && server.isHost(player.getGameProfile())
-                && !player.isSpectator() && player.isAlive() && !player.hasVehicle();
+                && !player.isSpectator() && !player.hasVehicle();
     }
 
     private static int stopCommand(ServerCommandSource source) {
@@ -143,13 +145,22 @@ public final class StellarBridge implements ClientModInitializer {
         AvatarCombat.restoreTime(false);
         Session current = session;
         if (current == null || current.server != server) return;
-        if (!eligible(current.server, current.player) || current.player.getServerWorld() != current.world
-                || current.server.getPlayerManager().getPlayer(current.player.getUuid()) != current.player) {
+        ServerPlayerEntity live = current.server.getPlayerManager().getPlayer(current.player.getUuid());
+        // A death in Minecraft keeps the link and Stellar Blade's lab: the player respawned in the session's world returns
+        // to the anchor. Any other replacement (another dimension, hardcore spectator, the End's exit) ends the session.
+        if (live != null && live != current.player && live.isAlive() && current.player.isDead()
+                && live.getServerWorld() == current.world && eligible(current.server, live)) current.revive(live);
+        boolean dead = !current.player.isAlive();
+        if (live != current.player || !eligible(current.server, current.player) || !dead && current.player.getServerWorld() != current.world) {
             stop("The original private session is no longer available");
             return;
         }
         try {
             if (++current.ticks % 4 == 0) current.publish();
+            if (dead) { // The terrain heartbeat goes on; EVE drives nobody until the respawn.
+                control = null;
+                return;
+            }
             BridgeProtocol.Eve eve = current.gate.accept(current.files.readEve(current.id), current.revision, now());
             if (eve == null) {
                 control = null;
@@ -272,7 +283,7 @@ public final class StellarBridge implements ClientModInitializer {
 
     private static final class Session {
         final IntegratedServer server;
-        final ServerPlayerEntity player;
+        ServerPlayerEntity player; // Replaced by the respawned player after a death.
         final ServerWorld world;
         final BridgeFiles files;
         final String id = UUID.randomUUID().toString().replace("-", "");
@@ -297,7 +308,18 @@ public final class StellarBridge implements ClientModInitializer {
                 throw new IllegalArgumentException("The starting block must have a full-height collision floor");
         }
 
+        void revive(ServerPlayerEntity respawned) {
+            player = respawned;
+            respawned.teleport(world, origin.x, origin.y, origin.z, respawned.getYaw(), respawned.getPitch());
+            // Vanilla recentres chunk loading and sending only from move packets, which the bridge cancels.
+            world.getChunkManager().updatePosition(respawned);
+            LOG.info("Bridge kept through a death: the respawned player returns to the anchor");
+        }
+
         void publish() throws IOException {
+            // The patch must stay loaded without the player entity: a dead player leaves the world after a second. The
+            // ticket lasts 5 ticks and is renewed every 4, so it lapses by itself once the session ends.
+            world.getChunkManager().addTicket(ChunkTicketType.POST_TELEPORT, new ChunkPos(BlockPos.ofFloored(origin)), 1, player.getId());
             List<VoxelShape> shapes = new ArrayList<>();
             int x0 = MathHelper.floor(origin.x), y0 = MathHelper.floor(origin.y), z0 = MathHelper.floor(origin.z);
             // Include one neighboring block for collision shapes that protrude across the fixed patch boundary.

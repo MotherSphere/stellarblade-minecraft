@@ -61,7 +61,10 @@ public final class AvatarLock {
         }
         double seconds = lastNanos == 0 ? 0 : Math.min((nanos - lastNanos) / 1e9, 0.1);
         lastNanos = nanos;
-        Vec3d toward = target.getBoundingBox().getCenter().subtract(player.getEyePos());
+        // Where both are drawn this frame, not where the last tick left them: tick positions step 20 times a second.
+        float delta = client.getRenderTickCounter().getTickDelta(true);
+        Vec3d feet = AvatarView.cameraFeet(), eye = feet != null ? feet.add(0, player.getStandingEyeHeight(), 0) : player.getCameraPosVec(delta);
+        Vec3d toward = target.getLerpedPos(delta).add(0, target.getHeight() / 2, 0).subtract(eye);
         float[] wanted = angles(toward.x, toward.y, toward.z);
         double share = 1 - Math.exp(-TURN * seconds);
         double yaw = MathHelper.wrapDegrees(wanted[0] - player.getYaw()) * share;
