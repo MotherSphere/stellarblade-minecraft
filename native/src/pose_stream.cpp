@@ -223,6 +223,38 @@ std::optional<Table> parse_components(std::string_view text) {
     floats += q.floats;
     table.parameters.push_back(q);
   }
+  if (lines.at >= lines.rows.size())
+    return {};
+  // EFFECTS none, or EFFECTS children asset template activeByte activeMask niagaraClass particleClass count
+  auto e = split(lines.rows[lines.at++]);
+  if (e.size() == 9 && e[0] == "EFFECTS") {
+    Effects fx;
+    uint64_t children = 0, asset = 0, templ = 0, byte = 0, mask = 0, assets = 0;
+    auto field = [](std::string_view s, uint64_t &out) { return s.size() == 8 && hex32(s, out) && out && out < 0x4000; };
+    if (!field(e[1], children) || children % 8 || !field(e[2], asset) || asset % 8 || !field(e[3], templ) ||
+        templ % 8 || !field(e[4], byte) || e[5].size() != 2 || !hex32(e[5], mask) || !mask ||
+        !address(e[6], fx.niagara) || !address(e[7], fx.particle) || !number(e[8], assets) ||
+        assets > MaxEffectAssets)
+      return {};
+    fx.children = uint32_t(children);
+    fx.asset = uint32_t(asset);
+    fx.templ = uint32_t(templ);
+    fx.active_byte = uint32_t(byte);
+    fx.active_mask = uint8_t(mask);
+    for (uint32_t i = 1; i <= assets; i++) {
+      if (lines.at >= lines.rows.size())
+        return {};
+      auto a = split(lines.rows[lines.at++]);
+      uint64_t index = 0, object = 0;
+      if (a.size() != 4 || a[0] != "EFFECT" || !number(a[1], index) || index != i ||
+          !address(a[2], object) || a[3].empty())
+        return {};
+      fx.assets.push_back(object);
+    }
+    floats += MaxEffects * EffectFloats;
+    table.effects = std::move(fx);
+  } else if (e.size() != 2 || e[0] != "EFFECTS" || e[1] != "none")
+    return {};
   if (floats > Capacity || !lines.end(table.generation))
     return {};
   table.floats = static_cast<uint32_t>(floats);
@@ -292,6 +324,43 @@ bool read_parameter(const Engine &engine, const Parameter &q, float *out) {
       return false;
   std::memcpy(out, values, sizeof(float) * q.floats);
   return true;
+}
+
+uint32_t read_effects(const Engine &engine, const Table &table, float *out) {
+  for (uint32_t r = 0; r < MaxEffects; r++) {
+    std::memset(out + r * EffectFloats, 0, sizeof(float) * EffectFloats);
+    out[r * EffectFloats] = -1;
+  }
+  if (!table.effects || !engine.objects)
+    return 0;
+  const auto &fx = *table.effects;
+  uint32_t count = 0;
+  for (const auto &c : table.components) {
+    auto parent = static_cast<uintptr_t>(c.object);
+    if (!alive(engine.objects, parent) || at<uint64_t>(parent + ClassPrivate) != c.cls)
+      continue;
+    auto data = at<uintptr_t>(parent + fx.children);
+    auto children = at<int32_t>(parent + fx.children + 8);
+    if (!data || children <= 0 || children > 256)
+      continue;
+    for (int32_t k = 0; k < children && count < MaxEffects; k++) {
+      auto child = at<uintptr_t>(data + 8 * uintptr_t(k));
+      if (!child || !alive(engine.objects, child))
+        continue;
+      auto cls = at<uint64_t>(child + ClassPrivate);
+      if ((cls != fx.niagara && cls != fx.particle) ||
+          !(at<uint8_t>(child + fx.active_byte) & fx.active_mask))
+        continue;
+      auto asset = at<uint64_t>(child + (cls == fx.niagara ? fx.asset : fx.templ));
+      auto found = std::find(fx.assets.begin(), fx.assets.end(), asset);
+      if (!asset || found == fx.assets.end())
+        continue;
+      out[count * EffectFloats] = float(found - fx.assets.begin());
+      transform(child + WorldTransform, out + count * EffectFloats + 1);
+      count++;
+    }
+  }
+  return count;
 }
 
 bool read_controller(const Engine &engine, const Controller &c, float *out) {
@@ -588,6 +657,17 @@ bool guarded(const Engine &e, const Controller &c, float *out) {
     return false;
   }
 }
+uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
+  __try {
+    return read_effects(e, t, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    for (uint32_t r = 0; r < MaxEffects; r++) {
+      std::memset(out + r * EffectFloats, 0, sizeof(float) * EffectFloats);
+      out[r * EffectFloats] = -1;
+    }
+    return 0;
+  }
+}
 // A pawn freed after Lua published it faults before any call; contained.
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   __try {
@@ -597,6 +677,9 @@ bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) 
   }
 }
 #else
+uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
+  return read_effects(e, t, out);
+}
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   return turn_controller(e, c, pitch, yaw);
 }
@@ -664,6 +747,10 @@ void on_gameplay_poll(std::string_view owner) {
   for (const auto &q : table->parameters) {
     guarded(engine, q, payload.data() + offset);
     offset += q.floats;
+  }
+  if (table->effects) {
+    guarded_effects(engine, *table, payload.data() + offset);
+    offset += MaxEffects * EffectFloats;
   }
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),

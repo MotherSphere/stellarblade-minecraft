@@ -186,11 +186,11 @@ function Adapter.new()
         return found
     end
     -- Active particle effects (Cascade and Niagara components) on EVE: owned by her actor, or pooled by the world and
-    -- attached to her skeletal components (up to three levels down). Asset, class, attach parent and socket. A
-    -- diagnostic for which of the game's show effects play, and where; nothing is drawn from it yet.
+    -- attached to her skeletal components (up to three levels down). Returns log labels (asset, class, attach parent,
+    -- socket) and the effect assets seen, as {name=, object=}.
     local EFFECT_CLASSES={'/Script/Engine.ParticleSystemComponent','/Script/Niagara.NiagaraComponent'}
     function engine.effects(list)
-        local found,seen={},{}
+        local found,seen,assets={},{},{}
         local function note(component)
             local name=text(valid(component:GetClass()):GetFName())
             if not (name:find('Particle',1,true) or name:find('Niagara',1,true)) or seen[component:GetAddress()] then return end
@@ -201,6 +201,7 @@ function Adapter.new()
             local parent=valid(component:GetAttachParent())
             found[#found+1]=string.format('%s[%s]@%s:%s',ok and asset and text(asset:GetFName()) or text(component:GetFName()),name,
                 parent and text(parent:GetFName()) or '-',text(component:GetAttachSocketName()))
+            if ok and asset then assets[#assets+1]={name=text(asset:GetFName()),object=asset:GetAddress()} end
         end
         local function walk(component,depth)
             each(component.AttachChildren,function(_,child)
@@ -220,7 +221,41 @@ function Adapter.new()
             end) end
         end
         table.sort(found)
-        return found
+        return found,assets
+    end
+    -- What the native adapter needs to read attached effects each frame: USceneComponent::AttachChildren,
+    -- UNiagaraComponent::Asset and UParticleSystemComponent::Template offsets, UActorComponent::bIsActive's byte and
+    -- mask, and both component classes. Found by reflection on the classes, walking up to their supers.
+    local function property(path,name)
+        local class=valid(StaticFindObject(path))
+        while class do
+            local found
+            class:ForEachProperty(function(p) if text(p:GetFName())==name then found=p end end)
+            if found then return found end
+            class=valid(class:GetSuperStruct())
+        end
+        error(path..' has no property '..name)
+    end
+    function engine.effect_layout()
+        local active=property('/Script/Engine.ActorComponent','bIsActive')
+        return {children=property('/Script/Engine.SceneComponent','AttachChildren'):GetOffset_Internal(),
+            asset=property('/Script/Niagara.NiagaraComponent','Asset'):GetOffset_Internal(),
+            template=property('/Script/Engine.ParticleSystemComponent','Template'):GetOffset_Internal(),
+            active_byte=active:GetOffset_Internal()+active:GetByteOffset(),active_mask=active:GetByteMask(),
+            niagara=valid(StaticFindObject(EFFECT_CLASSES[2])):GetAddress(),particle=valid(StaticFindObject(EFFECT_CLASSES[1])):GetAddress()}
+    end
+    -- Effect assets loaded right now among the ones Minecraft knows how to draw, as {name=, object=}.
+    local KNOWN_EFFECTS={'/Game/Art/FX/Char/PC/Skill/Attack/NS_A_ParTrail_SwordDefaultAtk_01.NS_A_ParTrail_SwordDefaultAtk_01',
+        '/Game/Art/FX/Char/PC/WeaponFX/NS_A_Weapon_Signal_Sword.NS_A_Weapon_Signal_Sword',
+        '/Game/Art/FX/Char/PC/WeaponFX/NS_A_Weapon_Electric_01.NS_A_Weapon_Electric_01',
+        '/Game/Art/FX/Char/PC/WeaponFX/NS_A_WeaponFX_SwordFlame_01.NS_A_WeaponFX_SwordFlame_01'}
+    function engine.known_effects()
+        local loaded={}
+        for _,path in ipairs(KNOWN_EFFECTS) do
+            local asset=valid(StaticFindObject(path))
+            if asset then loaded[#loaded+1]={name=text(asset:GetFName()),object=asset:GetAddress()} end
+        end
+        return loaded
     end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)

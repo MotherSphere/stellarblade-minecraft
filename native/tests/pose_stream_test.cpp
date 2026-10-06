@@ -90,7 +90,7 @@ static std::string hex(uint64_t value) {
   return text;
 }
 static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint64_t controller = 0,
-                              uint64_t pawn = 0x40, std::string parameters = "PARAMETERS 0\n") {
+                              uint64_t pawn = 0x40, std::string parameters = "PARAMETERS 0\nEFFECTS none\n") {
   return "SBMC_POSE_COMPONENTS 1\nRUN " + Run + "\nGENERATION " +
          std::to_string(generation) + "\nSESSION none\nANCHOR 1 2 3 100\n" +
          (controller ? "CONTROLLER " + hex(controller) + " 0000000000001000 00000318 " + hex(pawn) +
@@ -141,10 +141,25 @@ int main() {
   assert(broken("ANCHOR 1 2 3 100", "ANCHOR 1 2"));
   assert(broken("CONTROLLER none", "CONTROLLER"));
   assert(broken("PARAMETERS 0\n", "") && "The parameter count is required");
+  assert(broken("EFFECTS none\n", "") && "The effects line is required");
+  {
+    // Effects: offsets, mask, both classes, then the assets Minecraft draws; records follow the parameters.
+    std::string fx = "PARAMETERS 0\nEFFECTS 00000300 00000200 00000208 00000088 10 0000000000001000 0000000000001008 2\n"
+                     "EFFECT 1 0000000000abc000 NS_A_ParTrail_SwordDefaultAtk_01\nEFFECT 2 0000000000abd000 NS_A_Weapon_Signal_Sword\n";
+    auto with = parse_components(components(4, 0x10, 0x20, 0, 0x40, fx));
+    assert(with && with->effects && with->effects->children == 0x300 && with->effects->active_mask == 0x10 &&
+           with->effects->assets.size() == 2 && with->floats == (10 + 30 + 2) + (10 + 2) + MaxEffects * EffectFloats);
+    for (auto bad : {std::make_pair(" 00000300 ", " 00000304 "), std::make_pair(" 10 ", " 00 "), std::make_pair("EFFECT 2 ", "EFFECT 3 "),
+                     std::make_pair(" 2\nEFFECT 1", " 3\nEFFECT 1")}) {
+      auto text = components(4, 0x10, 0x20, 0, 0x40, fx);
+      text.replace(text.find(bad.first), std::string(bad.first).size(), bad.second);
+      assert(!parse_components(text) && "Effects carry aligned offsets, a mask and exactly their assets");
+    }
+  }
   {
     // Material parameters: a scalar and a vector of the face's dynamic material instance, after the components.
     std::string two = "PARAMETERS 2\nPARAMETER 1 2 Edge Opacity 0000000000000050 0000000000003000 00000100 1 77 1\n"
-                      "PARAMETER 2 2 Edge Emissive_Color 0000000000000050 0000000000003000 00000110 0 78 4\n";
+                      "PARAMETER 2 2 Edge Emissive_Color 0000000000000050 0000000000003000 00000110 0 78 4\nEFFECTS none\n";
     auto with = parse_components(components(4, 0x10, 0x20, 0, 0x40, two));
     assert(with && with->parameters.size() == 2 && with->parameters[0].offset == 0x100 && with->parameters[0].index == 1 &&
            with->parameters[0].name == 77 && with->parameters[1].floats == 4 && with->floats == (10 + 30 + 2) + (10 + 2) + 5);
@@ -298,6 +313,40 @@ int main() {
     put_array(0x110, vectors, 0);
   }
   {
+    // An active Niagara component attached to a published component (the pawn and controller objects stand in).
+    Table t;
+    t.components.push_back(Component{reinterpret_cast<uint64_t>(fake.pawn.bytes), 0x1000, 0x2000, 0, 0});
+    Effects fx;
+    fx.children = 0x300;
+    fx.asset = 0x240; // Clear of the world transform at 0x1f0.
+    fx.templ = 0x248;
+    fx.active_byte = 0x88;
+    fx.active_mask = 0x10;
+    fx.niagara = 0x1000;
+    fx.particle = 0x1008;
+    fx.assets = {0xabc000, 0xabd000};
+    t.effects = fx;
+    static uintptr_t children[1];
+    children[0] = reinterpret_cast<uintptr_t>(fake.controller.bytes);
+    auto list = reinterpret_cast<uintptr_t>(children);
+    int32_t one = 1;
+    std::memcpy(fake.pawn.bytes + 0x300, &list, 8);
+    std::memcpy(fake.pawn.bytes + 0x308, &one, 4);
+    uint64_t signal = 0xabd000;
+    std::memcpy(fake.controller.bytes + 0x240, &signal, 8);
+    fake.controller.bytes[0x88] = 0x10;
+    std::vector<float> records(MaxEffects * EffectFloats, 7);
+    assert(read_effects(engine, t, records.data()) == 1 && records[0] == 1 && records[5] == 100 && records[7] == 300 &&
+           records[EffectFloats] == -1 && "The signal plays at its component's world transform");
+    fake.controller.bytes[0x88] = 0;
+    assert(read_effects(engine, t, records.data()) == 0 && records[0] == -1 && "An inactive component is no effect");
+    fake.controller.bytes[0x88] = 0x10;
+    uint64_t other = 0xabe000;
+    std::memcpy(fake.controller.bytes + 0x240, &other, 8);
+    assert(read_effects(engine, t, records.data()) == 0 && "An asset Minecraft does not draw is skipped");
+    std::memset(fake.pawn.bytes + 0x300, 0, 16);
+  }
+  {
     // Minecraft's motion goes forward; 15 % of the remaining yaw gap closes per poll.
     Follow f;
     auto t = follow(f, 10, 100, 90);
@@ -427,5 +476,5 @@ int main() {
     assert(stellar_shared::load32(base, 196) == 2);
   }
   std::filesystem::remove_all(directory);
-  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, material parameters, camera input, mapping publication and release\n";
+  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, material parameters, effects, camera input, mapping publication and release\n";
 }

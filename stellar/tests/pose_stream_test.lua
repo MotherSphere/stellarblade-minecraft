@@ -88,6 +88,17 @@ logging.tick(); logging.tick()
 assert(#logged==3 and logged[1]=='EVE effects: NS_A_WeaponFX_SwordFlame_01@SBSkeletalMeshComponent_1:FX_WeaponFX_Begin'
     and logged[2]=='EVE effects: none' and logged[3]:find('unavailable: ',1,true),table.concat(logged,'\n'))
 engine.effects=nil
+-- Effects: the reading layout and the known assets, then assets seen active, follow the parameters.
+engine.effect_layout=function() return {children=0x130,asset=0x6a8,template=0x4b0,active_byte=0x88,active_mask=0x10,
+    niagara=0x7f000000b000,particle=0x7f000000c000} end
+engine.known_effects=function() return {{name='NS_A_Weapon_Signal_Sword',object=0x7f000000d000}} end
+engine.effects=function() return {'flame'},{{name='NS_A_WeaponFX_SwordFlame_01',object=0x7f000000e000},{name='bad name',object=0x7f000000f000}} end
+local fx=Stream.new(engine,directory,function() return now end,function() end,function() return place end)
+RUN=string.rep('7',32); request(); fx.tick()
+assert(read('eve-pose-components.1'):find('\nPARAMETERS 0\nEFFECTS 00000130 000006a8 000004b0 00000088 10 00007f000000b000 00007f000000c000 2\n'
+    ..'EFFECT 1 00007f000000d000 NS_A_Weapon_Signal_Sword\nEFFECT 2 00007f000000e000 NS_A_WeaponFX_SwordFlame_01\nEND ',1,true),
+    read('eve-pose-components.1'))
+engine.effect_layout,engine.known_effects,engine.effects=nil,nil,nil
 -- Glow parameters of dynamic material instances follow the components; a failing lookup publishes none.
 engine.controller=function() return nil end
 engine.parameters=function(list)
@@ -98,12 +109,12 @@ end
 RUN=string.rep('d',32); request()
 local _,glow=reloaded.tick()
 assert(glow:find('1 material parameters',1,true),glow)
-assert(read('eve-pose-components.1'):find('\nPARAMETERS 1\nPARAMETER 1 1 Blade_Edge Opacity 00007f0000009000 00007f000000a000 00000168 2 4711 1\nEND ',1,true),
+assert(read('eve-pose-components.1'):find('\nPARAMETERS 1\nPARAMETER 1 1 Blade_Edge Opacity 00007f0000009000 00007f000000a000 00000168 2 4711 1\nEFFECTS none\nEND ',1,true),
     'A name the wire cannot carry is dropped')
 engine.parameters=function() error('GetComparisonIndex unavailable') end
 RUN=string.rep('9',32); request()
 local _,without_glow=reloaded.tick()
-assert(without_glow:find('material parameters unavailable: ',1,true) and read('eve-pose-components.1'):find('\nPARAMETERS 0\nEND ',1,true),without_glow)
+assert(without_glow:find('material parameters unavailable: ',1,true) and read('eve-pose-components.1'):find('\nPARAMETERS 0\nEFFECTS none\nEND ',1,true),without_glow)
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
-print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log')
+print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log and effect layout')

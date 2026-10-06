@@ -28,14 +28,19 @@ final class AvatarStream implements AutoCloseable {
      * controller says whether poses carry the player controller's rotation (and the adapter may turn its camera).
      */
     record Table(String run, long generation, String session, double[] anchor, boolean controller,
-                 List<AvatarRecording.Component> components, List<Parameter> parameters, int floats) {
-        /** Payload floats of the components; the parameters' floats follow them. */
+                 List<AvatarRecording.Component> components, List<Parameter> parameters, List<String> effects, boolean effectRecords,
+                 int floats) {
+        /** Payload floats of the components; the parameters' floats follow them, then the effect records. */
         int componentFloats() {
-            int total = floats;
+            int total = floats - (effectRecords ? MAX_EFFECTS * EFFECT_FLOATS : 0);
             for (Parameter parameter : parameters) total -= parameter.floats();
             return total;
         }
     }
+    /** Up to MAX_EFFECTS active effects per pose: an index into Table.effects, then a world transform (11 floats). */
+    static final int MAX_EFFECTS = 8, EFFECT_FLOATS = 11;
+    /** An active effect of a pose: its asset name and Unreal world position. */
+    record Effect(String name, double x, double y, double z) { }
     /** A material parameter the game animates (scalar: 1 float, vector: 4) on a component's material slot. */
     record Parameter(int component, String slot, String name, int floats) { }
     /**
@@ -222,6 +227,19 @@ final class AvatarStream implements AutoCloseable {
         return values;
     }
 
+    /** The sample's active effects, from the records after the parameters (index -1: none). */
+    static List<Effect> effects(Table table, Sample sample) {
+        List<Effect> active = new ArrayList<>();
+        if (!table.effectRecords) return active;
+        int at = table.floats - MAX_EFFECTS * EFFECT_FLOATS;
+        for (int r = 0; r < MAX_EFFECTS; r++, at += EFFECT_FLOATS) {
+            int index = Math.round(sample.payload[at]);
+            if (index >= 0 && index < table.effects.size())
+                active.add(new Effect(table.effects.get(index), sample.payload[at + 5], sample.payload[at + 6], sample.payload[at + 7]));
+        }
+        return active;
+    }
+
     static AvatarRecording.Pose emptyPose(Table table) {
         int n = table.components.size();
         float[][] world = new float[n][10], local = new float[n][], weights = new float[n][];
@@ -308,8 +326,28 @@ final class AvatarStream implements AutoCloseable {
                 parameters.add(new Parameter(component, f[3], f[4], width));
                 floats += width;
             }
+            String[] fx = lines[at++].split(" ", -1);
+            require(fx[0].equals("EFFECTS"), "effects");
+            List<String> effects = new ArrayList<>();
+            boolean records = fx.length == 9;
+            if (records) {
+                for (int k = 1; k <= 4; k++) require(fx[k].matches("[0-9a-f]{8}") && Integer.parseInt(fx[k], 16) > 0 && Integer.parseInt(fx[k], 16) < 0x4000
+                        && (k == 4 || Integer.parseInt(fx[k], 16) % 8 == 0), "effect offsets");
+                require(fx[5].matches("[0-9a-f]{2}") && Integer.parseInt(fx[5], 16) > 0 && fx[6].matches("[0-9a-f]{16}")
+                        && fx[7].matches("[0-9a-f]{16}"), "effect fields");
+                int assets = Integer.parseInt(fx[8]);
+                require(assets >= 0 && assets <= 32, "effect count");
+                for (int i = 1; i <= assets; i++) {
+                    String[] f = lines[at++].split(" ", -1);
+                    require(f.length == 4 && f[0].equals("EFFECT") && f[1].equals(Integer.toString(i)) && f[2].matches("[0-9a-f]{16}")
+                            && !f[3].isEmpty(), "effect");
+                    effects.add(f[3]);
+                }
+                floats += MAX_EFFECTS * EFFECT_FLOATS;
+            } else require(fx.length == 2 && fx[1].equals("none"), "effects form");
             require(floats <= CAPACITY && lines[at++].equals("END " + generation) && at == lines.length, "end");
-            return new Table(run, generation, session, anchor, controlled, List.copyOf(components), List.copyOf(parameters), (int) floats);
+            return new Table(run, generation, session, anchor, controlled, List.copyOf(components), List.copyOf(parameters),
+                    List.copyOf(effects), records, (int) floats);
         } catch (IOException | RuntimeException rejected) {
             return null;
         }

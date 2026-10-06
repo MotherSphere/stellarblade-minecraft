@@ -64,6 +64,9 @@ public final class AvatarView {
         boolean lookApplied; // The newest sample says the adapter turned that controller's camera toward Minecraft's.
         long gapSamples, turned; // Controlled poses, and those the adapter turned.
         float glow; // Highest streamed material Opacity so far (the sword edge's glow while the game raises it).
+        List<AvatarStream.Effect> effects = List.of(); // The game's active effects on EVE in the newest sample.
+        final AvatarEffects particles = new AvatarEffects();
+        long effectSamples; // Samples with at least one active effect.
         double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
         Vector3d relativeOrigin;
         boolean posed, anchored, controlled;
@@ -232,6 +235,8 @@ public final class AvatarView {
                     current.newest = slot;
                     current.count = Math.min(current.count + 1, Live.RING);
                     current.rotation = sample.rotation();
+                    current.effects = AvatarStream.effects(current.table, sample);
+                    if (!current.effects.isEmpty()) current.effectSamples++;
                     var parameters = AvatarStream.parameters(current.table, sample);
                     current.renderer.parameters(parameters);
                     for (var entry : parameters.entrySet())
@@ -299,6 +304,7 @@ public final class AvatarView {
             }
             current.model.palettes(current.pose, placement, current.renderer.palettes, true);
             draw(context, current.model, current.renderer, current.pose, placement, camera);
+            current.particles.spawn(current.effects, placement, camera, System.nanoTime());
         } catch (RuntimeException failure) {
             stopLive(failure.getMessage());
             LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
@@ -449,7 +455,9 @@ public final class AvatarView {
                 + (current.gapSamples == 0 ? "" : String.format(" Camera: turned by look input in %.0f%% of controlled poses; yaw gap %.1f deg mean, %.0f max.",
                         100.0 * current.turned / current.gapSamples, current.gapSum / current.gapSamples, current.gapMax))
                 + (current.table == null || current.table.parameters().isEmpty() ? " No streamed material parameters."
-                        : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow));
+                        : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
+                + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
+                        : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples));
     }
 
     /** Stops the live stream; a null reason is the user's own off. */

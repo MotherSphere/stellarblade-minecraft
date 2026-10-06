@@ -24,6 +24,15 @@ function Stream.new(engine,directory,clock,log,link)
     local api={}
     local run,generation,signature,published,binding
     local effects,effect_lines='',0 -- Last logged active effects; at most 400 log lines per Lua lifetime.
+    local layout,assets,asset_seen=nil,{},{} -- Effect reading layout; effect assets in first-seen order (at most 32).
+    local function remember(found)
+        for _,a in ipairs(found or {}) do
+            if #assets<32 and not asset_seen[a.object] and token(a.name) and math.type(a.object)=='integer' and a.object%8==0 then
+                asset_seen[a.object]=true
+                assets[#assets+1]=a
+            end
+        end
+    end
     local function read(name,bound)
         local f=io.open(directory..'/'..name,'rb')
         if not f then return nil end
@@ -60,6 +69,11 @@ function Stream.new(engine,directory,clock,log,link)
             lines[#lines+1]=string.format('PARAMETER %d %d %s %s %s %s %08x %d %d %d',index,q.component,q.slot,q.name,
                 hex(q.object),hex(q.class),q.offset,q.element,q.index,q.floats)
         end
+        if layout then
+            lines[#lines+1]=string.format('EFFECTS %08x %08x %08x %08x %02x %s %s %d',layout.children,layout.asset,layout.template,
+                layout.active_byte,layout.active_mask,hex(layout.niagara),hex(layout.particle),#assets)
+            for index,a in ipairs(assets) do lines[#lines+1]=string.format('EFFECT %d %s %s',index,hex(a.object),a.name) end
+        else lines[#lines+1]='EFFECTS none' end
         lines[#lines+1]='END '..generation
         return table.concat(lines,'\n')..'\n'
     end
@@ -105,9 +119,21 @@ function Stream.new(engine,directory,clock,log,link)
                     and q.element>=0 and q.element<1024 then parameters[#parameters+1]=q end
             end
         end
-        -- Diagnostic: log the set of EVE's active particle effects whenever it changes.
+        -- Effects: the layout the adapter reads them with (found once), the assets Minecraft may draw (known ones once
+        -- loaded, then any seen active on EVE), and a log line whenever the active set changes.
+        if not layout and engine.effect_layout then
+            local ok,found=pcall(engine.effect_layout)
+            if ok and found.children>0 and found.children<0x4000 and found.children%8==0 and found.asset>0 and found.asset<0x4000
+                and found.asset%8==0 and found.template>0 and found.template<0x4000 and found.template%8==0
+                and found.active_byte>0 and found.active_byte<0x4000 and found.active_mask>0 and found.active_mask<256 then layout=found end
+        end
+        if engine.known_effects then
+            local ok,found=pcall(engine.known_effects)
+            if ok then remember(found) end
+        end
         if effects and engine.effects then
-            local seen,active=pcall(engine.effects,list)
+            local seen,active,found=pcall(engine.effects,list)
+            if seen then remember(found) end
             local now_effects=seen and table.concat(active,' ') or ('unavailable: '..tostring(active))
             if now_effects~=effects and effect_lines<400 then
                 effect_lines=effect_lines+1
@@ -126,6 +152,9 @@ function Stream.new(engine,directory,clock,log,link)
         for _,q in ipairs(parameters) do
             parts[#parts+1]=table.concat({q.component,q.slot,q.name,q.object,q.class,q.offset,q.element,q.index,q.floats},':')
         end
+        parts[#parts+1]=layout and string.format('effects:%d:%d:%d:%d:%d:%d:%d',layout.children,layout.asset,layout.template,
+            layout.active_byte,layout.active_mask,layout.niagara,layout.particle) or 'no effects'
+        for _,a in ipairs(assets) do parts[#parts+1]=a.name..':'..a.object end
         local next_signature=table.concat(parts,'|')
         if next_signature==signature then return true end
         for _,c in ipairs(list) do
@@ -137,6 +166,7 @@ function Stream.new(engine,directory,clock,log,link)
         local floats=0
         for _,c in ipairs(list) do floats=floats+10+10*#c.bones+#c.morphs end
         for _,q in ipairs(parameters) do floats=floats+q.floats end
+        if layout then floats=floats+8*11 end
         assert(floats<=16352,'EVE pose exceeds one stream slot.')
         generation=generation+1
         local text=encode(list,place,controller,parameters)

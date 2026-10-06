@@ -39,6 +39,26 @@ public final class AvatarStreamTest {
         glowPayload[52] = 0.75f;
         var glowSample = new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, glowPayload, null, false);
         assert AvatarStream.parameters(glowing, glowSample).get("Edge/Opacity")[0] == 0.75f;
+        // Effects: the layout line and its assets, then MAX_EFFECTS records after the parameters.
+        String effectLines = "EFFECTS 00000130 000006a8 000004b0 00000088 10 00007f000000b000 00007f000000c000 1\n"
+                + "EFFECT 1 00007f000000d000 NS_A_Weapon_Signal_Sword\n";
+        var sparkling = AvatarStream.parse(fixture.replace("EFFECTS none\n", effectLines));
+        assert sparkling != null && sparkling.effects().equals(java.util.List.of("NS_A_Weapon_Signal_Sword")) && sparkling.effectRecords()
+                && sparkling.floats() == 52 + AvatarStream.MAX_EFFECTS * AvatarStream.EFFECT_FLOATS && sparkling.componentFloats() == 52;
+        assert AvatarStream.parse(fixture.replace("EFFECTS none\n", effectLines.replace(" 10 ", " 00 "))) == null : "A zero mask";
+        assert AvatarStream.parse(fixture.replace("EFFECTS none\n", effectLines.replace(" 1\nEFFECT", " 2\nEFFECT"))) == null : "Missing asset";
+        assert AvatarStream.parse(fixture.replace("EFFECTS none\n", "")) == null : "The effects line is required";
+        float[] effectPayload = new float[sparkling.floats()];
+        java.util.Arrays.fill(effectPayload, 52, effectPayload.length, 0);
+        for (int r = 0; r < AvatarStream.MAX_EFFECTS; r++) effectPayload[52 + r * AvatarStream.EFFECT_FLOATS] = -1;
+        effectPayload[52] = 0;
+        effectPayload[52 + 5] = 100;
+        effectPayload[52 + 7] = 300;
+        var effects = AvatarStream.effects(sparkling, new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, effectPayload, null, false));
+        assert effects.size() == 1 && effects.get(0).name().equals("NS_A_Weapon_Signal_Sword") && effects.get(0).x() == 100 && effects.get(0).z() == 300;
+        assert AvatarEffects.look("NS_A_Weapon_Signal_Sword") == AvatarEffects.Look.SIGNAL && AvatarEffects.look("P_A_AnimTrail_SwordLightAtk_01") == null
+                && AvatarEffects.look("NS_A_ParTrail_SwordDefaultAtk_01") == AvatarEffects.Look.SPARKS
+                && AvatarEffects.look("NS_PC_SpinTrail_01") == AvatarEffects.Look.SWEEP && AvatarEffects.look("NS_Unknown") == AvatarEffects.Look.GLINT;
         var body = table.components().get(0);
         var face = table.components().get(1);
         assert body.recorded() && body.bones().length == 3 && body.bones()[2].equals("Bip001-Head") && body.weights() == 0;
@@ -80,7 +100,7 @@ public final class AvatarStreamTest {
 
         // Display interpolation between two poses.
         var single = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(new AvatarRecording.Component("C", "M", null,
-                new String[] {"Root"}, new String[] {"m"}, 1)), java.util.List.of(), 21);
+                new String[] {"Root"}, new String[] {"m"}, 1)), java.util.List.of(), java.util.List.of(), false, 21);
         var start = AvatarStream.emptyPose(single);
         var end = AvatarStream.emptyPose(single);
         var mid = AvatarStream.emptyPose(single);
@@ -147,7 +167,7 @@ public final class AvatarStreamTest {
                     AvatarMesh mesh = AvatarMesh.parse("CH_P_EVE_52_TypeB", AvatarModelTest.mesh("Bip001", b -> { }));
                     var renamed = new AvatarRecording.Component("CharacterMesh0", "CH_P_EVE_52_TypeB", null,
                             new String[] {"Root", "Bip001"}, new String[0], 0);
-                    var twoBones = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed), java.util.List.of(), 30);
+                    var twoBones = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed), java.util.List.of(), java.util.List.of(), false, 30);
                     AvatarModel model = new AvatarModel(twoBones.components(), Map.of("CH_P_EVE_52_TypeB", mesh));
                     var pose = AvatarStream.emptyPose(twoBones);
                     float[] values = new float[30];
