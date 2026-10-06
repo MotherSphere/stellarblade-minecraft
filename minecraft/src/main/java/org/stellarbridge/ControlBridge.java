@@ -128,6 +128,7 @@ public final class ControlBridge {
                     build ? "Build mode: Minecraft owns clicks; EVE movement is held." : "EVE mode: Minecraft inputs drive the native controller."), true);
         }
         if (state != null && state.active() && windowOwned()) apply(System.currentTimeMillis());
+        if (avatar) publish(); // Avatar mode has no image to wait for: send edges at once.
     }
 
     public static void mouseButton(long window, int button, int action) {
@@ -140,6 +141,7 @@ public final class ControlBridge {
         for (int i = 0; i < keys.length; i++) if (keys[i].matchesMouse(button)) held[i] = down;
         if (state != null && down && mode.matchesMouse(button) && windowOwned()) build(!build);
         if (state != null && state.active() && windowOwned()) apply(System.currentTimeMillis());
+        if (avatar) publish();
     }
 
     /** Called only at vanilla's sensitivity/invert-Y adjusted gameplay look invocation. */

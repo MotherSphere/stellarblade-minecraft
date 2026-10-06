@@ -188,14 +188,17 @@ bool write_ack(const std::string &bytes) {
          MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 void worker() {
-  std::string published;
-  for (;;) {
+  std::string published, slot0, slot1;
+  // Input every 5 ms keeps forwarding latency low; permits, capture and pose
+  // files keep their 20 ms period. Cached permit bytes are re-validated.
+  for (unsigned iteration = 0;; ++iteration) {
+    bool slow = iteration % 4 == 0;
     auto input_bytes =
         read_file(directory + L"eve-input.txt", 4096).value_or("");
-    auto slot0 =
-        read_file(directory + L"eve-control-permit.0", 512).value_or("");
-    auto slot1 =
-        read_file(directory + L"eve-control-permit.1", 512).value_or("");
+    if (slow) {
+      slot0 = read_file(directory + L"eve-control-permit.0", 512).value_or("");
+      slot1 = read_file(directory + L"eve-control-permit.1", 512).value_or("");
+    }
     auto input = stellar_input::parse_input(input_bytes);
     auto permit = stellar_input::select_permit(slot0, slot1);
     std::string permit_bytes;
@@ -221,6 +224,10 @@ void worker() {
           published = std::move(key);
       }
     }
+    if (!slow) {
+      Sleep(5);
+      continue;
+    }
     auto capture_request =
         read_file(directory + L"eve-stream.txt", 512).value_or("");
     stellar_raw::poll_raw_capture(capture_request, wall_ms());
@@ -234,7 +241,7 @@ void worker() {
     } catch (...) {
       // The pose stream is optional and must never stop input forwarding.
     }
-    Sleep(20);
+    Sleep(5);
   }
 }
 void initialize() {

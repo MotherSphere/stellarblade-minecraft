@@ -53,13 +53,18 @@ public final class AvatarView {
         AvatarStream.Table table;
         AvatarModel model;
         AvatarRenderer renderer;
-        // Displayed pose, blended from the previous display toward the newest sample over one sample interval.
-        AvatarRecording.Pose pose, from, to;
+        // Recent poses with Stellar Blade's publication times. The displayed pose is interpolated one sample interval
+        // in the past on those timestamps, so Minecraft's frame timing and polling add no jitter.
+        static final int RING = 4;
+        AvatarRecording.Pose pose;
+        AvatarRecording.Pose[] ring;
+        final double[] times = new double[RING];
+        int newest = -1, count;
         float[] rotation; // Stellar Blade's controller Pitch, Yaw, Roll from the newest sample, or null.
         Vector3d relativeOrigin;
         boolean posed, anchored, controlled;
         long poses, incomplete, lastPoseNanos, windowPoses, windowNanos;
-        double rate, interval = 1e9 / 60;
+        double rate, interval = 1000.0 / 60; // Milliseconds between publications.
         Live(AvatarStream stream, ClientWorld world, Path pack, Vec3d relativeAnchor) {
             this.stream = stream; this.world = world; this.pack = pack; this.relativeAnchor = relativeAnchor;
             windowNanos = System.nanoTime();
@@ -199,9 +204,11 @@ public final class AvatarView {
         }
     }
 
-    private static void renderLive(WorldRenderContext context) {
+    /** Once per Minecraft frame before the camera: newest pose, then the displayed pose shared by camera and drawing. */
+    public static void beginFrame() {
         Live current = live;
-        if (context.world() != current.world) { stopLive("the world changed"); return; }
+        if (current == null) return;
+        if (MinecraftClient.getInstance().world != current.world) { stopLive("the world changed"); return; }
         long nanos = System.nanoTime();
         try {
             AvatarStream.Sample sample = current.stream.poll(current.table, System.currentTimeMillis(), nanos);
@@ -209,12 +216,17 @@ public final class AvatarView {
                 AvatarStream.Table table = current.stream.table();
                 if (table != null && table.generation() == sample.generation()) install(current, table);
             } else if (sample != null && current.model != null) {
-                if (AvatarStream.decode(current.table, sample, current.model, current.to)) {
-                    if (current.posed) {
-                        long gap = nanos - current.lastPoseNanos;
-                        if (gap > 0 && gap < 200_000_000L) current.interval = current.interval * 0.8 + gap * 0.2;
-                        copy(current.pose, current.from); // Continue from what is on screen: no jump.
-                    } else copy(current.to, current.from);
+                int slot = (current.newest + 1) % Live.RING;
+                if (AvatarStream.decode(current.table, sample, current.model, current.ring[slot])) {
+                    double time = sample.publication();
+                    if (current.count > 0) {
+                        double previous = current.times[current.newest];
+                        if (time <= previous) time = previous + 0.5; // Same-millisecond publications stay ordered.
+                        if (time - previous < 100) current.interval = current.interval * 0.9 + (time - previous) * 0.1;
+                    }
+                    current.times[slot] = time;
+                    current.newest = slot;
+                    current.count = Math.min(current.count + 1, Live.RING);
                     current.rotation = sample.rotation();
                     current.posed = true;
                     current.poses++;
@@ -222,21 +234,33 @@ public final class AvatarView {
                     current.lastPoseNanos = nanos;
                 } else current.incomplete++;
             }
-            if (current.posed) blend(current.from, current.to, alpha(current, nanos), current.pose);
-            if (current.controlled) ControlBridge.avatarFrame();
             if (nanos - current.windowNanos >= 2_000_000_000L) {
                 current.rate = current.windowPoses * 1e9 / (nanos - current.windowNanos);
                 current.windowPoses = 0;
                 current.windowNanos = nanos;
             }
             if (!current.posed) return;
+            interpolate(current.ring, current.times, current.newest, current.count, wallMillis() - current.interval, current.pose);
+            var link = StellarBridge.renderingContext();
+            current.anchored = current.table.anchor() != null && link != null && current.table.session().equals(link.session());
+            if (current.controlled) ControlBridge.avatarFrame();
+        } catch (IOException | RuntimeException failure) {
+            stopLive(failure.getMessage());
+            if (failure instanceof RuntimeException) LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
+        }
+    }
+
+    private static void renderLive(WorldRenderContext context) {
+        Live current = live;
+        if (current.model == null || !current.posed) return;
+        if (context.world() != current.world) { stopLive("the world changed"); return; }
+        try {
             Vec3d camera = context.camera().getPos();
             var link = StellarBridge.renderingContext();
-            double[] anchor = current.table.anchor();
-            current.anchored = anchor != null && link != null && current.table.session().equals(link.session());
             Matrix4d placement;
-            if (current.anchored) {
+            if (current.anchored && link != null) {
                 // The terrain link's mapping: Minecraft origin + (X, Z, Y) / scale relative to the lab anchor.
+                double[] anchor = current.table.anchor();
                 var origin = link.origin();
                 placement = new Matrix4d().translation(origin.x() - camera.x, origin.y() - camera.y, origin.z() - camera.z)
                         .mul(AvatarModel.unrealToMinecraft(anchor[3])).translate(-anchor[0], -anchor[1], -anchor[2]);
@@ -251,9 +275,9 @@ public final class AvatarView {
             }
             current.model.palettes(current.pose, placement, current.renderer.palettes, true);
             draw(context, current.model, current.renderer, current.pose, placement, camera);
-        } catch (IOException | RuntimeException failure) {
+        } catch (RuntimeException failure) {
             stopLive(failure.getMessage());
-            if (failure instanceof RuntimeException) LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
+            LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
         }
     }
 
@@ -271,8 +295,10 @@ public final class AvatarView {
         current.model = model;
         current.renderer = renderer;
         current.pose = AvatarStream.emptyPose(table);
-        current.from = AvatarStream.emptyPose(table);
-        current.to = AvatarStream.emptyPose(table);
+        current.ring = new AvatarRecording.Pose[Live.RING];
+        for (int i = 0; i < Live.RING; i++) current.ring[i] = AvatarStream.emptyPose(table);
+        current.newest = -1;
+        current.count = 0;
         current.posed = false;
         int[] sections = renderer.sectionCounts();
         report(String.format("EVE live avatar: generation %d, %d meshes, %d/%d material sections%s.", table.generation(),
@@ -314,8 +340,20 @@ public final class AvatarView {
         return id;
     }
 
-    private static float alpha(Live current, long nanos) {
-        return (float) Math.min(1, Math.max(0, (nanos - current.lastPoseNanos) / current.interval));
+    /**
+     * The pose at a publication time: interpolated between the bracketing samples, the oldest before them, and at most
+     * half an interval extrapolated past the newest.
+     */
+    static void interpolate(AvatarRecording.Pose[] ring, double[] times, int newest, int count, double at, AvatarRecording.Pose out) {
+        if (count == 1) { copy(ring[newest], out); return; }
+        int size = ring.length, b = newest, a = (newest + size - 1) % size;
+        for (int k = 2; k < count && at < times[a]; k++) { b = a; a = (a + size - 1) % size; }
+        double span = times[b] - times[a];
+        blend(ring[a], ring[b], (float) Math.max(0, Math.min(1.5, (at - times[a]) / span)), out);
+    }
+    private static double wallMillis() {
+        var now = java.time.Instant.now();
+        return now.getEpochSecond() * 1000.0 + now.getNano() / 1e6;
     }
     private static void copy(AvatarRecording.Pose source, AvatarRecording.Pose target) {
         for (int i = 0; i < source.world().length; i++) {
@@ -339,9 +377,7 @@ public final class AvatarView {
         var link = StellarBridge.renderingContext();
         if (current == null || !current.posed || current.table == null || current.table.anchor() == null || link == null
                 || !current.table.session().equals(link.session())) return null;
-        int component = current.model.parts.get(0).component();
-        float[] root = new float[AvatarRecording.TRANSFORM];
-        AvatarRecording.blend(current.from.world()[component], current.to.world()[component], alpha(current, System.nanoTime()), root);
+        float[] root = current.pose.world()[current.model.parts.get(0).component()];
         double[] anchor = current.table.anchor();
         var origin = link.origin();
         // Unreal (X, Y, Z) to Minecraft (X, Z, Y) relative to the lab anchor, as the terrain link maps EVE's feet.
@@ -373,9 +409,9 @@ public final class AvatarView {
     }
     private static String liveStatus(Live current) {
         long[] native_ = current.stream.statistics();
-        return String.format("EVE live avatar: %s; generation %s; %d poses (%.1f/s), %d incomplete; last %s; native read %d us last, %d max, %d mean over %d published.",
+        return String.format("EVE live avatar: %s; generation %s; %d poses (%.1f/s, %.1f ms apart), %d incomplete; last %s; native read %d us last, %d max, %d mean over %d published.",
                 current.table == null ? "waiting for Lua's component table" : current.anchored ? "anchored to the bridge link" : "two blocks ahead (no entered link)",
-                current.table == null ? "-" : Long.toString(current.table.generation()), current.poses, current.rate, current.incomplete,
+                current.table == null ? "-" : Long.toString(current.table.generation()), current.poses, current.rate, current.interval, current.incomplete,
                 current.posed ? String.format("%.0f ms ago", (System.nanoTime() - current.lastPoseNanos) / 1e6) : "never",
                 native_[1], native_[2], native_[3], native_[0]);
     }

@@ -58,6 +58,28 @@ public final class AvatarStreamTest {
         end.world()[0][4] = 10; end.weights()[0][0] = 1;
         AvatarView.blend(start, end, 0.25f, mid);
         assert mid.world()[0][4] == 2.5f && mid.weights()[0][0] == 0.25f && mid.world()[0][3] == 1;
+        // Interpolation on publication times: bracketing samples, oldest clamp, bounded extrapolation, ring wrap.
+        AvatarRecording.Pose[] ring = new AvatarRecording.Pose[4];
+        double[] times = new double[4];
+        for (int i = 0; i < 4; i++) {
+            ring[i] = AvatarStream.emptyPose(single);
+            ring[i].world()[0][3] = ring[i].local()[0][3] = 1;
+        }
+        int[] order = {2, 3, 0}; // Newest at index 0 after wrapping.
+        double[] stamps = {0, 16, 32};
+        for (int k = 0; k < 3; k++) { times[order[k]] = stamps[k]; ring[order[k]].world()[0][4] = (float) stamps[k]; }
+        AvatarView.interpolate(ring, times, 0, 3, 8, mid);
+        assert mid.world()[0][4] == 8 : mid.world()[0][4];
+        AvatarView.interpolate(ring, times, 0, 3, 24, mid);
+        assert mid.world()[0][4] == 24;
+        AvatarView.interpolate(ring, times, 0, 3, 40, mid);
+        assert mid.world()[0][4] == 40 : "Extrapolates up to half an interval";
+        AvatarView.interpolate(ring, times, 0, 3, 90, mid);
+        assert mid.world()[0][4] == 40 : "Extrapolation is bounded";
+        AvatarView.interpolate(ring, times, 0, 3, -5, mid);
+        assert mid.world()[0][4] == 0 : "Older than every sample shows the oldest";
+        AvatarView.interpolate(ring, times, 0, 1, 50, mid);
+        assert mid.world()[0][4] == 32 : "A single sample is shown as is";
 
         Path directory = Files.createTempDirectory("stellar-pose-");
         try {
