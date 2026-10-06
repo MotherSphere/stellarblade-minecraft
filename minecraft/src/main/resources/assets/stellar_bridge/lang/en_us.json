@@ -6,5 +6,7 @@
   "key.stellar_bridge.lt": "Controller LT",
   "key.stellar_bridge.rt": "Controller RT",
   "key.stellar_bridge.r3": "Controller right stick button",
-  "key.stellar_bridge.dpad_up": "Controller D-pad up"
+  "key.stellar_bridge.dpad_up": "Controller D-pad up",
+  "key.stellar_bridge.sprint": "EVE sprint (L3)",
+  "key.stellar_bridge.walk": "EVE walk (light stick tilt)"
 }

@@ -82,8 +82,8 @@ public final class ControlHooksTest {
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setYaw", "(F)V") == 1;
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setPitch", "(F)V") == 1;
         // EVE combat layout: use is the heavy attack (Y), the inventory key blocks (LB), hotbar 1 holds LB then adds X.
-        boolean[] held = new boolean[20];
-        long[] since = new long[20];
+        boolean[] held = new boolean[22];
+        long[] since = new long[22];
         held[8] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x8000 : "Use (right click) is Y, not LB";
         held[8] = false;
@@ -97,7 +97,20 @@ public final class ControlHooksTest {
         held[ControlBridge.SKILLS] = false;
         held[ControlBridge.SKILLS + 3] = true;
         assert ControlBridge.buttons(held, since, ControlBridge.SKILL_DELAY) == (0x100 | 0x1000) : "Skill 4 is LB with A";
-        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery, narrow movement authority and EVE's combat layout");
+        held[ControlBridge.SKILLS + 3] = false;
+        held[ControlBridge.AIM] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x10000 : "Minecraft's sprint key aims the drone (LT)";
+        held[ControlBridge.ATTACK] = true;
+        assert ControlBridge.buttons(held, since, 0) == (0x10000 | 0x20000) : "Attack while aiming fires (RT), not X";
+        held[ControlBridge.AIM] = false;
+        assert ControlBridge.buttons(held, since, 0) == 0x4000 : "Attack alone is the light attack";
+        held[ControlBridge.ATTACK] = false;
+        held[20] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x40 : "The EVE sprint key is L3";
+        held[20] = false;
+        held[ControlBridge.WALK] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0 : "Walk only shapes the stick";
+        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery, narrow movement authority and EVE's combat layout (skills, drone aim, sprint, walk)");
     }
     private static boolean hasMethod(ClassNode node, String name, String descriptor) {
         return node.methods.stream().anyMatch(method -> method.name.equals(name) && method.desc.equals(descriptor));

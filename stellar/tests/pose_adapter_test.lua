@@ -81,4 +81,19 @@ local glow=engine.parameters({{handle=sword}})
 assert(#glow==2 and glow[1].slot=='Blade_Edge' and glow[1].name=='Opacity' and glow[1].element==1 and glow[1].index==9
     and glow[1].offset==0x168 and glow[1].floats==1 and glow[1].class==0x7f0000020000,'The scalar names its element')
 assert(glow[2].name=='Emissive_Color' and glow[2].floats==4 and glow[2].offset==0x178 and glow[2].element==0)
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components and glow parameters')
+-- Effects: an active pooled Niagara component attached under the sword is found; an inactive one is not.
+local niagaraClass=object('NiagaraComponent')
+local function effect(name,asset,active,socket)
+    local e=object(name,{Asset=object(asset),AttachChildren=tarray({})})
+    e.GetClass=function() return niagaraClass end
+    e.IsActive=function() return active end
+    e.GetAttachParent=function() return sword end
+    e.GetAttachSocketName=function() return fname(socket) end
+    return e
+end
+sword.AttachChildren=tarray({effect('NC1','NS_A_Weapon_Signal_Sword',true,'FX_WeaponFX_Begin'),effect('NC2','NS_Old',false,'X')})
+sword.GetClass=function() return object('SkeletalMeshComponent') end
+package.loaded.UEHelpers.GetPlayer=function() return nil end
+local effects=engine.effects({{handle=sword}})
+assert(#effects==1 and effects[1]=='NS_A_Weapon_Signal_Sword[NiagaraComponent]@Sword:FX_WeaponFX_Begin',effects[1])
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters and attached effects')

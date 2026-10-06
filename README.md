@@ -39,7 +39,9 @@ EVE mode follows Stellar Blade's default controller layout:
 | Minecraft binding (default key) | Controller | Stellar Blade |
 |---|---|---|
 | Movement (W, A, S, D) | Left stick | Move |
-| Jump (Space), Sneak (Shift), Sprint (Ctrl) | A, B, L3 | Jump, dodge, sprint |
+| EVE walk (C) | Left stick at 35 % | Walk |
+| Jump (Space), Sneak (Shift), EVE sprint (V) | A, B, L3 | Jump, dodge (held: sprint after it), sprint |
+| Sprint (Ctrl) | LT | Drone aim; attack then fires with RT |
 | Attack (left click), Use (right click) | X, Y | Light attack, heavy attack |
 | Inventory (E) | LB | Block, parry |
 | Hotbar 1, 2, 3, 4 | LB, then X, Y, B or A 40 ms later | Beta skills |

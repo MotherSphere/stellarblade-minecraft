@@ -6,5 +6,7 @@
   "key.stellar_bridge.lt": "Manette LT",
   "key.stellar_bridge.rt": "Manette RT",
   "key.stellar_bridge.r3": "Clic du stick droit",
-  "key.stellar_bridge.dpad_up": "Croix directionnelle haut"
+  "key.stellar_bridge.dpad_up": "Croix directionnelle haut",
+  "key.stellar_bridge.sprint": "Sprint d'EVE (L3)",
+  "key.stellar_bridge.walk": "Marche d'EVE (stick légèrement incliné)"
 }

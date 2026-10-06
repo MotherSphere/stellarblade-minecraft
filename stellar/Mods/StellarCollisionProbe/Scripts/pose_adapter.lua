@@ -185,26 +185,38 @@ function Adapter.new()
         end
         return found
     end
-    -- Active particle effects (Cascade and Niagara components) on EVE's actor: asset, attach parent and socket. A
+    -- Active particle effects (Cascade and Niagara components) on EVE: owned by her actor, or pooled by the world and
+    -- attached to her skeletal components (up to three levels down). Asset, class, attach parent and socket. A
     -- diagnostic for which of the game's show effects play, and where; nothing is drawn from it yet.
     local EFFECT_CLASSES={'/Script/Engine.ParticleSystemComponent','/Script/Niagara.NiagaraComponent'}
-    function engine.effects()
+    function engine.effects(list)
+        local found,seen={},{}
+        local function note(component)
+            local name=text(valid(component:GetClass()):GetFName())
+            if not (name:find('Particle',1,true) or name:find('Niagara',1,true)) or seen[component:GetAddress()] then return end
+            seen[component:GetAddress()]=true
+            if not component:IsActive() then return end
+            local ok,asset=pcall(function() return valid(component.Template or component.Asset) end)
+            local parent=valid(component:GetAttachParent())
+            found[#found+1]=string.format('%s[%s]@%s:%s',ok and asset and text(asset:GetFName()) or text(component:GetFName()),name,
+                parent and text(parent:GetFName()) or '-',text(component:GetAttachSocketName()))
+        end
+        local function walk(component,depth)
+            each(component.AttachChildren,function(_,child)
+                child=valid(child)
+                if not child then return end
+                note(child)
+                if depth<3 then walk(child,depth+1) end
+            end)
+        end
+        for _,entry in ipairs(list or {}) do pcall(walk,entry.handle,1) end
         local pawn=valid(UE.GetPlayer())
-        if not pawn then return {} end
-        local found={}
         for _,path in ipairs(EFFECT_CLASSES) do
-            local class=valid(StaticFindObject(path))
-            if class then
-                each(pawn:K2_GetComponentsByClass(class),function(_,component)
-                    component=valid(component)
-                    if component and component:IsActive() then
-                        local ok,asset=pcall(function() return valid(component.Template or component.Asset) end)
-                        local parent=valid(component:GetAttachParent())
-                        found[#found+1]=string.format('%s@%s:%s',ok and asset and text(asset:GetFName()) or text(component:GetFName()),
-                            parent and text(parent:GetFName()) or '-',text(component:GetAttachSocketName()))
-                    end
-                end)
-            end
+            local class=pawn and valid(StaticFindObject(path))
+            if class then each(pawn:K2_GetComponentsByClass(class),function(_,component)
+                component=valid(component)
+                if component then note(component) end
+            end) end
         end
         table.sort(found)
         return found

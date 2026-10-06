@@ -13,21 +13,24 @@ import org.lwjgl.glfw.GLFW;
 
 /**
  * Minecraft owns menus and hardware events; only this explicit session forwards controller states. In EVE mode,
- * Stellar Blade's controller layout: movement on the left stick, jump A, sneak B (dodge), sprint L3, attack X (light),
- * use Y (heavy), the inventory key LB (block, parry) and hotbar keys 1 to 4 the Beta skills, which hold LB and then
- * press X, Y, B or A; Minecraft's own inventory and hotbar 1 to 4 wait for build mode.
+ * Stellar Blade's controller layout: movement on the left stick (walk key: a light tilt), jump A, sneak B (dodge), the
+ * EVE sprint key L3, Minecraft's sprint key LT (drone aim, during which attack fires with RT), attack X (light), use Y
+ * (heavy), the inventory key LB (block, parry) and hotbar keys 1 to 4 the Beta skills, which hold LB and then press X,
+ * Y, B or A; Minecraft's own inventory and hotbar 1 to 4 wait for build mode.
  */
 public final class ControlBridge {
-    private static final int LB = 0x100, X = 0x4000, Y = 0x8000, A = 0x1000, B = 0x2000;
-    // Per binding index: the movement keys (0-3) steer; skills (16-19) are sequenced by buttons().
-    private static final int[] BUTTON = {0, 0, 0, 0, A, B, 0x40, X, Y,
-            Y, 0x200, 0x10000, 0x20000, 0x80, 0x1, LB, 0, 0, 0, 0};
-    static final int SKILLS = 16;
+    private static final int LB = 0x100, X = 0x4000, Y = 0x8000, A = 0x1000, B = 0x2000, L3 = 0x40, LT = 0x10000, RT = 0x20000;
+    // Per binding index: the movement keys (0-3) and walk (21) shape the stick; skills (16-19) are sequenced by buttons().
+    private static final int[] BUTTON = {0, 0, 0, 0, A, B, LT, X, Y,
+            Y, 0x200, LT, RT, 0x80, 0x1, LB, 0, 0, 0, 0, L3, 0};
+    static final int AIM = 6, ATTACK = 7, SKILLS = 16, WALK = 21;
+    static final double WALK_TILT = 0.35; // Stick deflection while the walk key is held: Stellar Blade walks.
     private static final int[] SKILL_FACE = {X, Y, B, A};
     static final long SKILL_DELAY = 40_000_000L; // LB leads a skill's face button by 40 ms, as a player's thumb would.
-    private static final boolean[] held = new boolean[20];
-    private static final long[] heldSince = new long[20];
-    private static final boolean[] wasHeld = new boolean[20];
+    private static final boolean[] held = new boolean[22];
+    private static final long[] heldSince = new long[22];
+    private static final boolean[] wasHeld = new boolean[22];
+    private static KeyBinding sprint, walk;
     private static final Set<Integer> scanCodes = new HashSet<>();
     private static final Set<InputUtil.Key> blocked = new HashSet<>();
     private static KeyBinding mode;
@@ -50,6 +53,9 @@ public final class ControlBridge {
         String[] names = {"y", "rb", "lt", "rt", "r3", "dpad_up"};
         for (int i = 0; i < extra.length; i++) extra[i] = KeyBindingHelper.registerKeyBinding(
                 new KeyBinding("key.stellar_bridge." + names[i], InputUtil.UNKNOWN_KEY.getCode(), category));
+        // Stellar Blade's keyboard defaults: V sprints, C walks (Minecraft's sprint key aims the drone instead).
+        sprint = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.stellar_bridge.sprint", GLFW.GLFW_KEY_V, category));
+        walk = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.stellar_bridge.walk", GLFW.GLFW_KEY_C, category));
         ClientTickEvents.END_CLIENT_TICK.register(client -> tick());
     }
 
@@ -124,7 +130,7 @@ public final class ControlBridge {
         return new KeyBinding[] {options.forwardKey, options.backKey, options.leftKey, options.rightKey,
                 options.jumpKey, options.sneakKey, options.sprintKey, options.attackKey, options.useKey,
                 extra[0], extra[1], extra[2], extra[3], extra[4], extra[5], options.inventoryKey,
-                options.hotbarKeys[0], options.hotbarKeys[1], options.hotbarKeys[2], options.hotbarKeys[3]};
+                options.hotbarKeys[0], options.hotbarKeys[1], options.hotbarKeys[2], options.hotbarKeys[3], sprint, walk};
     }
 
     /**
@@ -133,7 +139,8 @@ public final class ControlBridge {
      */
     static int buttons(boolean[] held, long[] since, long nowNanos) {
         int mask = 0;
-        for (int i = 4; i < SKILLS; i++) if (held[i]) mask |= BUTTON[i];
+        for (int i = 4; i < held.length; i++) if (held[i] && (i < SKILLS || i >= SKILLS + SKILL_FACE.length)) mask |= BUTTON[i];
+        if (held[AIM] && held[ATTACK]) mask = mask & ~X | RT; // Aiming the drone, attack fires.
         for (int k = 0; k < SKILL_FACE.length; k++) {
             if (!held[SKILLS + k]) continue;
             mask |= LB;
@@ -252,7 +259,7 @@ public final class ControlBridge {
             wasHeld[i] = held[i];
         }
         int mask = build ? 0 : buttons(held, heldSince, nanos);
-        for (int bit : new int[] {A, B, 0x40, X, Y, 0x200, 0x10000, 0x20000, 0x80, 0x1, LB}) state.button(bit, (mask & bit) != 0, time);
+        for (int bit : new int[] {A, B, L3, X, Y, 0x200, LT, RT, 0x80, 0x1, LB}) state.button(bit, (mask & bit) != 0, time);
     }
 
     /** Each avatar render frame: refresh the steering and publish at most every 20 ms, the adapter's read period. */
@@ -296,7 +303,7 @@ public final class ControlBridge {
     private static ControlState.Axes axes() {
         int x = build ? 0 : (held[3] ? 1 : 0) - (held[2] ? 1 : 0);
         int y = build ? 0 : (held[0] ? 1 : 0) - (held[1] ? 1 : 0);
-        int scale = x != 0 && y != 0 ? 23170 : 32767;
+        int scale = (int) Math.round((x != 0 && y != 0 ? 23170 : 32767) * (held[WALK] && !build ? WALK_TILT : 1));
         if (avatar) {
             var player = MinecraftClient.getInstance().player;
             float[] rotation = AvatarView.controllerRotation();

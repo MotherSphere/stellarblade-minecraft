@@ -107,7 +107,7 @@ function Stream.new(engine,directory,clock,log,link)
         end
         -- Diagnostic: log the set of EVE's active particle effects whenever it changes.
         if effects and engine.effects then
-            local seen,active=pcall(engine.effects)
+            local seen,active=pcall(engine.effects,list)
             local now_effects=seen and table.concat(active,' ') or ('unavailable: '..tostring(active))
             if now_effects~=effects and effect_lines<400 then
                 effect_lines=effect_lines+1
