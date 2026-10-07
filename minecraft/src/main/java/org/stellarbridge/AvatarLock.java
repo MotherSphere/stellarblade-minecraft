@@ -8,7 +8,7 @@ import net.minecraft.util.math.Vec3d;
 /**
  * Stellar Blade's lock-on for Minecraft's entities, as Stellar Blade's own needs its own enemies: the lock-on key picks
  * the living entity nearest the crosshair within CONE of it, RANGE blocks and in sight, outlines it, and turns
- * Minecraft's camera toward it each frame. Stellar Blade's camera follows Minecraft's, and its own lock-on holds EVE
+ * Minecraft's camera toward it horizontally each frame. Stellar Blade's camera follows Minecraft's, and its own lock-on holds EVE
  * facing the target (her strafing locomotion): the target's centre goes to Lua every SEND nanoseconds while locked,
  * none once released. Pressing the key again, losing the target (dead, gone, beyond KEEP blocks), losing the bridge
  * link or leaving EVE mode releases it. Render thread only.
@@ -16,7 +16,6 @@ import net.minecraft.util.math.Vec3d;
 public final class AvatarLock {
     static final double RANGE = 20, KEEP = 28, CONE = Math.toRadians(40);
     static final double TURN = 12; // Per second: the camera closes this share of the gap, about 0.25 s to settle.
-    static final float PITCH_DOWN = 8; // Degrees the camera looks below the target, as Stellar Blade frames it over EVE.
     static final long SEND = 50_000_000L; // Heartbeat of the target sent to Stellar Blade, whose lease lasts 0.6 s.
     private static Entity target;
     private static long lastNanos, lastSent;
@@ -77,9 +76,8 @@ public final class AvatarLock {
             StellarBridge.lockTarget(center);
         }
         float[] wanted = angles(toward.x, toward.y, toward.z);
-        double share = 1 - Math.exp(-TURN * seconds);
-        double yaw = MathHelper.wrapDegrees(wanted[0] - player.getYaw()) * share;
-        double pitch = (MathHelper.clamp(wanted[1] + PITCH_DOWN, -90, 90) - player.getPitch()) * share;
-        player.changeLookDirection(yaw / 0.15, pitch / 0.15); // As the mouse turns it (0.15 degrees per unit), interpolation included.
+        double yaw = MathHelper.wrapDegrees(wanted[0] - player.getYaw()) * (1 - Math.exp(-TURN * seconds));
+        // Yaw only: Stellar Blade's camera height follows Minecraft's pitch open-loop, so pitch stays the mouse's.
+        player.changeLookDirection(yaw / 0.15, 0); // As the mouse turns it (0.15 degrees per unit), interpolation included.
     }
 }

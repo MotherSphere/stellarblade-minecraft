@@ -15,7 +15,7 @@
 namespace stellar_pose {
 namespace {
 constexpr uint32_t Slots = 3, Dirty = 4, Format = 1;
-constexpr uint64_t Lease = 3000;
+constexpr uint64_t Lease = 3000, LockLease = 600; // LockLease: Lua's own lock lease.
 using stellar_input::detail::identity;
 using stellar_input::detail::Lines;
 using stellar_input::detail::number;
@@ -43,8 +43,8 @@ constexpr int32_t PendingKill = 1 << 29, Unreachable = 1 << 28;
 // editor data; FMaterialParameterInfo starts with the FName.
 constexpr size_t ScalarStride = 36, VectorStride = 48, ParameterValue = 16;
 
-bool fresh(uint64_t value, uint64_t now) {
-  return value && (value <= now ? now - value <= Lease : value - now <= 100);
+bool fresh(uint64_t value, uint64_t now, uint64_t lease = Lease) {
+  return value && (value <= now ? now - value <= lease : value - now <= 100);
 }
 bool middle_valid(uint32_t state) {
   return (state & ~7u) == 0 && (state & 3u) < Slots;
@@ -407,23 +407,36 @@ bool turn_controller(const Engine &engine, const Controller &c, float pitch, flo
   return true;
 }
 
+namespace {
 // The game world's actor manager (+0xc8) holds the actors (+0x28) and the
-// player's index (+0x3c, below the count at +0x30); an actor's stats are floats
-// at +0x118 + 4 * ESBActorStatType, live while its life state (+0x2600) is
-// Spawn (1) or Spawning (6). From the pinned build's HUD (FSBUILogicHUDHint).
-bool read_gauges(uintptr_t world, float *out) {
-  if (!world)
-    return false;
-  auto manager = at<uintptr_t>(world + 0xc8);
+// player's index (+0x3c, below the count at +0x30); the player's actor counts
+// while its life state (+0x2600) is Spawn (1) or Spawning (6). From the pinned
+// build's HUD (FSBUILogicHUDHint).
+uintptr_t player_actor(uintptr_t world) {
+  auto manager = world ? at<uintptr_t>(world + 0xc8) : 0;
   if (!manager)
-    return false;
+    return 0;
   auto index = at<int32_t>(manager + 0x3c), count = at<int32_t>(manager + 0x30);
   auto actors = at<uintptr_t>(manager + 0x28);
   if (!actors || index < 0 || index >= count)
-    return false;
+    return 0;
   auto actor = at<uintptr_t>(actors + 8 * uintptr_t(index));
   auto life = actor ? at<int32_t>(actor + 0x2600) : 0;
-  if (life != 1 && life != 6)
+  return life == 1 || life == 6 ? actor : 0;
+}
+struct EvadePatch {
+  uintptr_t actor, node;
+  uint64_t name; // The row's FName: a rebuilt tree may reuse the address.
+  uint32_t original;
+  bool seen; // Visited by the current restoring walk.
+};
+std::vector<EvadePatch> evade_patches;
+} // namespace
+
+// An actor's stats are floats at +0x118 + 4 * ESBActorStatType.
+bool read_gauges(uintptr_t world, float *out) {
+  auto actor = player_actor(world);
+  if (!actor)
     return false;
   constexpr uint32_t Stats[GaugeFloats] = {14, 15, 18, 19, 116}; // Beta, max, Burst, max, Burst unlocked.
   for (uint32_t i = 0; i < GaugeFloats; i++) {
@@ -432,6 +445,72 @@ bool read_gauges(uintptr_t world, float *out) {
       return false;
   }
   return out[0] <= out[1] && out[2] <= out[3];
+}
+
+// EVE's command set (FSBActor +0x530, owner back at +0x178) roots her nodes at
+// +0x8; a node keeps child pointers at +0x8 (count +0x10), its command at
+// +0x18 and its row FName at +0x24 (0x1a61c50, 0x1d28500, 0x1d285e0). Her eight
+// lock-gated evades are global commands under the root or their double dodges
+// one below.
+uint32_t patch_evades(uintptr_t world, bool locked) {
+  constexpr uint32_t Evade = 24; // ESBSkillCommandState::Evade
+  constexpr int32_t MaxChildren = 4096;
+  auto actor = player_actor(world);
+  auto set = actor ? at<uintptr_t>(actor + 0x530) : 0;
+  auto root = set && at<uintptr_t>(set + 0x178) == actor ? at<uintptr_t>(set + 8) : 0;
+  if (!root)
+    return uint32_t(evade_patches.size()); // Records kept until her tree is back.
+  auto visit = [&](uintptr_t node) {
+    if (at<uint32_t>(node + 0x18) != Evade)
+      return;
+    auto value = at<uint32_t>(node + 0x68);
+    auto name = at<uint64_t>(node + 0x24);
+    auto *bytes = reinterpret_cast<uint8_t *>(node);
+    auto record = std::find_if(evade_patches.begin(), evade_patches.end(),
+                               [&](const EvadePatch &p) { return p.node == node && p.name == name; });
+    if (locked && (value == 1 || value == 2)) {
+      if (record != evade_patches.end())
+        record->original = value; // Written back by the game meanwhile.
+      else
+        evade_patches.push_back({actor, node, name, value, false});
+      put(bytes, 0x68, value == 2 ? 0u : 3u);
+    } else if (!locked && record != evade_patches.end()) {
+      record->seen = true;
+      if (value == (record->original == 2 ? 0u : 3u))
+        put(bytes, 0x68, record->original);
+    }
+  };
+  auto children = [&](uintptr_t node, auto &&each) {
+    auto data = at<uintptr_t>(node + 8);
+    auto count = at<int32_t>(node + 0x10);
+    for (int32_t i = 0; data && count <= MaxChildren && i < count; i++)
+      if (auto child = at<uintptr_t>(data + 8 * uintptr_t(i)))
+        each(child);
+  };
+  children(root, [&](uintptr_t node) {
+    visit(node);
+    children(node, visit);
+  });
+  // Nodes out of her tree now keep their records until they are back or her actor is gone.
+  if (!locked)
+    evade_patches.erase(std::remove_if(evade_patches.begin(), evade_patches.end(),
+                                       [&](EvadePatch &p) {
+                                         bool done = p.seen || p.actor != actor;
+                                         p.seen = false;
+                                         return done;
+                                       }),
+                        evade_patches.end());
+  return uint32_t(evade_patches.size());
+}
+
+uint64_t parse_lock(std::string_view text) {
+  Lines lines(text, 256);
+  std::string session;
+  uint64_t seq = 0, time = 0;
+  bool target = lines.literal("SBMC_LOCK 1") && lines.text("SESSION", session) &&
+                identity(session) && lines.num("SEQ", seq) && lines.num("TIME", time) &&
+                lines.field("TARGET", 3).size() == 3 && lines.end(seq);
+  return target ? time : 0;
 }
 
 Turn follow(Follow &f, float look_pitch, float look_yaw, float yaw) {
@@ -643,6 +722,7 @@ std::optional<Table> table;
 std::vector<float> payload(Capacity);
 std::array<uint32_t, MaxComponents> status{};
 Follow following;
+uint64_t minecraft_lock = 0; // eve-lock.txt's TIME while Minecraft holds a target.
 uint32_t process_id() {
 #ifdef _WIN32
   return GetCurrentProcessId();
@@ -716,6 +796,14 @@ uintptr_t game_world() {
     return 0;
   }
 }
+// A command tree freed under the walk faults at worst; contained.
+uint32_t guarded_evades(uintptr_t world, bool locked) {
+  __try {
+    return patch_evades(world, locked);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0;
+  }
+}
 // A pawn freed after Lua published it faults before any call; contained.
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   __try {
@@ -727,6 +815,7 @@ bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) 
 #else
 bool guarded_gauges(uintptr_t world, float *out) { return read_gauges(world, out); }
 uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
+uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
 uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
   return read_effects(e, t, out);
 }
@@ -748,12 +837,15 @@ bool guarded(const Engine &e, const Parameter &q, float *out) {
 void initialize(uintptr_t objects) { engine.objects = objects; }
 
 void poll_files(const std::wstring &directory, std::string_view request_text,
-                std::string_view slot0, std::string_view slot1, uint64_t wall) {
+                std::string_view slot0, std::string_view slot1, uint64_t wall,
+                std::string_view lock_text) {
   auto request = parse_request(request_text);
   bool wanted = request && request->active && fresh(request->time, wall);
   auto next = wanted ? select_components(slot0, slot1, request->run)
                      : std::optional<Table>{};
+  auto locked_at = parse_lock(lock_text);
   std::lock_guard<std::mutex> guard(lock);
+  minecraft_lock = locked_at;
   if (!wanted) {
     producer.stop();
     table.reset();
@@ -771,10 +863,14 @@ void poll_files(const std::wstring &directory, std::string_view request_text,
 
 void on_gameplay_poll(std::string_view owner) {
   std::unique_lock<std::mutex> guard(lock, std::try_to_lock);
-  if (!guard.owns_lock() || !table || !engine.objects)
+  if (!guard.owns_lock())
     return;
   auto wall = stellar_shared::wall_now();
-  if (!producer.active(wall))
+  // Minecraft's lock-on gives EVE Stellar Blade's lock-on evades while Minecraft drives her.
+  bool locked = !owner.empty() && fresh(minecraft_lock, wall, LockLease);
+  if (locked || !evade_patches.empty())
+    guarded_evades(game_world(), locked);
+  if (!table || !engine.objects || !producer.active(wall))
     return;
   auto started = micros();
   float rotation[3];

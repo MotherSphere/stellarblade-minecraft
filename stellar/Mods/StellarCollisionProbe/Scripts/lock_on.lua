@@ -8,6 +8,10 @@
 -- the rest of the log budget for releases and failures. Game-thread only; call tick each native frame.
 local Lock={}
 local FRESH_MS,LEASE,RETRY,REPORT,SPAWN_TRIES,ROUTINE_LINES=2500,0.6,0.25,1,3,200
+-- While locked, EVE's sword is drawn as Stellar Blade's lock-on draws it, checked every DRAW_WAIT seconds (its draw Show
+-- attaches the sword 0.337 s in). A draw that did not stick by the next check is retried with the attach event sent at
+-- once, DRAWS tries in a row at most; release sheathes it if we drew.
+local DRAW_WAIT,DRAWS=1,5
 function Lock.parse(text)
     if type(text)~='string' or #text>256 then return nil end
     local session,seq,time,target,ending=text:match('^SBMC_LOCK 1\nSESSION (%x+)\nSEQ (%d+)\nTIME (%d+)\nTARGET ([^\n]+)\nEND (%d+)\n$')
@@ -25,7 +29,7 @@ end
 function Lock.new(engine,directory,wall,real,log,link)
     local api,lines,swept,spawn_failures={},0,false,0
     local last,seen -- The newest accepted publication, and when its sequence arrived.
-    local held -- {proxy=,camera=,engaged=,retry=,relocks=,report=} while EVE is locked for Minecraft.
+    local held -- {proxy=,camera=,engaged=,retry=,relocks=,report=,draw=,draws=,drew=} while EVE is locked for Minecraft.
     local undo -- A lock whose release failed, retried first every frame.
     local function note(message) if lines<300 then lines=lines+1; log('Lock: '..message) end end
     local function status(proxy)
@@ -41,6 +45,11 @@ function Lock.new(engine,directory,wall,real,log,link)
     function api.release(why)
         undo,held=held or undo,nil
         if not undo then return true,'Lock-on idle.' end
+        if undo.drew then -- Once, before the release that may be retried.
+            undo.drew=false
+            local _,how=pcall(engine.lock_sheathe)
+            note('sword: '..tostring(how))
+        end
         local ok,how=pcall(engine.lock_release,undo.proxy,undo.camera)
         if not ok then
             if not undo.failed then undo.failed=true; note('release failed, retrying: '..tostring(how)) end
@@ -78,7 +87,7 @@ function Lock.new(engine,directory,wall,real,log,link)
                 note(string.format('proxy failed (%d/%d): %s',spawn_failures,SPAWN_TRIES,tostring(proxy)))
                 return
             end
-            held={proxy=proxy,engaged=false,retry=-math.huge,relocks=0,report=now}
+            held={proxy=proxy,engaged=false,retry=-math.huge,relocks=0,report=now,draw=-math.huge,draws=0,drew=false}
             note(info)
             local saved,previous=pcall(engine.lock_camera,false)
             if saved then held.camera=previous else note('camera flag unavailable: '..tostring(previous)) end
@@ -95,6 +104,15 @@ function Lock.new(engine,directory,wall,real,log,link)
             if not engaged then spawn_failures=spawn_failures+1; api.release('error: '..tostring(result)); return end
             if result and not held.engaged then note('engaged: '..status(held.proxy)) end
             held.engaged=held.engaged or result
+        end
+        if locked and now>=held.draw and held.draws<DRAWS then
+            held.draw=now+DRAW_WAIT
+            local ok,drew=pcall(engine.lock_draw,held.draws>0)
+            if ok and not drew then held.draws=0 -- Drawn already, or Stellar Blade's.
+            else
+                held.draws,held.drew=held.draws+1,held.drew or ok
+                if lines<ROUTINE_LINES then note(string.format('sword %d/%d: %s',held.draws,DRAWS,tostring(drew))) end
+            end
         end
         if now-held.report>=REPORT and lines<ROUTINE_LINES then
             held.report=now

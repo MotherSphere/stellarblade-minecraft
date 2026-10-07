@@ -32,6 +32,8 @@ function engine.lock_release(proxy,camera)
     return 'released proxy '..proxy.id
 end
 function engine.lock_status() return 'status' end
+function engine.lock_draw() return nil end -- Drawn already, until the sword section.
+function engine.lock_sheathe() return 'sheathing' end
 local place={session=SESSION,anchor={X=1000,Y=2000,Z=300},scale=100}
 local lock=Lock.new(engine,directory,function() return wall end,function() return real end,function(line) logged[#logged+1]=line end,function() return place end)
 local seq=0
@@ -97,5 +99,33 @@ assert(state.spawned==spawned,'An old first publication is ignored')
 engine.lock_engage=function() error('engage broke') end
 for _=1,10 do publish('1.000 1.000 1.000'); real=real+0.05; fresh.tick() end
 assert(state.spawned==spawned+3 and last():find('released (error: ',1,true),'Three tries, then no more spawns: '..last())
+-- The sword: drawn once the lock holds, checked every second; a draw that did not stick is retried at once, five in a
+-- row at most; a drawn check resets the count; release sheathes once, even when the release itself is retried.
+engine.lock_engage=function(proxy,at) state.locked=true; return true end
+local sword,draws='Sword',{}
+function engine.lock_draw(instant)
+    if sword~='Sword' then return nil end
+    draws[#draws+1]=instant; return instant and 'instant draw' or 'drawing'
+end
+local sheathes=0
+function engine.lock_sheathe() sheathes=sheathes+1; return 'sheathing' end
+local armed=Lock.new(engine,directory,function() return wall end,function() return real end,function(line) logged[#logged+1]=line end,function() return place end)
+publish('1.000 1.000 1.000',nil,wall*1000); armed.tick()
+assert(#draws==0,'No draw before the lock holds')
+publish('1.000 1.000 1.000'); armed.tick()
+assert(#draws==1 and draws[1]==false and last()=='Lock: sword 1/5: drawing',last())
+real=real+0.5; publish('1.000 1.000 1.000'); armed.tick()
+assert(#draws==1,'One check per second')
+real=real+0.5; publish('1.000 1.000 1.000'); armed.tick()
+assert(#draws==2 and draws[2]==true,'A draw that did not stick is retried with the instant attach')
+sword='Draw'; real=real+0.5; publish('1.000 1.000 1.000'); armed.tick()
+real=real+0.5; publish('1.000 1.000 1.000'); armed.tick()
+sword='Sword'; real=real+1; publish('1.000 1.000 1.000'); armed.tick()
+assert(#draws==3 and draws[3]==false,'Seen drawn: the next draw is a plain one again')
+for _=1,10 do real=real+0.5; publish('1.000 1.000 1.000'); armed.tick() end
+assert(#draws==7,'Five tries in a row at most: '..#draws)
+state.release_error='EVE busy'; publish('none'); armed.tick(); armed.tick()
+state.release_error=nil; armed.tick()
+assert(sheathes==1 and table.concat(logged,'\n'):find('Lock: sword: sheathing',1,true),'One sheathe across release retries')
 os.remove(directory..'/eve-lock.txt'); os.remove(directory)
-print('Lock-on: parse, Unreal placement, engage and relock, lease, release paths, retry and spawn cap')
+print('Lock-on: parse, Unreal placement, engage and relock, lease, release paths, retry and spawn cap, sword draw and sheathe')

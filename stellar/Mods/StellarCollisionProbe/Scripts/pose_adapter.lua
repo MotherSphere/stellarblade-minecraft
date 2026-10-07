@@ -553,6 +553,36 @@ function Adapter.new()
         end
         return count
     end
+    -- EVE's sword while Minecraft locks: Stellar Blade's lock-on enters battle, which plays her character draw Show and
+    -- the sword's unfold Show (attach to the hand at 0.337 s, blade Opacity 0 to 1, FX, sound); ours plays the same pair,
+    -- and the stock pair back on release. Left to Stellar Blade while it is in battle or forces the sword folded or
+    -- hidden. instant: the draw Shows' own attach event, sent at once (the blade still unfolds through the Show).
+    local BASIC,WEAPON='/Game/Art/Show/CH_P_EVE_01/Basic/','/Game/Art/Show/Weapon/Eve/'
+    local DRAW,UNFOLD=BASIC..'Eve_Drawing_Moving_LockOn.Eve_Drawing_Moving_LockOn',WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword'
+    local SHEATHE,FOLD=BASIC..'Eve_Swording_Moving.Eve_Swording_Moving',WEAPON..'Eve_FoldSword.Eve_FoldSword'
+    local function sword(eve) -- The sword AnimBP's state (Draw or CriticalDraw in hand, Sword in the hair) and socket.
+        local w=valid(eve:GetSBSkeletalMeshComponent(5)) -- ESBSkelMeshSlot::ESBMesh_Weapon1
+        if not w then return 'none','-' end
+        return text(w:GetCustomAnimStateName()),text(w:GetAttachSocketName())
+    end
+    local function stellar_owns(eve) return eve:IsBattle() or eve.bForceFoldWeapon or eve.bForceFoldWeaponStance or eve.bForceWeaponHide end
+    function engine.lock_draw(instant)
+        local eve=character()
+        local state,socket=sword(eve)
+        if state=='Draw' or state=='CriticalDraw' or stellar_owns(eve) then return nil end
+        if instant then eve:NotifyShowEvent(FName('CriticalDraw'),FName('CriticalDraw')) else engine.play_show(DRAW) end
+        engine.play_show(UNFOLD) -- After the attach, which then happens even if this Show fails.
+        return string.format('%s (sword was %s@%s)',instant and 'instant draw' or 'drawing',state,socket)
+    end
+    function engine.lock_sheathe()
+        local eve=valid(UE.GetPlayer())
+        if not eve or not eve:IsA(sbcharacter()) then return 'EVE gone' end
+        local state,socket=sword(eve)
+        if stellar_owns(eve) then return string.format('left to Stellar Blade (sword %s@%s)',state,socket) end
+        if state~='Draw' and state~='CriticalDraw' then return string.format('already sheathed (sword %s@%s)',state,socket) end
+        engine.play_show(FOLD); engine.play_show(SHEATHE)
+        return string.format('sheathing (sword was %s@%s)',state,socket)
+    end
     -- What Stellar Blade checks each frame and what its lock gives EVE, as one line.
     function engine.lock_status(proxy)
         local eve=character()
@@ -564,13 +594,16 @@ function Adapter.new()
         local function off(yaw) return yaw and bearing and string.format('%.0f',(yaw-bearing+540)%360-180) or 'n/a' end
         local camera=get(function() return value_of(valid(UE.GetPlayerController()).PlayerCameraManager:GetCameraRotation()).Yaw end)
         local v,yaw=value_of(eve:GetVelocity()),math.rad(r.Yaw)
+        local dolly=get(function() return valid(eve.CameraBoom).CameraDollyAlpha end) -- 1 frames her from her hips, looking up.
         return string.format('IsLockOn %s, anim IsLockOn %s; facing %s, camera %s deg off target; dist %s cm; vel fwd %.0f right %.0f; '..
-            'hide %.2f; mode %s freecam %s flying %s; target unavailable %s; disable control %s target %s',
+            'hide %.2f; mode %s freecam %s flying %s; target unavailable %s; disable control %s target %s; dolly %s; battle %s sword %s',
             tostring(eve:IsLockOn()),tostring(get(function() return valid(eve.Mesh):GetAnimInstance().IsLockOn end)),off(r.Yaw),off(camera),
             t and string.format('%.0f',math.sqrt((t.X-p.X)^2+(t.Y-p.Y)^2)) or 'n/a',
             v.X*math.cos(yaw)+v.Y*math.sin(yaw),-v.X*math.sin(yaw)+v.Y*math.cos(yaw),eve.HideTimeForLockOnCharacter,
             tostring(get(function() return eve.CharacterMovement.MovementMode end)),tostring(eve.bFreeCamMode),tostring(eve.bFlyingAction),
-            tostring(proxy and proxy.UnavailableLockOn),tostring(eve.bDisableLockOnControl),tostring(eve.bDisableLockonTarget))
+            tostring(proxy and proxy.UnavailableLockOn),tostring(eve.bDisableLockOnControl),tostring(eve.bDisableLockonTarget),
+            dolly and string.format('%.2f',dolly) or 'n/a',tostring(get(function() return eve:IsBattle() end)),
+            get(function() return string.format('%s@%s',sword(eve)) end) or 'n/a')
     end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)

@@ -237,7 +237,7 @@ void worker() {
           read_file(directory + L"eve-pose-request.txt", 512).value_or(""),
           read_file(directory + L"eve-pose-components.0", 65536).value_or(""),
           read_file(directory + L"eve-pose-components.1", 65536).value_or(""),
-          wall_ms());
+          wall_ms(), read_file(directory + L"eve-lock.txt", 256).value_or(""));
     } catch (...) {
       // The pose stream is optional and must never stop input forwarding.
     }

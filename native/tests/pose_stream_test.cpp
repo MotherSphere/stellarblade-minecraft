@@ -419,6 +419,59 @@ int main() {
     stat(18, 130);
     put_i32(manager, 0x3c, 2);
     assert(!read_gauges(w, g) && "The player index stays within the actor count");
+    put_i32(manager, 0x3c, 1);
+    // Minecraft's lock: EVE's lock-gated evades (globals under the root, double dodges one below) are opened.
+    std::vector<uint8_t> set(0x180), root(0x20), normal(0x70), lockon(0x70), chain(0x70), air(0x70), attack(0x70);
+    uintptr_t top[4] = {uintptr_t(normal.data()), uintptr_t(lockon.data()), uintptr_t(air.data()), uintptr_t(attack.data())};
+    uintptr_t below[1] = {uintptr_t(chain.data())};
+    assert(patch_evades(w, true) == 0 && "No command set, nothing changed");
+    put_ptr(actor, 0x530, uintptr_t(set.data()));
+    put_ptr(set, 8, uintptr_t(root.data()));
+    assert(patch_evades(w, true) == 0 && "A set owned by another actor is not EVE's");
+    put_ptr(set, 0x178, uintptr_t(actor.data()));
+    put_ptr(root, 8, uintptr_t(top));
+    put_i32(root, 0x10, 4);
+    put_ptr(lockon, 8, uintptr_t(below));
+    put_i32(lockon, 0x10, 1);
+    for (auto *n : {&normal, &lockon, &chain, &air})
+      put_i32(*n, 0x18, 24);
+    put_i32(attack, 0x18, 3);
+    put_i32(normal, 0x68, 1); put_i32(lockon, 0x68, 2); put_i32(chain, 0x68, 2); put_i32(air, 0x68, 0); put_i32(attack, 0x68, 2);
+    auto cond = [](std::vector<uint8_t> &n) { int32_t v; std::memcpy(&v, n.data() + 0x68, 4); return v; };
+    assert(patch_evades(w, true) == 3 && cond(normal) == 3 && cond(lockon) == 0 && cond(chain) == 0 && cond(air) == 0 &&
+           cond(attack) == 2 && "Lock-on evades for any target, plain ones closed, others untouched");
+    assert(patch_evades(w, true) == 3 && "Idempotent while held");
+    put_i32(lockon, 0x68, 2); // Written back by the game while held.
+    assert(patch_evades(w, true) == 3 && cond(lockon) == 0 && "Patched again, one record per node");
+    put_i32(root, 0x10, 1); // The lock-on evade left the tree.
+    assert(patch_evades(w, false) == 2 && cond(normal) == 1 && cond(lockon) == 0 && "Live nodes restored, the others kept");
+    put_i32(root, 0x10, 4);
+    assert(patch_evades(w, false) == 0 && cond(lockon) == 2 && cond(chain) == 2 && "Restored once back in her tree");
+    assert(patch_evades(w, true) == 3);
+    put_i32(chain, 0x68, 1); // Rewritten by the game meanwhile.
+    put_i32(actor, 0x2600, 3);
+    assert(patch_evades(w, false) == 3 && "Records kept while her tree is unreadable");
+    put_i32(actor, 0x2600, 1);
+    assert(patch_evades(w, false) == 0 && cond(normal) == 1 && cond(lockon) == 2 && cond(chain) == 1 &&
+           "Restored once readable, a value the game rewrote is left alone");
+    assert(patch_evades(w, true) == 3);
+    std::vector<uint8_t> other(0x2700);
+    put_i32(other, 0x2600, 1);
+    actors[0] = uintptr_t(other.data());
+    put_i32(manager, 0x3c, 0); // Another player actor, whose command set has no lock-gated evades.
+    put_ptr(other, 0x530, uintptr_t(set.data()));
+    put_ptr(set, 0x178, uintptr_t(other.data()));
+    put_i32(root, 0x10, 0);
+    assert(patch_evades(w, false) == 0 && "Records of a gone actor are dropped");
+    put_i32(manager, 0x3c, 1);
+    put_ptr(actor, 0x530, 0);
+    auto lock_file = [](const char *seq, const char *target, const char *end) {
+      return "SBMC_LOCK 1\nSESSION " + Run + "\nSEQ " + seq + "\nTIME 1000\nTARGET " + target + "\nEND " + end + "\n";
+    };
+    assert(parse_lock(lock_file("3", "1.000 2.000 3.000", "3")) == 1000 && "A held target gives its time");
+    assert(parse_lock(lock_file("4", "none", "4")) == 0 && "A release gives none");
+    assert(parse_lock(lock_file("4", "1.000 2.000 3.000", "5")) == 0 && "A torn file gives none");
+    assert(parse_lock("") == 0);
   }
   on_gameplay_poll(); // Nothing installed yet.
   poll_files(directory.wstring(), request(now), slots, "", now);

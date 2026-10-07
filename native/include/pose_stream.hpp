@@ -105,6 +105,17 @@ constexpr uintptr_t GameWorldRva = 0x7032570;
 constexpr uint32_t GaugeFloats = 5;
 constexpr float GaugeLimit = 100000;
 bool read_gauges(uintptr_t world, float *out);
+// Minecraft's lock-on for EVE's evade. Each skill command node keeps
+// FSBSkillCommandTableProperty.bLockOn at +0x68, checked against the
+// simulation's own lock target (0 any, 1 none, 2 one, other values never);
+// Minecraft's lock never sets that target, so a locked evade took the plain
+// row. locked: EVE's lock-gated evade nodes go 2 -> 0 and 1 -> 3; unlocked:
+// those in her tree get their value back, those out of it once they return
+// (while her actor lives). Returns the nodes still changed. world as for
+// read_gauges.
+uint32_t patch_evades(uintptr_t world, bool locked);
+// eve-lock.txt (SBMC_LOCK 1): its TIME while it names a target, else 0.
+uint64_t parse_lock(std::string_view text);
 // Look input for one gameplay poll: Minecraft's camera motion since the last
 // poll, plus for yaw a share of the remaining gap to the controller's rotation,
 // so the game's camera follows like it follows a mouse. The controller's pitch
@@ -152,13 +163,14 @@ public:
 };
 
 // Adapter entry points. initialize receives GUObjectArray's address. The
-// worker passes the request file and both component slots; the verified
-// gameplay XInput poll reads the controller, turns the game's camera toward
-// Minecraft's when owner (the run whose input is forwarded) is this stream's
-// run, then reads the components and publishes. None of
-// them throws.
+// worker passes the request file, both component slots and Minecraft's lock
+// file; the verified gameplay XInput poll gives EVE the lock-on evades while
+// Minecraft locks and owner (the run whose input is forwarded) is set, reads
+// the controller, turns the game's camera toward Minecraft's when owner is this
+// stream's run, then reads the components and publishes. None of them throws.
 void initialize(uintptr_t objects);
 void poll_files(const std::wstring &directory, std::string_view request,
-                std::string_view slot0, std::string_view slot1, uint64_t wall);
+                std::string_view slot0, std::string_view slot1, uint64_t wall,
+                std::string_view lock = {});
 void on_gameplay_poll(std::string_view owner = {});
 } // namespace stellar_pose
