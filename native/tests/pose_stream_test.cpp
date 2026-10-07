@@ -584,13 +584,14 @@ int main() {
     mapping(alone / ("eve-pose-" + Run + ".bin"));
     Producer direct;
     assert(direct.open(alone.wstring(), *parse_request(request(now)), 77, now));
-    uint32_t state = WorldValid, evades[EvadeWords] = {1, 2, 3, 4, 5, 6, 7};
+    uint32_t state = WorldValid, evades[EvadeWords] = {1, 2, 3, 4, 5, 6, 7, 8};
     float pose[10] = {};
     assert(direct.publish(1, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades));
     stellar_shared::Mapping view;
     assert(view.open(alone / ("eve-pose-" + Run + ".bin"), TotalBytes));
     for (uint32_t i = 0; i < EvadeWords; i++)
       assert(stellar_shared::plain<uint32_t>(view.base, 344 + 4 * i) == i + 1 && "Evade words in order at 344");
+    assert(stellar_shared::plain<uint32_t>(view.base, 372) == 8 && "The lock rows held, word 7 at 372");
     assert(std::all_of(view.base + 344 + 4 * EvadeWords, view.base + Header, [](uint8_t b) { return b == 0; }) &&
            "Nothing after them");
     // EVE's stats: floats at StatsAt, state 1 at StatsState, cleared to 0 when unreadable; the rest stays reserved.
@@ -1021,6 +1022,123 @@ int main() {
     assert(parse_lock(lock_file("4", "1.000 2.000 3.000", "5"), Run) == 0 && "A torn file gives none");
     assert(parse_lock("", Run) == 0);
   }
+  {
+    // Minecraft's lock: the lock evades' turn rows, found by ID in Stellar Blade's table registry, go 1 -> 0 and back.
+    auto put_ptr = [](std::vector<uint8_t> &b, size_t at, uintptr_t v) { std::memcpy(b.data() + at, &v, 8); };
+    auto put_i32 = [](std::vector<uint8_t> &b, size_t at, int32_t v) { std::memcpy(b.data() + at, &v, 4); };
+    auto put_f32 = [](std::vector<uint8_t> &b, size_t at, float v) { std::memcpy(b.data() + at, &v, 4); };
+    // GUObjectArray: one chunk of 24-byte items (object, flags, cluster root, serial).
+    std::vector<uint8_t> objects(0x40), items(24 * 8);
+    uintptr_t chunk[1] = {uintptr_t(items.data())};
+    put_ptr(objects, 0x10, uintptr_t(chunk));
+    put_i32(objects, 0x24, 8);
+    // A TSet at owner + at: elements of stride bytes (next id at next), chains[b] the elements of bucket b in order;
+    // a single bucket stays inline at +0x38, more go to heap (+0x40); HashSize at +0x48.
+    auto tset = [&](std::vector<uint8_t> &owner, size_t at, std::vector<uint8_t> &elements, size_t stride, size_t next,
+                    std::vector<int32_t> &heap, const std::vector<std::vector<int32_t>> &chains) {
+      put_ptr(owner, at, uintptr_t(elements.data()));
+      put_i32(owner, at + 8, int32_t(elements.size() / stride));
+      heap.assign(chains.size(), -1);
+      for (size_t b = 0; b < chains.size(); b++) {
+        for (size_t k = 0; k < chains[b].size(); k++)
+          put_i32(elements, stride * chains[b][k] + next, k + 1 < chains[b].size() ? chains[b][k + 1] : -1);
+        heap[b] = chains[b].empty() ? -1 : chains[b][0];
+      }
+      put_i32(owner, at + 0x38, heap[0]);
+      put_ptr(owner, at + 0x40, chains.size() > 1 ? uintptr_t(heap.data()) : 0);
+      put_i32(owner, at + 0x48, int32_t(chains.size()));
+    };
+    // Rows (ID at +0x10). Move rows carry the Move2 fingerprint (RotationEndTime 0.3, 280 cm, 65 degrees) and
+    // RotationType 1; skill rows IgnoreLockOn 0, bSwitchBattleMode 1 and RotateInputDirection 1. The decoys carry both.
+    auto row = [&](uint32_t id, float end = 0.3f, uint8_t ignore = 0) {
+      std::vector<uint8_t> r(0x180);
+      put_i32(r, 0x10, int32_t(id));
+      put_f32(r, 0xb8, end);
+      put_f32(r, 0xd8, 280);
+      put_f32(r, 0xdc, 65);
+      r[0xbc] = r[0x170] = r[0x172] = 1;
+      r[0x171] = ignore;
+      return r;
+    };
+    std::vector<std::vector<uint8_t>> moves = {row(1000601), row(1000701), row(1001104), row(1000601, 0.25f)};
+    std::vector<std::vector<uint8_t>> skills = {row(1001104), row(1001105), row(1001106), row(1004202), row(1007102),
+                                                row(1001105, 0.3f, 1)};
+    std::vector<std::vector<uint8_t>> stray = {row(1000601)}, late = {row(1000701)};
+    // A UDataTable per table (RowMap at +0x30: 0x18-byte name, row, next id), each a live object in the array.
+    std::vector<uint8_t> move_table(0x80), skill_table(0x80), stray_table(0x80), late_table(0x80);
+    std::vector<uint8_t> move_pairs(0x18 * 4), skill_pairs(0x18 * 6), stray_pairs(0x18), late_pairs(0x18);
+    std::vector<int32_t> move_heap, skill_heap, stray_heap, late_heap, main_heap, second_heap;
+    auto rows = [&](std::vector<uint8_t> &pairs, std::vector<std::vector<uint8_t>> &list) {
+      for (size_t i = 0; i < list.size(); i++)
+        put_ptr(pairs, 0x18 * i + 8, uintptr_t(list[i].data()));
+    };
+    rows(move_pairs, moves);
+    rows(skill_pairs, skills);
+    rows(stray_pairs, stray);
+    rows(late_pairs, late);
+    tset(move_table, 0x30, move_pairs, 0x18, 0x10, move_heap, {{}, {0, 1}, {2}, {3}}); // Two chained in one bucket.
+    tset(skill_table, 0x30, skill_pairs, 0x18, 0x10, skill_heap, {{0, 1}, {2, 3}, {4}, {5}});
+    tset(stray_table, 0x30, stray_pairs, 0x18, 0x10, stray_heap, {{0}});
+    tset(late_table, 0x30, late_pairs, 0x18, 0x10, late_heap, {{0}});
+    auto item = [&](int32_t index, std::vector<uint8_t> &object, int32_t serial) {
+      put_ptr(items, 24 * index, uintptr_t(object.data()));
+      put_i32(items, 24 * index + 0x10, serial);
+    };
+    item(1, move_table, 11);
+    item(2, skill_table, 12);
+    item(3, stray_table, 13);
+    item(4, late_table, 14);
+    // The registry: main map at +0x08 (0x14-byte key, weak index, weak serial, next id; one inline bucket): key 4 the
+    // move table, key 0 the skill table, key 7 another table; the second map at +0x60 (two heap buckets) holds key 4.
+    std::vector<uint8_t> registry(0xb0), main(0x14 * 3), second(0x14);
+    int32_t entries[3][3] = {{4, 1, 11}, {0, 2, 12}, {7, 3, 13}};
+    for (int i = 0; i < 3; i++)
+      for (int k = 0; k < 3; k++)
+        put_i32(main, 0x14 * i + 4 * k, entries[i][k]);
+    put_i32(second, 0, 4);
+    put_i32(second, 4, 4);
+    put_i32(second, 8, 14);
+    tset(registry, 8, main, 0x14, 0xc, main_heap, {{1, 2, 0}}); // The inline bucket starts the chain at the skill table.
+    tset(registry, 0x60, second, 0x14, 0xc, second_heap, {{}, {0}});
+    auto o = uintptr_t(objects.data()), reg = uintptr_t(registry.data());
+    auto byte = [](std::vector<uint8_t> &r, size_t field) { return int(r[field]); };
+    auto patched = [&](int value) { // The seven fields.
+      return byte(moves[0], 0xbc) == value && byte(moves[1], 0xbc) == value &&
+             std::all_of(skills.begin(), skills.end() - 1, [&](auto &r) { return byte(r, 0x170) == value; });
+    };
+    // Untouched: a move-table row with a skill ID, a move row off the fingerprint, a skill row with IgnoreLockOn, a row
+    // under key 7.
+    auto decoys = [&]() {
+      return byte(moves[2], 0xbc) == 1 && byte(moves[2], 0x170) == 1 && byte(moves[3], 0xbc) == 1 &&
+             byte(skills[5], 0x170) == 1 && byte(stray[0], 0xbc) == 1 && byte(stray[0], 0x170) == 1;
+    };
+    assert(patch_lock_rows(0, o, true) == 0 && patch_lock_rows(reg, 0, true) == 0 && patched(1) && "No registry or objects, nothing written");
+    assert(patch_lock_rows(reg, o, true) == 7 && patched(0) && decoys() && "Locked: the seven rows hold 0, the decoys untouched");
+    assert(patch_lock_rows(reg, o, true) == 7 && patched(0) && decoys() && "Idempotent while held");
+    skills[3][0x170] = 2; // Set by the game or a mod meanwhile.
+    assert(patch_lock_rows(reg, o, false) == 0 && byte(skills[3], 0x170) == 2 && byte(moves[0], 0xbc) == 1 && byte(moves[1], 0xbc) == 1 &&
+           byte(skills[0], 0x170) == 1 && byte(skills[4], 0x170) == 1 && decoys() && "Unlocked: back to 1, another value left alone");
+    assert(patch_lock_rows(reg, o, true) == 6 && "A row holding another value is not held");
+    skills[3][0x170] = 0;
+    assert(patch_lock_rows(reg, o, false) == 0 && patched(1));
+    put_i32(items, 24 * 1 + 0x10, 99);
+    assert(patch_lock_rows(reg, o, true) == 5 && byte(moves[0], 0xbc) == 1 && "A table whose serial changed is skipped");
+    assert(patch_lock_rows(reg, o, false) == 0 && patched(1));
+    put_i32(items, 24 * 1 + 0x10, 11);
+    put_i32(items, 24 * 1 + 8, 1 << 29);
+    assert(patch_lock_rows(reg, o, true) == 5 && byte(moves[1], 0xbc) == 1 && "Nor a pending-kill table");
+    assert(patch_lock_rows(reg, o, false) == 0 && patched(1));
+    put_i32(items, 24 * 1 + 8, 0);
+    assert(patch_lock_rows(reg, o, true) == 7 && byte(late[0], 0xbc) == 1 && "The second map waits for its flag");
+    assert(patch_lock_rows(reg, o, false) == 0 && patched(1));
+    registry[0x58] = 1;
+    assert(patch_lock_rows(reg, o, true) == 7 && byte(late[0], 0xbc) == 0 && patched(0) && "With it, its rows are patched too");
+    assert(patch_lock_rows(reg, o, false) == 0 && byte(late[0], 0xbc) == 1 && patched(1));
+    registry[0x58] = 0;
+    put_i32(skill_pairs, 0x18 * 4 + 0x10, 4); // A chain that loops on itself.
+    assert(patch_lock_rows(reg, o, true) == 7 && patched(0) && "A looping chain ends, the count exact");
+    assert(patch_lock_rows(reg, o, false) == 0 && patched(1));
+  }
   on_gameplay_poll(); // Nothing installed yet.
   poll_files(directory.wstring(), request(now), slots, "", now);
   on_gameplay_poll();
@@ -1173,5 +1291,5 @@ int main() {
     assert(stellar_shared::load32(base, 196) == 2);
   }
   std::filesystem::remove_all(directory);
-  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, material parameters, effects, camera input, mapping publication and release\n";
+  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, material parameters, effects, camera input, lock evade rows, mapping publication and release\n";
 }

@@ -462,10 +462,13 @@ public final class AvatarStreamTest {
                     assert stream.gauges() == null : "A gauge above its maximum is not shown";
                     RawFrameBus.INT.setRelease(map, 320, 0);
                     // EVE's evade starts follow them.
-                    assert java.util.Arrays.equals(stream.evades(), new int[7]) : "No evade counted yet";
-                    map.putInt(344, 3).putInt(348, 3).putInt(352, 0).putInt(356, 3).putInt(360, 0).putInt(364, 3).putInt(368, 4);
-                    assert java.util.Arrays.equals(stream.evades(), new int[] {3, 3, 0, 3, 0, 3, 4});
+                    assert java.util.Arrays.equals(stream.evades(), new int[8]) : "No evade counted yet";
+                    map.putInt(344, 3).putInt(348, 3).putInt(352, 0).putInt(356, 3).putInt(360, 0).putInt(364, 3).putInt(368, 4)
+                            .putInt(372, 7);
+                    assert java.util.Arrays.equals(stream.evades(), new int[] {3, 3, 0, 3, 0, 3, 4, 7});
                     assert stream.poll(table, now, System.nanoTime()) == null : "Counted evades are not reserved bytes";
+                    assert AvatarView.evadeStatus(stream.evades()).equals(" Evades: unlocked 3 first, 3 double, 0 cut; locked 3 first,"
+                            + " 0 double, 3 cut; 4 evade commands, 7 lock evade rows changed by the lock.") : "The lock rows in the status";
                     // EVE's stats follow them once the adapter reads them.
                     assert stream.stats() == null : "Unread stats";
                     float[] stats = {2000, 2, 450, 5, 1.5f, 0, 0, -0.2f};
@@ -514,6 +517,7 @@ public final class AvatarStreamTest {
                     .equals("Pose slot format 3, this build reads 4: install the matching adapter");
             // The header stays reserved between the camera and the gains word, and after the adapter's report.
             assert refusedWith(directory, table, 308, 1).equals("Pose mapping reserved bytes changed");
+            assert refusedWith(directory, table, 376, 1).equals("Pose mapping reserved bytes changed") : "Reserved after the evade words";
             assert AvatarStream.ACTOR_END == 1036 && refusedWith(directory, table, AvatarStream.ACTOR_END, 1).equals("Pose mapping reserved bytes changed");
             // A refused slot ends the stream: bit 2 without bit 0, an unknown bit, a camera pitch without bit 2, a non-finite one.
             assert refused(directory, table, 4, 0).equals("Invalid controller rotation status");

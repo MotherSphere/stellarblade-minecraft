@@ -38,9 +38,10 @@ constexpr size_t InternalIndex = 0x0c, ClassPrivate = 0x10, WorldTransform = 0x1
                  SpaceTransforms = 0x5a8, SkeletalMesh = 0x568,
                  ReadTransforms = 0x674, MorphWeights = 0x738;
 // GUObjectArray: ObjObjects at 0x10 (chunk table pointer first), NumElements
-// at ObjObjects + 0x14; 64K items per chunk, 24-byte FUObjectItem.
+// at ObjObjects + 0x14; 64K items per chunk, 24-byte FUObjectItem (object,
+// flags, cluster root, serial number; 0x2ba3ab0).
 constexpr size_t ChunkTable = 0x10, ElementCount = 0x24, ItemBytes = 24,
-                 ItemFlags = 8;
+                 ItemFlags = 8, ItemSerial = 0x10;
 constexpr int32_t PendingKill = 1 << 29, Unreachable = 1 << 28;
 // FScalarParameterValue (FMaterialParameterInfo, float, FGuid) and
 // FVectorParameterValue (FMaterialParameterInfo, FLinearColor, FGuid) without
@@ -113,16 +114,17 @@ template <class T> T at(uintptr_t where) {
   std::memcpy(&value, reinterpret_cast<const void *>(where), sizeof value);
   return value;
 }
-bool alive(uintptr_t objects, uintptr_t object) {
-  auto index = at<int32_t>(object + InternalIndex);
+// The FUObjectItem of an object index, or 0.
+uintptr_t object_item(uintptr_t objects, int32_t index) {
   if (index < 0 || index >= at<int32_t>(objects + ElementCount))
-    return false;
+    return 0;
   auto chunks = at<uintptr_t>(objects + ChunkTable);
   auto chunk = chunks ? at<uintptr_t>(chunks + 8 * uintptr_t(index >> 16)) : 0;
-  if (!chunk)
-    return false;
-  auto item = chunk + ItemBytes * uintptr_t(index & 0xffff);
-  return at<uintptr_t>(item) == object &&
+  return chunk ? chunk + ItemBytes * uintptr_t(index & 0xffff) : 0;
+}
+bool alive(uintptr_t objects, uintptr_t object) {
+  auto item = object_item(objects, at<int32_t>(object + InternalIndex));
+  return item && at<uintptr_t>(item) == object &&
          !(at<int32_t>(item + ItemFlags) & (PendingKill | Unreachable));
 }
 // USceneComponent::bVisible (byte 0x170, bit 5) and bHiddenInGame (0x171, bit 2)
@@ -781,6 +783,80 @@ bool hold_battle(uintptr_t world, uintptr_t clock, uintptr_t vtable) {
   return true;
 }
 
+namespace {
+// A UE 4.26 TSet at set: elements of stride bytes from +0 (slot count +8), each with its next id at next; buckets
+// inline at +0x38 or on the heap at +0x40, HashSize +0x48 (as 0x1b70d40 reads them). Each live element hangs on one
+// bucket chain, so the chains visit them all once; a chain is cut after count links.
+template <class Each> void each_element(uintptr_t set, size_t stride, size_t next, Each &&each) {
+  auto data = at<uintptr_t>(set);
+  auto count = at<int32_t>(set + 8), size = at<int32_t>(set + 0x48);
+  auto buckets = at<uintptr_t>(set + 0x40) ? at<uintptr_t>(set + 0x40) : set + 0x38;
+  if (!data || count <= 0 || size <= 0 || size > (1 << 20))
+    return;
+  for (int32_t b = 0; b < size; b++)
+    for (int32_t i = at<int32_t>(buckets + 4 * uintptr_t(b)), seen = 0; i >= 0 && i < count && seen++ < count;
+         i = at<int32_t>(data + stride * uintptr_t(i) + next))
+      each(data + stride * uintptr_t(i));
+}
+// A FWeakObjectPtr (index, serial) as 0x2ba3ab0 resolves it: the object while its item keeps the serial and is
+// neither pending kill nor unreachable.
+uintptr_t weak_object(uintptr_t objects, uintptr_t weak) {
+  auto item = object_item(objects, at<int32_t>(weak));
+  auto serial = at<int32_t>(weak + 4);
+  return item && serial && at<int32_t>(item + ItemSerial) == serial &&
+                 !(at<int32_t>(item + ItemFlags) & (PendingKill | Unreachable))
+             ? at<uintptr_t>(item)
+             : 0;
+}
+struct LockRow {
+  int32_t table; // Registry key: 0 SkillTable, 4 CharacterMoveTable.
+  uint32_t id;
+  size_t field; // A byte holding 1 as shipped.
+};
+constexpr LockRow LockRows[] = {
+    {4, 1000601, 0xbc}, {4, 1000701, 0xbc},                        // Move2 rows (first, double dodge): Target -> None
+    {0, 1001104, 0x170}, {0, 1001105, 0x170}, {0, 1001106, 0x170}, // Sword lock evades: no turn to the stick
+    {0, 1004202, 0x170}, {0, 1007102, 0x170}};                     // Tachy, Fusion
+// Only these rows of the extracted tables match: move rows by RotationEndTime +0xB8, DistanceToIgnoreRotationLimitAngle
+// +0xD8 and RotationLeftLimitAngle +0xDC; skill rows by RotateInputDirectionIgnoreLockOn +0x171 and bSwitchBattleMode +0x172.
+bool shipped(uintptr_t row, int32_t table) {
+  return table == 4 ? at<float>(row + 0xb8) == 0.3f && at<float>(row + 0xd8) == 280 && at<float>(row + 0xdc) == 65
+                    : at<uint8_t>(row + 0x171) == 0 && at<uint8_t>(row + 0x172) == 1;
+}
+} // namespace
+
+// The registry's main TMap<int32, TWeakObjectPtr<UDataTable>> at +0x08 (0x14-byte elements: key, weak pointer, next id
+// at +0xc), and a second one at +0x60 consulted first while byte +0x58 is 1 (0x1b70d40, 0x1a9d900). A table's RowMap
+// (TMap<FName, uint8*>, 0x18-byte elements: name, row, next id at +0x10) is at +0x30, what its GetRowMap (virtual
+// +0x280, 0x1415dbd90) returns.
+uint32_t patch_lock_rows(uintptr_t registry, uintptr_t objects, bool locked) {
+  bool held[std::size(LockRows)] = {}; // An entry's row holds 0: counted once, however often the chains reach it.
+  auto tables = [&](uintptr_t map) {
+    each_element(map, 0x14, 0xc, [&](uintptr_t entry) {
+      auto key = at<int32_t>(entry);
+      auto table = key == 0 || key == 4 ? weak_object(objects, entry + 4) : 0;
+      if (table)
+        each_element(table + 0x30, 0x18, 0x10, [&](uintptr_t pair) {
+          auto row = at<uintptr_t>(pair + 8);
+          auto id = row ? at<uint32_t>(row + 0x10) : 0;
+          for (size_t k = 0; k < std::size(LockRows); k++)
+            if (LockRows[k].table == key && LockRows[k].id == id && shipped(row, key)) {
+              auto value = at<uint8_t>(row + LockRows[k].field);
+              if (value == uint8_t(locked))
+                put(reinterpret_cast<uint8_t *>(row), LockRows[k].field, uint8_t(!locked));
+              held[k] = held[k] || (locked && value <= 1);
+            }
+        });
+    });
+  };
+  if (!registry || !objects)
+    return 0;
+  tables(registry + 8);
+  if (at<uint8_t>(registry + 0x58) == 1)
+    tables(registry + 0x60);
+  return uint32_t(std::count(std::begin(held), std::end(held), true));
+}
+
 uint64_t parse_lock(std::string_view text, std::string_view linked) {
   Lines lines(text, 256);
   std::string session;
@@ -953,7 +1029,7 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   if (gauges)
     std::memcpy(self.base + 324, gauges, sizeof(float) * GaugeFloats);
   exchange32(self.base, 320, gauges ? 1 : 0);
-  // EVE's evade starts and the nodes the lock left changed: words at 344.
+  // EVE's evade starts, the nodes and the rows the lock left changed: words at 344.
   if (evades)
     std::memcpy(self.base + 344, evades, sizeof(uint32_t) * EvadeWords);
   // EVE's stats for Minecraft: floats at StatsAt, then state 1 (or 0) at StatsState.
@@ -1036,6 +1112,8 @@ Follow following;
 DollyWrite dolly_write;
 uint64_t minecraft_lock = 0; // eve-lock.txt's TIME while Minecraft holds a target.
 EvadeStarts evade_starts;
+bool rows_locked = false; // The lock state patch_lock_rows last completed a walk for.
+constexpr uint32_t RowsFault = ~0u;
 Grants grants;
 HealthMirror mirror;
 uint32_t process_id() {
@@ -1155,6 +1233,16 @@ void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e)
   } __except (EXCEPTION_EXECUTE_HANDLER) {
   }
 }
+// A table freed under the walk faults at worst; contained, and retried at the next poll.
+uint32_t guarded_rows(bool locked) {
+  static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  __try {
+    auto manager = at<uintptr_t>(image + TableManagerRva);
+    return patch_lock_rows(manager ? at<uintptr_t>(manager + 0x20) : 0, engine.objects, locked);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return RowsFault;
+  }
+}
 // A player actor freed under the poll faults before the write at worst; contained.
 bool guarded_battle(uintptr_t world) {
   static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
@@ -1192,7 +1280,8 @@ void guarded_mirror(uintptr_t world, float share, uint32_t acknowledged, bool fr
 uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
 uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
 void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) { count_evades(world, locked, wall, e); }
-bool guarded_battle(uintptr_t) { return false; } // Nor a turn clock.
+bool guarded_battle(uintptr_t) { return false; } // Nor a turn clock,
+uint32_t guarded_rows(bool) { return 0; }        // nor a table manager.
 uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
   return read_effects(e, t, out);
 }
@@ -1258,6 +1347,14 @@ void on_gameplay_poll(std::string_view owner) {
     auto changed = guarded_evades(game_world(), locked);
     if (locked)
       evade_starts.counts[6] = changed;
+  }
+  if (locked != rows_locked) { // About 5900 rows walked, so only when the lock starts or ends.
+    auto rows = guarded_rows(locked);
+    if (rows != RowsFault) {
+      rows_locked = locked;
+      if (locked)
+        evade_starts.counts[7] = rows; // Kept after the release, as word 6 is.
+    }
   }
   if (locked)
     guarded_battle(game_world());

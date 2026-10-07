@@ -179,13 +179,14 @@ uint32_t patch_evades(uintptr_t world, bool locked);
 // stance (air evade, fast getups and Evade-command attacks too). A first dodge
 // whose time goes to 0 more than EvadeMarginMs before its window's end counts
 // as cut. counts, the header's words after the gauges: first, double, cut
-// while unlocked, the same while locked, then the caller's word (the nodes the
-// latest locked poll's patch_evades left changed). A real start of a node
+// while unlocked, the same while locked, then the caller's words (the nodes the
+// latest locked poll's patch_evades left changed, the rows the latest lock
+// start's patch_lock_rows holds). A real start of a node
 // whose command is TPSFire (44) counts a drone shot when its action (+0x30,
 // the row's CommandActionType, stored at 0x1d287e2) fires: RangedFireItem (1)
 // or RangedFireSkill (2); her Skill (0) rows of that command are the empty
 // gun's misfires. world as for read_gauges; wall in milliseconds.
-constexpr uint32_t EvadeWords = 7;
+constexpr uint32_t EvadeWords = 8;
 static_assert(344 + 4 * EvadeWords <= StatsState, "The evade words must end before the stats");
 // Header byte of the drone shot count (u32), right after the stats.
 constexpr size_t ShotsAt = 484;
@@ -281,6 +282,17 @@ struct Report {
 // image's TurnClockVtableRva. True if it stamped.
 constexpr uintptr_t TurnClockRva = 0x7032560, TurnClockVtableRva = 0x5bf9120;
 bool hold_battle(uintptr_t world, uintptr_t clock, uintptr_t vtable);
+// Minecraft's lock-on for EVE's facing through a lock evade. Its skill turns her to the stick at start (SkillTable
+// RotateInputDirection, row +0x170; NewSkillLogic 0x1ad0557 skips that only for a caster with a simulation lock target,
+// FSBActor+0x630) and its second rule move turns her to the step's main target for 0.3 s (CharacterMoveTable
+// RotationType Target, row +0xBC; 0x20a6380), the lock target or else the nearest Stellar Blade enemy within 30 m
+// (SetStep 0x1bf660f). Minecraft's lock never sets that target. locked: the rows of LockRows that still look shipped
+// get 0 where they hold 1; unlocked: 1 again where they hold 0. Rows are found by ID (row +0x10) in the DataTables of
+// Stellar Blade's table registry (manager at TableManagerRva, 0x1a97f20; registry +0x20; key 0 SkillTable 0x1a9d900,
+// key 4 CharacterMoveTable 0x1b701a0), read by name at each use (0x1b72bc0). objects: GUObjectArray. Returns how many
+// of the 7 rows hold 0 while locked, else 0.
+constexpr uintptr_t TableManagerRva = 0x7032510;
+uint32_t patch_lock_rows(uintptr_t registry, uintptr_t objects, bool locked);
 // eve-lock.txt (SBMC_LOCK 1): its TIME while it names a target for session
 // (the link Lua's component table names), else 0.
 uint64_t parse_lock(std::string_view text, std::string_view session);
@@ -344,8 +356,10 @@ public:
 // Adapter entry points. initialize receives GUObjectArray's address and the
 // boom's virtual table (image + BoomVtableRva; 0 never sets the dolly). The
 // worker passes the request file, both component slots and Minecraft's lock
-// file; the verified gameplay XInput poll gives EVE the lock-on evades while
-// Minecraft locks and owner (the run whose input is forwarded) is set and keeps
+// file; the verified gameplay XInput poll gives EVE the lock-on evades, without
+// their turns away from the target (patch_lock_rows, walked when the lock
+// starts or ends), while Minecraft locks and owner (the run whose input is
+// forwarded) is set and keeps
 // her in the battle mode an attack started meanwhile, counts her evade starts and drone shots,
 // when owner is this stream's run adds Minecraft's gauge points and mirrors its
 // health share into her HP (restored once the share stops, stream or not),

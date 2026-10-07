@@ -599,9 +599,10 @@ public final class AvatarView {
         return reasons.isEmpty() ? "" : " Pitch input instead: " + String.join(", ", reasons) + ".";
     }
 
-    private static String evadeStatus(int[] evades) {
+    static String evadeStatus(int[] evades) {
         return evades == null ? "" : String.format(" Evades: unlocked %d first, %d double, %d cut; locked %d first, %d double, %d cut;"
-                + " %d evade commands changed by the lock.", evades[0], evades[1], evades[2], evades[3], evades[4], evades[5], evades[6]);
+                + " %d evade commands, %d lock evade rows changed by the lock.", evades[0], evades[1], evades[2], evades[3], evades[4],
+                evades[5], evades[6], evades[7]);
     }
 
     private static String gaugeStatus(float[] gauges) {

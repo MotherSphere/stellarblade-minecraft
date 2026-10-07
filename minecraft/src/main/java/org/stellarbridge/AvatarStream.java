@@ -43,7 +43,7 @@ final class AvatarStream implements AutoCloseable {
         }
     }
     /** Up to MAX_EFFECTS active effects per pose: an index into Table.effects, then a world transform (11 floats). */
-    static final int MAX_EFFECTS = 8, EFFECT_FLOATS = 11, GAUGES = 5, EVADES = 7, STATS = 8;
+    static final int MAX_EFFECTS = 8, EFFECT_FLOATS = 11, GAUGES = 5, EVADES = 8, STATS = 8;
     static final int STATS_STATE = 448, STATS_AT = 452; // Header bytes of EVE's stats: state, then floats.
     static final int SHOTS_AT = STATS_AT + 4 * STATS; // Header byte of her drone's shot count, right after the stats.
     // Minecraft's health and gains words beside its camera, then the adapter's report after the shot count: heal count,
@@ -244,7 +244,7 @@ final class AvatarStream implements AutoCloseable {
     /**
      * EVE's evade starts from the header (u32 at 344): first dodges, double dodges and first dodges whose combo window closed
      * early while unlocked, the same while Minecraft's lock held, then the lock-gated evade commands the adapter's latest
-     * locked frame left changed; zeros until it counts.
+     * locked frame left changed and the lock evade rows its latest lock start held at 0; zeros until it counts.
      */
     int[] evades() {
         if (map == null || stopped) return null;
@@ -506,8 +506,8 @@ final class AvatarStream implements AutoCloseable {
         require(map.getInt(8) == 1 && map.getInt(12) == HEADER && map.getInt(16) == SLOT && map.getInt(20) == CAPACITY
                 && map.getInt(28) == TOTAL, "Pose mapping layout changed");
         zeros(24, 28); zeros(64, 96); zeros(100, 128); zeros(132, 192); zeros(204, 208); zeros(240, 256); zeros(260, 264);
-        zeros(308, GAINS_AT); zeros(372, STATS_STATE); zeros(ACTOR_END, HEADER);
-        // 280..288: Minecraft's health word; 288..308: its camera; 312..320: its gains word; 320..372: EVE's gauges and evades;
+        zeros(308, GAINS_AT); zeros(376, STATS_STATE); zeros(ACTOR_END, HEADER);
+        // 280..288: Minecraft's health word; 288..308: its camera; 312..320: its gains word; 320..376: EVE's gauges and evades;
         // 448..484: her stats; 484..488: her drone's shots; 488..1036: the adapter's report.
     }
     private void zeros(int from, int to) throws IOException {
