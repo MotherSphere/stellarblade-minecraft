@@ -88,7 +88,7 @@ public final class AvatarCombat {
     // ponytail: a mob is struck again every REHIT seconds, so a long swing can count twice; per-swing ids if it over-grants.
     static final int STRIKE_BETA = 15, CRITICAL_BETA = 4, CHARGED_BURST = 200, PERFECT_PARRY_BETA = 65, PARRY_BETA = 25;
     // A Beta or Burst drop of SPENT or more between frames is a skill (Beta skills cost 400, Burst ones 600 or 800; the Ex
-    // finisher and combo extensions 200): strikes earn nothing for QUIET nanoseconds after it.
+    // finisher and combo extensions 200): strikes earn no points of their own for QUIET nanoseconds after it (kill Burst and parry Beta still count).
     // ponytail: a gauge-drop heuristic; EVE's command node (ESBSkillCommandState 30-39) would gate exactly, if it misses.
     static final int SPENT = 300;
     static final long QUIET = 2_500_000_000L;
@@ -351,7 +351,8 @@ public final class AvatarCombat {
         if (!target.damage(player.getDamageSources().playerAttack(player), amount * stats.strikes() * (critical ? stats.critMultiplier() : 1))) return;
         var living = (LivingEntity) target;
         int[] gain = gains(charged, first, critical, shot, quiet(System.nanoTime()));
-        // Stellar Blade's AttackerEffectWhenDead goes to the attacker whatever the weapon, so shots kill for Burst too.
+        // Stellar Blade's AttackerEffectWhenDead goes to the attacker, so EVE's sword and drone kills earn Burst; grenade and mine
+        // kills do not (Stellar Blade credits a mine's kill to the mine, and a Pulse only drains shields).
         if (living.isDead()) gain[1] += killBurst(target.getType().isIn(ConventionalEntityTypeTags.BOSSES), target instanceof Monster, living.getMaxHealth());
         points.addAndGet(0, gain[0]);
         points.addAndGet(1, gain[1]);
