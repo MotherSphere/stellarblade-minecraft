@@ -37,7 +37,8 @@ import org.joml.Vector3d;
  * pressed just before is a perfect parry (no damage; a melee attacker staggers, an arrow flies back at its shooter),
  * a little earlier a parry (no damage), and a held guard lets a fifth through, all as in Stellar Blade; Minecraft's
  * unblockable damage goes through any guard. While the bridge session lasts but EVE cannot answer (a pause menu over a
- * running world, no live link), nothing hurts her.
+ * running world, no live link), nothing hurts her. Her Stellar Blade stats (AvatarStats) scale her strikes and reduce,
+ * approximately, the damage she takes.
  */
 public final class AvatarCombat {
     // Strike damage per Stellar Blade trail style (SWING: no effect data, the swing heuristic), doubled for a charged
@@ -127,7 +128,7 @@ public final class AvatarCombat {
         Entity origin = source.getSource() != null ? source.getSource() : source.getAttacker();
         int now = player.getServer().getTicks();
         if (origin.getId() == lastOrigin && now - lastJudged < 10) return switch (lastDefense) {
-            case HIT -> null;
+            case HIT -> applied(player, source, amount);
             case GUARD -> applied(player, source, amount * GUARD_SHARE);
             default -> false;
         };
@@ -183,10 +184,10 @@ public final class AvatarCombat {
         }
     }
 
-    /** Minecraft's own damage, from inside the hook. */
+    /** Minecraft's own damage, from inside the hook, after EVE's Stellar Blade damage reductions. */
     private static boolean applied(ServerPlayerEntity player, DamageSource source, float amount) {
         defending = true;
-        try { return player.damage(source, amount); }
+        try { return player.damage(source, amount * AvatarStats.current().taken(source.isIn(DamageTypeTags.IS_PROJECTILE))); }
         finally { defending = false; }
     }
 
@@ -243,11 +244,14 @@ public final class AvatarCombat {
         Entity target = player.getServerWorld().getEntityById(entityId);
         if (target == null || !strikable(target, player) || target.getBoundingBox().squaredMagnitude(player.getPos()) > REACH * REACH) return;
         target.timeUntilRegen = 0; // Each strike is its own attack, often sooner than Minecraft's half-second immunity.
-        if (!target.damage(player.getDamageSources().playerAttack(player), amount)) return;
+        // EVE's attack power scales the strike; her critical rate rolls Stellar Blade's critical damage.
+        var stats = AvatarStats.current();
+        boolean critical = stats.crits(player.getRandom().nextFloat());
+        if (!target.damage(player.getDamageSources().playerAttack(player), amount * stats.strikes() * (critical ? stats.critMultiplier() : 1))) return;
         if (knockback > 0) ((LivingEntity) target).takeKnockback(knockback, player.getX() - target.getX(), player.getZ() - target.getZ());
         player.onAttacking(target);
-        sound(player, charged ? SoundEvents.ENTITY_PLAYER_ATTACK_CRIT : SoundEvents.ENTITY_PLAYER_ATTACK_STRONG, 1);
-        impact(player, target, knockback > 0, charged);
+        sound(player, charged || critical ? SoundEvents.ENTITY_PLAYER_ATTACK_CRIT : SoundEvents.ENTITY_PLAYER_ATTACK_STRONG, 1);
+        impact(player, target, knockback > 0, charged || critical);
         counts.incrementAndGet(0);
     }
 

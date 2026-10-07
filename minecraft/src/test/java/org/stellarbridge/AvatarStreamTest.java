@@ -119,6 +119,24 @@ public final class AvatarStreamTest {
         assert java.util.Arrays.equals(AvatarHud.cubes(450, 1000, 16), new int[] {5, 2, 1}) : "Two cubes, then a quarter of the third";
         assert java.util.Arrays.equals(AvatarHud.cubes(130, 1600, 20), new int[] {8, 0, 2}) : "A perfect dodge's 130 Burst";
         assert java.util.Arrays.equals(AvatarHud.cubes(1000, 1000, 16), new int[] {5, 5, 0}) && AvatarHud.cubes(0, 5000, 20)[0] == 20;
+        // Stellar Blade's stats as Minecraft's: her base is vanilla's, upgrades scale health and strikes, reductions multiply.
+        var base = AvatarStats.Values.of(new float[] {2000, 2, 450, 5, 1.5f, 0, 0, 0});
+        assert base.health() == 1 && base.strikes() == 1 && Math.abs(base.taken(false) - 0.65f) < 1e-6 : "Two shield blocks take 35 %";
+        assert base.crits(0.04f) && !base.crits(0.05f) && base.critMultiplier() == 1.5f : "5 % of strikes deal 150 %";
+        var upgraded = AvatarStats.Values.of(new float[] {4000, 3, 900, 5, 1.5f, 0.2f, 0.1f, 0});
+        assert upgraded.health() == 2 && upgraded.strikes() == 2;
+        assert Math.abs(upgraded.taken(false) - 0.8f * 0.475f) < 1e-6 && Math.abs(upgraded.taken(true) - 0.9f * 0.475f) < 1e-6
+                : "Melee and ranged reductions by the hit's kind, times the shield's";
+        var strange = AvatarStats.Values.of(new float[] {99999, 99, 1, 500, 99, 5, -5, -5});
+        assert strange.health() == AvatarStats.MAX_SCALE && strange.strikes() == AvatarStats.MIN_SCALE
+                && strange.critMultiplier() == AvatarStats.MAX_SCALE && strange.crits(0.99f);
+        assert Math.abs(strange.taken(false) - 0.1f * 2 * 0.1f) < 1e-6 : "Each reduction stops at 90 %, a negative final one doubles at most";
+        assert Math.abs(strange.taken(true) - 2 * 0.1f) < 1e-6 : "A negative ranged reduction adds nothing";
+        var none = AvatarStats.Values.BASE;
+        assert none.health() == 1 && none.strikes() == 1 && none.taken(true) == 1 && !none.crits(0) && none.critMultiplier() == 1
+                : "Without stats, Minecraft's own rules";
+        assert AvatarStats.status(null).equals(" Stats not read.") && AvatarStats.status(new float[] {2000, 2, 450, 5, 1.5f, 0, 0, 0})
+                .contains("max HP 2000 (health x1");
         var body = table.components().get(0);
         var face = table.components().get(1);
         assert body.recorded() && body.bones().length == 3 && body.bones()[2].equals("Bip001-Head") && body.weights() == 0;
@@ -269,6 +287,19 @@ public final class AvatarStreamTest {
                     map.putInt(344, 3).putInt(348, 3).putInt(352, 0).putInt(356, 3).putInt(360, 0).putInt(364, 3).putInt(368, 4);
                     assert java.util.Arrays.equals(stream.evades(), new int[] {3, 3, 0, 3, 0, 3, 4});
                     assert stream.poll(table, now, System.nanoTime()) == null : "Counted evades are not reserved bytes";
+                    // EVE's stats follow them once the adapter reads them.
+                    assert stream.stats() == null : "Unread stats";
+                    float[] stats = {2000, 2, 450, 5, 1.5f, 0, 0, -0.2f};
+                    for (int i = 0; i < stats.length; i++) map.putFloat(AvatarStream.STATS_AT + 4 * i, stats[i]);
+                    RawFrameBus.INT.setRelease(map, AvatarStream.STATS_STATE, 1);
+                    assert java.util.Arrays.equals(stream.stats(), stats);
+                    assert stream.poll(table, now, System.nanoTime()) == null : "Streamed stats are not reserved bytes";
+                    map.putFloat(AvatarStream.STATS_AT + 8, 0);
+                    assert stream.stats() == null : "No attack power is not EVE's";
+                    map.putFloat(AvatarStream.STATS_AT + 8, 450).putFloat(AvatarStream.STATS_AT + 28, Float.NaN);
+                    assert stream.stats() == null : "Nor is a non-finite rate";
+                    RawFrameBus.INT.setRelease(map, AvatarStream.STATS_STATE, 0);
+                    assert stream.stats() == null : "Unreadable again";
                     // Native release, then reaping deletes the mapping and the request says stopped.
                     RawFrameBus.INT.setRelease(map, 196, 2);
                     try { stream.poll(table, now, System.nanoTime()); throw new AssertionError("A stopped producer must end the stream"); }

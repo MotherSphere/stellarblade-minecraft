@@ -12,6 +12,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.block.ShapeContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -69,6 +70,11 @@ public final class StellarBridge implements ClientModInitializer {
         ServerTickEvents.END_SERVER_TICK.register(StellarBridge::tick);
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             if (session != null && session.server == server) stop("World closed");
+        });
+        // Before vanilla saves a leaving player (Save and Quit): EVE's maximum health must never reach the save.
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            Session current = session;
+            if (current != null && current.player == handler.player) AvatarStats.apply(handler.player, AvatarStats.Values.BASE);
         });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> pauseBinding = null);
         ClientTickEvents.START_CLIENT_TICK.register(client -> {
@@ -135,6 +141,7 @@ public final class StellarBridge implements ClientModInitializer {
         AvatarCombat.restoreTime(true);
         NativeSceneExport.stop();
         if (previous == null) return;
+        AvatarStats.apply(previous.player, AvatarStats.Values.BASE); // Minecraft's own maximum health again.
         try { previous.files.stop(); }
         catch (IOException exception) { LOG.warn("Could not delete terrain snapshot; its heartbeat will expire", exception); }
         previous.player.sendMessage(Text.literal("Stellar Bridge stopped: " + reason), false);
@@ -155,6 +162,7 @@ public final class StellarBridge implements ClientModInitializer {
             stop("The original private session is no longer available");
             return;
         }
+        if (!dead) AvatarStats.apply(current.player, AvatarStats.current()); // A respawned player gets them anew.
         try {
             if (++current.ticks % 4 == 0) current.publish();
             if (dead) { // The terrain heartbeat goes on; EVE drives nobody until the respawn.

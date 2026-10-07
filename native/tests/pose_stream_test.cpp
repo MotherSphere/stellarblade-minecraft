@@ -551,6 +551,16 @@ int main() {
       assert(stellar_shared::plain<uint32_t>(view.base, 344 + 4 * i) == i + 1 && "Evade words in order at 344");
     assert(std::all_of(view.base + 344 + 4 * EvadeWords, view.base + Header, [](uint8_t b) { return b == 0; }) &&
            "Nothing after them");
+    // EVE's stats: floats at StatsAt, state 1 at StatsState, cleared to 0 when unreadable; the rest stays reserved.
+    float stats[StatFloats] = {2000, 2, 450, 5, 1.5f, 0, 0, 0};
+    assert(direct.publish(2, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades, stats));
+    assert(stellar_shared::load32(view.base, StatsState) == 1 && stellar_shared::plain<float>(view.base, StatsAt) == 2000 &&
+           stellar_shared::plain<float>(view.base, StatsAt + 4 * 4) == 1.5f && "Stats in order");
+    assert(std::all_of(view.base + 344 + 4 * EvadeWords, view.base + StatsState, [](uint8_t b) { return b == 0; }) &&
+           std::all_of(view.base + StatsAt + 4 * StatFloats, view.base + Header, [](uint8_t b) { return b == 0; }) &&
+           "Reserved bytes around them");
+    assert(direct.publish(3, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades) &&
+           stellar_shared::load32(view.base, StatsState) == 0 && "Unreadable stats clear their state");
     direct.stop();
   }
   auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
@@ -580,8 +590,24 @@ int main() {
     stat(18, std::nanf(""));
     assert(!read_gauges(w, g) && "Nor a non-finite one");
     stat(18, 130);
+    // Her stats for Minecraft, from the same array: MaxHP, ShieldBlock, attack power, critical rate and damage,
+    // then the melee, ranged and final HP damage reduction rates (a negative one adds damage).
+    stat(2, 2000); stat(11, 2); stat(26, 450); stat(38, 5); stat(39, 1.5f); stat(55, 0.1f); stat(56, 0); stat(71, -0.2f);
+    float s[StatFloats];
+    assert(read_stats(w, s) && s[0] == 2000 && s[1] == 2 && s[2] == 450 && s[3] == 5 && s[4] == 1.5f && s[5] == 0.1f &&
+           s[6] == 0 && s[7] == -0.2f && "EVE's stats");
+    assert(!read_stats(0, s) && "No game world, no stats");
+    stat(26, 0);
+    assert(!read_stats(w, s) && "No attack power is not her actor's");
+    stat(26, 450);
+    stat(71, std::nanf(""));
+    assert(!read_stats(w, s) && "Nor is a non-finite rate");
+    stat(71, -0.2f);
+    stat(2, 2 * GaugeLimit);
+    assert(!read_stats(w, s) && "Nor a maximum beyond the gauges' limit");
+    stat(2, 2000);
     put_i32(manager, 0x3c, 2);
-    assert(!read_gauges(w, g) && "The player index stays within the actor count");
+    assert(!read_gauges(w, g) && !read_stats(w, s) && "The player index stays within the actor count");
     put_i32(manager, 0x3c, 1);
     // Minecraft's lock: EVE's lock-gated evades (globals under the root, double dodges one below) are opened.
     std::vector<uint8_t> set(0x180), root(0x20), normal(0xb8), lockon(0xb8), chain(0xb8), air(0xb8), attack(0xb8);
@@ -731,7 +757,8 @@ int main() {
     assert(stellar_shared::plain<uint32_t>(slot, 36) == 1 && stellar_shared::plain<float>(slot, 44) == 135 &&
            "The controller rotation travels in the slot header");
     assert(stellar_shared::plain<float>(slot, 128 + 4 * (42 + 10)) == 0.25f && "Follower morphs follow its world transform");
-    assert(stellar_shared::load32(base, 320) == 0 && "Without the pinned game world the gauges stay unreadable");
+    assert(stellar_shared::load32(base, 320) == 0 && stellar_shared::load32(base, StatsState) == 0 &&
+           "Without the pinned game world the gauges and stats stay unreadable");
     for (uint32_t i = 0; i < EvadeWords; i++)
       assert(stellar_shared::plain<uint32_t>(base, 344 + 4 * i) == 0 && "Nor are evades counted");
     on_gameplay_poll();

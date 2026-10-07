@@ -526,6 +526,18 @@ bool read_gauges(uintptr_t world, float *out) {
   }
   return out[0] <= out[1] && out[2] <= out[3];
 }
+bool read_stats(uintptr_t world, float *out) {
+  auto actor = player_actor(world);
+  if (!actor)
+    return false;
+  constexpr uint32_t Stats[StatFloats] = {2, 11, 26, 38, 39, 55, 56, 71};
+  for (uint32_t i = 0; i < StatFloats; i++) {
+    out[i] = at<float>(actor + 0x118 + 4 * uintptr_t(Stats[i]));
+    if (!std::isfinite(out[i]) || std::fabs(out[i]) > GaugeLimit)
+      return false;
+  }
+  return out[0] > 0 && out[2] > 0;
+}
 
 // EVE's command set (FSBActor +0x530, owner back at +0x178) roots her nodes at
 // +0x8; a node keeps child pointers at +0x8 (count +0x10), its command at
@@ -755,7 +767,7 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
                        const float *rotation, uint32_t look,
                        uint64_t wall, uint32_t read_us, const float *gauges,
-                       const uint32_t *evades) {
+                       const uint32_t *evades, const float *stats) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -793,6 +805,10 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   // EVE's evade starts and the nodes the lock left changed: words at 344.
   if (evades)
     std::memcpy(self.base + 344, evades, sizeof(uint32_t) * EvadeWords);
+  // EVE's stats for Minecraft: floats at StatsAt, then state 1 (or 0) at StatsState.
+  if (stats)
+    std::memcpy(self.base + StatsAt, stats, sizeof(float) * StatFloats);
+  exchange32(self.base, StatsState, stats ? 1 : 0);
   put(self.base, 224, read_us);
   put(self.base, 228, self.max_us);
   store64(self.base, 232, self.total_us);
@@ -911,6 +927,13 @@ bool guarded_gauges(uintptr_t world, float *out) {
     return false;
   }
 }
+bool guarded_stats(uintptr_t world, float *out) {
+  __try {
+    return read_stats(world, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
 uintptr_t game_world() {
   static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
   __try {
@@ -960,6 +983,7 @@ bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) 
 }
 #else
 bool guarded_gauges(uintptr_t world, float *out) { return read_gauges(world, out); }
+bool guarded_stats(uintptr_t world, float *out) { return read_stats(world, out); }
 uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
 uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
 void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) { count_evades(world, locked, wall, e); }
@@ -1065,11 +1089,13 @@ void on_gameplay_poll(std::string_view owner) {
   }
   float gauges[GaugeFloats];
   bool gauged = guarded_gauges(game_world(), gauges);
+  float stats[StatFloats];
+  bool statted = guarded_stats(game_world(), stats);
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
                    offset, rotated ? rotation : nullptr,
                    (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u) | (granted ? InputGranted : 0u), wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
-                   gauged ? gauges : nullptr, evade_starts.counts);
+                   gauged ? gauges : nullptr, evade_starts.counts, statted ? stats : nullptr);
 }
 } // namespace stellar_pose

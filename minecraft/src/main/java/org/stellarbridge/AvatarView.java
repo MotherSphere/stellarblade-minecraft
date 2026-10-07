@@ -69,6 +69,7 @@ public final class AvatarView {
         long grantedNanos; // When a sample last said Stellar Blade granted this run's input (or control was off).
         long gapSamples, turned, synced; // Controlled poses, those the adapter turned, those whose camera dolly it set.
         float glow; // Highest streamed material Opacity so far (the sword edge's glow while the game raises it).
+        float[] stats; // EVE's latest streamed stats, or null.
         List<AvatarStream.Effect> effects = List.of(); // The game's active effects on EVE in the newest sample.
         final AvatarEffects particles = new AvatarEffects();
         final AvatarCombat.Blade blade = new AvatarCombat.Blade();
@@ -287,6 +288,10 @@ public final class AvatarView {
             interpolate(current.ring, current.times, current.newest, current.count, wallMillis() - current.interval, current.pose);
             var link = StellarBridge.renderingContext();
             current.anchored = current.table.anchor() != null && link != null && current.table.session().equals(link.session());
+            // Her stats while she is the bridged player; a frame the adapter could not read them keeps the last ones.
+            float[] stats = current.stream.stats();
+            if (stats != null) current.stats = stats;
+            AvatarStats.publish(current.anchored ? current.stats : null);
             if (current.controlled) {
                 var player = MinecraftClient.getInstance().player;
                 // A locked target turns Minecraft's camera first; Stellar Blade's follows it. Without the link no EVE aims.
@@ -509,7 +514,8 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + AvatarCombat.status() + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges());
+                + AvatarCombat.status() + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
+                + AvatarStats.status(current.stats);
     }
 
     private static String evadeStatus(int[] evades) {
@@ -528,6 +534,7 @@ public final class AvatarView {
         if (current == null) return;
         live = null;
         halted = false;
+        AvatarStats.publish(null);
         AvatarLock.release();
         if (current.controlled) {
             current.stream.lookOff();

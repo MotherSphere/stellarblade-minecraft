@@ -134,6 +134,18 @@ constexpr uintptr_t GameWorldRva = 0x7032570;
 constexpr uint32_t GaugeFloats = 5;
 constexpr float GaugeLimit = 100000;
 bool read_gauges(uintptr_t world, float *out);
+// EVE's stats Minecraft converts, from the same actor and stat array:
+// ESBActorStatType MaxHP (2), ShieldBlock (11), PhysicAttackPower (26),
+// CriticalPercentage (38), CriticalValueRate (39),
+// MeleeAttackDamageReductionRate (55), RangeAttackDamageReductionRate (56) and
+// FinalHPDamageReduceRate (71). FSBActor::SetStat (0x1a684f0) stores each at
+// +0x118 + 4 * type and rebuilds MaxHP and PhysicAttackPower as their Value
+// stat times 1 + their Rate stat. False unless the player actor is spawned and
+// every value is finite within +-GaugeLimit, MaxHP and PhysicAttackPower above 0.
+constexpr uint32_t StatFloats = 8;
+// Header bytes of the stats: state at StatsState, floats from StatsAt (room left after the evade words).
+constexpr size_t StatsState = 448, StatsAt = 452;
+bool read_stats(uintptr_t world, float *out);
 // Minecraft's lock-on for EVE's evade. Each skill command node keeps
 // FSBSkillCommandTableProperty.bLockOn at +0x68, checked against the
 // simulation's own lock target (0 any, 1 none, 2 one, other values never);
@@ -160,6 +172,7 @@ uint32_t patch_evades(uintptr_t world, bool locked);
 // latest locked poll's patch_evades left changed). world as for read_gauges;
 // wall in milliseconds.
 constexpr uint32_t EvadeWords = 7;
+static_assert(344 + 4 * EvadeWords <= StatsState, "The evade words must end before the stats");
 struct EvadeStarts {
   uintptr_t node = 0;
   uint32_t start = 0;  // The start time's bits.
@@ -230,11 +243,13 @@ public:
   // rotation: the controller's Pitch, Yaw, Roll, then the camera's pitch
   // (zero unless look carries PitchSynced); look: LookApplied, PitchSynced,
   // InputGranted.
-  // evades: EvadeWords words for the header, or none.
+  // evades: EvadeWords words for the header, or none; stats: StatFloats
+  // floats, or none (unreadable).
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
                uint32_t look, uint64_t wall, uint32_t read_us,
-               const float *gauges = nullptr, const uint32_t *evades = nullptr);
+               const float *gauges = nullptr, const uint32_t *evades = nullptr,
+               const float *stats = nullptr);
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
   bool look(uint64_t wall, float &pitch, float &yaw) const;
