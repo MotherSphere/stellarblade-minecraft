@@ -359,13 +359,23 @@ function Adapter.new()
         end
         error(name..' not found')
     end
-    -- A Show on EVE through PlaySingleShow (built as no hit: keys checking a hit level are dropped).
-    function engine.play_show(path,yaw)
+    -- A Show on EVE through PlaySingleShow (built as no hit: keys checking a hit level are dropped). held names a
+    -- full-body SBShowAnimKey whose stop-at-move is lifted for this play: the game's skill blocks movement while such a
+    -- Show plays, a lone Show does not, so held movement would cut it at once. EVE's animation slot copies the flag when
+    -- the key starts, a frame or two later; returns the description and the restore to call after that.
+    function engine.play_show(path,yaw,held)
         local eve=character()
         local at,side,relative=toward(eve,yaw or value_of(eve:K2_GetActorRotation()).Yaw)
         loaded(path)
-        eve:PlaySingleShow(path,true,at)
-        return string.format('%s toward the %s (%.0f deg)',path:match('[^.]+$'),side,relative)
+        local restore=function() end
+        if held then
+            local key=show_key(path,held,'SBShowAnimKey')
+            key.bStopAtMove=false
+            restore=function() if valid(key) then key.bStopAtMove=true end end -- The asset's value.
+        end
+        local ok,why=pcall(function() eve:PlaySingleShow(path,true,at) end)
+        if not ok then restore(); error(why,0) end
+        return string.format('%s toward the %s (%.0f deg)%s',path:match('[^.]+$'),side,relative,held and ', stop-at-move lifted' or ''),restore
     end
     -- The Niagara and Cascade effects active on EVE's body mesh, as labels.
     function engine.eve_effects() return (engine.effects({{handle=assert(valid(pawn().Mesh),'EVE has no mesh.')}})) end
@@ -438,6 +448,15 @@ function Adapter.new()
             speed and string.format('%.0f',speed) or 'n/a'),full,add,speed
     end
     function engine.hit_restore(sample) if sample.restore then sample.restore() end end
+    -- EVE's full-body animation alpha and what lets a stop-at-move animation stop (her reflected movement state).
+    function engine.anim_state()
+        local eve=character()
+        local function get(read) local ok,v=pcall(read); return ok and tostring(value_of(v)) or 'n/a' end
+        local a=custom(eve)
+        return string.format('custom alpha %s; move block %s; move type %s; input %s/%s',a and string.format('%.2f',a) or 'n/a',
+            get(function() return eve.MoveInputBlockCount end),get(function() return eve.LastMoveType end),
+            get(function() return eve.LastMoveFowardInput end),get(function() return eve.LastMoveRightInput end))
+    end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)
         local bones,morphs={},{}

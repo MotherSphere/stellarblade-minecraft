@@ -21,11 +21,14 @@ local reactions,restores,alphas,busy,speed={},0,{},false,0
 local engine={}
 function engine.time_dilation(value) local previous=dilation; dilation=value; dilations[#dilations+1]=value; return previous end
 function engine.play_effect(path) effects[#effects+1]=path:match('[^.]+$') end
-function engine.play_show(path,yaw)
+local lifted,unlift=0,function() end -- Keys whose stop-at-move is lifted; the restore the fake hands out.
+function engine.play_show(path,yaw,held)
     shows[#shows+1]=path:match('[^.]+$')
     if takes and path:find('JustEvade',1,true) then on_eve[#on_eve+1]='NS_A_EvadeBody_01[NiagaraComponent]@CharacterMesh0:None' end
-    return path:match('[^.]+$')..' toward '..tostring(yaw)
+    if held then lifted=lifted+1 end
+    return path:match('[^.]+$')..' toward '..tostring(yaw),held and function() unlift(); lifted=lifted-1 end or nil
 end
+function engine.anim_state() return 'custom alpha 1.00' end
 function engine.eve_effects() return on_eve end
 function engine.hit_reaction(yaw,method) reactions[#reactions+1]=method; return method..' toward '..yaw,{method=method,busy=busy} end
 function engine.hit_sample(sample) local a=alphas[sample.method] or 0; return string.format('alpha %.2f',a),a,0,speed end
@@ -44,8 +47,19 @@ assert(#dilations==0 and #logged==0,'No event file, nothing to do')
 -- A perfect dodge plays EVE's own Show; when its effect shows up on her, nothing else is needed.
 event('perfect_dodge'); combat.tick(); combat.tick()
 assert(shows[1]=='P_Eve_Sword_Normal_JustEvade1' and #dilations==0,table.concat(logged,'\n'))
+assert(lifted==1 and logged[#logged]:find('before: custom alpha 1.00',1,true),'The flip plays with its stop-at-move lifted')
 real=real+0.2; combat.tick()
-assert(last():find('Stellar Blade plays it',1,true) and #dilations==0 and #effects==0,last())
+assert(last():find('Stellar Blade plays it; +0.2s: custom alpha',1,true) and #dilations==0 and #effects==0,last())
+assert(lifted==0,'The lifted stop-at-move is restored once the key has started')
+real=real+0.4; combat.tick()
+assert(last():find('+0.6s: custom alpha',1,true),last())
+-- A failed restore of the lifted key is retried every frame.
+unlift=function() error('key gone') end
+event('perfect_dodge'); combat.tick(); real=real+0.2; combat.tick(); combat.tick()
+assert(lifted==1 and table.concat(logged,'\n'):find('stop-at-move not restored yet, retrying',1,true))
+unlift=function() end; combat.tick()
+assert(lifted==0,'Restored once it can be')
+real=real+1; combat.tick()
 -- Without a new one (an earlier evade effect still on EVE does not count), Lua slows Stellar Blade's world for the
 -- moment and plays the evade effects.
 takes=false
@@ -54,7 +68,7 @@ assert(dilation==0.3 and effects[1]=='NS_A_EvadeBody_01' and effects[2]=='NS_A_E
 real=real+0.3; combat.tick()
 assert(dilation==0.3,'Still slowed for the moment of the dodge')
 real=real+0.3; combat.tick()
-assert(dilation==1 and last()=='Combat: time restored','Time comes back after half a second')
+assert(dilation==1 and logged[#logged-1]=='Combat: time restored' and last():find('+0.6s',1,true),'Time comes back after half a second')
 -- Guards and perfect parries play the guarded-hit Show; a parry also its effect.
 event('perfect_parry'); combat.tick()
 assert(shows[#shows]=='Result_Guard' and effects[3]=='NS_JustParry_02' and dilation==1)

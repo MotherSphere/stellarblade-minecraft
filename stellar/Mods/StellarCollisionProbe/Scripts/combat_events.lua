@@ -13,7 +13,7 @@
 local Combat={}
 local SLOW,SLOW_SECONDS=0.3,0.5
 local FRESH_MS=2500 -- The wall clock here has whole seconds.
-local DODGE_CHECK=0.2
+local DODGE_CHECK,DODGE_TRACE=0.2,0.6 -- Seconds: to the effect check and lifted-key restore; to a later animation sample.
 local REACTION_GAP,REACTION_SAMPLE,REACTION_RESTORE=0.6,0.3,1.1
 -- The lifted gate first: it animated EVE in game (2026-10-07) and keeps the attack's side; the library call plays from the front.
 local VARIANTS,PROBES={'gate','library','tag'},12 -- Reactions tried before giving up when none animates EVE.
@@ -42,6 +42,8 @@ function Combat.new(engine,directory,wall,real,log,link)
     local session,last=nil,0
     local slow_until,restore_failed
     local dodge -- A perfect-dodge Show whose effect is still to be checked.
+    local lifted -- {at=, restore=, failed=}: the perfect-dodge key's lifted stop-at-move, until restored.
+    local trace -- {at=, seq=}: a later animation sample of the last perfect dodge.
     local reactions,last_reaction,pending,chosen=0,-math.huge,nil,nil
     local lines=0
     local function note(message)
@@ -61,9 +63,13 @@ function Combat.new(engine,directory,wall,real,log,link)
         end
         return table.concat(played,', ')
     end
-    local function show(path,yaw)
-        local ok,info=pcall(engine.play_show,path,yaw)
-        return ok and 'show '..info or 'show failed: '..tostring(info),ok
+    local function show(path,yaw,held)
+        local ok,info,restore=pcall(engine.play_show,path,yaw,held)
+        return ok and 'show '..info or 'show failed: '..tostring(info),ok,ok and restore or nil
+    end
+    local function state()
+        local ok,line=pcall(engine.anim_state)
+        return ok and line or 'state failed: '..tostring(line)
     end
     local function evade_bodies()
         local ok,labels=pcall(engine.eve_effects)
@@ -108,9 +114,19 @@ function Combat.new(engine,directory,wall,real,log,link)
                 note(string.format('hit %d %s: restore failed, retrying: %s',pending.seq,pending.method,tostring(why)))
             end
         end
+        -- Every frame until it works: the key is a shared asset object.
+        if lifted and real()>=lifted.at+DODGE_CHECK then
+            local ok,why=pcall(lifted.restore)
+            if ok then lifted=nil
+            elseif not lifted.failed then lifted.failed=true; note('perfect_dodge stop-at-move not restored yet, retrying: '..tostring(why)) end
+        end
+        if trace and real()>=trace.at+DODGE_TRACE then
+            note(string.format('perfect_dodge %d +%.1fs: %s',trace.seq,DODGE_TRACE,state()))
+            trace=nil
+        end
         if dodge and real()>=dodge.at+DODGE_CHECK then
             local count,ok,labels=evade_bodies()
-            if dodge.played and count>dodge.before then note(string.format('perfect_dodge %d: Stellar Blade plays it',dodge.seq))
+            if dodge.played and count>dodge.before then note(string.format('perfect_dodge %d: Stellar Blade plays it; +0.2s: %s',dodge.seq,state()))
             elseif place then note(string.format('perfect_dodge %d: show not seen%s; %s; effects %s',dodge.seq,
                 ok and '' or ' ('..tostring(labels)..')',slow(),play(EVADE_EFFECTS))) end
             dodge=nil
@@ -124,10 +140,12 @@ function Combat.new(engine,directory,wall,real,log,link)
         if math.abs(wall()*1000-event.time)>FRESH_MS then return end
         local answer=''
         if event.event=='perfect_dodge' then
-            local before=evade_bodies()
-            local info,played=show(JUST_EVADE,event.yaw)
-            answer='; '..info
+            local before,was=evade_bodies(),state()
+            local info,played,restore=show(JUST_EVADE,event.yaw,'SBShowAnimKey_0')
+            answer='; '..info..'; before: '..was
             dodge={at=real(),seq=event.seq,before=before,played=played}
+            if restore then lifted={at=real(),restore=restore} end
+            trace={at=real(),seq=event.seq}
         elseif event.event=='perfect_parry' then
             answer='; '..show(GUARDED,event.yaw)..'; effects '..play({PARRY_EFFECT})
         elseif event.event=='guard' then
