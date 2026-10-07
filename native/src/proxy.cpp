@@ -135,7 +135,8 @@ bool verify_host() {
       !hash_matches(module_path(module)))
     return false;
   gameplay_return = reinterpret_cast<uintptr_t>(base) + return_rva;
-  stellar_pose::initialize(reinterpret_cast<uintptr_t>(base) + objects_rva);
+  stellar_pose::initialize(reinterpret_cast<uintptr_t>(base) + objects_rva,
+                           reinterpret_cast<uintptr_t>(base) + stellar_pose::BoomVtableRva);
   return true;
 #endif
 }

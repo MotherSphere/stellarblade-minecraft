@@ -45,11 +45,12 @@ final class AvatarStream implements AutoCloseable {
     record Parameter(int component, String slot, String name, int floats) { }
     /**
      * One published pose: per component status bits and its floats (world, component-space bones, morph weights),
-     * the controller's Unreal Pitch, Yaw, Roll in degrees or null (read before this frame's turn), and whether the
-     * adapter turned Stellar Blade's camera toward Minecraft's this frame.
+     * the controller's Unreal Pitch, Yaw, Roll in degrees or null (read before this frame's turn), whether the
+     * adapter turned Stellar Blade's camera toward Minecraft's this frame, and the camera's Unreal pitch read before
+     * the adapter set its dolly from Minecraft's this frame, or NaN when it did not.
      */
     record Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation,
-                  boolean lookApplied) { }
+                  boolean lookApplied, float cameraPitch) { }
 
     final String run;
     final Path path;
@@ -146,12 +147,13 @@ final class AvatarStream implements AutoCloseable {
         require(map.getInt(at + 24) == 1 && generation > 0 && count >= 1 && count <= 16 && floats >= 0 && floats <= CAPACITY,
                 "Invalid pose slot layout");
         int rotated = map.getInt(at + 36);
-        require(rotated == 0 || rotated == 1 || rotated == 3, "Invalid controller rotation status");
+        require(rotated == 0 || (rotated & ~6) == 1, "Invalid controller rotation status");
         if (rotated == 0) zeros(at + 40, at + 52);
-        zeros(at + 52, at + 64);
+        if ((rotated & 4) == 0) zeros(at + 52, at + 56);
+        zeros(at + 56, at + 64);
         zeros(at + 64 + 4 * count, at + SLOT_HEADER);
         RawFrameBus.LONG.setRelease(map, 272, counter);
-        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null, false);
+        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null, false, Float.NaN);
         require(count == table.components.size() && floats == table.floats, "Pose slot does not match its component table");
         int[] status = new int[count];
         for (int i = 0; i < count; i++) {
@@ -165,11 +167,16 @@ final class AvatarStream implements AutoCloseable {
                 "Pose producer stopped during the copy");
         for (float value : payload) require(Float.isFinite(value), "Non-finite pose value");
         float[] rotation = null;
+        float cameraPitch = Float.NaN;
         if (rotated != 0) {
             rotation = new float[] {map.getFloat(at + 40), map.getFloat(at + 44), map.getFloat(at + 48)};
             for (float value : rotation) require(Float.isFinite(value), "Non-finite controller rotation");
         }
-        return new Sample(counter, publication, generation, status, payload, rotation, rotated == 3);
+        if ((rotated & 4) != 0) {
+            cameraPitch = map.getFloat(at + 52);
+            require(Float.isFinite(cameraPitch), "Non-finite camera pitch");
+        }
+        return new Sample(counter, publication, generation, status, payload, rotation, (rotated & 2) != 0, cameraPitch);
     }
 
     /**

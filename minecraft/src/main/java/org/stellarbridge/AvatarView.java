@@ -62,13 +62,14 @@ public final class AvatarView {
         int newest = -1, count;
         float[] rotation; // Stellar Blade's controller Pitch, Yaw, Roll from the newest sample, or null.
         boolean lookApplied; // The newest sample says the adapter turned that controller's camera toward Minecraft's.
-        long gapSamples, turned; // Controlled poses, and those the adapter turned.
+        long gapSamples, turned, synced; // Controlled poses, those the adapter turned, those whose camera dolly it set.
         float glow; // Highest streamed material Opacity so far (the sword edge's glow while the game raises it).
         List<AvatarStream.Effect> effects = List.of(); // The game's active effects on EVE in the newest sample.
         final AvatarEffects particles = new AvatarEffects();
         final AvatarCombat.Blade blade = new AvatarCombat.Blade();
         long effectSamples; // Samples with at least one active effect.
         double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
+        double pitchSum, pitchMax; // Pitch gap in degrees between Minecraft's camera and the camera pitch of synced poses.
         Vector3d relativeOrigin;
         boolean posed, anchored, controlled;
         long poses, incomplete, lastPoseNanos, windowPoses, windowNanos;
@@ -256,6 +257,12 @@ public final class AvatarView {
                         current.gapSum += gap;
                         current.gapMax = Math.max(current.gapMax, gap);
                         if (current.lookApplied) current.turned++;
+                        if (!Float.isNaN(sample.cameraPitch())) {
+                            double pitchGap = Math.abs(-player.getPitch() - sample.cameraPitch());
+                            current.synced++;
+                            current.pitchSum += pitchGap;
+                            current.pitchMax = Math.max(current.pitchMax, pitchGap);
+                        }
                     }
                     current.posed = true;
                     current.poses++;
@@ -484,8 +491,10 @@ public final class AvatarView {
                 current.table == null ? "-" : Long.toString(current.table.generation()), current.poses, current.rate, current.interval, current.incomplete,
                 current.posed ? String.format("%.0f ms ago", (System.nanoTime() - current.lastPoseNanos) / 1e6) : "never",
                 native_[1], native_[2], native_[3], native_[0])
-                + (current.gapSamples == 0 ? "" : String.format(" Camera: turned by look input in %.0f%% of controlled poses; yaw gap %.1f deg mean, %.0f max.",
-                        100.0 * current.turned / current.gapSamples, current.gapSum / current.gapSamples, current.gapMax))
+                + (current.gapSamples == 0 ? "" : String.format(" Camera: turned by look input in %.0f%% of controlled poses; yaw gap %.1f deg mean, %.0f max;"
+                        + " dolly set from Minecraft's pitch in %.0f%%, pitch gap %.1f deg mean, %.0f max.",
+                        100.0 * current.turned / current.gapSamples, current.gapSum / current.gapSamples, current.gapMax,
+                        100.0 * current.synced / current.gapSamples, current.synced == 0 ? 0 : current.pitchSum / current.synced, current.pitchMax))
                 + (current.table == null || current.table.parameters().isEmpty() ? " No streamed material parameters."
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."

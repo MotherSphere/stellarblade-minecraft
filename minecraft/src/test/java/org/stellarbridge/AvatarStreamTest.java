@@ -37,7 +37,7 @@ public final class AvatarStreamTest {
         assert AvatarStream.parse(fixture.replace("PARAMETERS 0\n", "")) == null : "The parameter count is required";
         float[] glowPayload = new float[53];
         glowPayload[52] = 0.75f;
-        var glowSample = new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, glowPayload, null, false);
+        var glowSample = new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, glowPayload, null, false, Float.NaN);
         assert AvatarStream.parameters(glowing, glowSample).get("Edge/Opacity")[0] == 0.75f;
         // Effects: the layout line and its assets, then MAX_EFFECTS records after the parameters.
         String effectLines = "EFFECTS 00000130 000006a8 000004b0 00000088 10 00007f000000b000 00007f000000c000 1\n"
@@ -54,7 +54,7 @@ public final class AvatarStreamTest {
         effectPayload[52] = 0;
         effectPayload[52 + 5] = 100;
         effectPayload[52 + 7] = 300;
-        var effects = AvatarStream.effects(sparkling, new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, effectPayload, null, false));
+        var effects = AvatarStream.effects(sparkling, new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, effectPayload, null, false, Float.NaN));
         assert effects.size() == 1 && effects.get(0).name().equals("NS_A_Weapon_Signal_Sword") && effects.get(0).x() == 100 && effects.get(0).z() == 300;
         assert AvatarEffects.look("NS_A_Weapon_Signal_Sword") == AvatarEffects.Look.SIGNAL && AvatarEffects.look("P_A_AnimTrail_SwordLightAtk_01") == null
                 && AvatarEffects.look("NS_A_ParTrail_SwordDefaultAtk_01") == AvatarEffects.Look.SPARKS
@@ -182,15 +182,17 @@ public final class AvatarStreamTest {
                     map.putInt(AvatarStream.HEADER + AvatarStream.SLOT + 36, 1).putFloat(AvatarStream.HEADER + AvatarStream.SLOT + 44, 135);
                     var sample = stream.poll(table, now, System.nanoTime());
                     assert sample.counter() == 1 && sample.status()[0] == 7 && sample.payload()[4] == 100 && sample.rotation()[1] == 135
-                            && !sample.lookApplied();
+                            && !sample.lookApplied() && Float.isNaN(sample.cameraPitch());
                     assert (long) RawFrameBus.LONG.getAcquire(map, 272) == 1 : "Accepted counter is acknowledged";
                     assert stream.poll(table, now, System.nanoTime()) == null : "No new slot";
                     // Minecraft's camera goes to the adapter as one atomic word once the producer claimed the mapping.
                     stream.look(-15, 270, now);
                     assert map.getLong(288) == now && map.getInt(304) == 1 && map.getFloat(296) == -15 && map.getFloat(300) == 270;
                     publish(map, 2, 2, 1, now, new int[] {7, 5}, payload());
-                    map.putInt(AvatarStream.HEADER + 2 * AvatarStream.SLOT + 36, 3);
-                    assert stream.poll(table, now, System.nanoTime()).lookApplied();
+                    // Bit 1: turned toward Minecraft's camera; bit 2: dolly set, with the camera's pitch at 52.
+                    map.putInt(AvatarStream.HEADER + 2 * AvatarStream.SLOT + 36, 7).putFloat(AvatarStream.HEADER + 2 * AvatarStream.SLOT + 52, -17);
+                    var synced = stream.poll(table, now, System.nanoTime());
+                    assert synced.lookApplied() && synced.cameraPitch() == -17;
                     stream.lookOff();
                     assert map.getInt(304) == 0;
 
@@ -206,11 +208,11 @@ public final class AvatarStreamTest {
                     // Component space: root turned 90 degrees about X; the child's component transform already includes it.
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, 0, 0, 1, 1, 1}, 0, values, 10, 10);
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, -100, 0, 1, 1, 1}, 0, values, 20, 10);
-                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false), model, pose);
+                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false, Float.NaN), model, pose);
                     FloatBuffer[] palettes = {FloatBuffer.allocate(24)};
                     model.palettes(pose, new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT), palettes, true);
                     AvatarModelTest.assertPoint(palettes[0], 1, 0, 0, 100, 1, 3, 1);
-                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false), model, pose)
+                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false, Float.NaN), model, pose)
                             : "A drawn component without bones is incomplete";
 
                     // A slot of another generation asks the caller to reload the table.
@@ -240,6 +242,11 @@ public final class AvatarStreamTest {
                     assert stream.reap() && !Files.exists(stream.path);
                 }
             }
+            // A refused slot ends the stream: bit 2 without bit 0, an unknown bit, a camera pitch without bit 2, a non-finite one.
+            assert refused(directory, table, 4, 0).equals("Invalid controller rotation status");
+            assert refused(directory, table, 9, 0).equals("Invalid controller rotation status");
+            assert refused(directory, table, 1, -17).equals("Pose mapping reserved bytes changed");
+            assert refused(directory, table, 5, Float.NaN).equals("Non-finite camera pitch");
             // A stream the producer never claimed is cancelled and removed.
             try (var unclaimed = new AvatarStream(directory, "d".repeat(32), System.currentTimeMillis())) {
                 assert unclaimed.reap() && !Files.exists(unclaimed.path);
@@ -248,6 +255,24 @@ public final class AvatarStreamTest {
             try (var files = Files.walk(directory)) { files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
         }
         System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation and combat");
+    }
+
+    /** Why a fresh stream (its run named by status) refuses one native slot with this controller status and camera pitch. */
+    private static String refused(Path directory, AvatarStream.Table table, int status, float pitch) throws Exception {
+        long now = System.currentTimeMillis();
+        try (var stream = new AvatarStream(directory, String.format("%032x", status), now);
+             var channel = FileChannel.open(stream.path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
+            assert (boolean) RawFrameBus.INT.compareAndSet(map, 192, 0, 777);
+            RawFrameBus.LONG.setRelease(map, 208, now);
+            RawFrameBus.INT.setRelease(map, 196, 1);
+            publish(map, 1, 1, 1, now, new int[] {7, 5}, payload());
+            map.putInt(AvatarStream.HEADER + AvatarStream.SLOT + 36, status).putFloat(AvatarStream.HEADER + AvatarStream.SLOT + 52, pitch);
+            stream.poll(table, now, System.nanoTime());
+            throw new AssertionError("Accepted controller status " + status);
+        } catch (java.io.IOException refusal) {
+            return refusal.getMessage();
+        }
     }
 
     /** Reads poses from the external native fixture (pose_stream_fixture), which plays Lua and the game thread. */

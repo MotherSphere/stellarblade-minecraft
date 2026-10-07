@@ -77,7 +77,7 @@ public final class AvatarLock {
         }
         float[] wanted = angles(toward.x, toward.y, toward.z);
         double yaw = MathHelper.wrapDegrees(wanted[0] - player.getYaw()) * (1 - Math.exp(-TURN * seconds));
-        // Yaw only: Stellar Blade's camera height follows Minecraft's pitch open-loop, so pitch stays the mouse's.
+        // Yaw only: pitch stays the mouse's, and the adapter sets Stellar Blade's camera dolly from it.
         player.changeLookDirection(yaw / 0.15, 0); // As the mouse turns it (0.15 degrees per unit), interpolation included.
     }
 }

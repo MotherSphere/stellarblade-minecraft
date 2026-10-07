@@ -74,7 +74,8 @@ std::optional<Table> select_components(std::string_view slot0,
 // Engine memory of the pinned build. Reads must run on the game thread, where
 // garbage collection cannot free objects concurrently.
 struct Engine {
-  uintptr_t objects = 0; // FUObjectArray (GUObjectArray).
+  uintptr_t objects = 0;     // FUObjectArray (GUObjectArray).
+  uintptr_t boom_vtable = 0; // USBSpringArmComponent's virtual table (image + BoomVtableRva), 0 if unknown.
 };
 // Copies one component into out (10 + 10 * bones + morphs floats, zeroed when
 // invalid) and returns its status bits. The object must still be the live,
@@ -94,6 +95,25 @@ bool read_controller(const Engine &, const Controller &, float *out);
 // Blade's own mouse look, if the pawn is the live object of its published
 // class and its virtual table lies in the game image.
 bool turn_controller(const Engine &, const Controller &, float pitch, float yaw);
+// Stellar Blade's camera pitch is its camera dolly, not ControlRotation: while
+// EVE's boom takes its rotation from the dolly, pitch input only moves the
+// boom's CameraDollyAlpha (0 looks down from above her, 1 up from her hips) and
+// the spring arm rebuilds the camera from it at every tick. steer_dolly moves
+// that alpha by DollyStep per degree from the arm's last pitch to look_pitch
+// (Unreal degrees), clamped to 0..1, and cancels the game's own dolly blend as
+// its pitch input does; camera then receives the arm's pitch read before the
+// write. It writes only into the live boom (by virtual table and owner) of the
+// published live pawn, and only while the arm's next pitch follows that alpha
+// alone: dolly used, with a track, in dolly mode on the default track with no
+// spline or mode blend, without rotation lag, outside TPS aim and fishing (whose
+// views set the dolly and take pitch input as aim) and while the slope camera
+// does not set the alpha after the arm. False, with nothing written, otherwise:
+// pitch input then carries Minecraft's motion. The boom is a final class; its
+// constructor (0x2404d80) stores this table.
+constexpr uintptr_t BoomVtableRva = 0x5ce42a0;
+// About half the gap per poll at ~150 degrees per unit alpha (the track gives 117-192).
+constexpr float DollyStep = 1.0f / 300;
+bool steer_dolly(const Engine &, const Controller &, float look_pitch, float &camera);
 
 // EVE's Beta and Burst gauges, kept by Stellar Blade only in its native player
 // actor (FSBActor, not a UObject). world is the pinned build's game world
@@ -119,8 +139,8 @@ uint64_t parse_lock(std::string_view text);
 // Look input for one gameplay poll: Minecraft's camera motion since the last
 // poll, plus for yaw a share of the remaining gap to the controller's rotation,
 // so the game's camera follows like it follows a mouse. The controller's pitch
-// does not track Stellar Blade's camera pitch, so pitch gets the motion alone.
-// Degrees.
+// does not track Stellar Blade's camera pitch, so pitch gets the motion alone
+// (used only while steer_dolly cannot set the camera's pitch). Degrees.
 struct Follow {
   bool previous = false;
   float pitch = 0, yaw = 0;
@@ -134,7 +154,7 @@ struct Turn {
 };
 Turn follow(Follow &, float look_pitch, float look_yaw, float yaw);
 // Bits of the controller status word in a slot.
-constexpr uint32_t RotationValid = 1, LookApplied = 2;
+constexpr uint32_t RotationValid = 1, LookApplied = 2, PitchSynced = 4;
 
 // Producer side of eve-pose-<RUN>.bin. The caller serializes every method.
 class Producer {
@@ -151,9 +171,11 @@ public:
   void heartbeat(uint64_t wall);
   bool active(uint64_t wall) const;
   const std::string &run() const;
+  // rotation: the controller's Pitch, Yaw, Roll, then the camera's pitch
+  // (zero unless look carries PitchSynced); look: LookApplied, PitchSynced.
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
-               bool applied, uint64_t wall, uint32_t read_us,
+               uint32_t look, uint64_t wall, uint32_t read_us,
                const float *gauges = nullptr);
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
@@ -162,13 +184,14 @@ public:
   void stop();
 };
 
-// Adapter entry points. initialize receives GUObjectArray's address. The
+// Adapter entry points. initialize receives GUObjectArray's address and the
+// boom's virtual table (image + BoomVtableRva; 0 never sets the dolly). The
 // worker passes the request file, both component slots and Minecraft's lock
 // file; the verified gameplay XInput poll gives EVE the lock-on evades while
 // Minecraft locks and owner (the run whose input is forwarded) is set, reads
 // the controller, turns the game's camera toward Minecraft's when owner is this
 // stream's run, then reads the components and publishes. None of them throws.
-void initialize(uintptr_t objects);
+void initialize(uintptr_t objects, uintptr_t boom_vtable = 0);
 void poll_files(const std::wstring &directory, std::string_view request,
                 std::string_view slot0, std::string_view slot1, uint64_t wall,
                 std::string_view lock = {});

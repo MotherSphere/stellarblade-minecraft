@@ -407,6 +407,69 @@ bool turn_controller(const Engine &engine, const Controller &c, float pitch, flo
   return true;
 }
 
+// ASBCharacter (SB_classes.hpp:6109, 6731, 6785, 6826): CameraBoom 0x5c0,
+// bTPSMode 0x1528 and FishingModeType 0x1690 (their views set the dolly at
+// 0x23af115; their pitch input turns an aim, 0x2050576, 0x205138e), and in
+// MovementCheckInfo (0x1770; SB_structs.hpp:10354-10360) the slope camera:
+// while CameraSlopeMoveType 0x1b5c and bRunCameraSlopeMoveAlpha 0x1b5d are set
+// and CurrentCameraSlopeMoveRunningTime 0x1b64 exceeds CameraSlopeRunTimeFromStart
+// 0x1b6c (0x2028900), the boom's tick sets the alpha after the arm update
+// (0x24074c4-0x24074f7), and only nonzero pitch input stops it (0x2051ab9).
+// USBSpringArmComponent (SB_classes.hpp:25472-25512): CameraDollyAlpha 0x2f0,
+// bUseCameraDolly 0x2f4 and CameraDollyTrackData 0x2f8 (without either the arm
+// does not place the camera from the alpha, 0x24055b0, 0x2408758),
+// bLastUseCharacterControllerRot 0x370 (the arm's dolly-blocked test 0x2406180,
+// cached each tick at 0x240869f), RemainBlendCamera 0x374 (started when 0x370
+// flips, 0x24086de; while above 0 the arm eases its rotation from the last one,
+// 0x2408abe), RemainBlendDollyAlpha and BlendDollyAlphaDuration 0x3c0,
+// BlendTargetDollyAlpha 0x3c8 (0, 0 and -1 end a blend, as 0x2406140 does at
+// 0x2406166), DollyBlends' count 0x3d8 and CurrentDollyMode 0x3e0 (another
+// spline, or a blend from an earlier one, places the camera: 0x2405070,
+// 0x2407954). USpringArmComponent: bEnableCameraRotationLag, bit 6 of 0x284
+// (Engine_classes.hpp:1257; passed at 0x24070a3, eases the rotation at
+// 0x2408cf4). Unreflected: the component's owner at 0xb0 (read so at 0x24052d4)
+// and PreviousDesiredRot at 0x2c0, the arm's final rotation, stored at 0x24090ce
+// by each UpdateDesiredArmLocation (0x24085e0), which first evaluates the dolly
+// at CameraDollyAlpha (0x24087c6) and in dolly mode pitches the camera from its
+// arm location toward the pivot (0x24087f7-0x240893a).
+constexpr size_t CameraBoom = 0x5c0, TPSMode = 0x1528, FishingMode = 0x1690, SlopeType = 0x1b5c,
+                 SlopeRun = 0x1b5d, SlopeTime = 0x1b64, SlopeStart = 0x1b6c, Owner = 0xb0,
+                 ArmFlags = 0x284, ArmRotation = 0x2c0, DollyAlpha = 0x2f0, UseDolly = 0x2f4,
+                 DollyTrack = 0x2f8, ControllerRotation = 0x370, CameraBlend = 0x374,
+                 DollyBlend = 0x3c0, DollyBlendTarget = 0x3c8, DollyBlends = 0x3d8, DollyMode = 0x3e0;
+constexpr uint8_t RotationLag = 0x40;
+bool steer_dolly(const Engine &engine, const Controller &c, float look_pitch, float &camera) {
+  auto pawn = static_cast<uintptr_t>(c.pawn);
+  if (!engine.objects || !engine.boom_vtable || !alive(engine.objects, pawn) ||
+      at<uint64_t>(pawn + ClassPrivate) != c.pawn_cls)
+    return false;
+  auto boom = at<uintptr_t>(pawn + CameraBoom);
+  if (!boom || !alive(engine.objects, boom) || at<uintptr_t>(boom) != engine.boom_vtable ||
+      at<uintptr_t>(boom + Owner) != pawn)
+    return false;
+  // The arm's next pitch must come from this alpha alone, along the default
+  // track, with no easing and no other writer after the arm reads it.
+  bool slope = at<uint8_t>(pawn + SlopeRun) && at<uint8_t>(pawn + SlopeType) &&
+               at<float>(pawn + SlopeTime) - at<float>(pawn + SlopeStart) > 0;
+  if (!at<uint8_t>(boom + UseDolly) || !at<uint64_t>(boom + DollyTrack) ||
+      at<uint8_t>(boom + ControllerRotation) || !(at<float>(boom + CameraBlend) <= 0) ||
+      (at<uint8_t>(boom + ArmFlags) & RotationLag) || at<int32_t>(boom + DollyMode) != -1 ||
+      at<int32_t>(boom + DollyBlends) || at<uint8_t>(pawn + TPSMode) || at<uint8_t>(pawn + FishingMode) || slope)
+    return false;
+  auto alpha = at<float>(boom + DollyAlpha);
+  auto pitch = std::remainder(at<float>(boom + ArmRotation), 360.0f);
+  if (!std::isfinite(alpha) || !std::isfinite(pitch))
+    return false;
+  // Read back each poll: a capped or reset alpha never winds up. One arm
+  // update runs between two polls, so pitch answers the previous write.
+  auto *bytes = reinterpret_cast<uint8_t *>(boom);
+  put(bytes, DollyAlpha, std::clamp(alpha + DollyStep * (look_pitch - pitch), 0.0f, 1.0f));
+  put(bytes, DollyBlend, uint64_t(0));
+  put(bytes, DollyBlendTarget, -1.0f);
+  camera = pitch;
+  return true;
+}
+
 namespace {
 // The game world's actor manager (+0xc8) holds the actors (+0x28) and the
 // player's index (+0x3c, below the count at +0x30); the player's actor counts
@@ -636,7 +699,7 @@ void Producer::heartbeat(uint64_t wall) {
 }
 bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
-                       const float *rotation, bool applied,
+                       const float *rotation, uint32_t look,
                        uint64_t wall, uint32_t read_us, const float *gauges) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
@@ -651,10 +714,10 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   put(slot, 24, Format);
   put(slot, 28, count);
   put(slot, 32, floats);
-  // Controller rotation: status at 36, Pitch, Yaw, Roll at 40.
+  // Controller rotation: status at 36, Pitch, Yaw, Roll at 40, camera pitch at 52.
   if (rotation) {
-    put(slot, 36, RotationValid | (applied ? LookApplied : 0u));
-    std::memcpy(slot + 40, rotation, 3 * sizeof(float));
+    put(slot, 36, RotationValid | (look & (LookApplied | PitchSynced)));
+    std::memcpy(slot + 40, rotation, 4 * sizeof(float));
   }
   std::memcpy(slot + 64, status, sizeof(uint32_t) * count);
   std::memcpy(slot + SlotHeader, payload, sizeof(float) * floats);
@@ -804,6 +867,14 @@ uint32_t guarded_evades(uintptr_t world, bool locked) {
     return 0;
   }
 }
+// A boom freed after its pawn was checked faults before the write; contained.
+bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera) {
+  __try {
+    return steer_dolly(e, c, pitch, camera);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
 // A pawn freed after Lua published it faults before any call; contained.
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   __try {
@@ -822,6 +893,9 @@ uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   return turn_controller(e, c, pitch, yaw);
 }
+bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera) {
+  return steer_dolly(e, c, pitch, camera);
+}
 uint32_t guarded(const Engine &e, const Component &c, float *out) {
   return read_component(e, c, out);
 }
@@ -834,7 +908,10 @@ bool guarded(const Engine &e, const Parameter &q, float *out) {
 #endif
 } // namespace
 
-void initialize(uintptr_t objects) { engine.objects = objects; }
+void initialize(uintptr_t objects, uintptr_t boom_vtable) {
+  engine.objects = objects;
+  engine.boom_vtable = boom_vtable;
+}
 
 void poll_files(const std::wstring &directory, std::string_view request_text,
                 std::string_view slot0, std::string_view slot1, uint64_t wall,
@@ -873,15 +950,17 @@ void on_gameplay_poll(std::string_view owner) {
   if (!table || !engine.objects || !producer.active(wall))
     return;
   auto started = micros();
-  float rotation[3];
+  float rotation[4] = {}; // The controller's Pitch, Yaw, Roll, then the camera's pitch.
   bool rotated = table->controller && guarded(engine, *table->controller, rotation);
   // Minecraft's camera turns Stellar Blade's only while this stream's run owns
   // forwarded input; the frame's own input processing then applies the turn.
-  bool applied = false;
+  // The dolly carries the pitch where it can: pitch input would move it again.
+  bool applied = false, synced = false;
   float pitch = 0, yaw = 0;
   if (rotated && !owner.empty() && owner == producer.run() && producer.look(wall, pitch, yaw)) {
     auto turn = follow(following, pitch, yaw, rotation[1]);
-    applied = turn.engaged && guarded_turn(engine, *table->controller, turn.pitch, turn.yaw);
+    synced = guarded_dolly(engine, *table->controller, pitch, rotation[3]);
+    applied = turn.engaged && guarded_turn(engine, *table->controller, synced ? 0 : turn.pitch, turn.yaw);
   } else
     following = {};
   uint32_t offset = 0, count = 0;
@@ -902,7 +981,8 @@ void on_gameplay_poll(std::string_view owner) {
   bool gauged = guarded_gauges(game_world(), gauges);
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
-                   offset, rotated ? rotation : nullptr, applied, wall,
+                   offset, rotated ? rotation : nullptr,
+                   (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u), wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
                    gauged ? gauges : nullptr);
 }

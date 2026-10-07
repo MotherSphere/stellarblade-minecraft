@@ -3,6 +3,7 @@
 #endif
 #include "pose_stream.hpp"
 #include "shared_memory.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -20,6 +21,7 @@ static std::vector<std::pair<char, float>> inputs;
 static void add_pitch(void *, float value) { inputs.push_back({'p', value}); }
 static void add_yaw(void *, float value) { inputs.push_back({'y', value}); }
 static uintptr_t pawn_table[0x7a0 / 8 + 1];
+static uintptr_t boom_table[1]; // Stands in for USBSpringArmComponent's virtual table.
 
 // Fake engine memory with the pinned build's offsets: a GUObjectArray with one
 // chunk of FUObjectItems and skeletal mesh components that point into it.
@@ -28,11 +30,11 @@ struct Fake {
   std::vector<uint8_t> items = std::vector<uint8_t>(24 * 8);
   uint8_t *chunks[1];
   struct Object {
-    alignas(16) uint8_t bytes[0x800]{};
+    alignas(16) uint8_t bytes[0x1c00]{};
     alignas(16) float space[2][3 * 12]{}; // Two double-buffered 3-bone arrays.
     float morphs[2]{};
   };
-  Object a, b, controller, pawn;
+  Object a, b, controller, pawn, boom;
   Fake() {
     chunks[0] = items.data();
     auto table = reinterpret_cast<uintptr_t>(chunks);
@@ -49,6 +51,35 @@ struct Fake {
     pawn_table[0x7a0 / 8] = reinterpret_cast<uintptr_t>(&add_yaw);
     auto vtable = reinterpret_cast<uintptr_t>(pawn_table);
     std::memcpy(pawn.bytes, &vtable, 8);
+    std::memset(pawn.bytes + 0x5c0, 0, 8); // CameraBoom (setup's bone arrays reach it): none until a test sets it.
+    // EVE's camera boom: owner, dolly used with a track on the default spline (mode -1), alpha 0.5, the arm's
+    // last pitch -17, a running blend.
+    setup(boom, 4);
+    auto boom_vtable = reinterpret_cast<uintptr_t>(boom_table), owner = reinterpret_cast<uintptr_t>(pawn.bytes);
+    std::memcpy(boom.bytes, &boom_vtable, 8);
+    std::memcpy(boom.bytes + 0xb0, &owner, 8);
+    boom.bytes[0x2f4] = 1;
+    uint64_t track = 0x3000;
+    std::memcpy(boom.bytes + 0x2f8, &track, 8);
+    int32_t mode = -1;
+    std::memcpy(boom.bytes + 0x3e0, &mode, 4);
+    float dolly[3] = {0.25f, 0.5f, 0.9f}; // RemainBlendDollyAlpha, BlendDollyAlphaDuration, BlendTargetDollyAlpha.
+    std::memcpy(boom.bytes + 0x3c0, dolly, sizeof dolly);
+    arm(0.5f, -17);
+  }
+  // CameraDollyAlpha and the arm's last pitch (PreviousDesiredRot.Pitch).
+  void arm(float alpha, float pitch) {
+    std::memcpy(boom.bytes + 0x2f0, &alpha, 4);
+    std::memcpy(boom.bytes + 0x2c0, &pitch, 4);
+  }
+  float alpha() {
+    float v;
+    std::memcpy(&v, boom.bytes + 0x2f0, 4);
+    return v;
+  }
+  void attach() { // The pawn's CameraBoom.
+    auto self = reinterpret_cast<uintptr_t>(boom.bytes);
+    std::memcpy(pawn.bytes + 0x5c0, &self, 8);
   }
   void setup(Object &o, int32_t index) {
     auto self = reinterpret_cast<uintptr_t>(o.bytes);
@@ -271,6 +302,83 @@ int main() {
     assert(!turn_controller(engine, c, 5, 5) && inputs.empty() && "A pawn without a virtual table is never called");
   }
   {
+    // Stellar Blade's camera dolly, written only into the live boom of the live published pawn while the dolly
+    // carries the camera's pitch.
+    Controller c;
+    c.pawn = reinterpret_cast<uint64_t>(fake.pawn.bytes);
+    c.pawn_cls = 0x1000;
+    auto dolly = engine;
+    dolly.boom_vtable = reinterpret_cast<uintptr_t>(boom_table);
+    float camera = 9;
+    assert(!steer_dolly(dolly, c, 13, camera) && fake.alpha() == 0.5f && camera == 9 && "No boom on the pawn, nothing written");
+    fake.attach();
+    assert(!steer_dolly(engine, c, 13, camera) && fake.alpha() == 0.5f && "Without the pinned virtual table, nothing written");
+    assert(steer_dolly(dolly, c, 13, camera) && std::fabs(fake.alpha() - (0.5f + 30 * DollyStep)) < 1e-6f && camera == -17 &&
+           "The alpha moves by DollyStep per degree from the arm's pitch to Minecraft's");
+    float blend[3];
+    std::memcpy(blend, fake.boom.bytes + 0x3c0, sizeof blend);
+    assert(blend[0] == 0 && blend[1] == 0 && blend[2] == -1 && "The game's own dolly blend is cancelled, as its pitch input does");
+    fake.arm(0.95f, 343); // A pitch kept in 0..360.
+    assert(steer_dolly(dolly, c, 90, camera) && fake.alpha() == 1 && camera == -17 && "Alpha stays within 0..1");
+    fake.arm(0.5f, -17);
+    auto refused = [&](uint8_t *object, size_t at, auto value, const char *why) {
+      decltype(value) saved;
+      std::memcpy(&saved, object + at, sizeof value);
+      std::memcpy(object + at, &value, sizeof value);
+      bool wrote = steer_dolly(dolly, c, 13, camera);
+      std::memcpy(object + at, &saved, sizeof value);
+      assert(!wrote && fake.alpha() == 0.5f && why);
+    };
+    refused(fake.boom.bytes, 0x370, uint8_t(1), "Nor while the arm follows the controller (dolly blocked)");
+    refused(fake.boom.bytes, 0x374, 0.1f, "Nor while the arm eases its rotation after a mode change");
+    refused(fake.boom.bytes, 0x284, uint8_t(0x40), "Nor with rotation lag");
+    refused(fake.boom.bytes, 0x3e0, int32_t(0), "Nor on another dolly spline");
+    refused(fake.boom.bytes, 0x3d8, int32_t(1), "Nor while a spline blend places the camera");
+    refused(fake.boom.bytes, 0x2f4, uint8_t(0), "Nor while the arm does not use the dolly");
+    refused(fake.pawn.bytes, 0x1528, uint8_t(1), "Nor in TPS aim, whose view sets the dolly");
+    refused(fake.pawn.bytes, 0x1690, uint8_t(2), "Nor while fishing");
+    refused(fake.boom.bytes, 0x2f8, uint64_t(0), "Nor without a dolly track");
+    refused(fake.boom.bytes, 0xb0, uint64_t(0x40), "Nor into another actor's boom");
+    refused(fake.boom.bytes, 0, reinterpret_cast<uint64_t>(pawn_table), "Nor into another component class");
+    refused(fake.boom.bytes, 0x2f0, std::nanf(""), "Nor from a non-finite alpha");
+    refused(fake.items.data() + 24 * 4, 8, int32_t(1 << 29), "Nor into a pending-kill boom");
+    // The slope camera sets the alpha after the arm while it has a type, runs and its running time is past its
+    // start (0x2028900).
+    float times[3] = {0.5f, 0, 0.2f}; // CurrentCameraSlopeMoveRunningTime, RemainBlockCameraSlopeMove, CameraSlopeRunTimeFromStart.
+    std::memcpy(fake.pawn.bytes + 0x1b64, times, sizeof times);
+    fake.pawn.bytes[0x1b5c] = 3;
+    assert(steer_dolly(dolly, c, 13, camera) && "A slope camera that does not run leaves the dolly to Minecraft");
+    fake.arm(0.5f, -17);
+    refused(fake.pawn.bytes, 0x1b5d, uint8_t(1), "Nor while the slope camera sets the alpha");
+    fake.pawn.bytes[0x1b5d] = 1;
+    fake.pawn.bytes[0x1b5c] = 0;
+    assert(steer_dolly(dolly, c, 13, camera) && "Nor without a slope move type");
+    fake.pawn.bytes[0x1b5c] = 3;
+    std::memcpy(fake.pawn.bytes + 0x1b64, &times[2], 4);
+    fake.arm(0.5f, -17);
+    assert(steer_dolly(dolly, c, 13, camera) && "Nor at its start time");
+    std::memset(fake.pawn.bytes + 0x1b5c, 0, 0x14);
+    fake.arm(0.5f, -17);
+    c.pawn_cls = 0x1008;
+    assert(!steer_dolly(dolly, c, 13, camera) && fake.alpha() == 0.5f && "Nor through another pawn class");
+    c.pawn_cls = 0x1000;
+    // Against a stand-in arm whose pitch spans -89.9..57.5 over alpha 0..1, an 85 degree gap closes within half a
+    // degree in eight polls, from one side.
+    fake.arm(0.2f, 0);
+    float last = 180;
+    for (int poll = 0; poll < 8; poll++) {
+      fake.arm(fake.alpha(), -89.9f + 147.4f * fake.alpha());
+      assert(steer_dolly(dolly, c, 25, camera));
+      float gap = 25 - camera;
+      assert(gap >= 0 && gap <= last && "The camera closes on Minecraft's pitch from one side");
+      last = gap;
+    }
+    fake.arm(fake.alpha(), -89.9f + 147.4f * fake.alpha());
+    assert(steer_dolly(dolly, c, 25, camera) && std::fabs(25 - camera) < 0.5f);
+    std::memset(fake.pawn.bytes + 0x5c0, 0, 8);
+    fake.arm(0.5f, -17);
+  }
+  {
     // A dynamic material instance (the still-live controller object stands in): scalars and vectors read by
     // element after checking the element's name.
     alignas(8) uint8_t scalars[3 * 36]{}, vectors[2 * 48]{};
@@ -372,7 +480,7 @@ int main() {
 
   // End to end on a real mapping: worker installs the table, game thread publishes.
   Fake live;
-  initialize(reinterpret_cast<uintptr_t>(live.objects));
+  initialize(reinterpret_cast<uintptr_t>(live.objects), reinterpret_cast<uintptr_t>(boom_table));
   auto directory = std::filesystem::temp_directory_path() / ("stellar-pose-" + std::to_string(now));
   std::filesystem::create_directories(directory);
   auto path = directory / ("eve-pose-" + Run + ".bin");
@@ -536,6 +644,51 @@ int main() {
     look(10, 30, stellar_shared::wall_now(), 0);
     on_gameplay_poll(Run);
     assert(inputs.empty() && "An inactive look is ignored");
+    // With EVE's boom on the pawn, Minecraft's pitch steers the camera dolly and pitch input stops.
+    live.attach();
+    auto camera_pitch = [&]() {
+      return stellar_shared::plain<float>(base + Header + SlotBytes * (stellar_shared::load32(base, 128) & 3), 52);
+    };
+    look(-25, -90, stellar_shared::wall_now(), 1);
+    on_gameplay_poll(Run);
+    look(-15, -90, stellar_shared::wall_now(), 1);
+    on_gameplay_poll(Run);
+    assert(controller_status() == (RotationValid | LookApplied | PitchSynced) && camera_pitch() == -17 &&
+           std::fabs(live.alpha() - (0.5f - 6 * DollyStep)) < 1e-6f && !inputs.empty() &&
+           std::none_of(inputs.begin(), inputs.end(), [](auto &i) { return i.first == 'p'; }) &&
+           "The dolly takes the pitch; yaw still goes through look input; the slot carries the arm's pitch");
+    inputs.clear();
+    live.pawn.bytes[0x1528] = 1; // TPS aim: Stellar Blade's view sets the dolly and pitch input turns the aim.
+    look(-5, -90, stellar_shared::wall_now(), 1);
+    auto held = live.alpha();
+    on_gameplay_poll(Run);
+    assert(controller_status() == (RotationValid | LookApplied) && camera_pitch() == 0 &&
+           live.alpha() == held && inputs.size() == 2 && inputs[1].first == 'p' &&
+           std::fabs(inputs[1].second - 10 / -2.5f) < 1e-4f && "Where the dolly is not the camera's, pitch motion returns");
+    live.pawn.bytes[0x1528] = 0;
+    look(10, 30, stellar_shared::wall_now(), 0);
+    on_gameplay_poll(Run);
+    assert(controller_status() == RotationValid && camera_pitch() == 0 && live.alpha() == held &&
+           "An inactive look leaves the dolly alone");
+    look(-5, -90, stellar_shared::wall_now(), 1);
+    on_gameplay_poll();
+    assert(controller_status() == RotationValid && camera_pitch() == 0 && live.alpha() == held &&
+           "Without forwarded input the dolly is left alone");
+    on_gameplay_poll(std::string(32, '9'));
+    assert(controller_status() == RotationValid && camera_pitch() == 0 && live.alpha() == held &&
+           "Another run's input cannot set it");
+    look(-5, -90, stellar_shared::wall_now() - 1000, 1);
+    on_gameplay_poll(Run);
+    assert(controller_status() == RotationValid && camera_pitch() == 0 && live.alpha() == held && "Nor a stale look");
+    // A camera whose yaw stays far for FarPolls polls gets no more look input; the dolly is still set (status 5).
+    for (uint32_t poll = 0; poll < FarPolls; poll++) {
+      look(-17, -90, stellar_shared::wall_now(), 1);
+      on_gameplay_poll(Run);
+    }
+    assert(controller_status() == (RotationValid | PitchSynced) && camera_pitch() == -17 && live.alpha() == held &&
+           "Yaw follow stopped, the dolly still set");
+    inputs.clear();
+    std::memset(live.pawn.bytes + 0x5c0, 0, 8);
 #ifdef _WIN32
     // An object freed after Lua published it may fault; the read is contained.
     auto before = stellar_shared::load64(base, 216);
