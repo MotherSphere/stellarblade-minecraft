@@ -50,10 +50,14 @@ final class AvatarStream implements AutoCloseable {
      * the controller's Unreal Pitch, Yaw, Roll in degrees or null (read before this frame's turn), whether the
      * adapter turned Stellar Blade's camera toward Minecraft's this frame, and the camera's Unreal pitch read before
      * the adapter set its dolly from Minecraft's this frame, or NaN when it did not, and whether this run owned
-     * forwarded input that frame (Stellar Blade grants it: not paused, no cutscene).
+     * forwarded input that frame (Stellar Blade grants it: not paused, no cutscene), and why the adapter left the
+     * camera's pitch to pitch input that frame (one of DOLLY_REFUSALS' 1-based index; 0 when it did not try or set it).
      */
     record Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation,
-                  boolean lookApplied, float cameraPitch, boolean inputGranted) { }
+                  boolean lookApplied, float cameraPitch, boolean inputGranted, int dollyRefusal) { }
+    // The adapter's DollyRefusal codes 1..10, in order.
+    static final String[] DOLLY_REFUSALS = {"no camera boom", "dolly unused", "camera follows the controller", "easing after a mode change",
+            "rotation lag", "another camera spline", "aim", "fishing", "slope camera", "unreadable values"};
 
     final String run;
     final Path path;
@@ -154,10 +158,13 @@ final class AvatarStream implements AutoCloseable {
         require(rotated == 0 || (rotated & ~14) == 1, "Invalid controller rotation status");
         if (rotated == 0) zeros(at + 40, at + 52);
         if ((rotated & 4) == 0) zeros(at + 52, at + 56);
-        zeros(at + 56, at + 64);
+        int refusal = map.getInt(at + 56);
+        require(refusal >= 0 && refusal <= DOLLY_REFUSALS.length && (refusal == 0 || rotated != 0 && (rotated & 4) == 0),
+                "Invalid dolly refusal");
+        zeros(at + 60, at + 64);
         zeros(at + 64 + 4 * count, at + SLOT_HEADER);
         RawFrameBus.LONG.setRelease(map, 272, counter);
-        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null, false, Float.NaN, false);
+        if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null, false, Float.NaN, false, 0);
         require(count == table.components.size() && floats == table.floats, "Pose slot does not match its component table");
         int[] status = new int[count];
         for (int i = 0; i < count; i++) {
@@ -181,7 +188,7 @@ final class AvatarStream implements AutoCloseable {
             require(Float.isFinite(cameraPitch), "Non-finite camera pitch");
         }
         return new Sample(counter, publication, generation, status, payload, rotation, (rotated & 2) != 0, cameraPitch,
-                (rotated & 8) != 0);
+                (rotated & 8) != 0, refusal);
     }
 
     /**

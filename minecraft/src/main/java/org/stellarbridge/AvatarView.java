@@ -81,6 +81,7 @@ public final class AvatarView {
         long effectSamples; // Samples with at least one active effect.
         double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
         double pitchSum, pitchMax; // Pitch gap in degrees between Minecraft's camera and the camera pitch of synced poses.
+        final long[] refusals = new long[AvatarStream.DOLLY_REFUSALS.length + 1]; // Controlled poses by dolly refusal.
         Vector3d relativeOrigin;
         boolean posed, anchored, controlled;
         long poses, incomplete, lastPoseNanos, windowPoses, windowNanos;
@@ -283,7 +284,7 @@ public final class AvatarView {
                             current.synced++;
                             current.pitchSum += pitchGap;
                             current.pitchMax = Math.max(current.pitchMax, pitchGap);
-                        }
+                        } else current.refusals[sample.dollyRefusal()]++;
                     }
                     current.posed = true;
                     current.poses++;
@@ -550,7 +551,8 @@ public final class AvatarView {
                 + (current.gapSamples == 0 ? "" : String.format(" Camera: turned by look input in %.0f%% of controlled poses; yaw gap %.1f deg mean, %.0f max;"
                         + " dolly set from Minecraft's pitch in %.0f%%, pitch gap %.1f deg mean, %.0f max.",
                         100.0 * current.turned / current.gapSamples, current.gapSum / current.gapSamples, current.gapMax,
-                        100.0 * current.synced / current.gapSamples, current.synced == 0 ? 0 : current.pitchSum / current.synced, current.pitchMax))
+                        100.0 * current.synced / current.gapSamples, current.synced == 0 ? 0 : current.pitchSum / current.synced, current.pitchMax)
+                        + refusalStatus(current))
                 + (current.table == null || current.table.parameters().isEmpty() ? " No streamed material parameters."
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
@@ -567,6 +569,14 @@ public final class AvatarView {
         for (var part : current.model.parts)
             if (!current.drawn[part.component()]) names.append(names.isEmpty() ? "" : ", ").append(current.table.components().get(part.component()).name());
         return names.isEmpty() ? " Every streamed mesh drawn." : " Not drawn now: " + names + ".";
+    }
+
+    /** The commonest reasons the adapter left the camera's pitch to pitch input, by share of controlled poses. */
+    private static String refusalStatus(Live current) {
+        var reasons = java.util.stream.IntStream.range(1, current.refusals.length).filter(i -> current.refusals[i] > 0).boxed()
+                .sorted((a, b) -> Long.compare(current.refusals[b], current.refusals[a])).limit(3)
+                .map(i -> String.format("%s %.0f%%", AvatarStream.DOLLY_REFUSALS[i - 1], 100.0 * current.refusals[i] / current.gapSamples)).toList();
+        return reasons.isEmpty() ? "" : " Pitch input instead: " + String.join(", ", reasons) + ".";
     }
 
     private static String evadeStatus(int[] evades) {

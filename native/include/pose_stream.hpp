@@ -126,7 +126,13 @@ struct DollyWrite {
   bool moved = false;       // The write moved the alpha by more than MovedAlpha.
 };
 constexpr float MovedAlpha = 1e-4f; // At least about 0.01 degree of arm pitch.
-bool steer_dolly(const Engine &, const Controller &, float look_pitch, float &camera, DollyWrite &last);
+// Why steer_dolly left the camera's pitch to pitch input (refusal, when not null): the pawn or its boom not
+// valid; the dolly unused or without a track; the arm following the controller; easing after a mode change; rotation
+// lag; another spline or a spline blend; TPS aim; fishing; the slope camera; an unreadable alpha or arm pitch.
+enum DollyRefusal : uint32_t { DollyNone, DollyNoBoom, DollyUnused, DollyController, DollyEasing, DollyLag, DollySpline,
+                               DollyAim, DollyFishing, DollySlope, DollyUnreadable, DollyRefusals };
+bool steer_dolly(const Engine &, const Controller &, float look_pitch, float &camera, DollyWrite &last,
+                 uint32_t *refusal = nullptr);
 
 // EVE's Beta and Burst gauges, kept by Stellar Blade only in its native player
 // actor (FSBActor, not a UObject). world is the pinned build's game world
@@ -253,7 +259,7 @@ public:
                const float *payload, uint32_t floats, const float *rotation,
                uint32_t look, uint64_t wall, uint32_t read_us,
                const float *gauges = nullptr, const uint32_t *evades = nullptr,
-               const float *stats = nullptr);
+               const float *stats = nullptr, uint32_t refusal = DollyNone);
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
   bool look(uint64_t wall, float &pitch, float &yaw) const;

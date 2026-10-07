@@ -351,6 +351,7 @@ int main() {
     fake.arm(0.05f, -17);
     assert(steer_dolly(dolly, c, -90, camera, written) && fake.alpha() == 0 && "Down to 0 as well");
     fake.arm(0.5f, -17);
+    std::vector<uint32_t> reasons; // Each refusal's reason, in order.
     // Nothing written (alpha, blend) and nothing reported, and the previous write forgotten.
     auto refused = [&](uint8_t *object, size_t at, auto value, const char *why) {
       decltype(value) saved;
@@ -362,7 +363,9 @@ int main() {
       std::memcpy(&before, fake.boom.bytes + 0x2f0, 4);
       camera = 9;
       DollyWrite previous{0.5f, -17, true};
-      bool wrote = steer_dolly(dolly, c, 13, camera, previous);
+      uint32_t reason = DollyNone;
+      bool wrote = steer_dolly(dolly, c, 13, camera, previous, &reason);
+      reasons.push_back(reason);
       std::memcpy(&after, fake.boom.bytes + 0x2f0, 4);
       std::memcpy(blend, fake.boom.bytes + 0x3c0, sizeof blend);
       std::memcpy(object + at, &saved, sizeof value);
@@ -384,6 +387,11 @@ int main() {
     refused(fake.boom.bytes, 0x2f0, INFINITY, "Nor from an infinite alpha");
     refused(fake.boom.bytes, 0x2c0, std::nanf(""), "Nor from a non-finite arm pitch");
     refused(fake.items.data() + 24 * 4, 8, int32_t(1 << 29), "Nor into a pending-kill boom");
+    // Each refusal names its reason, in the order above.
+    std::vector<uint32_t> expected = {DollyController, DollyEasing, DollyLag, DollySpline, DollySpline, DollyUnused, DollyAim,
+                                      DollyFishing, DollyUnused, DollyNoBoom, DollyNoBoom, DollyUnreadable, DollyUnreadable,
+                                      DollyUnreadable, DollyNoBoom};
+    assert(reasons == expected && "Refusal reasons");
     // The slope camera sets the alpha after the arm while it has a type, runs and its running time is past its
     // start (0x2028900).
     float times[3] = {0.5f, 0, 0.2f}; // CurrentCameraSlopeMoveRunningTime, RemainBlockCameraSlopeMove, CameraSlopeRunTimeFromStart.
@@ -392,6 +400,7 @@ int main() {
     assert(steer_dolly(dolly, c, 13, camera, written) && "A slope camera that does not run leaves the dolly to Minecraft");
     fake.arm(0.5f, -17);
     refused(fake.pawn.bytes, 0x1b5d, uint8_t(1), "Nor while the slope camera sets the alpha");
+    assert(reasons.back() == DollySlope && "The slope camera's reason");
     fake.pawn.bytes[0x1b5d] = 1;
     fake.pawn.bytes[0x1b5c] = 0;
     assert(steer_dolly(dolly, c, 13, camera, written) && "Nor without a slope move type");
@@ -854,6 +863,8 @@ int main() {
     assert(controller_status() == (RotationValid | LookApplied | PitchSynced | InputGranted) && live.alpha() == steered &&
            std::none_of(inputs.begin(), inputs.end(), [](auto &i) { return i.first == 'p'; }) &&
            "Without an arm update since, the dolly holds and pitch input stays off");
+    assert(stellar_shared::plain<uint32_t>(base + Header + SlotBytes * (stellar_shared::load32(base, 128) & 3), 56) == DollyNone &&
+           "A synced frame names no refusal");
     live.arm(live.alpha(), -17);
     inputs.clear();
     live.pawn.bytes[0x1528] = 1; // TPS aim: Stellar Blade's view sets the dolly and pitch input turns the aim.
@@ -863,6 +874,10 @@ int main() {
     assert(controller_status() == (RotationValid | LookApplied | InputGranted) && camera_pitch() == 0 &&
            live.alpha() == held && inputs.size() == 2 && inputs[1].first == 'p' &&
            std::fabs(inputs[1].second - 10 / -2.5f) < 1e-4f && "Where the dolly is not the camera's, pitch motion returns");
+    auto dolly_refusal = [&]() {
+      return stellar_shared::plain<uint32_t>(base + Header + SlotBytes * (stellar_shared::load32(base, 128) & 3), 56);
+    };
+    assert(dolly_refusal() == DollyAim && "The slot names why the dolly was left alone");
     live.pawn.bytes[0x1528] = 0;
     look(10, 30, stellar_shared::wall_now(), 0);
     on_gameplay_poll(Run);

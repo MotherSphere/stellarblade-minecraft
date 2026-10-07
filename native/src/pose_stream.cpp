@@ -455,30 +455,47 @@ constexpr size_t CameraBoom = 0x5c0, TPSMode = 0x1528, FishingMode = 0x1690, Slo
                  DollyBlend = 0x3c0, DollyBlendTarget = 0x3c8, DollyBlends = 0x3d8, DollyMode = 0x3e0;
 constexpr uint8_t RotationLag = 0x40;
 bool steer_dolly(const Engine &engine, const Controller &c, float look_pitch, float &camera,
-                 DollyWrite &last) {
+                 DollyWrite &last, uint32_t *refusal) {
   auto previous = last;
   last = {};
+  auto refuse = [&](uint32_t why) {
+    if (refusal)
+      *refusal = why;
+    return false;
+  };
+  if (refusal)
+    *refusal = DollyNone;
   auto pawn = static_cast<uintptr_t>(c.pawn);
   if (!engine.objects || !engine.boom_vtable || !alive(engine.objects, pawn) ||
       at<uint64_t>(pawn + ClassPrivate) != c.pawn_cls)
-    return false;
+    return refuse(DollyNoBoom);
   auto boom = at<uintptr_t>(pawn + CameraBoom);
   if (!boom || !alive(engine.objects, boom) || at<uintptr_t>(boom) != engine.boom_vtable ||
       at<uintptr_t>(boom + Owner) != pawn)
-    return false;
+    return refuse(DollyNoBoom);
   // The arm's next pitch must come from this alpha alone, along the default
   // track, with no easing and no other writer after the arm reads it.
-  bool slope = at<uint8_t>(pawn + SlopeRun) && at<uint8_t>(pawn + SlopeType) &&
-               at<float>(pawn + SlopeTime) - at<float>(pawn + SlopeStart) > 0;
-  if (!at<uint8_t>(boom + UseDolly) || !at<uint64_t>(boom + DollyTrack) ||
-      at<uint8_t>(boom + ControllerRotation) || !(at<float>(boom + CameraBlend) <= 0) ||
-      (at<uint8_t>(boom + ArmFlags) & RotationLag) || at<int32_t>(boom + DollyMode) != -1 ||
-      at<int32_t>(boom + DollyBlends) || at<uint8_t>(pawn + TPSMode) || at<uint8_t>(pawn + FishingMode) || slope)
-    return false;
+  if (!at<uint8_t>(boom + UseDolly) || !at<uint64_t>(boom + DollyTrack))
+    return refuse(DollyUnused);
+  if (at<uint8_t>(boom + ControllerRotation))
+    return refuse(DollyController);
+  if (!(at<float>(boom + CameraBlend) <= 0))
+    return refuse(DollyEasing);
+  if (at<uint8_t>(boom + ArmFlags) & RotationLag)
+    return refuse(DollyLag);
+  if (at<int32_t>(boom + DollyMode) != -1 || at<int32_t>(boom + DollyBlends))
+    return refuse(DollySpline);
+  if (at<uint8_t>(pawn + TPSMode))
+    return refuse(DollyAim);
+  if (at<uint8_t>(pawn + FishingMode))
+    return refuse(DollyFishing);
+  if (at<uint8_t>(pawn + SlopeRun) && at<uint8_t>(pawn + SlopeType) &&
+      at<float>(pawn + SlopeTime) - at<float>(pawn + SlopeStart) > 0)
+    return refuse(DollySlope);
   auto alpha = at<float>(boom + DollyAlpha), arm = at<float>(boom + ArmRotation);
   auto pitch = std::remainder(arm, 360.0f);
   if (!std::isfinite(alpha) || !std::isfinite(pitch))
-    return false;
+    return refuse(DollyUnreadable);
   camera = pitch;
   // Read back each poll: a capped or reset alpha never winds up. One arm
   // update normally runs between two polls, so pitch answers the previous
@@ -782,7 +799,7 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
                        const float *rotation, uint32_t look,
                        uint64_t wall, uint32_t read_us, const float *gauges,
-                       const uint32_t *evades, const float *stats) {
+                       const uint32_t *evades, const float *stats, uint32_t refusal) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -796,10 +813,11 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   put(slot, 24, Format);
   put(slot, 28, count);
   put(slot, 32, floats);
-  // Controller rotation: status at 36, Pitch, Yaw, Roll at 40, camera pitch at 52.
+  // Controller rotation: status at 36, Pitch, Yaw, Roll at 40, camera pitch at 52, dolly refusal at 56.
   if (rotation) {
     put(slot, 36, RotationValid | (look & (LookApplied | PitchSynced | InputGranted)));
     std::memcpy(slot + 40, rotation, 4 * sizeof(float));
+    put(slot, 56, (look & PitchSynced) || refusal >= DollyRefusals ? uint32_t(DollyNone) : refusal);
   }
   std::memcpy(slot + 64, status, sizeof(uint32_t) * count);
   std::memcpy(slot + SlotHeader, payload, sizeof(float) * floats);
@@ -981,9 +999,10 @@ bool guarded_battle(uintptr_t world) {
   }
 }
 // A boom freed after its pawn was checked faults before the write; contained.
-bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last) {
+bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last,
+                   uint32_t *refusal) {
   __try {
-    return steer_dolly(e, c, pitch, camera, last);
+    return steer_dolly(e, c, pitch, camera, last, refusal);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
@@ -1009,8 +1028,9 @@ uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   return turn_controller(e, c, pitch, yaw);
 }
-bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last) {
-  return steer_dolly(e, c, pitch, camera, last);
+bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last,
+                   uint32_t *refusal) {
+  return steer_dolly(e, c, pitch, camera, last, refusal);
 }
 uint32_t guarded(const Engine &e, const Component &c, float *out) {
   return read_component(e, c, out);
@@ -1079,10 +1099,11 @@ void on_gameplay_poll(std::string_view owner) {
   // forwarded input; the frame's own input processing then applies the turn.
   // The dolly carries the pitch where it can: pitch input would move it again.
   bool granted = !owner.empty() && owner == producer.run(), applied = false, synced = false;
+  uint32_t refusal = DollyNone; // Why the dolly was left alone this frame, when it was tried.
   float pitch = 0, yaw = 0;
   if (rotated && granted && producer.look(wall, pitch, yaw)) {
     auto turn = follow(following, pitch, yaw, rotation[1]);
-    synced = guarded_dolly(engine, *table->controller, pitch, rotation[3], dolly_write);
+    synced = guarded_dolly(engine, *table->controller, pitch, rotation[3], dolly_write, &refusal);
     applied = turn.engaged && guarded_turn(engine, *table->controller, synced ? 0 : turn.pitch, turn.yaw);
   } else {
     following = {};
@@ -1111,6 +1132,6 @@ void on_gameplay_poll(std::string_view owner) {
                    offset, rotated ? rotation : nullptr,
                    (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u) | (granted ? InputGranted : 0u), wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
-                   gauged ? gauges : nullptr, evade_starts.counts, statted ? stats : nullptr);
+                   gauged ? gauges : nullptr, evade_starts.counts, statted ? stats : nullptr, refusal);
 }
 } // namespace stellar_pose
