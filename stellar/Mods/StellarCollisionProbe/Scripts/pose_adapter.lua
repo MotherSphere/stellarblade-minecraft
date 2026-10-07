@@ -563,12 +563,20 @@ function Adapter.new()
         eve.bLockOn=true
         return eve:IsLockOn()
     end
+    -- Returns whether EVE is locked on the proxy, and whether her soft lock-rotation disable was cleared.
     function engine.lock_follow(proxy,at)
         local eve=character()
         proxy=assert(valid(proxy),'proxy gone')
         proxy:K2_SetActorLocation(at,false,{},true)
         eve.HideTimeForLockOnCharacter=0 -- Stellar Blade's off-screen release timer: Minecraft decides what is seen.
-        return eve:IsLockOn() and aimed(eve,proxy)
+        local locked=eve:IsLockOn() and aimed(eve,proxy)
+        -- A skill step that disables lock-on rotation leaves EVE's facing frozen until a move key (0x22718d0 sets
+        -- bSoftDisableLockOnCharacterRotation; 0x20f6490 clears it only if she already faces LockOnCharacter, which Stellar
+        -- Blade's rule moves ensure with its own simulation target, never set for our proxy). Clear it, so its lock-on facing
+        -- (0x216a370) turns her back.
+        local cleared=locked and eve.bSoftDisableLockOnCharacterRotation==true
+        if cleared then eve.bSoftDisableLockOnCharacterRotation=false end
+        return locked,cleared
     end
     -- Stellar Blade's own release first (an unavailable target makes IsLockOn release: lock fields cleared, camera boom
     -- restored from the backups); cleared directly if its bDisableLockOnControl blocks that; then camera flag and proxy.

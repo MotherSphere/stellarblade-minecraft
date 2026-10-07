@@ -6,6 +6,7 @@
 -- undoes everything, retried every frame until done; spawn, follow and engage errors together stop new locks after
 -- SPAWN_TRIES, so a broken proxy is never respawned frame after frame. Routine lines stop at ROUTINE_LINES, keeping
 -- the rest of the log budget for releases and failures. Game-thread only; call tick each native frame.
+-- While locked, follow clears Stellar Blade's soft lock-rotation disable (counted on the held lines).
 local Lock={}
 local FRESH_MS,LEASE,RETRY,REPORT,SPAWN_TRIES,ROUTINE_LINES=2500,0.6,0.25,1,3,200
 -- While locked, EVE's sword is drawn as Stellar Blade's lock-on draws it, checked every DRAW_WAIT seconds (its draw Show
@@ -30,7 +31,8 @@ end
 function Lock.new(engine,directory,wall,real,log,link)
     local api,lines,swept,spawn_failures={},0,false,0
     local last,seen -- The newest accepted publication, and when its sequence arrived.
-    local held -- {proxy=,camera=,engaged=,retry=,relocks=,report=,draw=,draws=,drew=} while EVE is locked for Minecraft.
+    -- {proxy=,camera=,engaged=,retry=,relocks=,clears=,report=,draw=,draws=,drew=} while EVE is locked for Minecraft.
+    local held
     local undo -- A lock whose release failed, retried first every frame.
     local function note(message) if lines<300 then lines=lines+1; log('Lock: '..message) end end
     local function status(proxy)
@@ -88,13 +90,14 @@ function Lock.new(engine,directory,wall,real,log,link)
                 note(string.format('proxy failed (%d/%d): %s',spawn_failures,SPAWN_TRIES,tostring(proxy)))
                 return
             end
-            held={proxy=proxy,engaged=false,retry=-math.huge,relocks=0,report=now,draw=-math.huge,draws=0,drew=false}
+            held={proxy=proxy,engaged=false,retry=-math.huge,relocks=0,clears=0,report=now,draw=-math.huge,draws=0,drew=false}
             note(info)
             local saved,previous=pcall(engine.lock_camera,false)
             if saved then held.camera=previous else note('camera flag unavailable: '..tostring(previous)) end
         end
-        local ok,locked=pcall(engine.lock_follow,held.proxy,at)
+        local ok,locked,cleared=pcall(engine.lock_follow,held.proxy,at)
         if not ok then spawn_failures=spawn_failures+1; api.release('error: '..tostring(locked)); return end
+        if cleared then held.clears=held.clears+1 end
         if not locked and now>=held.retry then
             held.retry=now+RETRY
             if held.engaged then
@@ -117,7 +120,7 @@ function Lock.new(engine,directory,wall,real,log,link)
         end
         if now-held.report>=REPORT and lines<ROUTINE_LINES then
             held.report=now
-            note(string.format('held, %d relocks: %s',held.relocks,status(held.proxy)))
+            note(string.format('held, %d relocks, %d soft clears: %s',held.relocks,held.clears,status(held.proxy)))
         end
     end
     return api

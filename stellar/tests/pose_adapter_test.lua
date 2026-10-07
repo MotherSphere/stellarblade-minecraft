@@ -298,6 +298,26 @@ missing[WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword']=true
 played={}; blade.state='Sword'
 local drew,err=pcall(swords.lock_draw,false)
 assert(not drew and tostring(err):find('Eve_UnFoldSword.Eve_UnFoldSword is not loaded',1,true),'No Show at all is an error: '..tostring(err))
+-- The lock: follow clears Stellar Blade's soft lock-rotation disable only while EVE is locked on the proxy.
+local proxy=object('Proxy',{UnavailableLockOn=0})
+function proxy:K2_SetActorLocation(at) self.at=at end
+function proxy:K2_GetActorLocation() return {X=0,Y=100,Z=0} end
+local lockedOn=true
+function holder:IsLockOn() return lockedOn end
+function holder:GetVelocity() return {X=0,Y=0,Z=0} end
+holder.LockOnCharacter,holder.HideTimeForLockOnCharacter,holder.DisableLockOnCharacterRotaion=proxy,5,0
+holder.bSoftDisableLockOnCharacterRotation=true
+local locked,cleared=swords.lock_follow(proxy,{X=1,Y=2,Z=3})
+assert(locked==true and cleared==true and holder.bSoftDisableLockOnCharacterRotation==false and proxy.at.Z==3
+    and holder.HideTimeForLockOnCharacter==0,'Locked on the proxy: the soft disable is cleared')
+locked,cleared=swords.lock_follow(proxy,{X=1,Y=2,Z=3})
+assert(locked==true and cleared==false,'Nothing to clear')
+holder.bSoftDisableLockOnCharacterRotation,holder.LockOnCharacter=true,object('Cow')
+locked,cleared=swords.lock_follow(proxy,{X=1,Y=2,Z=3})
+assert(locked==false and cleared==false and holder.bSoftDisableLockOnCharacterRotation==true,'Not while locked on another target')
+holder.LockOnCharacter,lockedOn=proxy,false
+locked,cleared=swords.lock_follow(proxy,{X=1,Y=2,Z=3})
+assert(locked==false and cleared==false and holder.bSoftDisableLockOnCharacterRotation==true,'Nor while not locked on')
 -- Stellar Blade's HUD widgets: item slots by name, the dash slot and bullet slots by class; kept while valid; while one is
 -- missing, searched again 2 s later, doubling up to 30 s (2 s again once a search finds one), at once when one found went.
 local function thumb(texture) return object('Image_Item_Thumb',{Brush=wrap({ResourceObject=texture and object(texture)})}) end
@@ -354,4 +374,4 @@ RegisterHook=function(path,fn) hooked={path=path,fn=fn} end
 widgets.watch_consume(print)
 assert(hooked.path=='/Script/SB.SBNetworkPlayerController:ServerRequest_ItemBucketItemConsume' and hooked.fn==print)
 os.clock=real_clock
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone, the sword Shows per weapon and hairstyle, and the HUD widgets')
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone, the sword Shows per weapon and hairstyle, the lock soft-disable clear, and the HUD widgets')

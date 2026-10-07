@@ -24,7 +24,7 @@ function engine.lock_spawn(at)
     return {id=state.spawned},'proxy '..state.spawned
 end
 function engine.lock_camera(value) local previous=state.camera; state.camera=value; return previous end
-function engine.lock_follow(proxy,at) state.at=at; return state.locked end
+function engine.lock_follow(proxy,at) state.at=at; return state.locked,state.locked and state.cleared or false end
 function engine.lock_engage(proxy,at) state.locked=state.engage; return state.locked end
 function engine.lock_release(proxy,camera)
     if state.release_error then error(state.release_error) end
@@ -127,5 +127,15 @@ assert(#draws==7,'Five tries in a row at most: '..#draws)
 state.release_error='EVE busy'; publish('none'); armed.tick(); armed.tick()
 state.release_error=nil; armed.tick()
 assert(sheathes==1 and table.concat(logged,'\n'):find('Lock: sword: sheathing',1,true),'One sheathe across release retries')
+-- Soft clears: the held line counts the frames where follow cleared Stellar Blade's soft lock-rotation disable.
+engine.lock_draw=function() return nil end
+local lines={}
+local clearing=Lock.new(engine,directory,function() return wall end,function() return real end,function(line) lines[#lines+1]=line end,function() return place end)
+publish('1.000 1.000 1.000',nil,wall*1000); clearing.tick()
+state.cleared=true; real=real+0.01; publish('1.000 1.000 1.000'); clearing.tick()
+state.cleared=false; real=real+0.01; publish('1.000 1.000 1.000'); clearing.tick()
+real=real+1; publish('1.000 1.000 1.000'); clearing.tick()
+assert(lines[#lines]=='Lock: held, 0 relocks, 1 soft clears: status',lines[#lines])
+publish('none'); clearing.tick()
 os.remove(directory..'/eve-lock.txt'); os.remove(directory)
-print('Lock-on: parse, Unreal placement, engage and relock, lease, release paths, retry and spawn cap, sword draw and sheathe')
+print('Lock-on: parse, Unreal placement, engage and relock, lease, release paths, retry and spawn cap, sword draw and sheathe, soft clears')
