@@ -82,8 +82,8 @@ public final class ControlHooksTest {
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setYaw", "(F)V") == 1;
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setPitch", "(F)V") == 1;
         // EVE combat layout: use is the heavy attack (Y), the inventory key blocks (LB), hotbar 1 holds LB then adds X.
-        boolean[] held = new boolean[29];
-        long[] since = new long[29];
+        boolean[] held = new boolean[30];
+        long[] since = new long[30];
         held[8] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x8000 : "Use (right click) is Y, not LB";
         held[8] = false;
@@ -135,7 +135,7 @@ public final class ControlHooksTest {
         held[6] = true;
         assert ControlBridge.buttons(held, since, 0) == 0 : "Minecraft's own sprint key does nothing for EVE";
         held[6] = false;
-        int[] expected = {0x1, 0x2, 0x20000, 0x20, 0x80}; // Heal, item, interact, scan, lock-on.
+        int[] expected = {0x1, 0x2, 0x20000, 0x20, 0x80, 0x40 | 0x80}; // Heal, item, interact, scan, lock-on, Tachy (L3 with R3).
         for (int k = 0; k < expected.length; k++) {
             held[24 + k] = true;
             assert ControlBridge.buttons(held, since, 0) == expected[k] : "EVE key " + k;

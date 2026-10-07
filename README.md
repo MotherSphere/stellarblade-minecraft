@@ -48,6 +48,7 @@ EVE mode follows Stellar Blade's default controller layout:
 | EVE burst (Alt) with hotbar 1–4 | RB, then X, Y, A or B | Burst skills |
 | EVE heal (Q position: A on AZERTY), EVE item (R) | D-pad up, D-pad down | Heal, item |
 | EVE interact (F), EVE scan (Tab), EVE lock-on (middle click) | RT, Back, R3 (avatar: Minecraft's lock-on) | Interact, scan, lock-on |
+| EVE Tachy mode (T) | L3 with R3 | Tachy mode, when Stellar Blade allows it |
 
 The EVE keys default to Stellar Blade's own keyboard keys (its `DefaultInput.ini`) and are rebindable under Stellar Bridge in Minecraft's controls; Minecraft's own sprint key does nothing for EVE. Six extra controller buttons (Y, RB, LT, RT, R3, D-pad up) are initially unbound. Actions follow Stellar Blade's controller settings. In EVE mode Minecraft actions bound to the inventory key, hotbar 1–4 or an EVE key (inventory, hotbar, drop, swap hands, pick block) wait for build mode. Build mode keeps camera look, neutralizes EVE's actions and restores normal Minecraft clicks, sneak interactions, inventory and hotbar. Chat and the other hotbar slots remain Minecraft-owned.
 

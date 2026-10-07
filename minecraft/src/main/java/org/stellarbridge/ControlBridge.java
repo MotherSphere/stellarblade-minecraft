@@ -17,7 +17,7 @@ import org.lwjgl.glfw.GLFW;
  * on the left stick (walk key: a light tilt), jump A, sneak B (dodge), EVE sprint L3, attack X (light), use Y (heavy),
  * the inventory key LB (guard, parry), hotbar keys 1 to 4 the Beta skills (LB, then X, Y, A or B) or with the burst key
  * the Burst skills (RB instead of LB), drone aim LT (attack then fires with RT), heal D-pad up, item D-pad down,
- * interact RT, scan Back and lock-on R3. Minecraft actions sharing those keys wait for build mode.
+ * interact RT, scan Back, lock-on R3 and Tachy mode L3 with R3. Minecraft actions sharing those keys wait for build mode.
  */
 public final class ControlBridge {
     private static final int LB = 0x100, RB = 0x200, X = 0x4000, Y = 0x8000, A = 0x1000, B = 0x2000, L3 = 0x40, R3 = 0x80,
@@ -25,15 +25,15 @@ public final class ControlBridge {
     // Per binding index (bindings()): movement (0-3) and walk shape the stick; skills (16-19) are sequenced by buttons();
     // Minecraft's own sprint key (6) does nothing in EVE mode, where the EVE sprint key sprints.
     private static final int[] BUTTON = {0, 0, 0, 0, A, B, 0, X, Y,
-            Y, RB, LT, RT, R3, UP, LB, 0, 0, 0, 0, L3, 0, LT, 0, UP, DOWN, RT, BACK, R3};
-    static final int DODGE = 5, ATTACK = 7, EXTRA_R3 = 13, GUARD = 15, SKILLS = 16, WALK = 21, AIM = 22, BURST = 23, LOCK = 28;
+            Y, RB, LT, RT, R3, UP, LB, 0, 0, 0, 0, L3, 0, LT, 0, UP, DOWN, RT, BACK, R3, L3 | R3};
+    static final int DODGE = 5, ATTACK = 7, EXTRA_R3 = 13, GUARD = 15, SKILLS = 16, WALK = 21, AIM = 22, BURST = 23, LOCK = 28, TACHY = 29;
     static final double WALK_TILT = 0.35; // Stick deflection while the walk key is held: Stellar Blade walks.
     private static final int[] SKILL_FACE = {X, Y, A, B}; // BetaSkill1..4: face left, top, bottom, right.
     static final long SKILL_DELAY = 40_000_000L; // LB leads a skill's face button by 40 ms, as a player's thumb would.
-    private static final boolean[] held = new boolean[29];
-    private static final long[] heldSince = new long[29];
-    private static final boolean[] wasHeld = new boolean[29];
-    private static final KeyBinding[] eve = new KeyBinding[9];
+    private static final boolean[] held = new boolean[30];
+    private static final long[] heldSince = new long[30];
+    private static final boolean[] wasHeld = new boolean[30];
+    private static final KeyBinding[] eve = new KeyBinding[10];
     private static final Set<Integer> scanCodes = new HashSet<>();
     private static final Set<InputUtil.Key> blocked = new HashSet<>();
     private static KeyBinding mode;
@@ -57,9 +57,9 @@ public final class ControlBridge {
         for (int i = 0; i < extra.length; i++) extra[i] = KeyBindingHelper.registerKeyBinding(
                 new KeyBinding("key.stellar_bridge." + names[i], InputUtil.UNKNOWN_KEY.getCode(), category));
         // Stellar Blade's keyboard defaults, by physical key (an AZERTY heal key A is Minecraft's Q position).
-        String[] eveNames = {"sprint", "walk", "aim", "burst", "heal", "item", "interact", "scan", "lock_on"};
+        String[] eveNames = {"sprint", "walk", "aim", "burst", "heal", "item", "interact", "scan", "lock_on", "tachy"};
         int[] eveKeys = {GLFW.GLFW_KEY_V, GLFW.GLFW_KEY_C, GLFW.GLFW_KEY_LEFT_CONTROL, GLFW.GLFW_KEY_LEFT_ALT, GLFW.GLFW_KEY_Q,
-                GLFW.GLFW_KEY_R, GLFW.GLFW_KEY_F, GLFW.GLFW_KEY_TAB, GLFW.GLFW_MOUSE_BUTTON_MIDDLE};
+                GLFW.GLFW_KEY_R, GLFW.GLFW_KEY_F, GLFW.GLFW_KEY_TAB, GLFW.GLFW_MOUSE_BUTTON_MIDDLE, GLFW.GLFW_KEY_T};
         for (int i = 0; i < eve.length; i++) eve[i] = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.stellar_bridge." + eveNames[i],
                 eveNames[i].equals("lock_on") ? InputUtil.Type.MOUSE : InputUtil.Type.KEYSYM, eveKeys[i], category));
         ClientTickEvents.END_CLIENT_TICK.register(client -> tick());
@@ -141,7 +141,7 @@ public final class ControlBridge {
                 options.jumpKey, options.sneakKey, options.sprintKey, options.attackKey, options.useKey,
                 extra[0], extra[1], extra[2], extra[3], extra[4], extra[5], options.inventoryKey,
                 options.hotbarKeys[0], options.hotbarKeys[1], options.hotbarKeys[2], options.hotbarKeys[3],
-                eve[0], eve[1], eve[2], eve[3], eve[4], eve[5], eve[6], eve[7], eve[8]};
+                eve[0], eve[1], eve[2], eve[3], eve[4], eve[5], eve[6], eve[7], eve[8], eve[9]};
     }
 
     /**

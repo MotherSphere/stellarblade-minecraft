@@ -16,6 +16,7 @@
   "key.stellar_bridge.interact": "Interaction d'EVE (RT)",
   "key.stellar_bridge.scan": "Scan d'EVE (Back)",
   "key.stellar_bridge.lock_on": "Verrouillage d'EVE (R3 ; avatar : mob le plus proche)",
+  "key.stellar_bridge.tachy": "EVE mode Tachy (L3 avec R3)",
   "stellar_bridge.combat.perfect_parry": "Parade parfaite",
   "stellar_bridge.combat.perfect_dodge": "Esquive parfaite",
   "stellar_bridge.combat.dodge": "Esquivé",
