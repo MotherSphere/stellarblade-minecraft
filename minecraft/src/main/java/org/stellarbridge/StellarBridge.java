@@ -66,6 +66,9 @@ public final class StellarBridge implements ClientModInitializer {
             dispatcher.register(CommandManager.literal("stellar")
                     .then(CommandManager.literal("start").executes(context -> start(context.getSource())))
                     .then(CommandManager.literal("stop").executes(context -> stopCommand(context.getSource())))
+                    .then(CommandManager.literal("import").executes(context -> request(context.getSource(), "import")))
+                    .then(CommandManager.literal("enter").executes(context -> request(context.getSource(), "enter")))
+                    .then(CommandManager.literal("return").executes(context -> request(context.getSource(), "return")))
                     .then(CommandManager.literal("status").executes(context -> status(context.getSource()))));
         });
         ServerTickEvents.END_SERVER_TICK.register(StellarBridge::tick);
@@ -121,6 +124,27 @@ public final class StellarBridge implements ClientModInitializer {
         return 1;
     }
 
+    /**
+     * /stellar import, enter and return: Stellar Blade's F5, F8 and F11 through a session request (eve-request.txt), one at
+     * a time; Lua's answer is shown in chat.
+     */
+    private static int request(ServerCommandSource source, String action) {
+        Session current = session;
+        if (current == null) return error(source, "No bridge session is active. Use /stellar start first.");
+        if (source.getPlayer() != current.player) return error(source, "Only the local bridge owner can send requests to Stellar Blade.");
+        if (current.request != null) return error(source, "Waiting for Stellar Blade's answer to /stellar " + current.request.action() + ".");
+        try {
+            long seq = current.requestSeq + 1;
+            current.files.write("eve-request.txt", BridgeProtocol.encodeRequest(current.id, seq, System.currentTimeMillis(), action));
+            current.requestSeq = seq;
+            current.request = new Request(seq, action, System.nanoTime());
+            source.sendFeedback(() -> Text.literal("Sent /stellar " + action + " to Stellar Blade."), false);
+            return 1;
+        } catch (IOException | IllegalArgumentException failure) {
+            return error(source, "Request not delivered to Stellar Blade: " + failure.getMessage());
+        }
+    }
+
     private static int status(ServerCommandSource source) {
         Session current = session;
         source.sendFeedback(() -> Text.literal(current == null ? "Stellar Bridge is inactive."
@@ -164,6 +188,7 @@ public final class StellarBridge implements ClientModInitializer {
             stop("The original private session is no longer available");
             return;
         }
+        current.answer();
         if (!dead) AvatarStats.apply(current.player, AvatarStats.current()); // A respawned player gets them anew.
         try {
             if (++current.ticks % 4 == 0) current.publish();
@@ -315,6 +340,13 @@ public final class StellarBridge implements ClientModInitializer {
     record RenderingContext(String session, int revision, CaptureFrame.Position origin, String dimension, UUID owner) { }
 
     /**
+     * A session request awaiting Stellar Blade's answer. Lua takes it within 2.5 s of its millisecond TIME by a wall clock
+     * in whole seconds, so never later than 3.5 s: past ANSWER it can no longer run, and the next one may go.
+     */
+    private record Request(long seq, String action, long sentNanos) { }
+    private static final long ANSWER = 5_000_000_000L;
+
+    /**
      * The walls Stellar Blade gets for the entities' boxes: the MOBS nearest EVE's feet (by each box's bottom centre),
      * clipped to the patch, relative to the origin, without slivers thinner than 0.01 block.
      */
@@ -340,7 +372,8 @@ public final class StellarBridge implements ClientModInitializer {
         long slowestPublish; // Nanoseconds of the slowest terrain publication (scan, merge, write) this session.
         int revision;
         int ticks;
-        long combatSeq, lockSeq, mobSeq;
+        long combatSeq, lockSeq, mobSeq, requestSeq;
+        Request request; // The session request awaiting Stellar Blade's answer.
         boolean mobsListed; // The last eve-mobs.txt listed at least one entity.
 
         Session(IntegratedServer server, ServerPlayerEntity player, BridgeFiles files) {
@@ -355,6 +388,28 @@ public final class StellarBridge implements ClientModInitializer {
             VoxelShape support = world.getBlockState(floor).getCollisionShape(world, floor, ShapeContext.of(player));
             if (support.isEmpty() || Math.abs(support.getMax(Direction.Axis.Y) - 1) > 0.00001)
                 throw new IllegalArgumentException("The starting block must have a full-height collision floor");
+        }
+
+        /** Each tick: Stellar Blade's answer to the pending session request, in chat; a request unanswered after ANSWER, once. */
+        void answer() {
+            if (request == null) return;
+            BridgeProtocol.RequestAck ack = null;
+            try {
+                String text = files.read("eve-request-ack.txt");
+                if (text != null) ack = BridgeProtocol.parseRequestAck(text);
+            } catch (IOException | IllegalArgumentException unreadable) {
+                // Malformed, foreign or being replaced: only a valid answer to this request counts.
+            }
+            if (ack != null && ack.session().equals(id) && ack.seq() == request.seq() && ack.action().equals(request.action())) {
+                player.sendMessage(Text.literal("Stellar Blade " + ack.action() + " " + ack.result() + ": " + ack.message()), false);
+                LOG.info("Session request {} {}: {}: {}", ack.seq(), ack.action(), ack.result(), ack.message());
+                request = null;
+            } else if (System.nanoTime() - request.sentNanos() > ANSWER) {
+                player.sendMessage(Text.literal("Stellar Blade did not answer /stellar " + request.action()
+                        + ". Check that it runs Lua revision 47 with a save loaded, or use its key."), false);
+                LOG.info("Session request {} {}: no answer", request.seq(), request.action());
+                request = null;
+            }
         }
 
         void revive(ServerPlayerEntity respawned) {

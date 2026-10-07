@@ -27,7 +27,8 @@ function capture.exportbmp() bmp_exports=bmp_exports+1; return true,'BMP compari
 function capture.cleanup() return true,'cleaned' end
 function capture.clear() clears=clears+1; if clear_error then error('native cleanup failed') end; return true,'cleared' end
 local bridge={status=function()return state end,shapes=function()return {} end}
-function bridge.read() if read_error then error('bridge read failed') end; return {} end
+local terrain_session
+function bridge.read() if read_error then error('bridge read failed') end; return {session=terrain_session} end
 function bridge.create() state='ready'; return true,'created' end
 function bridge.enter() state='entered'; return true,'entered' end
 function bridge.restore() returns=returns+1; state='idle'; return true,'returned' end
@@ -122,6 +123,12 @@ package.loaded.pose_stream={new=function(engine,directory,clock,logger,link)
     stream_link=link
     return {tick=function() stream_ticks=stream_ticks+1; if stream_error then error('identities failed') end; return true end,
         binding=function() return stream_binding end}
+end}
+local request_args,request_ticks,request_error=nil,0,false
+package.loaded.requests={new=function(directory,wall,logger,linked,offered,run)
+    assert(directory=='/unused' and wall==os.time and type(logger)=='function')
+    request_args={linked=linked,offered=offered,run=run}
+    return {tick=function() request_ticks=request_ticks+1; if request_error then error('request read failed') end end}
 end}
 package.loaded.native_scene={new=function(_,received,directory,scale) assert(received==bridge and directory=='/unused' and scale==100); return scene end}
 package.loaded.scene_adapter={new=function()return {} end}
@@ -315,3 +322,22 @@ next_hd_frame(); assert(not permit_context,'A binding for another link session i
 stream_binding=nil; next_hd_frame(); assert(not permit_context,'No binding, no permit')
 keys.F11(); drain()
 print('PASS pose stream wiring: bridge-timer checks, entered placement, nonfatal failures and avatar input permits')
+-- Minecraft's session requests: ticked by the bridge timer after its own tick, through the same run as F5, F8 and F11.
+ticks=request_ticks
+loop(); drain(); assert(request_ticks==ticks+1,'The bridge timer checks session requests')
+request_error=true; loop(); drain(); request_error=false
+assert(logs[#logs]:find('STOP: Session requests paused: ',1,true) and logs[#logs]:find('request read failed',1,true),'Request failures are reported')
+loop(); drain(); assert(request_ticks==ticks+3,'The bridge timer keeps running after a request failure')
+assert(state=='idle' and request_args.linked()==nil and request_args.offered()==nil,'No link, no terrain session')
+terrain_session=string.rep('a',32); assert(request_args.offered()==terrain_session,'The terrain names its session')
+local requested,message=request_args.run('mirror')
+assert(requested and message=='created' and state=='ready' and logs[#logs]:find('OK: created',1,true),'Import runs the F5 action and logs it')
+requested,message=request_args.run('enter')
+assert(requested and message=='entered' and request_args.linked()==string.rep('a',32),'Enter runs the F8 action; the link names its session')
+local returned=returns
+requested,message=request_args.run('restore')
+assert(requested and returns==returned+1 and state=='idle' and request_args.linked()==nil and message:find('Return: returned',1,true),
+    'Return runs the complete F11 cleanup')
+requested,message=request_args.run('nonsense')
+assert(requested==false and message:find('Use status',1,true) and logs[#logs]:find('STOP: ',1,true),'A failed action reports false and its message')
+print('PASS session request wiring: bridge-timer ticks, nonfatal failures, link and terrain sessions, shared key actions')

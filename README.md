@@ -11,12 +11,12 @@ The prototype supports a bounded terrain/collision link, keyboard/mouse forwardi
 First follow [setup and build instructions](docs/setup.md). Use a private creative or survival test world and a backed-up Stellar Blade save in a clear outdoor location. Avatar mode runs with Fast, Fancy or Fabulous graphics; Iris shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris.
 
 1. In Minecraft, stand on a full block and run `/stellar start`.
-2. In Stellar Blade, load EVE, press **F5** to import collision, then **F8** to enter the elevated lab. The lab must be clear of existing level geometry: about 34 m square, from 4 m to 18 m above EVE.
+2. With EVE loaded in Stellar Blade, import collision, then enter the elevated lab: either run **`/stellar import`**, then **`/stellar enter`** in Minecraft (Stellar Blade's answer appears in chat; its window is never touched), or press **F5**, then **F8** in Stellar Blade. The lab must be clear of existing level geometry: about 34 m square, from 4 m to 18 m above EVE.
 3. Return to Minecraft and run **`/stellaravatar play`** (or `/stellarview play` for capture mode). Close chat and release held controls. Forwarding begins once EVE's streamed pose (in capture mode: a displayed image) is fresh and the native adapter acknowledges neutral input.
 4. Use **B** to switch between EVE controls and Minecraft build interactions. This binding is configurable in Minecraft's Controls menu.
-5. To stop, use **`/stellaravatar off`** (or `/stellarview off`), then **F11** in Stellar Blade to return EVE, then **`/stellar stop`** in Minecraft.
+5. To stop, use **`/stellaravatar off`** (or `/stellarview off`), then return EVE with **`/stellar return`** in Minecraft or **F11** in Stellar Blade, then **`/stellar stop`** in Minecraft.
 
-Do not save, travel, load another save or reload Lua while EVE is in the lab. The bridge does not disable autosave. If returning fails, supporting collision stays in place so F11 can be retried.
+Do not save, travel, load another save or reload Lua while EVE is in the lab. The bridge does not disable autosave. If returning fails, supporting collision stays in place so `/stellar return` or F11 can be retried.
 
 The patch is fixed around the starting anchor: **33 × 12 × 33 blocks** (4 below the starting floor, 8 above), at most 1024 merged collision boxes, at 100 Unreal units per block. Water and lava are walls from the fluid up to the patch's top: EVE cannot enter them. An active session keeps the private Minecraft world running through pause menus and focus changes. Stopping or disconnecting restores normal pause behavior. This is not a multiplayer integration.
 
@@ -25,6 +25,7 @@ The patch is fixed around the starting anchor: **33 × 12 × 33 blocks** (4 belo
 | Minecraft command or binding | Action |
 |---|---|
 | `/stellar start`, `/stellar status`, `/stellar stop` | Terrain and position link |
+| `/stellar import`, `/stellar enter`, `/stellar return` | Stellar Blade's F5, F8 and F11 from Minecraft, answered in chat |
 | `/stellarview play` | Continuous EVE view with controls forwarded from Minecraft |
 | `/stellarview livehd` | Same continuous view without input forwarding |
 | **B**, `/stellarview mode eve`, `/stellarview mode build` | Switch control ownership |

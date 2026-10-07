@@ -1,0 +1,7 @@
+SBMC_REQUEST_ACK 1
+SESSION aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SEQ 4
+ACTION import
+RESULT ok
+MESSAGE Imported 12 Minecraft collision boxes.
+END 4

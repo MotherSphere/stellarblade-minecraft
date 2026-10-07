@@ -392,19 +392,24 @@ local actions = {
         return success,table.concat(messages,'; ')
     end,
 }
-local function dispatch(name)
-    ExecuteInGameThread(function()
-        local ok, err = pcall(function()
-            if name=='status' then status(); return end
-            local action = actions[name]
-            assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, frameasync, exportbmp, exportasync, capture, depth, posetest or capturecleanup.')
-            local success, message = action()
-            log((success and 'OK: ' or 'STOP: ')..message)
-            if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then show_markers() end
-        end)
-        if not ok then log('STOP: '..tostring(err)) end
+-- One game-thread path for keys, console commands and Minecraft's session requests; returns success and its message.
+local function run(name)
+    local ok, success, message = pcall(function()
+        if name=='status' then status(); return true,'Status logged.' end
+        local action = actions[name]
+        assert(action, 'Use status, create, mirror, enter, toggle, restore, texture, visuals, live, liveoff, frame, framehd, framehdpng, frameasync, exportbmp, exportasync, capture, depth, posetest or capturecleanup.')
+        local success, message = action()
+        log((success and 'OK: ' or 'STOP: ')..message)
+        if success and (name=='create' or name=='mirror' or name=='enter' or name=='toggle') then
+            local shown, why = pcall(show_markers)
+            if not shown then log('STOP: '..tostring(why)) end
+        end
+        return success, message
     end)
+    if not ok then log('STOP: '..tostring(success)); return false, tostring(success) end
+    return success, message
 end
+local function dispatch(name) ExecuteInGameThread(function() run(name) end) end
 RegisterKeyBind(Key.F1,function() dispatch('livetoggle') end)
 RegisterKeyBind(Key.F2,function() dispatch('depth') end)
 RegisterKeyBind(Key.F4,function() dispatch('framehd') end)
@@ -421,6 +426,14 @@ RegisterConsoleCommandHandler('sbmc',function(_,parameters)
     return true
 end)
 if bridge then
+    -- Minecraft's /stellar import, enter and return: F5, F8 and F11 through the same run, without Stellar Blade's window.
+    local requests=require('requests').new(config.directory,os.time,log,function()
+        local pose=active==bridge and bridge.pose() or nil
+        return pose and pose.session
+    end,function()
+        local packet=bridge.read()
+        return packet and packet.session
+    end,run)
     local pending=false
     local last_messages={}
     local function report_result(kind,success,message)
@@ -461,6 +474,8 @@ if bridge then
                 report_result('scene',scene.clear('bridge tick failed'))
                 report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error)))
             end
+            local asked,ask_error=pcall(requests.tick) -- After the bridge's own tick; never cancels capture or input.
+            if not asked then report_result('request',false,'Session requests paused: '..tostring(ask_error)) end
         end)
         pending=false
         if not ok then
@@ -523,4 +538,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 47; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 47; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

@@ -46,10 +46,10 @@ public final class BridgeRuntimeTest {
             try { files.readEve(SESSION); throw new AssertionError("Non-regular slot accepted"); }
             catch (java.io.IOException expected) { }
             Files.delete(directory.resolve("eve.1"));
-            for (String name : new String[] {"eve-combat.txt", "eve-lock.txt", "eve-mobs.txt"}) files.write(name, "x\n");
+            for (String name : new String[] {"eve-combat.txt", "eve-lock.txt", "eve-mobs.txt", "eve-request.txt", "eve-request-ack.txt"}) files.write(name, "x\n");
             files.stop();
             assert !Files.exists(directory.resolve("terrain.txt"));
-            for (String name : new String[] {"eve-combat.txt", "eve-lock.txt", "eve-mobs.txt"})
+            for (String name : new String[] {"eve-combat.txt", "eve-lock.txt", "eve-mobs.txt", "eve-request.txt", "eve-request-ack.txt"})
                 assert !Files.exists(directory.resolve(name)) : name + " outlives the bridge";
             Path outside = temporary.resolve("outside.txt");
             Files.writeString(outside, "untouched");

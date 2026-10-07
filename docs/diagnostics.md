@@ -6,10 +6,10 @@ The gameplay path is [`/stellarview play`](../README.md#start-a-session). The co
 
 | Key | Console command | Action |
 |---|---|---|
-| F5 | `sbmc mirror` | Import the active Minecraft collision patch |
-| F8 | `sbmc enter` | Enter the created lab once |
+| F5 | `sbmc mirror` | Import the active Minecraft collision patch (Minecraft: `/stellar import`) |
+| F8 | `sbmc enter` | Enter the created lab once (Minecraft: `/stellar enter`) |
 | F6 | `sbmc status` | Log context, position and timing counters |
-| F11 | `sbmc restore` | Revoke input, stop captures, return EVE and clean up owned geometry |
+| F11 | `sbmc restore` | Revoke input, stop captures, return EVE and clean up owned geometry (Minecraft: `/stellar return`) |
 | F4 | `sbmc framehd` | One 1280 × 720 paired still: BMP color, PNG mask, HDR depth |
 | F2 | `sbmc depth` | Independent depth probe; not paired with another capture |
 | F1 | `sbmc live` / `sbmc liveoff` | Legacy 320 × 180 animated diagnostic; capped at 60 seconds or 300 frames |
@@ -17,6 +17,8 @@ The gameplay path is [`/stellarview play`](../README.md#start-a-session). The co
 | F9 | `sbmc toggle` | Toggle the standalone fixture's obstacle |
 | Shift+F7 | `sbmc texture` | Toggle a non-colliding stone-texture probe |
 | Shift+F8 | `sbmc visuals` | Toggle native Minecraft terrain visuals inside Stellar Blade |
+
+Minecraft's `/stellar import`, `/stellar enter` and `/stellar return` run the F5, F8 and F11 actions through a [session request](../protocol/README.md#session-requests), one at a time. Lua logs `Request: import N from Minecraft` before the action's own `OK:` or `STOP:` line, `Request: enter N refused: ...` when the sessions do not match (nothing runs), `Request: answer not written: ...`, and `STOP: Session requests paused: ...` for an unexpected failure. Minecraft shows the answer in chat and logs `Session request N import: ok: ...` (or `failed`, `refused`), or `Session request N import: no answer` after 5 seconds, which is when Stellar Blade is not running revision 47 with a save loaded. A refused import usually means `/stellar start` was run again after Stellar Blade read the terrain; enter and return are refused without a link of the same session, so use F11 for a link Minecraft no longer knows.
 
 `sbmc posetest` records EVE's skeletal mesh components for up to 15 seconds or 900 frames: bone transforms relative to their parents (`SnapshotPose`, with a per-bone fallback), face morph weights and component world transforms. It writes private `eve-pose-probe.txt` (components, bones, method, timing) and `eve-pose-probe.bin` (per frame: frame number, seconds, then each component's world transform followed by its bones and weights, 10 floats per transform). It changes nothing in the scene; Minecraft can replay it with [`/stellaravatar replay`](#avatar-view-experimental).
 

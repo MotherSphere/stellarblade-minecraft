@@ -1,0 +1,6 @@
+SBMC_REQUEST 1
+SESSION aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SEQ 4
+TIME 1760000000000
+ACTION import
+END 4

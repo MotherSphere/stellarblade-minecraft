@@ -113,6 +113,37 @@ public final class BridgeProtocol {
         return text.append("END ").append(seq).append('\n').toString();
     }
 
+    static final List<String> REQUEST_ACTIONS = List.of("import", "enter", "return");
+    static final List<String> REQUEST_RESULTS = List.of("ok", "failed", "refused");
+    public record RequestAck(String session, long seq, String action, String result, String message) {}
+
+    /** A session request for Stellar Blade: its F5 (import), F8 (enter) or F11 (return) action, run once per SEQ. */
+    public static String encodeRequest(String session, long seq, long time, String action) {
+        require(matches(SESSION, session), "Invalid session");
+        require(seq > 0 && seq <= MAX_TIME && time >= 0 && time <= MAX_TIME, "Invalid sequence or timestamp");
+        require(REQUEST_ACTIONS.contains(action), "Invalid request action");
+        return "SBMC_REQUEST 1\nSESSION " + session + "\nSEQ " + seq + "\nTIME " + time + "\nACTION " + action + "\nEND " + seq + "\n";
+    }
+
+    /** Stellar Blade's answer to a session request: ok, failed or refused, with its one-line message. */
+    public static RequestAck parseRequestAck(String text) {
+        require(text != null && text.length() <= 1024 && text.endsWith("\n"), "Invalid packet size or ending");
+        for (int i = 0; i < text.length(); i++) {
+            char value = text.charAt(i);
+            require(value == '\n' || value >= 32 && value <= 126, "Packet must contain printable ASCII and LF");
+        }
+        String[] lines = text.split("\n", -1);
+        require(lines.length == 8 && lines[0].equals("SBMC_REQUEST_ACK 1") && lines[7].isEmpty(), "Invalid request answer framing");
+        String session = fields(lines[1], "SESSION", 2)[1];
+        require(matches(SESSION, session), "Invalid session");
+        long seq = unsigned(fields(lines[2], "SEQ", 2)[1], 1, MAX_TIME);
+        String action = fields(lines[3], "ACTION", 2)[1], result = fields(lines[4], "RESULT", 2)[1];
+        require(REQUEST_ACTIONS.contains(action) && REQUEST_RESULTS.contains(result), "Invalid action or result");
+        require(lines[5].startsWith("MESSAGE ") && lines[5].length() > 8 && lines[5].length() <= 408, "Invalid message");
+        require(unsigned(fields(lines[6], "END", 2)[1], 1, MAX_TIME) == seq, "Footer sequence mismatch");
+        return new RequestAck(session, seq, action, result, lines[5].substring(8));
+    }
+
     public static String encodeTerrain(Terrain terrain) {
         require(terrain != null && matches(SESSION,terrain.session), "Invalid session");
         require(terrain.seq > 0 && terrain.time >= 0 && terrain.time <= MAX_TIME, "Invalid sequence or timestamp");

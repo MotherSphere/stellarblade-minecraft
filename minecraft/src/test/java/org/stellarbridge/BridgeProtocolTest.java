@@ -74,6 +74,25 @@ public final class BridgeProtocolTest {
         rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, Double.NaN, 1, 1))));
         rejects(() -> encodeMobs("A".repeat(32), 1, 0, mobs));
         rejects(() -> encodeMobs("a".repeat(32), 0, 0, mobs));
+        // Session requests follow the shared fixture; Stellar Blade's answers parse from theirs; anything else is refused.
+        assert encodeRequest("a".repeat(32), 4, 1760000000000L, "import").equals(Files.readString(root.resolve("protocol/fixtures/request.txt")));
+        assert encodeRequest("a".repeat(32), 5, 0, "return").contains("\nACTION return\nEND 5\n");
+        rejects(() -> encodeRequest("a".repeat(32), 1, 0, "teleport"));
+        rejects(() -> encodeRequest("A".repeat(32), 1, 0, "enter"));
+        rejects(() -> encodeRequest("a".repeat(32), 0, 0, "enter"));
+        rejects(() -> encodeRequest("a".repeat(32), 1, -1, "enter"));
+        String ack = Files.readString(root.resolve("protocol/fixtures/request-ack.txt"));
+        RequestAck answer = parseRequestAck(ack);
+        assert answer.equals(new RequestAck("a".repeat(32), 4, "import", "ok", "Imported 12 Minecraft collision boxes.")) : answer;
+        assert parseRequestAck(ack.replace("RESULT ok", "RESULT refused")).result().equals("refused");
+        assert parseRequestAck(ack.replace("Imported 12 Minecraft collision boxes.", "x".repeat(400))).message().length() == 400;
+        for (String invalid : List.of(ack.replace("END 4", "END 5"), ack.replace("RESULT ok", "RESULT maybe"),
+                ack.replace("ACTION import", "ACTION teleport"), ack.replace("SBMC_REQUEST_ACK 1", "SBMC_REQUEST_ACK 2"),
+                ack.replace("SESSION a", "SESSION A"), ack.replace("Imported 12 Minecraft collision boxes.", ""),
+                ack.replace("Imported 12 Minecraft collision boxes.", "x".repeat(401)), ack.replace("Imported", "Importedé"),
+                ack.replace("\n", "\r\n"), ack.stripTrailing(), ack + "\n", ack.replace("SEQ 4", "SEQ 0").replace("END 4", "END 0")))
+            rejects(() -> parseRequestAck(invalid));
+        rejects(() -> parseRequestAck(null));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(0,0,0,1,1,1), new Box(0,0,0,1,1,1)))));
         // The whole box budget fits one 64 KiB packet even with sixteenth-block coordinates on every side.
         List<Box> many = new java.util.ArrayList<>();
@@ -106,6 +125,6 @@ public final class BridgeProtocolTest {
             Files.writeString(exchange.resolve("terrain-java.txt"), encoded);
             if (Files.exists(exchange.resolve("eve-lua.txt"))) verifyEve(parseEve(Files.readString(exchange.resolve("eve-lua.txt"))));
         }
-        System.out.println("PASS protocol Java: valid EVE, malformed snapshots, terrain validation, mob walls, freshness");
+        System.out.println("PASS protocol Java: valid EVE, malformed snapshots, terrain validation, mob walls, session requests, freshness");
     }
 }
