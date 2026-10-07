@@ -485,6 +485,9 @@ public final class AvatarStreamTest {
                     assert stream.shots() == 0xFFFFFFFEL;
                     assert stream.poll(table, now, System.nanoTime()) == null : "Counted shots are not reserved bytes";
                     // The adapter's report follows: heal count, mirror state, losses, Beta and Burst granted, actor stats.
+                    assert AvatarStream.HEALED_AT == 488 && AvatarStream.MIRROR_AT == 492 && AvatarStream.LOST_AT == 496
+                            && AvatarStream.GRANTED_AT == 500 && AvatarStream.ACTOR_STATE == 508 && AvatarStream.ACTOR_AT == 512
+                            : "The native report layout";
                     map.putInt(AvatarStream.HEALED_AT, 1200).putInt(AvatarStream.MIRROR_AT, 2).putInt(AvatarStream.LOST_AT, 1)
                             .putInt(AvatarStream.GRANTED_AT, 17).putInt(AvatarStream.GRANTED_AT + 4, 200);
                     assert java.util.Arrays.equals(stream.report(), new long[] {1200, 2, 1, 17, 200}) && stream.healed() == 1200;
