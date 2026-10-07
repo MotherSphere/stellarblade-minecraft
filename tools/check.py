@@ -78,7 +78,14 @@ def main():
         elif component == 'windows':
             windows(args.windows_toolchain, args.wine)
         else:
-            run([ROOT / 'minecraft/gradlew', 'build'], cwd=ROOT / 'minecraft')
+            gradlew = ROOT / 'minecraft/gradlew'
+            run([gradlew, 'build'], cwd=ROOT / 'minecraft')
+            # The shared terrain and EVE text both ways: Java writes, Lua reads and answers, Java reads the answer.
+            with tempfile.TemporaryDirectory() as exchange:
+                java = [gradlew, '-q', 'protocolTest', f'--args=. {exchange}']
+                run(java, cwd=ROOT / 'minecraft')
+                run(['lua', 'stellar/tests/protocol_test.lua', exchange])
+                run(java, cwd=ROOT / 'minecraft')
         print(f'PASS {component}', flush=True)
 
 
