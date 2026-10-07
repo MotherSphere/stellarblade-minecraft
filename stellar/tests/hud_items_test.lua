@@ -28,6 +28,7 @@ local function newest() -- The newer slot's text, by SEQ.
     return text,best
 end
 local function second() wall=wall+1; hud.tick(); return newest() end
+local function stable() hud.tick(); return second() end -- Two agreeing reads.
 state={heal={thumb='Icon_PotionR',count=3,max=5,cooldown=0,usable=true},util=slot('Grenade',2),bullet='Bullet_Normal',
     ammo={count=120,cooldown=0},dash=0.25,search={ms=1.5,missing='lower',retry=2}}
 hud.tick()
@@ -79,7 +80,14 @@ failure=nil
 state={heal={count=3},util={thumb='Grenade'},bullet='Bullet Normal',ammo={count=1},dash='n/a'}
 text=second()
 assert(text:find('\nHEAL none\nUTIL none\nAMMO none\nDASH none\n',1,true),text)
+-- A drop adds its size; a selection to a lower count is none; unchanged values are logged once.
+state={util=slot('Grenade',3)}; stable(); state.util=slot('Grenade',1); text=stable()
+assert(text:find('\nUSES 3 0 1 0\n',1,true),'A drop of two is two uses: '..text)
+state.util=slot('FlashGrenade',0); text=stable(); second(); second()
+assert(text:find('\nUSES 3 0 1 0\n',1,true),'A selection to a lower count is not a use')
+assert(logs('; util FlashGrenade 0 cool 0 use true;')==1,'Unchanged values are logged once')
 -- The consume probe: the first five requests are logged.
 for _=1,6 do consume() end
 assert(logs('consume request seen')==5 and logs('consume request seen (5)')==1)
+os.remove(directory..'/eve-hud.0'); os.remove(directory..'/eve-hud.1'); os.remove(directory)
 print('PASS HUD items: kinds, shared fixture text, slot publication, use counting, failing reads and the consume probe')

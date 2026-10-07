@@ -13,6 +13,8 @@ public final class AvatarItemsTest {
         assert hud.util().equals(new AvatarItems.Slot("shock", 2, 0, 0.4f, true)) : hud.util();
         assert hud.ammoAlias().equals("Bullet_Normal") && hud.ammo() == 120 && hud.ammoCooldown() == 0 && hud.dash() == 0.25f;
         assert Arrays.equals(hud.uses(), new int[] {1, 0, 0, 0});
+        var dim = AvatarItems.parse(fixture.replace("HEAL tumbler 3 5 1", "HEAL tumbler 3 5 0").replace("0.40 1", "0.40 0").replace("120 0.00", "120 0.50"));
+        assert !dim.heal().usable() && !dim.util().usable() && dim.ammoCooldown() == 0.5f : "Refused slots and the ammo cooldown";
         var none = AvatarItems.parse(fixture.replaceAll("HEAL .*\n", "HEAL none\n").replaceAll("UTIL .*\n", "UTIL none\n")
                 .replaceAll("AMMO .*\n", "AMMO none\n").replace("DASH 0.25", "DASH none"));
         assert none != null && none.heal() == null && none.util() == null && none.ammoAlias() == null && Float.isNaN(none.dash()) : "Every slot may be none";

@@ -330,18 +330,20 @@ for _,t in ipairs({101,101.9,102,105.9,106,113.9,114,129.9,130,159.9,160}) do
 end
 assert(table.concat(searches,' ')=='102 106 114 130 160','A missing widget is searched for 2, 4, 8, 16 then 30 s later: '..table.concat(searches,' '))
 assert(walks.WB_MainHUD_Dash_Slot_C==1,'A found class is not walked again')
-instances.WB_Tps_Bullet2_Slot_C=bulletSlots
 instances.WB_MainHUD_ItemSlot_C[#instances.WB_MainHUD_ItemSlot_C+1]=lowerSlot
 clock=190; hud=widgets.hud()
-assert(hud.search.missing=='none' and hud.search.retry==nil and hud.lower.count==0,'Everything found')
+assert(hud.search.missing=='bullets' and hud.search.retry==2 and hud.lower.count==0,'A search that finds one waits 2 s again')
+instances.WB_Tps_Bullet2_Slot_C=bulletSlots
+clock=192; hud=widgets.hud()
+assert(hud.search.missing=='none' and hud.search.retry==nil and walks.WB_MainHUD_ItemSlot_C==7,'Everything found, the item slots not walked again')
 assert(hud.ammo.count==120 and hud.ammo.cooldown==0.5,'The selected bullet\'s slot gives the ammo')
 local before=walked()
-clock=1000; assert(widgets.hud().search==nil and walked()==before,'Found widgets are kept')
+clock=193; assert(widgets.hud().search==nil and walked()==before,'Found widgets are kept')
 utilSlot.IsValid=function() return false end
 instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot}
 hud=widgets.hud()
 assert(hud.search and hud.search.missing=='util' and hud.search.retry==2 and hud.util==nil,'A widget that went is searched for at once')
-assert(walks.WB_MainHUD_ItemSlot_C==8 and walks.WB_MainHUD_Dash_Slot_C==1,'Only its class is walked')
+assert(walks.WB_MainHUD_ItemSlot_C==8 and walks.WB_MainHUD_Dash_Slot_C==1 and walks.WB_Tps_Bullet2_Slot_C==8,'Only its class is walked')
 local hooked
 RegisterHook=function(path,fn) hooked={path=path,fn=fn} end
 widgets.watch_consume(print)
