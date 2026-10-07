@@ -15,6 +15,7 @@ import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.particle.ParticleTypes;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.sound.SoundEvent;
@@ -179,7 +180,16 @@ public final class AvatarCombat {
         if (knockback > 0) ((LivingEntity) target).takeKnockback(knockback, player.getX() - target.getX(), player.getZ() - target.getZ());
         player.onAttacking(target);
         sound(player, charged ? SoundEvents.ENTITY_PLAYER_ATTACK_CRIT : SoundEvents.ENTITY_PLAYER_ATTACK_STRONG, 1);
+        impact(player, target, knockback > 0, charged);
         counts.incrementAndGet(0);
+    }
+
+    /** The hit as Minecraft shows a player's: crit sparks on the target, a sweep for a heavy strike, more when charged. */
+    private static void impact(ServerPlayerEntity player, Entity target, boolean heavy, boolean charged) {
+        var world = player.getServerWorld();
+        double x = target.getX(), y = target.getBodyY(0.5), z = target.getZ(), w = target.getWidth() / 2;
+        world.spawnParticles(charged ? ParticleTypes.ENCHANTED_HIT : ParticleTypes.CRIT, x, y, z, charged ? 16 : 8, w, target.getHeight() / 4, w, 0.3);
+        if (heavy) world.spawnParticles(ParticleTypes.SWEEP_ATTACK, x, y, z, 1, 0, 0, 0, 0);
     }
 
     private static void sound(ServerPlayerEntity player, SoundEvent sound, float pitch) {
