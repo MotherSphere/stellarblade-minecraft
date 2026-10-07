@@ -760,7 +760,7 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   put(slot, 32, floats);
   // Controller rotation: status at 36, Pitch, Yaw, Roll at 40, camera pitch at 52.
   if (rotation) {
-    put(slot, 36, RotationValid | (look & (LookApplied | PitchSynced)));
+    put(slot, 36, RotationValid | (look & (LookApplied | PitchSynced | InputGranted)));
     std::memcpy(slot + 40, rotation, 4 * sizeof(float));
   }
   std::memcpy(slot + 64, status, sizeof(uint32_t) * count);
@@ -1015,9 +1015,9 @@ void on_gameplay_poll(std::string_view owner) {
   // Minecraft's camera turns Stellar Blade's only while this stream's run owns
   // forwarded input; the frame's own input processing then applies the turn.
   // The dolly carries the pitch where it can: pitch input would move it again.
-  bool applied = false, synced = false;
+  bool granted = !owner.empty() && owner == producer.run(), applied = false, synced = false;
   float pitch = 0, yaw = 0;
-  if (rotated && !owner.empty() && owner == producer.run() && producer.look(wall, pitch, yaw)) {
+  if (rotated && granted && producer.look(wall, pitch, yaw)) {
     auto turn = follow(following, pitch, yaw, rotation[1]);
     synced = guarded_dolly(engine, *table->controller, pitch, rotation[3], dolly_write);
     applied = turn.engaged && guarded_turn(engine, *table->controller, synced ? 0 : turn.pitch, turn.yaw);
@@ -1044,7 +1044,7 @@ void on_gameplay_poll(std::string_view owner) {
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
                    offset, rotated ? rotation : nullptr,
-                   (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u), wall,
+                   (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u) | (granted ? InputGranted : 0u), wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
                    gauged ? gauges : nullptr, evade_starts.counts);
 }

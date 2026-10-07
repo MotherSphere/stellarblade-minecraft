@@ -723,7 +723,7 @@ int main() {
     assert(controller_status() == RotationValid && inputs.empty() && "Another run's input cannot turn this camera");
     on_gameplay_poll(Run);
     // Controller yaw 135, Minecraft 270: 15 % of the gap, through the yaw scale; no pitch motion yet.
-    assert(controller_status() == (RotationValid | LookApplied) && inputs.size() == 1 &&
+    assert(controller_status() == (RotationValid | LookApplied | InputGranted) && inputs.size() == 1 &&
            inputs[0].first == 'y' && std::fabs(inputs[0].second - 0.15f * 135 / 2.5f) < 1e-4f &&
            "Turned through the pawn's look input");
     inputs.clear();
@@ -737,7 +737,7 @@ int main() {
     inputs.clear();
     look(10, 30, stellar_shared::wall_now() - 1000, 1);
     on_gameplay_poll(Run);
-    assert(controller_status() == RotationValid && inputs.empty() && "A stale look is ignored");
+    assert(controller_status() == (RotationValid | InputGranted) && inputs.empty() && "A stale look is ignored");
     look(95, 30, stellar_shared::wall_now(), 1);
     on_gameplay_poll(Run);
     assert(inputs.empty() && "Pitch beyond the poles is ignored");
@@ -754,14 +754,14 @@ int main() {
     live.arm(live.alpha(), -16); // The arm's update after that write.
     look(-15, -90, stellar_shared::wall_now(), 1);
     on_gameplay_poll(Run);
-    assert(controller_status() == (RotationValid | LookApplied | PitchSynced) && camera_pitch() == -16 &&
+    assert(controller_status() == (RotationValid | LookApplied | PitchSynced | InputGranted) && camera_pitch() == -16 &&
            std::fabs(live.alpha() - (0.5f - 7 * DollyStep)) < 1e-6f && !inputs.empty() &&
            std::none_of(inputs.begin(), inputs.end(), [](auto &i) { return i.first == 'p'; }) &&
            "The dolly takes the pitch; yaw still goes through look input; the slot carries the arm's pitch");
     auto steered = live.alpha();
     look(-15, -90, stellar_shared::wall_now(), 1);
     on_gameplay_poll(Run);
-    assert(controller_status() == (RotationValid | LookApplied | PitchSynced) && live.alpha() == steered &&
+    assert(controller_status() == (RotationValid | LookApplied | PitchSynced | InputGranted) && live.alpha() == steered &&
            std::none_of(inputs.begin(), inputs.end(), [](auto &i) { return i.first == 'p'; }) &&
            "Without an arm update since, the dolly holds and pitch input stays off");
     live.arm(live.alpha(), -17);
@@ -770,13 +770,13 @@ int main() {
     look(-5, -90, stellar_shared::wall_now(), 1);
     auto held = live.alpha();
     on_gameplay_poll(Run);
-    assert(controller_status() == (RotationValid | LookApplied) && camera_pitch() == 0 &&
+    assert(controller_status() == (RotationValid | LookApplied | InputGranted) && camera_pitch() == 0 &&
            live.alpha() == held && inputs.size() == 2 && inputs[1].first == 'p' &&
            std::fabs(inputs[1].second - 10 / -2.5f) < 1e-4f && "Where the dolly is not the camera's, pitch motion returns");
     live.pawn.bytes[0x1528] = 0;
     look(10, 30, stellar_shared::wall_now(), 0);
     on_gameplay_poll(Run);
-    assert(controller_status() == RotationValid && camera_pitch() == 0 && live.alpha() == held &&
+    assert(controller_status() == (RotationValid | InputGranted) && camera_pitch() == 0 && live.alpha() == held &&
            "An inactive look leaves the dolly alone");
     look(-5, -90, stellar_shared::wall_now(), 1);
     on_gameplay_poll();
@@ -787,13 +787,13 @@ int main() {
            "Another run's input cannot set it");
     look(-5, -90, stellar_shared::wall_now() - 1000, 1);
     on_gameplay_poll(Run);
-    assert(controller_status() == RotationValid && camera_pitch() == 0 && live.alpha() == held && "Nor a stale look");
+    assert(controller_status() == (RotationValid | InputGranted) && camera_pitch() == 0 && live.alpha() == held && "Nor a stale look");
     // A camera whose yaw stays far for FarPolls polls gets no more look input; the dolly is still set (status 5).
     for (uint32_t poll = 0; poll < FarPolls; poll++) {
       look(-17, -90, stellar_shared::wall_now(), 1);
       on_gameplay_poll(Run);
     }
-    assert(controller_status() == (RotationValid | PitchSynced) && camera_pitch() == -17 && live.alpha() == held &&
+    assert(controller_status() == (RotationValid | PitchSynced | InputGranted) && camera_pitch() == -17 && live.alpha() == held &&
            "Yaw follow stopped, the dolly still set");
     inputs.clear();
     std::memset(live.pawn.bytes + 0x5c0, 0, 8);

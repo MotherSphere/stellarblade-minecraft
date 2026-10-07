@@ -37,7 +37,7 @@ public final class AvatarStreamTest {
         assert AvatarStream.parse(fixture.replace("PARAMETERS 0\n", "")) == null : "The parameter count is required";
         float[] glowPayload = new float[53];
         glowPayload[52] = 0.75f;
-        var glowSample = new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, glowPayload, null, false, Float.NaN);
+        var glowSample = new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, glowPayload, null, false, Float.NaN, false);
         assert AvatarStream.parameters(glowing, glowSample).get("Edge/Opacity")[0] == 0.75f;
         // Effects: the layout line and its assets, then MAX_EFFECTS records after the parameters.
         String effectLines = "EFFECTS 00000130 000006a8 000004b0 00000088 10 00007f000000b000 00007f000000c000 1\n"
@@ -54,7 +54,7 @@ public final class AvatarStreamTest {
         effectPayload[52] = 0;
         effectPayload[52 + 5] = 100;
         effectPayload[52 + 7] = 300;
-        var effects = AvatarStream.effects(sparkling, new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, effectPayload, null, false, Float.NaN));
+        var effects = AvatarStream.effects(sparkling, new AvatarStream.Sample(1, 1, 1, new int[] {7, 5}, effectPayload, null, false, Float.NaN, false));
         assert effects.size() == 1 && effects.get(0).name().equals("NS_A_Weapon_Signal_Sword") && effects.get(0).x() == 100 && effects.get(0).z() == 300;
         assert AvatarEffects.look("NS_A_Weapon_Signal_Sword") == AvatarEffects.Look.SIGNAL && AvatarEffects.look("P_A_AnimTrail_SwordLightAtk_01") == null
                 && AvatarEffects.look("NS_A_ParTrail_SwordDefaultAtk_01") == AvatarEffects.Look.SPARKS
@@ -208,11 +208,11 @@ public final class AvatarStreamTest {
                     // Component space: root turned 90 degrees about X; the child's component transform already includes it.
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, 0, 0, 1, 1, 1}, 0, values, 10, 10);
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, -100, 0, 1, 1, 1}, 0, values, 20, 10);
-                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false, Float.NaN), model, pose);
+                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false, Float.NaN, false), model, pose);
                     FloatBuffer[] palettes = {FloatBuffer.allocate(24)};
                     model.palettes(pose, new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT), palettes, true);
                     AvatarModelTest.assertPoint(palettes[0], 1, 0, 0, 100, 1, 3, 1);
-                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false, Float.NaN), model, pose)
+                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false, Float.NaN, false), model, pose)
                             : "A drawn component without bones is incomplete";
 
                     // A slot of another generation asks the caller to reload the table.
@@ -249,14 +249,16 @@ public final class AvatarStreamTest {
             }
             // A refused slot ends the stream: bit 2 without bit 0, an unknown bit, a camera pitch without bit 2, a non-finite one.
             assert refused(directory, table, 4, 0).equals("Invalid controller rotation status");
-            assert refused(directory, table, 9, 0).equals("Invalid controller rotation status");
+            assert refused(directory, table, 17, 0).equals("Invalid controller rotation status");
             assert refused(directory, table, 1, -17).equals("Pose mapping reserved bytes changed");
             assert refused(directory, table, 5, Float.NaN).equals("Non-finite camera pitch");
             // Each bit decodes alone: 5 is the dolly set while the yaw follow stopped, 3 a turn without the dolly.
             var held = slot(directory, table, 5, -17);
             assert !held.lookApplied() && held.cameraPitch() == -17;
             var turned = slot(directory, table, 3, 0);
-            assert turned.lookApplied() && Float.isNaN(turned.cameraPitch());
+            assert turned.lookApplied() && Float.isNaN(turned.cameraPitch()) && !turned.inputGranted();
+            var granted = slot(directory, table, 9, 0);
+            assert granted.inputGranted() && !granted.lookApplied() && Float.isNaN(granted.cameraPitch()) : "Bit 3: this run owns forwarded input";
             // A stream the producer never claimed is cancelled and removed.
             try (var unclaimed = new AvatarStream(directory, "d".repeat(32), System.currentTimeMillis())) {
                 assert unclaimed.reap() && !Files.exists(unclaimed.path);

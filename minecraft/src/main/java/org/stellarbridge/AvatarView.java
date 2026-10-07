@@ -39,6 +39,10 @@ public final class AvatarView {
     private static Replay replay;
     private static Live live;
     private static final List<AvatarStream> unreaped = new ArrayList<>();
+    // Stellar Blade stopped granting this run's forwarded input for HALT_NANOS (paused, a cutscene): EVE cannot answer.
+    // Written on the render thread, read by the server thread's damage hook.
+    private static volatile boolean halted;
+    static final long HALT_NANOS = 400_000_000L; // Longer than Lua's 200 ms permit renewal.
 
     private record Replay(ClientWorld world, AvatarRecording recording, AvatarModel model, AvatarRenderer renderer,
                           AvatarRecording.Pose pose, Vec3d anchor, Vector3d origin, long started) { }
@@ -62,6 +66,7 @@ public final class AvatarView {
         int newest = -1, count;
         float[] rotation; // Stellar Blade's controller Pitch, Yaw, Roll from the newest sample, or null.
         boolean lookApplied; // The newest sample says the adapter turned that controller's camera toward Minecraft's.
+        long grantedNanos; // When a sample last said Stellar Blade granted this run's input (or control was off).
         long gapSamples, turned, synced; // Controlled poses, those the adapter turned, those whose camera dolly it set.
         float glow; // Highest streamed material Opacity so far (the sword edge's glow while the game raises it).
         List<AvatarStream.Effect> effects = List.of(); // The game's active effects on EVE in the newest sample.
@@ -251,6 +256,8 @@ public final class AvatarView {
                     for (var entry : parameters.entrySet())
                         if (entry.getKey().endsWith("/Opacity")) current.glow = Math.max(current.glow, entry.getValue()[0]);
                     current.lookApplied = sample.lookApplied();
+                    if (sample.inputGranted() || !current.controlled || current.rotation == null) current.grantedNanos = nanos;
+                    halted = nanos - current.grantedNanos > HALT_NANOS;
                     var player = MinecraftClient.getInstance().player;
                     if (current.controlled && current.rotation != null && player != null) {
                         double gap = Math.abs(Math.IEEEremainder(player.getYaw() + 90 - current.rotation[1], 360));
@@ -455,6 +462,8 @@ public final class AvatarView {
         return current != null && current.controlled && current.stream.run.equals(run) && current.anchored && current.posed
                 && current.table.session().equals(session) && nanos - current.lastPoseNanos <= 500_000_000L;
     }
+    /** Any thread: Stellar Blade has not granted the controlled run's input for a while (paused, a cutscene). */
+    static boolean halted() { return halted; }
     /** Whether the adapter turns Stellar Blade's camera toward Minecraft's through look input. */
     static boolean lookApplied() {
         Live current = live;
@@ -518,6 +527,7 @@ public final class AvatarView {
         Live current = live;
         if (current == null) return;
         live = null;
+        halted = false;
         AvatarLock.release();
         if (current.controlled) {
             current.stream.lookOff();

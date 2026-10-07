@@ -199,11 +199,12 @@ public final class StellarBridge implements ClientModInitializer {
 
     /**
      * Server thread: the bridge session's player while EVE cannot answer, behind a pause menu the world keeps running
-     * through or without a live link (EVE outside the patch, stale packets). A Stellar Blade pause keeps the link live.
+     * through, without a live link (EVE outside the patch, stale packets), or while Stellar Blade withholds her input
+     * (its own pause or a cutscene keeps the link live).
      */
     static boolean defenseless(ServerPlayerEntity player) {
         PauseBinding current = pauseBinding;
-        return current != null && player.getUuid().equals(current.owner) && (pauseOverridden || !overrides(player));
+        return current != null && player.getUuid().equals(current.owner) && (pauseOverridden || !overrides(player) || AvatarView.halted());
     }
 
     private record PauseBinding(IntegratedServer server, UUID owner, String dimension) { }

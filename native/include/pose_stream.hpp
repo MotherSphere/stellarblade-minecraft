@@ -190,7 +190,8 @@ struct Turn {
 };
 Turn follow(Follow &, float look_pitch, float look_yaw, float yaw);
 // Bits of the controller status word in a slot.
-constexpr uint32_t RotationValid = 1, LookApplied = 2, PitchSynced = 4;
+// InputGranted: this stream's run owns forwarded input this frame (Stellar Blade grants it: not paused, no cutscene).
+constexpr uint32_t RotationValid = 1, LookApplied = 2, PitchSynced = 4, InputGranted = 8;
 
 // Producer side of eve-pose-<RUN>.bin. The caller serializes every method.
 class Producer {
@@ -208,7 +209,8 @@ public:
   bool active(uint64_t wall) const;
   const std::string &run() const;
   // rotation: the controller's Pitch, Yaw, Roll, then the camera's pitch
-  // (zero unless look carries PitchSynced); look: LookApplied, PitchSynced.
+  // (zero unless look carries PitchSynced); look: LookApplied, PitchSynced,
+  // InputGranted.
   // evades: EvadeWords words for the header, or none.
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
