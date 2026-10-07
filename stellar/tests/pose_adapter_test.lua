@@ -127,4 +127,8 @@ assert(key.bStopAtMove==true,'The stop-at-move comes back through the restore')
 refuse=true
 assert(not pcall(engine.play_show,SHOW_PATH,0,'SBShowAnimKey_0','SBShowAnimKey_0'))
 assert(key.bStopAtMove==true and key.bCheckHitLevel==true,'A refused play restores both keys')
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, attached effects and Show key lifts')
+local unseen=effect('NC3','NS_A_LensFlare_Drone',true,'FX_Lens')
+unseen.IsVisible=function() return false end
+sword.AttachChildren=tarray({unseen})
+assert(#engine.effects({{handle=sword}})==0,'An active effect Stellar Blade does not draw is not one')
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects and Show key lifts')

@@ -282,12 +282,50 @@ public final class AvatarStreamTest {
                     // Component space: root turned 90 degrees about X; the child's component transform already includes it.
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, 0, 0, 1, 1, 1}, 0, values, 10, 10);
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, -100, 0, 1, 1, 1}, 0, values, 20, 10);
-                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false, Float.NaN, false), model, pose);
+                    boolean[] shown = new boolean[1];
+                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false, Float.NaN, false), model, pose, shown)
+                            && shown[0];
                     FloatBuffer[] palettes = {FloatBuffer.allocate(24)};
                     model.palettes(pose, new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT), palettes, true);
                     AvatarModelTest.assertPoint(palettes[0], 1, 0, 0, 100, 1, 3, 1);
-                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false, Float.NaN, false), model, pose)
-                            : "A drawn component without bones is incomplete";
+                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false, Float.NaN, false), model, pose, shown)
+                            : "The root without bones is incomplete";
+                    // EVE's drone after her: without data or hidden in Stellar Blade it is only left out; a follower needs its leader's bones.
+                    AvatarMesh drone = AvatarMesh.parse("CH_NPC_Drone", AvatarModelTest.mesh("BN_BODY", b -> { }));
+                    var withDrone = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed,
+                            new AvatarRecording.Component("Drone.CharacterMesh0", "CH_NPC_Drone", null, new String[] {"Root", "BN_BODY"}, new String[0], 0),
+                            new AvatarRecording.Component("Drone.Gun", "CH_NPC_Drone", "Drone.CharacterMesh0", null, new String[0], 0)),
+                            java.util.List.of(), java.util.List.of(), false, 70);
+                    AvatarModel both = new AvatarModel(withDrone.components(), Map.of("CH_P_EVE_52_TypeB", mesh, "CH_NPC_Drone", drone));
+                    var dronePose = AvatarStream.emptyPose(withDrone);
+                    float[] doubled = new float[70];
+                    System.arraycopy(values, 0, doubled, 0, 30);
+                    System.arraycopy(values, 0, doubled, 30, 30);
+                    System.arraycopy(values, 0, doubled, 60, 10);
+                    boolean[] visible = new boolean[3];
+                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(4, now, 1, new int[] {3, 3, 1}, doubled, null, false, Float.NaN, false), both, dronePose, visible)
+                            && visible[0] && visible[1] && visible[2];
+                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(5, now, 1, new int[] {3, 3 | AvatarStream.HIDDEN, 1}, doubled, null, false, Float.NaN, false),
+                            both, dronePose, visible) && visible[0] && !visible[1] && visible[2] && dronePose.world()[1][4] == 100 : "Hidden: its floats still arrive";
+                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(6, now, 1, new int[] {3, 1, 1}, doubled, null, false, Float.NaN, false), both, dronePose, visible)
+                            && visible[0] && !visible[1] && !visible[2] : "No bones: the drone and its follower are left out, EVE is not";
+                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(7, now, 1, new int[] {3, 0, 0}, doubled, null, false, Float.NaN, false), both, dronePose, visible)
+                            && visible[0] && !visible[1] : "A destroyed drone";
+                    // EVE's own parts are not optional: one without its bones still drops the pose.
+                    var withWeapon = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed,
+                            new AvatarRecording.Component("Weapon", "CH_NPC_Drone", null, new String[] {"Root", "BN_BODY"}, new String[0], 0)),
+                            java.util.List.of(), java.util.List.of(), false, 60);
+                    AvatarModel armed = new AvatarModel(withWeapon.components(), Map.of("CH_P_EVE_52_TypeB", mesh, "CH_NPC_Drone", drone));
+                    assert !AvatarStream.decode(withWeapon, new AvatarStream.Sample(8, now, 1, new int[] {3, 1}, java.util.Arrays.copyOf(doubled, 60), null, false, Float.NaN, false),
+                            armed, AvatarStream.emptyPose(withWeapon), new boolean[2]) : "A sword without bones drops the pose";
+                    // A part is drawn again only after two consecutive poses showed it.
+                    boolean[] drawnNow = new boolean[2];
+                    AvatarStream.steady(drawnNow, new boolean[] {true, false}, new boolean[] {true, true});
+                    assert drawnNow[0] && !drawnNow[1] : "Hidden now";
+                    AvatarStream.steady(drawnNow, new boolean[] {true, true}, new boolean[] {true, false});
+                    assert !drawnNow[1] : "Shown once after hiding: not yet";
+                    AvatarStream.steady(drawnNow, new boolean[] {true, true}, new boolean[] {true, true});
+                    assert drawnNow[1] : "Shown twice: drawn";
 
                     // A slot of another generation asks the caller to reload the table.
                     publish(map, 0, 3, 2, now, new int[] {7, 5}, payload());
@@ -334,6 +372,8 @@ public final class AvatarStreamTest {
                     assert stream.reap() && !Files.exists(stream.path);
                 }
             }
+            // A slot of the previous format (an older adapter) ends the stream with the reason.
+            assert refusedFormat(directory, table).equals("Pose slot format 1, this build reads 2: install the matching adapter");
             // A refused slot ends the stream: bit 2 without bit 0, an unknown bit, a camera pitch without bit 2, a non-finite one.
             assert refused(directory, table, 4, 0).equals("Invalid controller rotation status");
             assert refused(directory, table, 17, 0).equals("Invalid controller rotation status");
@@ -361,6 +401,23 @@ public final class AvatarStreamTest {
         try {
             slot(directory, table, status, pitch);
             throw new AssertionError("Accepted controller status " + status);
+        } catch (java.io.IOException refusal) {
+            return refusal.getMessage();
+        }
+    }
+
+    private static String refusedFormat(Path directory, AvatarStream.Table table) throws Exception {
+        long now = System.currentTimeMillis();
+        try (var stream = new AvatarStream(directory, "f".repeat(32), now);
+             var channel = FileChannel.open(stream.path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
+            assert (boolean) RawFrameBus.INT.compareAndSet(map, 192, 0, 777);
+            RawFrameBus.LONG.setRelease(map, 208, now);
+            RawFrameBus.INT.setRelease(map, 196, 1);
+            publish(map, 1, 1, 1, now, new int[] {7, 5}, payload());
+            map.putInt(AvatarStream.HEADER + AvatarStream.SLOT + 24, 1);
+            stream.poll(table, now, System.nanoTime());
+            throw new AssertionError("Accepted format 1");
         } catch (java.io.IOException refusal) {
             return refusal.getMessage();
         }
@@ -431,7 +488,7 @@ public final class AvatarStreamTest {
     static void publish(java.nio.ByteBuffer map, int back, long counter, long generation, long now, int[] status, float[] payload) {
         int at = AvatarStream.HEADER + back * AvatarStream.SLOT;
         for (int i = 0; i < AvatarStream.SLOT_HEADER; i++) map.put(at + i, (byte) 0);
-        map.putLong(at, counter).putLong(at + 8, now).putLong(at + 16, generation).putInt(at + 24, 1)
+        map.putLong(at, counter).putLong(at + 8, now).putLong(at + 16, generation).putInt(at + 24, AvatarStream.FORMAT)
                 .putInt(at + 28, status.length).putInt(at + 32, payload.length);
         for (int i = 0; i < status.length; i++) map.putInt(at + 64 + 4 * i, status[i]);
         for (int i = 0; i < payload.length; i++) map.putFloat(at + AvatarStream.SLOT_HEADER + 4 * i, payload[i]);

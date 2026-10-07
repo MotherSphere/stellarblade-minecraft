@@ -30,6 +30,7 @@ void live(Object &o, int32_t index) {
   put(o.bytes + 0x0c, index);
   put(o.bytes + 0x10, uint64_t(0x1000));
   put(o.bytes + 0x568, uint64_t(0x2000));
+  o.bytes[0x170] = 0x20; // USceneComponent::bVisible.
   float world[12] = {0, 0, 0, 1, 100, 200, 300, 0, 1, 1, 1, 0};
   std::memcpy(o.bytes + 0x1f0, world, sizeof world);
   for (int k = 0; k < 3; k++) {

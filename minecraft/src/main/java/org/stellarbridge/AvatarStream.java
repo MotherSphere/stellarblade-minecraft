@@ -19,7 +19,8 @@ import java.util.List;
  */
 final class AvatarStream implements AutoCloseable {
     static final int HEADER = 4096, SLOT = 65536, SLOT_HEADER = 128, CAPACITY = (SLOT - SLOT_HEADER) / 4, TOTAL = HEADER + 3 * SLOT;
-    static final int WORLD = 1, BONES = 2, MORPHS = 4;
+    /** Component status bits; HIDDEN: Stellar Blade does not draw the component (its floats still arrive). Slot format 2. */
+    static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8, FORMAT = 2;
     private static final long MAX = 9007199254740991L;
     private static final byte[] MAGIC = "SBMCPOS1".getBytes(StandardCharsets.US_ASCII);
 
@@ -146,8 +147,9 @@ final class AvatarStream implements AutoCloseable {
         int count = map.getInt(at + 28), floats = map.getInt(at + 32);
         require(counter > previousCounter && counter <= MAX && publication > 0 && publication <= MAX, "Invalid pose sequence or time");
         previousCounter = counter;
-        require(map.getInt(at + 24) == 1 && generation > 0 && count >= 1 && count <= 16 && floats >= 0 && floats <= CAPACITY,
-                "Invalid pose slot layout");
+        int format = map.getInt(at + 24);
+        require(format == FORMAT, "Pose slot format " + format + ", this build reads " + FORMAT + ": install the matching adapter");
+        require(generation > 0 && count >= 1 && count <= 16 && floats >= 0 && floats <= CAPACITY, "Invalid pose slot layout");
         int rotated = map.getInt(at + 36);
         require(rotated == 0 || (rotated & ~14) == 1, "Invalid controller rotation status");
         if (rotated == 0) zeros(at + 40, at + 52);
@@ -160,7 +162,7 @@ final class AvatarStream implements AutoCloseable {
         int[] status = new int[count];
         for (int i = 0; i < count; i++) {
             status[i] = map.getInt(at + 64 + 4 * i);
-            require((status[i] & ~7) == 0, "Invalid pose component status");
+            require((status[i] & ~15) == 0, "Invalid pose component status");
         }
         float[] payload = new float[floats];
         map.slice(at + SLOT_HEADER, 4 * floats).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(payload);
@@ -247,15 +249,20 @@ final class AvatarStream implements AutoCloseable {
                 published > 0 ? total / published : 0};
     }
 
-    /** Decodes a sample of the table's generation into a component-space pose; false if a drawn part lacks data. */
-    static boolean decode(Table table, Sample sample, AvatarModel model, AvatarRecording.Pose target) {
+    /**
+     * Decodes a sample of the table's generation into a component-space pose and, per component, whether Stellar Blade
+     * draws it with its data in this sample (shown). False when one of EVE's own parts lacks its data or its leader's
+     * bones, as before; only the drone's parts (OPTIONAL) are then left out of the drawing instead. A part Stellar Blade
+     * hides is left out either way.
+     */
+    static boolean decode(Table table, Sample sample, AvatarModel model, AvatarRecording.Pose target, boolean[] shown) {
         int offset = 0;
-        boolean complete = true;
+        boolean[] ready = new boolean[table.components.size()];
         for (int i = 0; i < table.components.size(); i++) {
             var c = table.components.get(i);
             int bones = c.recorded() ? c.bones().length : 0, status = sample.status[i];
-            boolean drawn = model.draws(i);
-            if (drawn && ((status & WORLD) == 0 || bones > 0 && (status & BONES) == 0)) complete = false;
+            ready[i] = (status & WORLD) != 0 && (bones == 0 || (status & BONES) != 0);
+            shown[i] = ready[i] && (status & HIDDEN) == 0;
             System.arraycopy(sample.payload, offset, target.world()[i], 0, 10);
             if (bones > 0) System.arraycopy(sample.payload, offset + 10, target.local()[i], 0, 10 * bones);
             if (c.weights() > 0) {
@@ -264,7 +271,18 @@ final class AvatarStream implements AutoCloseable {
             }
             offset += 10 + 10 * bones + c.weights();
         }
-        return complete;
+        for (var part : model.parts) {
+            if (ready[part.component()] && ready[part.driver()]) continue;
+            if (!table.components.get(part.component()).name().startsWith(OPTIONAL)) return false;
+            shown[part.component()] = false;
+        }
+        return true;
+    }
+    static final String OPTIONAL = "Drone."; // Components whose missing data never drops EVE's pose.
+
+    /** A part is drawn once two consecutive decoded poses showed it, so it never blends with stale floats. */
+    static void steady(boolean[] drawn, boolean[] newest, boolean[] previous) {
+        for (int i = 0; i < drawn.length; i++) drawn[i] = newest[i] && previous[i];
     }
 
     /** The sample's material parameters by "slot/name", from the floats after the components. */

@@ -63,6 +63,10 @@ public final class AvatarView {
         static final int RING = 4;
         AvatarRecording.Pose pose;
         AvatarRecording.Pose[] ring;
+        // Per component: shown in the newest sample, a spare for the next decode, and drawn (shown in the two newest
+        // samples, which the displayed pose interpolates between: a component back from Stellar Blade's hiding or
+        // from missing data never blends with stale floats).
+        boolean[] shown, spare, drawn;
         final double[] times = new double[RING];
         int newest = -1, count;
         float[] rotation; // Stellar Blade's controller Pitch, Yaw, Roll from the newest sample, or null.
@@ -243,7 +247,11 @@ public final class AvatarView {
                 if (table != null && table.generation() == sample.generation()) install(current, table);
             } else if (sample != null && current.model != null) {
                 int slot = (current.newest + 1) % Live.RING;
-                if (AvatarStream.decode(current.table, sample, current.model, current.ring[slot])) {
+                if (AvatarStream.decode(current.table, sample, current.model, current.ring[slot], current.spare)) {
+                    AvatarStream.steady(current.drawn, current.spare, current.shown);
+                    boolean[] newest = current.spare;
+                    current.spare = current.shown;
+                    current.shown = newest;
                     double time = sample.publication();
                     if (current.count > 0) {
                         double previous = current.times[current.newest];
@@ -377,6 +385,11 @@ public final class AvatarView {
         current.newest = -1;
         current.count = 0;
         current.posed = false;
+        int n = table.components().size();
+        current.shown = new boolean[n];
+        current.spare = new boolean[n];
+        current.drawn = new boolean[n];
+        renderer.shown(current.drawn);
         int[] sections = renderer.sectionCounts();
         report(String.format("EVE live avatar: generation %d, %d meshes, %d/%d material sections%s.", table.generation(),
                 model.parts.size(), sections[0], sections[1], model.skipped.isEmpty() ? "" : "; skipped " + String.join(", ", model.skipped)), null);
@@ -542,9 +555,18 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + AvatarCombat.status() + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
+                + hiddenStatus(current) + AvatarCombat.status() + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
                 + AvatarStats.status(current.stats)
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
+    }
+
+    /** The streamed meshes left out of the newest pose: hidden in Stellar Blade or without data. */
+    private static String hiddenStatus(Live current) {
+        if (current.model == null || !current.posed) return "";
+        StringBuilder names = new StringBuilder();
+        for (var part : current.model.parts)
+            if (!current.drawn[part.component()]) names.append(names.isEmpty() ? "" : ", ").append(current.table.components().get(part.component()).name());
+        return names.isEmpty() ? " Every streamed mesh drawn." : " Not drawn now: " + names + ".";
     }
 
     private static String evadeStatus(int[] evades) {

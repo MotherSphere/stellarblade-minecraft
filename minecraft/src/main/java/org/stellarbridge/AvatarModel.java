@@ -105,11 +105,6 @@ final class AvatarModel {
         }
     }
 
-    boolean draws(int component) {
-        for (Part part : parts) if (part.component == component) return true;
-        return false;
-    }
-
     /**
      * Writes each part's skinning matrices as Minecraft-space affine rows (12 floats per bone, the GLSL mat3x4 layout).
      * placement maps Unreal world space to the target space, e.g. camera-relative Minecraft blocks. Bone transforms are

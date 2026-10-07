@@ -15,7 +15,7 @@
 
 namespace stellar_pose {
 namespace {
-constexpr uint32_t Slots = 3, Dirty = 4, Format = 1;
+constexpr uint32_t Slots = 3, Dirty = 4, Format = 2; // 2: component status bit 3 (Hidden).
 constexpr uint64_t Lease = 3000, LockLease = 600; // LockLease: Lua's own lock lease.
 using stellar_input::detail::identity;
 using stellar_input::detail::Lines;
@@ -121,6 +121,21 @@ bool alive(uintptr_t objects, uintptr_t object) {
   auto item = chunk + ItemBytes * uintptr_t(index & 0xffff);
   return at<uintptr_t>(item) == object &&
          !(at<int32_t>(item + ItemFlags) & (PendingKill | Unreachable));
+}
+// USceneComponent::bVisible (byte 0x170, bit 5) and bHiddenInGame (0x171, bit 2)
+// and AActor::bHidden (0x58, bit 5), Engine_classes.hpp:230, 235, 3220; the
+// component's owner is UActorComponent's unreflected pointer at 0xb0 (read so
+// at 0x24052d4).
+constexpr size_t VisibleByte = 0x170, HiddenInGameByte = 0x171, ActorHiddenByte = 0x58, Owner = 0xb0;
+constexpr uint8_t VisibleBit = 0x20, HiddenInGameBit = 0x04, ActorHiddenBit = 0x20;
+// A live scene component Stellar Blade leaves out of its rendering, as
+// USceneComponent::ShouldRender does in a game world: not visible, hidden in
+// game, or owned by a live hidden actor.
+bool hidden(uintptr_t objects, uintptr_t component) {
+  auto owner = at<uintptr_t>(component + Owner);
+  return !(at<uint8_t>(component + VisibleByte) & VisibleBit) ||
+         (at<uint8_t>(component + HiddenInGameByte) & HiddenInGameBit) ||
+         (owner && alive(objects, owner) && (at<uint8_t>(owner + ActorHiddenByte) & ActorHiddenBit));
 }
 // FTransform in memory: rotation xyzw, translation xyz + pad, scale xyz + pad.
 void transform(uintptr_t source, float *out) {
@@ -282,7 +297,7 @@ uint32_t read_component(const Engine &engine, const Component &c, float *out) {
       at<uint64_t>(object + ClassPrivate) != c.cls ||
       at<uint64_t>(object + SkeletalMesh) != c.mesh)
     return 0;
-  uint32_t status = WorldValid;
+  uint32_t status = WorldValid | (hidden(engine.objects, object) ? Hidden : 0);
   transform(object + WorldTransform, out);
   if (c.bones) {
     auto read = at<int32_t>(object + ReadTransforms);
@@ -350,7 +365,7 @@ uint32_t read_effects(const Engine &engine, const Table &table, float *out) {
         continue;
       auto cls = at<uint64_t>(child + ClassPrivate);
       if ((cls != fx.niagara && cls != fx.particle) ||
-          !(at<uint8_t>(child + fx.active_byte) & fx.active_mask))
+          !(at<uint8_t>(child + fx.active_byte) & fx.active_mask) || hidden(engine.objects, child))
         continue;
       auto asset = at<uint64_t>(child + (cls == fx.niagara ? fx.asset : fx.templ));
       auto found = std::find(fx.assets.begin(), fx.assets.end(), asset);
@@ -434,7 +449,7 @@ bool turn_controller(const Engine &engine, const Controller &c, float pitch, flo
 // at CameraDollyAlpha (0x24087c6) and in dolly mode pitches the camera from its
 // arm location toward the pivot (0x24087f7-0x240893a).
 constexpr size_t CameraBoom = 0x5c0, TPSMode = 0x1528, FishingMode = 0x1690, SlopeType = 0x1b5c,
-                 SlopeRun = 0x1b5d, SlopeTime = 0x1b64, SlopeStart = 0x1b6c, Owner = 0xb0,
+                 SlopeRun = 0x1b5d, SlopeTime = 0x1b64, SlopeStart = 0x1b6c,
                  ArmFlags = 0x284, ArmRotation = 0x2c0, DollyAlpha = 0x2f0, UseDolly = 0x2f4,
                  DollyTrack = 0x2f8, ControllerRotation = 0x370, CameraBlend = 0x374,
                  DollyBlend = 0x3c0, DollyBlendTarget = 0x3c8, DollyBlends = 0x3d8, DollyMode = 0x3e0;

@@ -195,7 +195,9 @@ function Adapter.new()
             local name=text(valid(component:GetClass()):GetFName())
             if not (name:find('Particle',1,true) or name:find('Niagara',1,true)) or seen[component:GetAddress()] then return end
             seen[component:GetAddress()]=true
-            if not component:IsActive() then return end
+            -- What Stellar Blade draws: active and visible (an unknown visibility counts as visible).
+            local known,visible=pcall(function() return component:IsVisible() end)
+            if not component:IsActive() or known and not visible then return end
             -- Niagara components name their system Asset, Cascade ones their Template.
             local ok,asset=pcall(function() return valid(name:find('Niagara',1,true) and component.Asset or component.Template) end)
             local parent=valid(component:GetAttachParent())

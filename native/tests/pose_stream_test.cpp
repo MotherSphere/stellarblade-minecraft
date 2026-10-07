@@ -90,6 +90,7 @@ struct Fake {
     uint64_t cls = 0x1000, mesh = 0x2000;
     std::memcpy(o.bytes + 0x10, &cls, 8);
     std::memcpy(o.bytes + 0x568, &mesh, 8);
+    o.bytes[0x170] = 0x20; // USceneComponent::bVisible.
     float world[12] = {0, 0, 0.5f, 0.75f, 100, 200, 300, 9, 1, 1, 1, 9};
     std::memcpy(o.bytes + 0x1f0, world, sizeof world);
     for (int buffer = 0; buffer < 2; buffer++) {
@@ -280,6 +281,30 @@ int main() {
   std::memcpy(fake.b.bytes + 0x0c, &outside, 4);
   assert(read_component(engine, Fake::component(fake.b), out.data()) == 0);
   assert(read_component(Engine{}, Fake::component(fake.b), out.data()) == 0);
+  {
+    // What Stellar Blade draws: Hidden when the component is not visible, hidden in game or owned by a live hidden
+    // actor (EVE's drone between its appearances); its floats are copied all the same.
+    Fake seen;
+    auto e = seen.engine();
+    auto drone = Fake::component(seen.a);
+    std::vector<float> values(10 + 30 + 2, -1);
+    constexpr uint32_t All = WorldValid | BonesValid | MorphsValid;
+    assert(read_component(e, drone, values.data()) == All);
+    seen.a.bytes[0x170] = 0;
+    assert(read_component(e, drone, values.data()) == (All | Hidden) && values[4] == 100 && "Not visible, still read");
+    seen.a.bytes[0x170] = 0x20;
+    seen.a.bytes[0x171] = 0x04;
+    assert(read_component(e, drone, values.data()) == (All | Hidden) && "Hidden in game");
+    seen.a.bytes[0x171] = 0;
+    auto actor = reinterpret_cast<uintptr_t>(seen.b.bytes);
+    std::memcpy(seen.a.bytes + 0xb0, &actor, 8);
+    assert(read_component(e, drone, values.data()) == All && "A shown actor");
+    seen.b.bytes[0x58] = 0x20;
+    assert(read_component(e, drone, values.data()) == (All | Hidden) && "A hidden actor");
+    int32_t pending = 1 << 29;
+    std::memcpy(seen.items.data() + 24 * 5 + 8, &pending, 4);
+    assert(read_component(e, drone, values.data()) == All && "A dead owner hides nothing");
+  }
   {
     float rotation[3] = {9, 9, 9};
     Controller c;
@@ -485,6 +510,9 @@ int main() {
     fake.controller.bytes[0x88] = 0;
     assert(read_effects(engine, t, records.data()) == 0 && records[0] == -1 && "An inactive component is no effect");
     fake.controller.bytes[0x88] = 0x10;
+    fake.controller.bytes[0x170] = 0;
+    assert(read_effects(engine, t, records.data()) == 0 && "An effect Stellar Blade does not draw is no effect");
+    fake.controller.bytes[0x170] = 0x20;
     uint64_t other = 0xabe000;
     std::memcpy(fake.controller.bytes + 0x240, &other, 8);
     assert(read_effects(engine, t, records.data()) == 0 && "An asset Minecraft does not draw is skipped");
@@ -751,6 +779,7 @@ int main() {
     assert(middle == (1 | 4) && stellar_shared::load64(base, 216) == 1);
     auto *slot = base + Header + SlotBytes * 1;
     assert(stellar_shared::plain<uint64_t>(slot, 0) == 1 && stellar_shared::plain<uint64_t>(slot, 16) == 7);
+    assert(stellar_shared::plain<uint32_t>(slot, 24) == 2 && "Format 2 carries the Hidden status bit");
     assert(stellar_shared::plain<uint32_t>(slot, 28) == 2 && stellar_shared::plain<uint32_t>(slot, 32) == 54);
     assert(stellar_shared::plain<uint32_t>(slot, 64) == 7 && stellar_shared::plain<uint32_t>(slot, 68) == (WorldValid | MorphsValid));
     assert(stellar_shared::plain<float>(slot, 128 + 4 * 4) == 100);

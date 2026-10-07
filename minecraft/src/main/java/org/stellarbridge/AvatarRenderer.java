@@ -60,6 +60,7 @@ final class AvatarRenderer implements AutoCloseable {
     private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, pass,
             opacity, emissiveTint, hurtTint, skinning, skinningBones;
     private Map<String, float[]> parameters = Map.of();
+    private boolean[] shown; // Per streamed component, whether its part is drawn; null draws every part (replays).
     private boolean hurt;
     private AvatarTrail trail; // The weapon's swing trail, when the pack describes one.
     private AvatarSprites sprites; // The game's effects as sprites, when the pack has their textures.
@@ -198,6 +199,7 @@ final class AvatarRenderer implements AutoCloseable {
                 }
                 GL20.glUniform1i(pass, stage);
                 for (int p = 0; p < arrays.length; p++) {
+                    if (!drawn(p)) continue;
                     GlStateManager._glBindVertexArray(arrays[p]);
                     GL21.glUniformMatrix3x4fv(bones, false, palettes[p]);
                     AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
@@ -262,6 +264,7 @@ final class AvatarRenderer implements AutoCloseable {
                     GlStateManager._depthMask(true);
                 }
                 for (int p = 0; p < arrays.length; p++) {
+                    if (!drawn(p)) continue;
                     GlStateManager._glBindVertexArray(entityArrays[p]);
                     AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
                     for (int s = 0; s < sections.length; s++) {
@@ -301,6 +304,7 @@ final class AvatarRenderer implements AutoCloseable {
         GL11.glEnable(GL30.GL_RASTERIZER_DISCARD);
         try {
             for (int p = 0; p < arrays.length; p++) {
+                if (!drawn(p)) continue;
                 GlStateManager._glBindVertexArray(arrays[p]);
                 GL21.glUniformMatrix3x4fv(skinningBones, false, palettes[p]);
                 GL30.glBindBufferBase(GL30.GL_TRANSFORM_FEEDBACK_BUFFER, 0, skinned[p]);
@@ -350,6 +354,9 @@ final class AvatarRenderer implements AutoCloseable {
             GlStateManager._blendFuncSeparate(blendFunction0[0], blendFunction0[1], blendFunction0[2], blendFunction0[3]);
         }
     }
+
+    /** Which streamed components are drawn, by table index, read at each draw; null draws every part. */
+    void shown(boolean[] components) { shown = components; }
 
     /** Whether EVE flashes red as a hurt Minecraft entity does, from the next draw. */
     void hurt(boolean flashing) { hurt = flashing; }
@@ -412,8 +419,10 @@ final class AvatarRenderer implements AutoCloseable {
     private void uploadMorphs() {
         GL20.glVertexAttrib3f(5, 0, 0, 0);
         GL20.glVertexAttrib3f(6, 0, 0, 0);
-        for (int p = 0; p < arrays.length; p++) if (morphBuffers[p] != 0) uploadMorphs(p);
+        for (int p = 0; p < arrays.length; p++) if (morphBuffers[p] != 0 && drawn(p)) uploadMorphs(p);
     }
+    /** Whether part p is drawn this frame (every part without a shown list, as in replays). */
+    private boolean drawn(int p) { return shown == null || shown[model.parts.get(p).component()]; }
     private void uploadMorphs(int part) {
         float[] weights = model.morphWeights[part];
         boolean changed = false;

@@ -15,8 +15,10 @@ constexpr uint32_t MaxEffects = 8, EffectFloats = 11, MaxEffectAssets = 32;
 constexpr uint32_t Header = 4096, SlotBytes = 65536, SlotHeader = 128;
 constexpr uint32_t Capacity = (SlotBytes - SlotHeader) / 4; // Payload floats.
 constexpr uint32_t TotalBytes = Header + 3 * SlotBytes;
-// Status bits per component in a published slot.
-constexpr uint32_t WorldValid = 1, BonesValid = 2, MorphsValid = 4;
+// Status bits per component in a published slot. Hidden: Stellar Blade does
+// not draw it (not visible, hidden in game, or its actor hidden); its floats
+// are still copied.
+constexpr uint32_t WorldValid = 1, BonesValid = 2, MorphsValid = 4, Hidden = 8;
 
 struct Request {
   std::string run;
@@ -80,13 +82,15 @@ struct Engine {
 // Copies one component into out (10 + 10 * bones + morphs floats, zeroed when
 // invalid) and returns its status bits. The object must still be the live,
 // non-pending-kill object of the published class with the published mesh.
+// Components of any actor qualify (EVE's, then her drone's).
 uint32_t read_component(const Engine &, const Component &, float *out);
 // Copies a material parameter; false (and zeros) unless the instance is live
 // with its class and the element still carries the published name.
 bool read_parameter(const Engine &, const Parameter &, float *out);
-// Writes MaxEffects records: for each active effect component attached to a
-// live published component, the index of its asset in Effects::assets and its
-// world transform; unused records carry index -1 and zeros. Returns the count.
+// Writes MaxEffects records: for each active, drawn (not Hidden) effect
+// component attached to a live published component, the index of its asset in
+// Effects::assets and its world transform; unused records carry index -1 and
+// zeros. Returns the count.
 uint32_t read_effects(const Engine &, const Table &, float *out);
 // Copies the controller's Pitch, Yaw and Roll; false (and zeros) unless live.
 bool read_controller(const Engine &, const Controller &, float *out);
