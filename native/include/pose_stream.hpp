@@ -220,7 +220,9 @@ uint32_t gauge_gain(uint32_t points, float rate, float cap);
 // False, nothing written, unless the player actor is spawned and its gauges read as read_gauges reads them.
 bool grant_gauges(uintptr_t world, uint32_t beta, uint32_t burst, uint32_t added[2]);
 // Minecraft's totals as last seen (known) while this run owned forwarded input, and what was granted since the adapter loaded.
-constexpr uint32_t MaxGrantStep = 1000; // A larger step per poll is not a strike: adopted, not granted.
+// A larger step per poll is no batch of strikes (a charged swing through several mobs gives a few thousand at most) but a
+// restarted or foreign Minecraft: adopted, not granted.
+constexpr uint32_t MaxGrantStep = 10000;
 struct Grants {
   bool known = false;
   uint32_t beta = 0, burst = 0, granted[2] = {};
