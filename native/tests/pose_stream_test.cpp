@@ -616,6 +616,43 @@ int main() {
     }
     assert(refusals == 1 && "The refusal in the published slot at 56");
     assert(std::all_of(view.base + ShotsAt + 4, view.base + Header, [](uint8_t b) { return b == 0; }) && "Nothing after them");
+    // Format 4: the adapter's report after the shot count (heal count, mirror state, losses, Beta and Burst granted),
+    // then the player actor's whole stat array with state 1 at 508; the rest stays reserved.
+    float actor_stats[ActorStats];
+    for (uint32_t i = 0; i < ActorStats; i++)
+      actor_stats[i] = i / 2.0f;
+    assert(direct.publish(5, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades, stats, DollyNone, 5,
+                          Report{1000, MirrorHeld, 1, {17, 200}, actor_stats}));
+    auto *latest = view.base + Header + SlotBytes * (stellar_shared::load32(view.base, 128) & 3);
+    assert(stellar_shared::plain<uint64_t>(latest, 16) == 5 && stellar_shared::plain<uint32_t>(latest, 24) == 4 && "Format 4");
+    uint32_t report[5] = {1000, 2, 1, 17, 200};
+    for (uint32_t i = 0; i < 5; i++)
+      assert(stellar_shared::plain<uint32_t>(view.base, 488 + 4 * i) == report[i] && "The report in order at 488");
+    assert(stellar_shared::load32(view.base, 508) == 1 && stellar_shared::plain<float>(view.base, 512 + 4 * 130) == 65 &&
+           "The actor's stats from 512, state 1 at 508");
+    auto zero = [](uint8_t b) { return b == 0; };
+    assert(std::all_of(view.base + 1036, view.base + Header, zero) && std::all_of(view.base + 308, view.base + 312, zero) &&
+           "Nothing after the actor's stats, nor between the camera and the gains word");
+    assert(direct.publish(6, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades));
+    assert(std::all_of(view.base + 488, view.base + 512, zero) && "No report: zeros and actor state 0");
+    // Minecraft's health and gains words, read only while its camera is fresh.
+    Feedback fed;
+    assert(!direct.feedback(now, fed) && "No camera, no words");
+    float half = 0.5f;
+    uint32_t share;
+    std::memcpy(&share, &half, 4);
+    stellar_shared::store64(view.base, 280, uint64_t(7) << 32 | share);
+    stellar_shared::store64(view.base, 312, 30 | uint64_t(200) << 32);
+    stellar_shared::store64(view.base, 296, 0);
+    stellar_shared::store64(view.base, 288, now);
+    stellar_shared::exchange32(view.base, 304, 1);
+    assert(direct.feedback(now, fed) && fed.share == 0.5f && fed.acknowledged == 7 && fed.beta == 30 && fed.burst == 200 &&
+           "Share and acknowledgement, then Beta and Burst totals");
+    stellar_shared::store64(view.base, 288, now - 201);
+    assert(!direct.feedback(now, fed) && "Stale camera, stale words");
+    stellar_shared::store64(view.base, 288, now);
+    stellar_shared::exchange32(view.base, 304, 0);
+    assert(!direct.feedback(now, fed) && "An inactive camera, no words");
     direct.stop();
   }
   auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
@@ -664,6 +701,130 @@ int main() {
     put_i32(manager, 0x3c, 2);
     assert(!read_gauges(w, g) && !read_stats(w, s) && "The player index stays within the actor count");
     put_i32(manager, 0x3c, 1);
+    // AddStat's gauge gain: the rate capped, truncated to thousandths, the bonus rounded up with the rate's sign.
+    assert(gauge_gain(15, 0, .4f) == 15 && gauge_gain(15, .06f, .4f) == 16 && gauge_gain(15, .13f, .4f) == 17 &&
+           gauge_gain(65, .13f, .4f) == 74 && gauge_gain(200, .27f, .75f) == 254 && "Points plus ceil(points x rate)");
+    assert(gauge_gain(15, .9f, .4f) == 21 && "The rate is capped");
+    assert(gauge_gain(15, .0669f, .4f) == 16 && "The rate is truncated to thousandths (ceil(15 x 0.0669) would give 17)");
+    assert(gauge_gain(15, -.1f, .4f) == 13 && "A negative rate takes its bonus away");
+    // Minecraft's points land in Beta and Burst as AddStat adds a hit's.
+    auto value = [&](uint32_t index) {
+      float v;
+      std::memcpy(&v, actor.data() + 0x118 + 4 * index, 4);
+      return v;
+    };
+    stat(64, .13f); stat(111, 0);
+    Grants grants;
+    auto feed = [&](uint32_t beta, uint32_t burst) {
+      Feedback f;
+      f.beta = beta;
+      f.burst = burst;
+      grant_poll(w, &f, grants);
+    };
+    feed(15, 0);
+    assert(grants.known && value(14) == 400 && value(18) == 130 && "First sighting is a baseline");
+    feed(30, 0);
+    assert(value(14) == 417 && grants.granted[0] == 17 && "15 points at rate 0.13");
+    feed(30, 0);
+    assert(value(14) == 417 && grants.granted[0] == 17 && "A step applies once");
+    feed(30, 200);
+    assert(value(18) == 330 && grants.granted[1] == 200 && "Burst at its own rate");
+    grant_poll(w, nullptr, grants);
+    assert(!grants.known && "No fresh words: the totals are forgotten");
+    feed(60, 200);
+    assert(value(14) == 417 && "Rebaseline after losing the input");
+    feed(1061, 200);
+    assert(value(14) == 417 && "A step above 1000 is adopted, not granted");
+    stat(116, 0);
+    feed(1061, 400);
+    assert(value(18) == 330 && grants.granted[1] == 200 && "Locked Burst gains nothing");
+    feed(1076, 400);
+    assert(value(14) == 434 && "Beta still gains");
+    stat(14, 995);
+    auto before = grants.granted[0];
+    feed(1091, 400);
+    assert(value(14) == 1000 && grants.granted[0] == before + 5 && "Clamped at its maximum");
+    stat(14, 400);
+    stat(116, 1);
+    put_i32(actor, 0x2600, 3);
+    feed(1106, 400);
+    assert(value(14) == 400 && "No spawned player, no write");
+    put_i32(actor, 0x2600, 1);
+    feed(1106, 400);
+    assert(value(14) == 400 && "A failed grant is not retried later");
+    stat(64, std::nanf(""));
+    feed(1121, 600);
+    assert(value(14) == 400 && value(18) == 330 && "A non-finite rate writes nothing");
+    stat(64, .13f);
+    Grants wrapped;
+    wrapped.known = true;
+    wrapped.beta = 0xFFFFFFF0;
+    Feedback over;
+    over.beta = 0x0F;
+    grant_poll(w, &over, wrapped);
+    // 31 points (0x0F - 0xFFFFFFF0 in u32) at rate 0.13: 31 + ceil(4.03) = 35.
+    assert(value(14) == 435 && wrapped.granted[0] == 35 && "U32 wrap");
+    // The HP mirror: Minecraft's share of MaxHP, a quarter at least, 1 per mille under full, never 0.
+    assert(mirrored(1, 2000) == 2000 && mirrored(.5f, 2000) == 1000 && mirrored(.9999f, 2000) == 1998 &&
+           mirrored(.1f, 2000) == 500 && mirrored(.01f, 2) == 1 && mirrored(.5f, 2) == 1 && "Never 0");
+    stat(1, 2000);
+    HealthMirror m;
+    mirror_health(w, .5f, 0, true, 1000, m);
+    assert(value(1) == 1000 && m.state == MirrorWritten && m.active && m.original == 2000 && "Minecraft's share written");
+    stat(1, 2000); // Stellar Blade heals.
+    mirror_health(w, .5f, 0, true, 1050, m);
+    assert(m.healed == 1000 && m.state == MirrorHeld && value(1) == 2000 && "A heal waits for its acknowledgement");
+    mirror_health(w, 1, 1000, true, 1100, m);
+    assert(value(1) == 2000 && m.state == MirrorWritten && "Acknowledged: written again");
+    mirror_health(w, .75f, 1000, true, 1150, m);
+    assert(value(1) == 1500);
+    stat(1, 1400); // Stellar Blade's own damage.
+    mirror_health(w, .75f, 1000, true, 1200, m);
+    assert(m.lost == 1 && value(1) == 1500 && "A loss is counted and overwritten");
+    mirror_health(w, 0, 0, false, 1700, m);
+    assert(m.state == MirrorHeld && value(1) == 1500 && "A stale share holds");
+    stat(1, 1600);
+    mirror_health(w, 0, 0, false, 1800, m);
+    assert(m.healed == 1100 && "Counted while stale");
+    mirror_health(w, 0, 0, false, 2201, m);
+    assert(value(1) == 2000 && m.state == MirrorOff && !m.active && "Restored after the lease");
+    mirror_health(w, .5f, 1100, true, 2300, m);
+    assert(value(1) == 1000 && m.healed == 1100 && m.state == MirrorWritten && "The restore is not a heal");
+    for (float bad : {std::nanf(""), 1.5f}) {
+      mirror_health(w, bad, 1100, true, 2350, m);
+      assert(m.state == MirrorHeld && value(1) == 1000 && "An unusable share holds, nothing written");
+    }
+    put_i32(actor, 0x2600, 3);
+    mirror_health(w, .75f, 1100, true, 2400, m);
+    assert(m.state == MirrorOff && value(1) == 1000 && m.active && "No spawned player: nothing written, the record kept");
+    put_i32(actor, 0x2600, 1);
+    mirror_health(w, .75f, 1100, true, 2450, m);
+    assert(value(1) == 1500 && m.state == MirrorWritten && m.original == 2000 && "Back: it continues with her original HP");
+    std::vector<uint8_t> next(0x2700);
+    put_i32(next, 0x2600, 1);
+    float next_hp[2] = {3000, 4000};
+    std::memcpy(next.data() + 0x11c, next_hp, sizeof next_hp);
+    actors[0] = uintptr_t(next.data());
+    put_i32(manager, 0x3c, 0);
+    mirror_health(w, .5f, 1100, true, 2500, m);
+    std::memcpy(next_hp, next.data() + 0x11c, 4);
+    assert(next_hp[0] == 2000 && m.original == 3000 && value(1) == 1500 && "Another actor: its own original, the first untouched");
+    actors[0] = 0;
+    put_i32(manager, 0x3c, 1);
+    HealthMirror idle;
+    stat(1, 1234);
+    mirror_health(w, .5f, 0, false, 3000, idle);
+    assert(idle.state == MirrorOff && !idle.active && !idle.actor && value(1) == 1234 && "Idle: nothing read or written");
+    // The player actor's whole stat array, in order.
+    for (uint32_t i = 0; i < ActorStats; i++)
+      stat(i, i + 0.25f);
+    float copied[ActorStats];
+    assert(read_actor(w, copied));
+    for (uint32_t i = 0; i < ActorStats; i++)
+      assert(copied[i] == i + 0.25f && "Stats 0..130 in order");
+    put_i32(actor, 0x2600, 3);
+    assert(!read_actor(w, copied) && "Not a dead player's");
+    put_i32(actor, 0x2600, 1);
     // Minecraft's lock: EVE's lock-gated evades (globals under the root, double dodges one below) are opened.
     std::vector<uint8_t> set(0x180), root(0x20), normal(0xb8), lockon(0xb8), chain(0xb8), air(0xb8), attack(0xb8);
     uintptr_t top[4] = {uintptr_t(normal.data()), uintptr_t(lockon.data()), uintptr_t(air.data()), uintptr_t(attack.data())};
@@ -829,7 +990,7 @@ int main() {
     assert(middle == (1 | 4) && stellar_shared::load64(base, 216) == 1);
     auto *slot = base + Header + SlotBytes * 1;
     assert(stellar_shared::plain<uint64_t>(slot, 0) == 1 && stellar_shared::plain<uint64_t>(slot, 16) == 7);
-    assert(stellar_shared::plain<uint32_t>(slot, 24) == 3 && "Format 3 carries the shot count");
+    assert(stellar_shared::plain<uint32_t>(slot, 24) == 4 && "Format 4 carries the adapter's report");
     assert(stellar_shared::plain<uint32_t>(slot, 28) == 2 && stellar_shared::plain<uint32_t>(slot, 32) == 54);
     assert(stellar_shared::plain<uint32_t>(slot, 64) == 7 && stellar_shared::plain<uint32_t>(slot, 68) == (WorldValid | MorphsValid));
     assert(stellar_shared::plain<float>(slot, 128 + 4 * 4) == 100);
@@ -867,6 +1028,9 @@ int main() {
     assert(controller_status() == (RotationValid | LookApplied | InputGranted) && inputs.size() == 1 &&
            inputs[0].first == 'y' && std::fabs(inputs[0].second - 0.15f * 135 / 2.5f) < 1e-4f &&
            "Turned through the pawn's look input");
+    assert(stellar_shared::load32(base, 508) == 0 && stellar_shared::plain<uint32_t>(base, 492) == MirrorOff &&
+           std::all_of(base + 1036, base + Header, [](uint8_t b) { return b == 0; }) &&
+           "Without the pinned game world, no actor stats and no mirror");
     inputs.clear();
     look(-25, -90, stellar_shared::wall_now(), 1);
     on_gameplay_poll(Run);

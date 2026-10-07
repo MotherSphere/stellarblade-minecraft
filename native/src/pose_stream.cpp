@@ -15,8 +15,10 @@
 
 namespace stellar_pose {
 namespace {
-// 2: component status bit 3 (Hidden); 3: the dolly refusal at slot byte 56 and the drone shot count at header byte ShotsAt.
-constexpr uint32_t Slots = 3, Dirty = 4, Format = 3;
+// 2: component status bit 3 (Hidden); 3: the dolly refusal at slot byte 56 and the drone shot count at header byte ShotsAt;
+// 4: the adapter's report (heal count, mirror, losses, gains, actor stats) at header 488-1036; it reads Minecraft's health
+// and gains words at 280 and 312.
+constexpr uint32_t Slots = 3, Dirty = 4, Format = 4;
 constexpr uint64_t Lease = 3000, LockLease = 600; // LockLease: Lua's own lock lease.
 using stellar_input::detail::identity;
 using stellar_input::detail::Lines;
@@ -572,6 +574,110 @@ bool read_stats(uintptr_t world, float *out) {
   return out[0] > 0 && out[2] > 0;
 }
 
+uint32_t gauge_gain(uint32_t points, float rate, float cap) {
+  if (cap > 0)
+    rate = std::min(cap, rate);
+  int64_t m = std::abs(int32_t(rate * 1000.0f)), t = m * points / 100, q = t / 10;
+  int64_t bonus = t - 10 * q > 0 ? q + 1 : q, gain = int64_t(points) + (rate >= 0 ? bonus : -bonus);
+  return gain > 0 ? uint32_t(gain) : 0;
+}
+bool grant_gauges(uintptr_t world, uint32_t beta, uint32_t burst, uint32_t added[2]) {
+  added[0] = added[1] = 0;
+  float g[GaugeFloats];
+  if (!read_gauges(world, g))
+    return false;
+  auto actor = player_actor(world);
+  float rates[2] = {at<float>(actor + 0x218), at<float>(actor + 0x2d4)};
+  for (float r : rates)
+    if (!std::isfinite(r) || std::fabs(r) > GaugeLimit)
+      return false;
+  auto add = [&](uint32_t points, float cur, float max, float rate, float cap, size_t offset) -> uint32_t {
+    if (!points)
+      return 0;
+    int64_t next = int64_t(cur + float(gauge_gain(points, rate, cap)));
+    next = next < 1 ? 0 : std::min<int64_t>(next, int64_t(max));
+    if (float(next) == cur)
+      return 0;
+    put(reinterpret_cast<uint8_t *>(actor), offset, float(next));
+    return uint32_t(std::max<int64_t>(0, next - int64_t(cur)));
+  };
+  added[0] = add(beta, g[0], g[1], rates[0], BetaRateCap, 0x150);
+  if (int32_t(g[4]) > 0)
+    added[1] = add(burst, g[2], g[3], rates[1], BurstRateCap, 0x160);
+  return true;
+}
+void grant_poll(uintptr_t world, const Feedback *fed, Grants &g) {
+  if (!fed) {
+    g.known = false;
+    return;
+  }
+  uint32_t beta = fed->beta - g.beta, burst = fed->burst - g.burst; // u32 wrap
+  bool apply = g.known && (beta || burst) && beta <= MaxGrantStep && burst <= MaxGrantStep;
+  g.known = true; // Adopted before the write: a step is applied once.
+  g.beta = fed->beta;
+  g.burst = fed->burst;
+  uint32_t added[2];
+  if (apply && grant_gauges(world, beta, burst, added)) {
+    g.granted[0] += added[0];
+    g.granted[1] += added[1];
+  }
+}
+float mirrored(float share, float max) {
+  if (share >= 1)
+    return max;
+  float low = std::ceil(max * MirrorFloor), high = std::max(low, max - std::max(1.0f, std::ceil(max / 1000)));
+  return std::clamp(std::floor(share * max), low, high);
+}
+void mirror_health(uintptr_t world, float share, uint32_t acknowledged, bool fresh, uint64_t wall, HealthMirror &m) {
+  m.state = MirrorOff;
+  if (!fresh && !m.active)
+    return; // Idle: no read at all.
+  auto actor = player_actor(world);
+  if (!actor)
+    return; // Not spawned: the record waits for her return.
+  if (actor != m.actor) { // Another actor has its own HP.
+    m.active = false;
+    m.actor = actor;
+  }
+  float hp = at<float>(actor + 0x11c), max = at<float>(actor + 0x120);
+  if (!std::isfinite(hp) || !std::isfinite(max) || max < 1 || max > GaugeLimit || hp < 0 || hp > max)
+    return;
+  if (m.active) {
+    if (hp > m.last + 0.5f)
+      m.healed += uint32_t(std::lround(hp - m.last));
+    else if (hp < m.last - 0.5f)
+      m.lost++;
+    m.last = hp;
+  }
+  bool usable = fresh && std::isfinite(share) && share > 0 && share <= 1;
+  if (usable)
+    m.fresh = wall;
+  auto *bytes = reinterpret_cast<uint8_t *>(actor);
+  if (usable && (!m.active || acknowledged == m.healed)) {
+    if (!m.active) {
+      m.active = true;
+      m.original = m.last = hp;
+    }
+    float target = mirrored(share, max);
+    if (target != hp) {
+      put(bytes, 0x11c, target);
+      m.last = target;
+    }
+    m.state = MirrorWritten;
+  } else if (m.active && wall > m.fresh + MirrorLease) {
+    put(bytes, 0x11c, std::clamp(m.original, 1.0f, max));
+    m.active = false;
+  } else if (m.active)
+    m.state = MirrorHeld;
+}
+bool read_actor(uintptr_t world, float *out) {
+  auto actor = player_actor(world);
+  if (!actor)
+    return false;
+  std::memcpy(out, reinterpret_cast<const void *>(actor + 0x118), sizeof(float) * ActorStats);
+  return true;
+}
+
 // EVE's command set (FSBActor +0x530, owner back at +0x178) roots her nodes at
 // +0x8; a node keeps child pointers at +0x8 (count +0x10), its command at
 // +0x18 and its row FName at +0x24 (0x1a61c50, 0x1d28500, 0x1d285e0). Her eight
@@ -809,7 +915,7 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
                        const float *rotation, uint32_t look,
                        uint64_t wall, uint32_t read_us, const float *gauges,
                        const uint32_t *evades, const float *stats, DollyRefusal refusal,
-                       uint32_t shots) {
+                       uint32_t shots, const Report &report) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -854,6 +960,16 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   exchange32(self.base, StatsState, stats ? 1 : 0);
   // Her drone's shots at ShotsAt.
   put(self.base, ShotsAt, shots);
+  // The adapter's report: heal count, mirror state, losses, points granted, then the player actor's stats with state 1
+  // (or 0) at ActorState.
+  put(self.base, HealedAt, report.healed);
+  put(self.base, MirrorAt, report.mirror);
+  put(self.base, LostAt, report.lost);
+  put(self.base, GrantedAt, report.granted[0]);
+  put(self.base, GrantedAt + 4, report.granted[1]);
+  if (report.actor)
+    std::memcpy(self.base + ActorAt, report.actor, sizeof(float) * ActorStats);
+  exchange32(self.base, ActorState, report.actor ? 1 : 0);
   put(self.base, 224, read_us);
   put(self.base, 228, self.max_us);
   store64(self.base, 232, self.total_us);
@@ -878,6 +994,17 @@ bool Producer::look(uint64_t wall, float &pitch, float &yaw) const {
   yaw = std::fmod(yaw, 360.0f);
   if (yaw < 0)
     yaw += 360;
+  return true;
+}
+bool Producer::feedback(uint64_t wall, Feedback &out) const {
+  float pitch, yaw;
+  if (!look(wall, pitch, yaw))
+    return false; // The camera's freshness covers the words.
+  auto health = load64(impl_->base, HealthAt), gains = load64(impl_->base, GainsAt);
+  std::memcpy(&out.share, &health, 4);
+  out.acknowledged = uint32_t(health >> 32);
+  out.beta = uint32_t(gains);
+  out.burst = uint32_t(gains >> 32);
   return true;
 }
 void Producer::fail(uint32_t error) {
@@ -907,6 +1034,8 @@ Follow following;
 DollyWrite dolly_write;
 uint64_t minecraft_lock = 0; // eve-lock.txt's TIME while Minecraft holds a target.
 EvadeStarts evade_starts;
+Grants grants;
+HealthMirror mirror;
 uint32_t process_id() {
 #ifdef _WIN32
   return GetCurrentProcessId();
@@ -979,6 +1108,29 @@ bool guarded_stats(uintptr_t world, float *out) {
     return false;
   }
 }
+bool guarded_actor(uintptr_t world, float *out) {
+  __try {
+    return read_actor(world, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+// A player actor freed under the poll faults before the write at worst; the record is forgotten without a restore.
+void guarded_grants(uintptr_t world, const Feedback *fed, Grants &g) {
+  __try {
+    grant_poll(world, fed, g);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    g.known = false;
+  }
+}
+void guarded_mirror(uintptr_t world, float share, uint32_t acknowledged, bool fresh, uint64_t wall, HealthMirror &m) {
+  __try {
+    mirror_health(world, share, acknowledged, fresh, wall, m);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    m.active = false;
+    m.state = MirrorOff;
+  }
+}
 uintptr_t game_world() {
   static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
   __try {
@@ -1030,6 +1182,11 @@ bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) 
 #else
 bool guarded_gauges(uintptr_t world, float *out) { return read_gauges(world, out); }
 bool guarded_stats(uintptr_t world, float *out) { return read_stats(world, out); }
+bool guarded_actor(uintptr_t world, float *out) { return read_actor(world, out); }
+void guarded_grants(uintptr_t world, const Feedback *fed, Grants &g) { grant_poll(world, fed, g); }
+void guarded_mirror(uintptr_t world, float share, uint32_t acknowledged, bool fresh, uint64_t wall, HealthMirror &m) {
+  mirror_health(world, share, acknowledged, fresh, wall, m);
+}
 uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
 uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
 void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) { count_evades(world, locked, wall, e); }
@@ -1103,6 +1260,14 @@ void on_gameplay_poll(std::string_view owner) {
   if (locked)
     guarded_battle(game_world());
   guarded_starts(game_world(), locked, wall, evade_starts);
+  // Minecraft's gauge points and health share act only for the run that owns forwarded input, with its words fresh;
+  // grants come before the gauges are read, so this slot shows them. The mirror's restore runs without a stream too.
+  bool granted = !owner.empty() && owner == producer.run();
+  Feedback fed;
+  bool heard = granted && producer.active(wall) && producer.feedback(wall, fed);
+  guarded_grants(game_world(), heard ? &fed : nullptr, grants);
+  if (heard || mirror.active)
+    guarded_mirror(game_world(), heard ? fed.share : 0, fed.acknowledged, heard, wall, mirror);
   if (!table || !engine.objects || !producer.active(wall))
     return;
   auto started = micros();
@@ -1111,7 +1276,7 @@ void on_gameplay_poll(std::string_view owner) {
   // Minecraft's camera turns Stellar Blade's only while this stream's run owns
   // forwarded input; the frame's own input processing then applies the turn.
   // The dolly carries the pitch where it can: pitch input would move it again.
-  bool granted = !owner.empty() && owner == producer.run(), applied = false, synced = false;
+  bool applied = false, synced = false;
   uint32_t refusal = DollyNone; // Why the dolly was left alone this frame, when it was tried.
   float pitch = 0, yaw = 0;
   if (rotated && granted && producer.look(wall, pitch, yaw)) {
@@ -1140,12 +1305,16 @@ void on_gameplay_poll(std::string_view owner) {
   bool gauged = guarded_gauges(game_world(), gauges);
   float stats[StatFloats];
   bool statted = guarded_stats(game_world(), stats);
+  float actor[ActorStats];
+  bool acted = guarded_actor(game_world(), actor);
   auto elapsed = micros() - started;
   producer.publish(table->generation, status.data(), count, payload.data(),
                    offset, rotated ? rotation : nullptr,
                    (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u) | (granted ? InputGranted : 0u), wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
                    gauged ? gauges : nullptr, evade_starts.counts, statted ? stats : nullptr,
-                   static_cast<DollyRefusal>(refusal), evade_starts.shots);
+                   static_cast<DollyRefusal>(refusal), evade_starts.shots,
+                   Report{mirror.healed, mirror.state, mirror.lost, {grants.granted[0], grants.granted[1]},
+                          acted ? actor : nullptr});
 }
 } // namespace stellar_pose

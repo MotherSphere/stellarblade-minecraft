@@ -201,6 +201,63 @@ struct EvadeStarts {
 // ponytail: one fixed margin for both polls' frame lag; below about 10 fps a window that ended on time may count as cut.
 constexpr uint64_t EvadeMarginMs = 200;
 void count_evades(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &);
+// Minecraft's words beside its camera, written only after the claim and read only while its camera is fresh (state 1 at
+// 304, time at 288 within 200 ms): the health word at HealthAt (f32 share of the bridged player's maximum health, 0 for
+// none, then u32 the heal count at HealedAt Minecraft has applied) and the gains word at GainsAt (u32 Beta then u32 Burst
+// base points, Minecraft's cumulative totals).
+constexpr size_t HealthAt = 280, GainsAt = 312;
+struct Feedback {
+  float share = 0;
+  uint32_t acknowledged = 0, beta = 0, burst = 0;
+};
+// FSBActor::AddStat's gauge gain (0x1a64ce0; Beta 0x1a6535b, Burst 0x1a6554e): points plus their bonus (0x1c7a7a0: the
+// rate, for the player at most cap, truncated to thousandths, then the gain rounded up, with the rate's sign); never below 0.
+constexpr float BetaRateCap = 0.4f, BurstRateCap = 0.75f; // BetaGaugeAdditiveRateMaxValue 0x1425f1c35, Burst... 0x1425f1c67.
+uint32_t gauge_gain(uint32_t points, float rate, float cap);
+// Adds base points to EVE's Beta and Burst as AddStat adds a hit's, by direct stores (SetStat 0x1a684f0 is a plain store
+// and SB's own gain paths notify nobody): value = min(int(value + gain), int(max)), rates stat 64 (+0x218) and 111
+// (+0x2d4) finite within +-GaugeLimit; Burst only while int(UnlockBurstGauge 116) > 0. added: what each gauge gained.
+// False, nothing written, unless the player actor is spawned and its gauges read as read_gauges reads them.
+bool grant_gauges(uintptr_t world, uint32_t beta, uint32_t burst, uint32_t added[2]);
+// Minecraft's totals as last seen (known) while this run owned forwarded input, and what was granted since the adapter loaded.
+constexpr uint32_t MaxGrantStep = 1000; // A larger step per poll is not a strike: adopted, not granted.
+struct Grants {
+  bool known = false;
+  uint32_t beta = 0, burst = 0, granted[2] = {};
+};
+// One poll: with fed (fresh words of the run that owns forwarded input) grants the step since the totals last seen,
+// adopting the new totals first so a step is applied once; without, forgets them (points earned meanwhile never land).
+void grant_poll(uintptr_t world, const Feedback *fed, Grants &);
+// EVE's HP mirror. Stellar Blade refuses a heal at full HP (ConditionTable ActorProperty_HP_Less, per mille), and
+// Minecraft judges her hits, so SB HP (stat 1, +0x11c) carries Minecraft's share of MaxHP (stat 2, +0x120): mirrored().
+// While active, SB HP above the last value written or seen is an SB heal (healed += its points); below it, a loss
+// (lost++), overwritten. Writes only with a usable share (fresh, finite, in (0, 1]) and once Minecraft acknowledged every
+// counted heal (the first write of an activation excepted); MirrorLease ms without a usable share restores the HP read
+// before its first write (at least 1). Another player actor drops the record; none keeps it.
+constexpr float MirrorFloor = 0.25f; // ponytail: margin against SB's own damage at low mirrored HP; heals above 75 % clip.
+constexpr uint64_t MirrorLease = 1000;
+enum MirrorState : uint32_t { MirrorOff, MirrorWritten, MirrorHeld };
+float mirrored(float share, float max);
+struct HealthMirror {
+  uintptr_t actor = 0;
+  bool active = false;
+  float original = 0, last = 0;
+  uint32_t healed = 0, lost = 0;
+  uint64_t fresh = 0; // Wall time of the last usable share.
+  MirrorState state = MirrorOff;
+};
+void mirror_health(uintptr_t world, float share, uint32_t acknowledged, bool fresh, uint64_t wall, HealthMirror &);
+// The adapter's report after the shot count: heal count, mirror state, losses, points granted (Beta, Burst), then the
+// player actor's whole stat array (ESBActorStatType_Num floats from +0x118) with state 1 at ActorState (0: unreadable).
+constexpr uint32_t ActorStats = 131;
+constexpr size_t HealedAt = 488, MirrorAt = 492, LostAt = 496, GrantedAt = 500, ActorState = 508, ActorAt = 512;
+static_assert(ShotsAt + 4 <= HealedAt, "The report follows the shot count");
+static_assert(ActorAt + 4 * ActorStats <= Header, "The actor stats fit the header");
+bool read_actor(uintptr_t world, float *out); // false without a spawned player actor
+struct Report {
+  uint32_t healed = 0, mirror = MirrorOff, lost = 0, granted[2] = {};
+  const float *actor = nullptr;
+};
 // Minecraft's lock-on for EVE's battle stance. Stellar Blade's actor update
 // (0x1a57de0) keeps her battle mode (byte +0xB58) while a hold applies (its
 // own lock target +0x630, enemies targeting her, a melee or battle-switching
@@ -263,16 +320,19 @@ public:
   // (zero unless look carries PitchSynced); look: LookApplied, PitchSynced,
   // InputGranted.
   // evades: EvadeWords words for the header, or none; stats: StatFloats
-  // floats, or none (unreadable); shots: the drone shot count for ShotsAt.
+  // floats, or none (unreadable); shots: the drone shot count for ShotsAt;
+  // report: the adapter's report from HealedAt (zeros and state 0 by default).
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
                uint32_t look, uint64_t wall, uint32_t read_us,
                const float *gauges = nullptr, const uint32_t *evades = nullptr,
                const float *stats = nullptr, DollyRefusal refusal = DollyNone,
-               uint32_t shots = 0);
+               uint32_t shots = 0, const Report &report = {});
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
   bool look(uint64_t wall, float &pitch, float &yaw) const;
+  // Minecraft's health and gains words, under the same conditions as look.
+  bool feedback(uint64_t wall, Feedback &) const;
   void fail(uint32_t);
   void stop();
 };
@@ -283,6 +343,8 @@ public:
 // file; the verified gameplay XInput poll gives EVE the lock-on evades while
 // Minecraft locks and owner (the run whose input is forwarded) is set and keeps
 // her in the battle mode an attack started meanwhile, counts her evade starts and drone shots,
+// when owner is this stream's run adds Minecraft's gauge points and mirrors its
+// health share into her HP (restored once the share stops, stream or not),
 // reads the controller, turns the game's camera toward Minecraft's when owner
 // is this stream's run, then reads the components and publishes. None of them
 // throws.
