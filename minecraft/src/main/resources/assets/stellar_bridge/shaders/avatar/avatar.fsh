@@ -8,7 +8,7 @@ uniform sampler2D Sampler4; // Emissive color.
 uniform sampler2D Sampler5; // Hair: root (1) to tip (0), strand id, depth.
 uniform sampler2D Sampler6; // Subsurface color: light scattered past the terminator; black for none.
 uniform int Hair;
-uniform int Overlay; // Translucent pass: premultiplied output, alpha 0 adds light.
+uniform int Pass; // 0: opaque and cut-out; 1: hair edges below AlphaCutoff, blended; 2: overlays, premultiplied (alpha 0 adds light).
 uniform float Opacity; // Streamed opacity of a glow overlay; 1 otherwise.
 uniform vec3 EmissiveTint; // Streamed emissive color times intensity of a glow overlay; white otherwise.
 uniform float Hurt; // 1 while EVE flashes red after a hit, as Minecraft tints a hurt entity.
@@ -61,8 +61,8 @@ void main() {
     vec3 scatter = texture(Sampler6, texCoord).rgb;
     vec3 dp1 = dFdx(relative), dp2 = dFdy(relative);
     vec2 duv1 = dFdx(texCoord), duv2 = dFdy(texCoord);
-    if (base.a < AlphaCutoff) discard;
-    if (Overlay == 0) base.rgb = mix(base.rgb, vec3(1.0, 0.0, 0.0), 0.3 * Hurt);
+    if (Pass == 1 ? base.a >= AlphaCutoff || base.a < 1.0 / 255.0 : base.a < AlphaCutoff) discard;
+    if (Pass != 2) base.rgb = mix(base.rgb, vec3(1.0, 0.0, 0.0), 0.3 * Hurt);
 
     vec3 view = normalize(-relative);
     vec3 n = normalize(normal);
@@ -123,7 +123,7 @@ void main() {
     lit += emissive * EmissiveTint;
     float vertexDistance = length(relative);
     float fog = vertexDistance <= FogStart ? 0.0 : (vertexDistance < FogEnd ? smoothstep(FogStart, FogEnd, vertexDistance) : 1.0);
-    float opacity = Overlay == 1 ? base.a * Opacity : 1.0;
-    if (Overlay == 1) lit *= Opacity;
+    float opacity = Pass == 0 ? 1.0 : Pass == 1 ? base.a : base.a * Opacity;
+    lit *= Pass == 2 ? Opacity : opacity;
     fragColor = vec4(mix(lit, FogColor.rgb * opacity, fog * FogColor.a), opacity);
 }

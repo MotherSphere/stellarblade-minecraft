@@ -36,9 +36,11 @@ import org.lwjgl.system.MemoryUtil;
  * A material slot draws with its base texture {@code <slot>.png} and optional maps beside it:
  * {@code .normal} (Unreal tangent space), {@code .surface} (occlusion, roughness, metallic, specular),
  * {@code .emissive}, {@code .hair} (root to tip, strand id, depth; selects hair shading) and {@code .scatter}
- * (subsurface color). A translucent slot ships {@code <slot>.overlay.png} instead: premultiplied color drawn after
- * every opaque section without writing depth. A {@code <slot>.glow.png} slot is such an overlay drawn only while the game
- * raises the slot's streamed Opacity, its emissive map tinted by Emissive_Color times Emissive_Intensity (and the _2 pair).
+ * (subsurface color). Hair strands are cut out like other slots, then their soft edges below the cutoff blend over
+ * every opaque section without writing depth. A translucent slot ships {@code <slot>.overlay.png} instead: premultiplied
+ * color drawn after every opaque section without writing depth. A {@code <slot>.glow.png} slot is such an overlay drawn
+ * only while the game raises the slot's streamed Opacity, its emissive map tinted by Emissive_Color times
+ * Emissive_Intensity (and the _2 pair).
  * While a shader pack is in use, drawEntity draws the same buffers through Minecraft's entity programs instead.
  */
 final class AvatarRenderer implements AutoCloseable {
@@ -50,12 +52,12 @@ final class AvatarRenderer implements AutoCloseable {
     private final AvatarModel model;
     // Texture units: base 0, normal 1, Minecraft's lightmap 2, surface 3, emissive 4, hair 5, scatter 6.
     private static final int[] UNITS = {0, 1, 3, 4, 5, 6};
-    private static final float CUTOFF = 0.5f, HAIR_CUTOFF = 0.25f;
+    private static final float CUTOFF = 0.5f;
     /** GL textures of one slot in UNITS order (base, normal, surface, emissive, hair, scatter); base 0: not drawn. */
     private record Material(String slot, int[] maps, boolean hair, boolean overlay, boolean glow) {
         int base() { return maps[0]; }
     }
-    private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, overlayPass,
+    private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, pass,
             opacity, emissiveTint, hurtTint, skinning, skinningBones;
     private Map<String, float[]> parameters = Map.of();
     private boolean hurt;
@@ -97,7 +99,7 @@ final class AvatarRenderer implements AutoCloseable {
             fogEnd = GL20.glGetUniformLocation(program, "FogEnd");
             fogColor = GL20.glGetUniformLocation(program, "FogColor");
             skyColor = GL20.glGetUniformLocation(program, "SkyColor");
-            overlayPass = GL20.glGetUniformLocation(program, "Overlay");
+            pass = GL20.glGetUniformLocation(program, "Pass");
             opacity = GL20.glGetUniformLocation(program, "Opacity");
             emissiveTint = GL20.glGetUniformLocation(program, "EmissiveTint");
             hurtTint = GL20.glGetUniformLocation(program, "Hurt");
@@ -186,21 +188,22 @@ final class AvatarRenderer implements AutoCloseable {
             GL20.glUniform3f(skyColor, sky[0], sky[1], sky[2]);
             GL20.glUniform1f(hurtTint, hurt ? 1 : 0);
             uploadMorphs();
-            // Opaque and cut-out sections first; translucent overlays then blend over them without writing depth.
-            for (boolean overlays : new boolean[] {false, true}) {
-                if (overlays) {
+            // Opaque and cut-out sections first; then, blended without writing depth, translucent overlays and the soft
+            // edges of hair strands that the cut-out dropped, the hair last so that the eyes' overlays never show through it.
+            for (int stage : new int[] {0, 2, 1}) {
+                if (stage == 2) {
                     GlStateManager._enableBlend();
                     GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ZERO, GL11.GL_ONE);
                     GlStateManager._depthMask(false);
                 }
-                GL20.glUniform1i(overlayPass, overlays ? 1 : 0);
+                GL20.glUniform1i(pass, stage);
                 for (int p = 0; p < arrays.length; p++) {
                     GlStateManager._glBindVertexArray(arrays[p]);
                     GL21.glUniformMatrix3x4fv(bones, false, palettes[p]);
                     AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
                     for (int s = 0; s < sections.length; s++) {
                         Material material = sectionMaterials[p][s];
-                        if (material.base() == 0 || material.overlay() != overlays) continue;
+                        if (material.base() == 0 || (stage == 1 ? !material.hair() : material.overlay() != (stage == 2))) continue;
                         float[] tint = {1, 1, 1};
                         float shown = material.glow() ? glow(material.slot(), tint) : 1;
                         if (shown <= 0.001f) continue;
@@ -211,7 +214,7 @@ final class AvatarRenderer implements AutoCloseable {
                             GlStateManager._bindTexture(material.maps()[k]);
                         }
                         GL20.glUniform1i(hairShading, material.hair() ? 1 : 0);
-                        GL20.glUniform1f(cutoff, material.hair() ? HAIR_CUTOFF : overlays ? 0 : CUTOFF);
+                        GL20.glUniform1f(cutoff, material.overlay() ? 0 : CUTOFF);
                         GL11.glDrawElements(GL11.GL_TRIANGLES, sections[s].indexCount(), GL11.GL_UNSIGNED_INT, 4L * sections[s].firstIndex());
                     }
                 }
@@ -459,7 +462,7 @@ final class AvatarRenderer implements AutoCloseable {
         Material known = materials.get(slot);
         if (known != null) return known;
         int hair = texture(pack, slot + ".hair.png", 0);
-        int base = texture(pack, slot + ".png", hair != 0 ? HAIR_CUTOFF : CUTOFF);
+        int base = texture(pack, slot + ".png", CUTOFF);
         boolean overlay = base == 0 && (base = texture(pack, slot + ".overlay.png", 0)) != 0;
         boolean glow = base == 0 && (base = texture(pack, slot + ".glow.png", 0)) != 0;
         int normal = texture(pack, slot + ".normal.png", 0), surface = texture(pack, slot + ".surface.png", 0);
