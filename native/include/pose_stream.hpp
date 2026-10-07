@@ -143,6 +143,33 @@ bool read_gauges(uintptr_t world, float *out);
 // (while her actor lives). Returns the nodes still changed. world as for
 // read_gauges.
 uint32_t patch_evades(uintptr_t world, bool locked);
+// EVE's evade starts as her command set records them. A skill whose row is in
+// her tree makes its node current (+0x70) and stores its start time (f32,
+// +0x78; 0x1d2d540, store at 0x1d2d5bd); one whose row is not zeroes the time
+// and keeps the node (0x1d2e335). The root comes back with time 0 when the
+// node's combo window ends (+0xac: its children's longest InputTime +
+// InputDuration, kept by the tick 0x1d2c520, reset at 0x1d2c895) or on other
+// resets (0x1c52b72). A real start (a new non-zero time) of a node whose
+// command is Evade counts: a double dodge when its byte at +0xb0 is clear (the
+// builder 0x1d285e0 sets it for her stance's own rows, store at 0x1d288e7, not
+// for combo children), else a first dodge, which covers every Evade row of her
+// stance (air evade, fast getups and Evade-command attacks too). A first dodge
+// whose time goes to 0 more than EvadeMarginMs before its window's end counts
+// as cut. counts, the header's words after the gauges: first, double, cut
+// while unlocked, the same while locked, then the caller's word (the nodes the
+// latest locked poll's patch_evades left changed). world as for read_gauges;
+// wall in milliseconds.
+constexpr uint32_t EvadeWords = 7;
+struct EvadeStarts {
+  uintptr_t node = 0;
+  uint32_t start = 0;  // The start time's bits.
+  uint64_t opened = 0; // Wall time of the newest first dodge while its window is open.
+  bool opened_locked = false;
+  uint32_t counts[EvadeWords] = {};
+};
+// ponytail: one fixed margin for both polls' frame lag; below about 10 fps a window that ended on time may count as cut.
+constexpr uint64_t EvadeMarginMs = 200;
+void count_evades(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &);
 // eve-lock.txt (SBMC_LOCK 1): its TIME while it names a target, else 0.
 uint64_t parse_lock(std::string_view text);
 // Look input for one gameplay poll: Minecraft's camera motion since the last
@@ -182,10 +209,11 @@ public:
   const std::string &run() const;
   // rotation: the controller's Pitch, Yaw, Roll, then the camera's pitch
   // (zero unless look carries PitchSynced); look: LookApplied, PitchSynced.
+  // evades: EvadeWords words for the header, or none.
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
                uint32_t look, uint64_t wall, uint32_t read_us,
-               const float *gauges = nullptr);
+               const float *gauges = nullptr, const uint32_t *evades = nullptr);
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
   bool look(uint64_t wall, float &pitch, float &yaw) const;
@@ -197,9 +225,10 @@ public:
 // boom's virtual table (image + BoomVtableRva; 0 never sets the dolly). The
 // worker passes the request file, both component slots and Minecraft's lock
 // file; the verified gameplay XInput poll gives EVE the lock-on evades while
-// Minecraft locks and owner (the run whose input is forwarded) is set, reads
-// the controller, turns the game's camera toward Minecraft's when owner is this
-// stream's run, then reads the components and publishes. None of them throws.
+// Minecraft locks and owner (the run whose input is forwarded) is set, counts
+// her evade starts, reads the controller, turns the game's camera toward
+// Minecraft's when owner is this stream's run, then reads the components and
+// publishes. None of them throws.
 void initialize(uintptr_t objects, uintptr_t boom_vtable = 0);
 void poll_files(const std::wstring &directory, std::string_view request,
                 std::string_view slot0, std::string_view slot1, uint64_t wall,

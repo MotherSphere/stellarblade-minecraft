@@ -234,6 +234,11 @@ public final class AvatarStreamTest {
                     map.putFloat(332, 2000);
                     assert stream.gauges() == null : "A gauge above its maximum is not shown";
                     RawFrameBus.INT.setRelease(map, 320, 0);
+                    // EVE's evade starts follow them.
+                    assert java.util.Arrays.equals(stream.evades(), new int[7]) : "No evade counted yet";
+                    map.putInt(344, 3).putInt(348, 3).putInt(352, 0).putInt(356, 3).putInt(360, 0).putInt(364, 3).putInt(368, 4);
+                    assert java.util.Arrays.equals(stream.evades(), new int[] {3, 3, 0, 3, 0, 3, 4});
+                    assert stream.poll(table, now, System.nanoTime()) == null : "Counted evades are not reserved bytes";
                     // Native release, then reaping deletes the mapping and the request says stopped.
                     RawFrameBus.INT.setRelease(map, 196, 2);
                     try { stream.poll(table, now, System.nanoTime()); throw new AssertionError("A stopped producer must end the stream"); }

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <utility>
 #ifndef _WIN32
 #include <unistd.h>
 #endif
@@ -504,6 +505,12 @@ struct EvadePatch {
   bool seen; // Visited by the current restoring walk.
 };
 std::vector<EvadePatch> evade_patches;
+constexpr uint32_t EvadeCommand = 24; // ESBSkillCommandState::Evade
+// EVE's command set (FSBActor +0x530) while it is hers (owner at +0x178).
+uintptr_t command_set(uintptr_t actor) {
+  auto set = actor ? at<uintptr_t>(actor + 0x530) : 0;
+  return set && at<uintptr_t>(set + 0x178) == actor ? set : 0;
+}
 } // namespace
 
 // An actor's stats are floats at +0x118 + 4 * ESBActorStatType.
@@ -526,15 +533,14 @@ bool read_gauges(uintptr_t world, float *out) {
 // lock-gated evades are global commands under the root or their double dodges
 // one below.
 uint32_t patch_evades(uintptr_t world, bool locked) {
-  constexpr uint32_t Evade = 24; // ESBSkillCommandState::Evade
   constexpr int32_t MaxChildren = 4096;
   auto actor = player_actor(world);
-  auto set = actor ? at<uintptr_t>(actor + 0x530) : 0;
-  auto root = set && at<uintptr_t>(set + 0x178) == actor ? at<uintptr_t>(set + 8) : 0;
+  auto set = command_set(actor);
+  auto root = set ? at<uintptr_t>(set + 8) : 0;
   if (!root)
     return uint32_t(evade_patches.size()); // Records kept until her tree is back.
   auto visit = [&](uintptr_t node) {
-    if (at<uint32_t>(node + 0x18) != Evade)
+    if (at<uint32_t>(node + 0x18) != EvadeCommand)
       return;
     auto value = at<uint32_t>(node + 0x68);
     auto name = at<uint64_t>(node + 0x24);
@@ -574,6 +580,33 @@ uint32_t patch_evades(uintptr_t world, bool locked) {
                                        }),
                         evade_patches.end());
   return uint32_t(evade_patches.size());
+}
+
+void count_evades(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) {
+  auto set = command_set(player_actor(world));
+  if (!set)
+    return;
+  auto node = at<uintptr_t>(set + 0x70);
+  auto start = at<uint32_t>(set + 0x78);
+  if (node == e.node && start == e.start)
+    return;
+  auto previous = e.node;
+  auto opened = std::exchange(e.opened, 0);
+  e.node = node;
+  e.start = start;
+  if (!start) { // Its window closed: cut unless near its end.
+    if (opened && previous && float(wall - opened + EvadeMarginMs) < at<float>(previous + 0xac) * 1000)
+      e.counts[3 * e.opened_locked + 2]++;
+    return;
+  }
+  if (!node || at<uint32_t>(node + 0x18) != EvadeCommand)
+    return;
+  bool first = at<uint8_t>(node + 0xb0) != 0;
+  e.counts[3 * locked + !first]++;
+  if (first) {
+    e.opened = wall;
+    e.opened_locked = locked;
+  }
 }
 
 uint64_t parse_lock(std::string_view text) {
@@ -710,7 +743,8 @@ void Producer::heartbeat(uint64_t wall) {
 bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
                        const float *rotation, uint32_t look,
-                       uint64_t wall, uint32_t read_us, const float *gauges) {
+                       uint64_t wall, uint32_t read_us, const float *gauges,
+                       const uint32_t *evades) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -745,6 +779,9 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   if (gauges)
     std::memcpy(self.base + 324, gauges, sizeof(float) * GaugeFloats);
   exchange32(self.base, 320, gauges ? 1 : 0);
+  // EVE's evade starts and the nodes the lock left changed: words at 344.
+  if (evades)
+    std::memcpy(self.base + 344, evades, sizeof(uint32_t) * EvadeWords);
   put(self.base, 224, read_us);
   put(self.base, 228, self.max_us);
   store64(self.base, 232, self.total_us);
@@ -797,6 +834,7 @@ std::array<uint32_t, MaxComponents> status{};
 Follow following;
 DollyWrite dolly_write;
 uint64_t minecraft_lock = 0; // eve-lock.txt's TIME while Minecraft holds a target.
+EvadeStarts evade_starts;
 uint32_t process_id() {
 #ifdef _WIN32
   return GetCurrentProcessId();
@@ -878,6 +916,12 @@ uint32_t guarded_evades(uintptr_t world, bool locked) {
     return 0;
   }
 }
+void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) {
+  __try {
+    count_evades(world, locked, wall, e);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+}
 // A boom freed after its pawn was checked faults before the write; contained.
 bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last) {
   __try {
@@ -898,6 +942,7 @@ bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) 
 bool guarded_gauges(uintptr_t world, float *out) { return read_gauges(world, out); }
 uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
 uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
+void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) { count_evades(world, locked, wall, e); }
 uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
   return read_effects(e, t, out);
 }
@@ -956,8 +1001,12 @@ void on_gameplay_poll(std::string_view owner) {
   auto wall = stellar_shared::wall_now();
   // Minecraft's lock-on gives EVE Stellar Blade's lock-on evades while Minecraft drives her.
   bool locked = !owner.empty() && fresh(minecraft_lock, wall, LockLease);
-  if (locked || !evade_patches.empty())
-    guarded_evades(game_world(), locked);
+  if (locked || !evade_patches.empty()) {
+    auto changed = guarded_evades(game_world(), locked);
+    if (locked)
+      evade_starts.counts[6] = changed;
+  }
+  guarded_starts(game_world(), locked, wall, evade_starts);
   if (!table || !engine.objects || !producer.active(wall))
     return;
   auto started = micros();
@@ -997,6 +1046,6 @@ void on_gameplay_poll(std::string_view owner) {
                    offset, rotated ? rotation : nullptr,
                    (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u), wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
-                   gauged ? gauges : nullptr);
+                   gauged ? gauges : nullptr, evade_starts.counts);
 }
 } // namespace stellar_pose

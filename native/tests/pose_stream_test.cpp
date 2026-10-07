@@ -4,6 +4,7 @@
 #include "pose_stream.hpp"
 #include "shared_memory.hpp"
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -518,7 +519,7 @@ int main() {
   auto directory = std::filesystem::temp_directory_path() / ("stellar-pose-" + std::to_string(now));
   std::filesystem::create_directories(directory);
   auto path = directory / ("eve-pose-" + Run + ".bin");
-  {
+  auto mapping = [&](const std::filesystem::path &file) {
     std::vector<uint8_t> bytes(TotalBytes);
     std::memcpy(bytes.data(), "SBMCPOS1", 8);
     stellar_shared::put(bytes.data(), 8, uint32_t(1));
@@ -530,7 +531,26 @@ int main() {
     stellar_shared::put(bytes.data(), 96, uint32_t(4242));
     stellar_shared::put(bytes.data(), 256, uint32_t(1));
     stellar_shared::put(bytes.data(), 264, now);
-    std::ofstream(path, std::ios::binary).write(reinterpret_cast<char *>(bytes.data()), bytes.size());
+    std::ofstream(file, std::ios::binary).write(reinterpret_cast<char *>(bytes.data()), bytes.size());
+  };
+  mapping(path);
+  {
+    // The evade words follow the gauges in the header, written with each slot; the rest stays reserved.
+    auto alone = directory / "alone";
+    std::filesystem::create_directories(alone);
+    mapping(alone / ("eve-pose-" + Run + ".bin"));
+    Producer direct;
+    assert(direct.open(alone.wstring(), *parse_request(request(now)), 77, now));
+    uint32_t state = WorldValid, evades[EvadeWords] = {1, 2, 3, 4, 5, 6, 7};
+    float pose[10] = {};
+    assert(direct.publish(1, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades));
+    stellar_shared::Mapping view;
+    assert(view.open(alone / ("eve-pose-" + Run + ".bin"), TotalBytes));
+    for (uint32_t i = 0; i < EvadeWords; i++)
+      assert(stellar_shared::plain<uint32_t>(view.base, 344 + 4 * i) == i + 1 && "Evade words in order at 344");
+    assert(std::all_of(view.base + 344 + 4 * EvadeWords, view.base + Header, [](uint8_t b) { return b == 0; }) &&
+           "Nothing after them");
+    direct.stop();
   }
   auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
                           reinterpret_cast<uint64_t>(live.controller.bytes), reinterpret_cast<uint64_t>(live.pawn.bytes));
@@ -563,7 +583,7 @@ int main() {
     assert(!read_gauges(w, g) && "The player index stays within the actor count");
     put_i32(manager, 0x3c, 1);
     // Minecraft's lock: EVE's lock-gated evades (globals under the root, double dodges one below) are opened.
-    std::vector<uint8_t> set(0x180), root(0x20), normal(0x70), lockon(0x70), chain(0x70), air(0x70), attack(0x70);
+    std::vector<uint8_t> set(0x180), root(0x20), normal(0xb8), lockon(0xb8), chain(0xb8), air(0xb8), attack(0xb8);
     uintptr_t top[4] = {uintptr_t(normal.data()), uintptr_t(lockon.data()), uintptr_t(air.data()), uintptr_t(attack.data())};
     uintptr_t below[1] = {uintptr_t(chain.data())};
     assert(patch_evades(w, true) == 0 && "No command set, nothing changed");
@@ -596,6 +616,50 @@ int main() {
     put_i32(actor, 0x2600, 1);
     assert(patch_evades(w, false) == 0 && cond(normal) == 1 && cond(lockon) == 2 && cond(chain) == 1 &&
            "Restored once readable, a value the game rewrote is left alone");
+    // Her evade starts: the command set's current node and its start time, as each skill starts.
+    EvadeStarts starts;
+    auto start = [&](std::vector<uint8_t> &node, float time) {
+      put_ptr(set, 0x70, uintptr_t(node.data()));
+      std::memcpy(set.data() + 0x78, &time, 4);
+    };
+    auto count = [&](bool locked, uint64_t wall, std::array<uint32_t, EvadeWords> expected) {
+      count_evades(w, locked, wall, starts);
+      return std::equal(expected.begin(), expected.end(), starts.counts);
+    };
+    normal[0xb0] = lockon[0xb0] = air[0xb0] = attack[0xb0] = 1; // The stance's own rows; chain is a combo child.
+    float window = 0.8f; // The first dodges' combo window, as the tick keeps it.
+    std::memcpy(normal.data() + 0xac, &window, 4);
+    std::memcpy(lockon.data() + 0xac, &window, 4);
+    start(root, 1);
+    assert(count(false, 1000, {}) && "Not an evade");
+    start(normal, 2);
+    assert(count(false, 1000, {1, 0, 0, 0, 0, 0}) && count(false, 1010, {1, 0, 0, 0, 0, 0}) && "A start counts once");
+    start(chain, 2.4f);
+    assert(count(false, 1400, {1, 1, 0, 0, 0, 0}) && "Her combo child is a double dodge");
+    start(root, 0);
+    assert(count(false, 1410, {1, 1, 0, 0, 0, 0}) && "A double dodge's window ends at once, never cut");
+    start(lockon, 3);
+    assert(count(true, 2000, {1, 1, 0, 1, 0, 0}) && "A first dodge while locked");
+    start(root, 0);
+    assert(count(true, 2050, {1, 1, 0, 1, 0, 1}) && "Its window closed 50 ms in: cut");
+    start(lockon, 4);
+    assert(count(true, 3000, {1, 1, 0, 2, 0, 1}) && "A restart at a new time counts again");
+    start(lockon, 0);
+    assert(count(true, 3100, {1, 1, 0, 2, 0, 2}) && "A skill out of her tree zeroes the time: no start, the window cut");
+    start(lockon, 5);
+    assert(count(true, 4000, {1, 1, 0, 3, 0, 2}) && "A later real start counts");
+    start(root, 0);
+    assert(count(true, 4600, {1, 1, 0, 3, 0, 2}) && "A window ended within the margin of its end is not cut");
+    start(attack, 7);
+    assert(count(true, 5000, {1, 1, 0, 3, 0, 2}) && "Other commands never count");
+    start(normal, 8);
+    count_evades(w, false, 6000, starts);
+    start(root, 0);
+    assert(count(true, 6100, {2, 1, 1, 3, 0, 2}) && "A cut counts with the lock state its dodge started in");
+    put_ptr(set, 0x178, 0);
+    start(normal, 9);
+    assert(count(false, 7000, {2, 1, 1, 3, 0, 2}) && "Not her command set, nothing counted");
+    put_ptr(set, 0x178, uintptr_t(actor.data()));
     assert(patch_evades(w, true) == 3);
     std::vector<uint8_t> other(0x2700);
     put_i32(other, 0x2600, 1);
@@ -634,6 +698,8 @@ int main() {
            "The controller rotation travels in the slot header");
     assert(stellar_shared::plain<float>(slot, 128 + 4 * (42 + 10)) == 0.25f && "Follower morphs follow its world transform");
     assert(stellar_shared::load32(base, 320) == 0 && "Without the pinned game world the gauges stay unreadable");
+    for (uint32_t i = 0; i < EvadeWords; i++)
+      assert(stellar_shared::plain<uint32_t>(base, 344 + 4 * i) == 0 && "Nor are evades counted");
     on_gameplay_poll();
     assert(stellar_shared::load64(base, 216) == 2 && stellar_shared::load32(base, 128) == (0 | 4));
     // Minecraft's camera: applied only for the run that owns forwarded input, fresh and in range.

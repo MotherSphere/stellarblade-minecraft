@@ -500,7 +500,12 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + AvatarCombat.status() + gaugeStatus(current.stream.gauges());
+                + AvatarCombat.status() + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges());
+    }
+
+    private static String evadeStatus(int[] evades) {
+        return evades == null ? "" : String.format(" Evades: unlocked %d first, %d double, %d cut; locked %d first, %d double, %d cut;"
+                + " %d evade commands changed by the lock.", evades[0], evades[1], evades[2], evades[3], evades[4], evades[5], evades[6]);
     }
 
     private static String gaugeStatus(float[] gauges) {
