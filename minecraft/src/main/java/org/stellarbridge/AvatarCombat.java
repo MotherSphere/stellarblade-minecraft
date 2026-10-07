@@ -2,9 +2,12 @@ package org.stellarbridge;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicIntegerArray;
+import net.fabricmc.fabric.api.tag.convention.v2.ConventionalEntityTypeTags;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
@@ -16,6 +19,7 @@ import net.minecraft.registry.tag.DamageTypeTags;
 import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
+import net.minecraft.entity.mob.Monster;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.projectile.PersistentProjectileEntity;
 import net.minecraft.entity.projectile.ProjectileEntity;
@@ -45,7 +49,8 @@ import org.joml.Vector3d;
  * running world, no live link), nothing hurts her. Her Stellar Blade stats (AvatarStats) scale her strikes and reduce,
  * approximately, the damage she takes. Her
  * body is solid to them: each tick a living entity inside it is moved out to its edge. Her drone's shots strike the
- * first living entity Minecraft's crosshair aims at within the gun's range.
+ * first living entity Minecraft's crosshair aims at within the gun's range. Landed strikes, parries and kills earn
+ * Stellar Blade's Beta and Burst points, which the adapter adds to her gauges through the pose stream.
  */
 public final class AvatarCombat {
     // Strike damage per Stellar Blade trail style (SWING: no effect data, the swing heuristic), doubled for a charged
@@ -78,6 +83,15 @@ public final class AvatarCombat {
     // EVE's right hand, where the shots leave while no drone part is drawn.
     static final String DRONE_MUZZLE = "Ab_ALegR_Fr", HAND = "Bip001-R-Hand";
     static final Vector3d DRONE_SOCKET = new Vector3d(0.163, -11.05, 0.133);
+    // Stellar Blade's gauge points (SkillResultTable): a sword hit's Beta, a critical's extra Beta, a charged (Ex)
+    // finisher's Burst in place of Beta, a perfect parry's and a parry's Beta. The adapter applies EVE's rates and caps.
+    // ponytail: a mob is struck again every REHIT seconds, so a long swing can count twice; per-swing ids if it over-grants.
+    static final int STRIKE_BETA = 15, CRITICAL_BETA = 4, CHARGED_BURST = 200, PERFECT_PARRY_BETA = 65, PARRY_BETA = 25;
+    // A Beta or Burst drop of SPENT or more between frames is a skill (Beta skills cost 400, Burst ones 600 or 800; the Ex
+    // finisher and combo extensions 200): strikes earn nothing for QUIET nanoseconds after it.
+    // ponytail: a gauge-drop heuristic; EVE's command node (ESBSkillCommandState 30-39) would gate exactly, if it misses.
+    static final int SPENT = 300;
+    static final long QUIET = 2_500_000_000L;
 
     enum Defense { PERFECT_PARRY, PARRY, PERFECT_DODGE, DODGE, GUARD, HIT }
 
@@ -96,6 +110,11 @@ public final class AvatarCombat {
     private static volatile MinecraftServer slowed; // The server whose tick rate a perfect dodge lowered; the HUD reads it.
     private static float normalRate;
     private static long slowUntil;
+    // Beta and Burst base points Minecraft counted since the JVM started (wrapping), added on the server thread; the end
+    // of the quiet window after a skill spent a gauge, written on the render thread; the gauges it saw last.
+    private static final AtomicIntegerArray points = new AtomicIntegerArray(2);
+    private static volatile long quietUntil = System.nanoTime();
+    private static float[] lastGauges;
 
     static void inputs(long dodgePressed, long guardPressed, boolean guardHeld) {
         dodged = dodgePressed;
@@ -186,10 +205,12 @@ public final class AvatarCombat {
                     attacker.addStatusEffect(new StatusEffectInstance(StatusEffects.SLOWNESS, 40, 4), player);
                 }
                 sound(player, SoundEvents.ITEM_SHIELD_BLOCK, 1.3f);
+                points.addAndGet(0, PERFECT_PARRY_BETA);
                 return false;
             }
             case PARRY -> { // A projectile bounces off, as Minecraft deflects any refused one.
                 sound(player, SoundEvents.ITEM_SHIELD_BLOCK, 1.1f);
+                points.addAndGet(0, PARRY_BETA);
                 return false;
             }
             case PERFECT_DODGE -> {
@@ -316,9 +337,10 @@ public final class AvatarCombat {
 
     /**
      * Server thread: one strike of EVE's blade, or her drone's shot (within the gun's range, with an arrow's hit sound and
-     * not counted as a strike), on an entity the client saw it hit.
+     * not counted as a strike), on an entity the client saw it hit. A landed strike earns its gauge points (first: the
+     * first strike of a charged attack on this entity), a kill its Burst.
      */
-    static void strike(ServerPlayerEntity player, int entityId, float amount, double knockback, boolean charged, boolean shot) {
+    static void strike(ServerPlayerEntity player, int entityId, float amount, double knockback, boolean charged, boolean first, boolean shot) {
         Entity target = player.getServerWorld().getEntityById(entityId);
         double reach = shot ? RANGE + REACH : REACH;
         if (target == null || !strikable(target, player) || target.getBoundingBox().squaredMagnitude(player.getPos()) > reach * reach) return;
@@ -327,7 +349,13 @@ public final class AvatarCombat {
         var stats = AvatarStats.current();
         boolean critical = stats.crits(player.getRandom().nextFloat());
         if (!target.damage(player.getDamageSources().playerAttack(player), amount * stats.strikes() * (critical ? stats.critMultiplier() : 1))) return;
-        if (knockback > 0) ((LivingEntity) target).takeKnockback(knockback, player.getX() - target.getX(), player.getZ() - target.getZ());
+        var living = (LivingEntity) target;
+        int[] gain = gains(charged, first, critical, shot, System.nanoTime() - quietUntil < 0);
+        // Stellar Blade's AttackerEffectWhenDead goes to the attacker whatever the weapon, so shots kill for Burst too.
+        if (living.isDead()) gain[1] += killBurst(target.getType().isIn(ConventionalEntityTypeTags.BOSSES), target instanceof Monster, living.getMaxHealth());
+        points.addAndGet(0, gain[0]);
+        points.addAndGet(1, gain[1]);
+        if (knockback > 0) living.takeKnockback(knockback, player.getX() - target.getX(), player.getZ() - target.getZ());
         player.onAttacking(target);
         sound(player, shot ? SoundEvents.ENTITY_ARROW_HIT : charged || critical ? SoundEvents.ENTITY_PLAYER_ATTACK_CRIT
                 : SoundEvents.ENTITY_PLAYER_ATTACK_STRONG, 1);
@@ -346,6 +374,38 @@ public final class AvatarCombat {
     private static void sound(ServerPlayerEntity player, SoundEvent sound, float pitch) {
         player.getServerWorld().playSound(null, player.getX(), player.getY(), player.getZ(), sound, player.getSoundCategory(), 1, pitch);
     }
+
+    /**
+     * A landed strike's {Beta, Burst} points: a sword hit's Beta, a charged one's Burst instead on its first entity per
+     * activation, a critical's extra Beta either way; nothing for a drone shot or within the quiet window.
+     */
+    static int[] gains(boolean charged, boolean first, boolean critical, boolean shot, boolean quiet) {
+        if (shot || quiet) return new int[2];
+        int extra = critical ? CRITICAL_BETA : 0;
+        return charged ? new int[] {extra, first ? CHARGED_BURST : 0} : new int[] {STRIKE_BETA + extra, 0};
+    }
+
+    /**
+     * A kill's Burst, after Stellar Blade's AttackerEffectWhenDead ranks: a boss (c:bosses) 200, a monster with 50 or more
+     * maximum health (an elite) 100, another monster 30, anything else (its animals) 6.
+     */
+    static int killBurst(boolean boss, boolean monster, float maxHealth) {
+        return boss ? 200 : monster ? maxHealth >= 50 ? 100 : 30 : 6;
+    }
+
+    /** Whether a skill spent Beta or Burst between two gauge reads (AvatarStream.gauges()). */
+    static boolean spent(float[] before, float[] after) {
+        return before != null && after != null && (before[0] - after[0] >= SPENT || before[2] - after[2] >= SPENT);
+    }
+
+    /** Render thread, each frame with AvatarStream.gauges(): a spent gauge opens the quiet window. */
+    static void watch(float[] gauges, long nanos) {
+        if (spent(lastGauges, gauges)) quietUntil = nanos + QUIET;
+        if (gauges != null) lastGauges = gauges;
+    }
+
+    /** Any thread: the Beta and Burst base points Minecraft counted, cumulative and wrapping. */
+    static int[] earned() { return new int[] {points.get(0), points.get(1)}; }
 
     /** Strike damage for a trail style (null: the swing heuristic) and whether the attack is charged. */
     static float damage(AvatarTrail.Style style, boolean charged) {
@@ -372,8 +432,9 @@ public final class AvatarCombat {
     }
 
     static String status() {
-        return String.format(" Combat: %d strikes; %d perfect parries, %d parries, %d perfect dodges, %d dodges, %d guarded, %d hits taken.",
-                counts.get(0), counts.get(1), counts.get(2), counts.get(3), counts.get(4), counts.get(5), counts.get(6));
+        return String.format(" Combat: %d strikes; %d perfect parries, %d parries, %d perfect dodges, %d dodges, %d guarded, %d hits taken."
+                + " Minecraft earned Beta %d, Burst %d.", counts.get(0), counts.get(1), counts.get(2), counts.get(3), counts.get(4),
+                counts.get(5), counts.get(6), Integer.toUnsignedLong(points.get(0)), Integer.toUnsignedLong(points.get(1)));
     }
 
     /** Render thread: EVE's displayed blade, swept against the client's entities each frame while it swings. */
@@ -382,13 +443,17 @@ public final class AvatarCombat {
         private boolean known;
         private double chargedUntil = Double.NEGATIVE_INFINITY;
         private final Map<Integer, Double> struck = new HashMap<>(); // Entity id to its last strike time.
+        private final Set<Integer> chargeStruck = new HashSet<>(); // Entities the current charged activation struck.
 
         void update(AvatarRenderer renderer, List<AvatarStream.Effect> effects, double seconds) {
             var client = MinecraftClient.getInstance();
             if (client.player == null || client.world == null || !renderer.blade(hilt, tip)) { known = false; return; }
             AvatarTrail.Style style = null;
             for (AvatarStream.Effect effect : effects) {
-                if (effect.name().contains("HoldBurst")) chargedUntil = seconds + CHARGE_HOLD;
+                if (effect.name().contains("HoldBurst")) {
+                    if (seconds >= chargedUntil) chargeStruck.clear(); // A new activation.
+                    chargedUntil = seconds + CHARGE_HOLD;
+                }
                 AvatarTrail.Style playing = AvatarTrail.Style.of(effect.name());
                 if (playing != null) style = playing;
             }
@@ -403,7 +468,7 @@ public final class AvatarCombat {
                 for (Entity entity : client.world.getOtherEntities(client.player, sweep, e -> strikable(e, client.player))) {
                     if (struck.containsKey(entity.getId()) || !sweeps(entity.getBoundingBox().expand(BLADE_RADIUS), lastHilt, lastTip, hilt, tip)) continue;
                     struck.put(entity.getId(), seconds);
-                    StellarBridge.strike(entity.getId(), amount, push, charged, false);
+                    StellarBridge.strike(entity.getId(), amount, push, charged, charged && chargeStruck.add(entity.getId()), false);
                 }
             }
             lastHilt.set(hilt);
@@ -488,7 +553,7 @@ public final class AvatarCombat {
             if (hit >= 0) {
                 Box box = boxes.get(hit);
                 end = box.contains(eyes) ? eyes : box.raycast(eyes, end).orElse(end);
-                StellarBridge.strike(entities.get(hit).getId(), SHOT, 0, false, true);
+                StellarBridge.strike(entities.get(hit).getId(), SHOT, 0, false, false, true);
                 hits++;
             }
             trace(client, muzzle == null ? eyes : muzzle.at(), end);

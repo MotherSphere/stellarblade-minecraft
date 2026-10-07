@@ -161,6 +161,37 @@ public final class AvatarStreamTest {
         assert java.util.Arrays.equals(AvatarHud.cubes(450, 1000, 16), new int[] {5, 2, 1}) : "Two cubes, then a quarter of the third";
         assert java.util.Arrays.equals(AvatarHud.cubes(130, 1600, 20), new int[] {8, 0, 2}) : "A perfect dodge's 130 Burst";
         assert java.util.Arrays.equals(AvatarHud.cubes(1000, 1000, 16), new int[] {5, 5, 0}) && AvatarHud.cubes(0, 5000, 20)[0] == 20;
+        // The Tachy row: from the actor stats once Stellar Blade unlocked it, only for sane values.
+        float[] actor = new float[AvatarStream.ACTOR_STATS];
+        actor[22] = 9000;
+        actor[23] = 18000;
+        assert AvatarHud.tachy(null) == null && AvatarHud.tachy(actor) == null : "Locked Tachy has no row";
+        actor[117] = 1;
+        assert java.util.Arrays.equals(AvatarHud.tachy(actor), new float[] {9000, 18000});
+        actor[22] = 18001;
+        assert AvatarHud.tachy(actor) == null : "Tachy above its maximum";
+        actor[22] = Float.NaN;
+        assert AvatarHud.tachy(actor) == null : "Non-finite Tachy";
+        // Gauge points Minecraft counts for Stellar Blade (the adapter applies her rates and caps).
+        assert java.util.Arrays.equals(AvatarCombat.gains(false, false, false, false, false), new int[] {15, 0}) : "A sword hit";
+        assert java.util.Arrays.equals(AvatarCombat.gains(false, false, true, false, false), new int[] {19, 0}) : "A critical hit";
+        assert java.util.Arrays.equals(AvatarCombat.gains(true, true, false, false, false), new int[] {0, 200}) : "A charged finisher gives Burst";
+        assert java.util.Arrays.equals(AvatarCombat.gains(true, true, true, false, false), new int[] {4, 200});
+        assert java.util.Arrays.equals(AvatarCombat.gains(true, false, false, false, false), new int[] {0, 0}) : "Once per entity and activation";
+        assert java.util.Arrays.equals(AvatarCombat.gains(false, false, true, true, false), new int[] {0, 0}) : "A drone shot gives nothing";
+        assert java.util.Arrays.equals(AvatarCombat.gains(false, false, false, false, true), new int[] {0, 0}) : "Nothing during a skill";
+        assert AvatarCombat.killBurst(true, false, 300) == 200 && AvatarCombat.killBurst(false, true, 100) == 100
+                && AvatarCombat.killBurst(false, true, 20) == 30 && AvatarCombat.killBurst(false, false, 10) == 6 : "Kill ranks";
+        assert AvatarCombat.spent(new float[] {1000, 1000, 0, 1600, 1}, new float[] {600, 1000, 0, 1600, 1}) : "A Beta skill";
+        assert !AvatarCombat.spent(new float[] {1000, 1000, 0, 1600, 1}, new float[] {800, 1000, 0, 1600, 1}) : "An Ex finisher's 200 is not a skill";
+        assert AvatarCombat.spent(new float[] {0, 1000, 1600, 1600, 1}, new float[] {0, 1000, 1000, 1600, 1}) : "A Burst skill";
+        assert !AvatarCombat.spent(new float[] {0, 1000, 1600, 1600, 1}, new float[] {0, 1000, 1400, 1600, 1});
+        assert !AvatarCombat.spent(null, new float[] {0, 1000, 0, 1600, 1}) : "No gauges before";
+        // Stellar Blade's heals as Minecraft health: a u32 step of the adapter's count, the same share of the maximum.
+        assert AvatarStats.heals(-1, 5) == 0 : "A first count is a baseline";
+        assert AvatarStats.heals(5, 1205) == 1200 && AvatarStats.heals(0xFFFFFFF0L, 0x10) == 0x20 : "u32 wrap";
+        assert AvatarStats.heals(0, 200000) == 0 : "A garbage step is not a heal";
+        assert AvatarStats.healthFor(1200, 2000, 20) == 12f;
         // Stellar Blade's stats as Minecraft's: her base is vanilla's, upgrades scale health and strikes, reductions multiply.
         var base = AvatarStats.Values.of(new float[] {2000, 2, 450, 5, 1.5f, 0, 0, 0});
         assert base.health() == 1 && base.strikes() == 1 && Math.abs(base.taken(false) - 0.65f) < 1e-6 : "Two shield blocks take 35 %";
@@ -264,6 +295,9 @@ public final class AvatarStreamTest {
                     var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
                     assert map.getInt(96) != 0 && (int) RawFrameBus.INT.getAcquire(map, 256) == 1 && map.getInt(16) == 65536;
                     assert stream.poll(table, now, System.nanoTime()) == null : "Unclaimed: nothing yet";
+                    stream.feedback(0.5f, 7, 30, 200);
+                    for (int i = AvatarStream.HEALTH_AT; i < AvatarStream.GAINS_AT + 8; i++)
+                        assert map.get(i) == 0 : "Native open needs Minecraft's words zero before the claim";
                     // The native claim, then one published slot.
                     assert (boolean) RawFrameBus.INT.compareAndSet(map, 192, 0, 777);
                     RawFrameBus.LONG.setRelease(map, 208, now);
@@ -278,6 +312,10 @@ public final class AvatarStreamTest {
                     // Minecraft's camera goes to the adapter as one atomic word once the producer claimed the mapping.
                     stream.look(-15, 270, now);
                     assert map.getLong(288) == now && map.getInt(304) == 1 && map.getFloat(296) == -15 && map.getFloat(300) == 270;
+                    // Its health and gains words beside the camera.
+                    stream.feedback(0.5f, 7, 30, 200);
+                    assert map.getFloat(280) == 0.5f && map.getInt(284) == 7 && map.getInt(312) == 30 && map.getInt(316) == 200;
+                    assert stream.poll(table, now, System.nanoTime()) == null : "Minecraft's words are not reserved bytes";
                     publish(map, 2, 2, 1, now, new int[] {7, 5}, payload());
                     // Bit 1: turned toward Minecraft's camera; bit 2: dolly set, with the camera's pitch at 52.
                     map.putInt(AvatarStream.HEADER + 2 * AvatarStream.SLOT + 36, 7).putFloat(AvatarStream.HEADER + 2 * AvatarStream.SLOT + 52, -17);
@@ -413,6 +451,18 @@ public final class AvatarStreamTest {
                     map.putInt(AvatarStream.SHOTS_AT, -2);
                     assert stream.shots() == 0xFFFFFFFEL;
                     assert stream.poll(table, now, System.nanoTime()) == null : "Counted shots are not reserved bytes";
+                    // The adapter's report follows: heal count, mirror state, losses, Beta and Burst granted, actor stats.
+                    map.putInt(AvatarStream.HEALED_AT, 1200).putInt(AvatarStream.MIRROR_AT, 2).putInt(AvatarStream.LOST_AT, 1)
+                            .putInt(AvatarStream.GRANTED_AT, 17).putInt(AvatarStream.GRANTED_AT + 4, 200);
+                    assert java.util.Arrays.equals(stream.report(), new long[] {1200, 2, 1, 17, 200}) && stream.healed() == 1200;
+                    map.putInt(AvatarStream.HEALED_AT, -2);
+                    assert stream.healed() == 0xFFFFFFFEL && stream.report()[0] == 0xFFFFFFFEL : "Unsigned counts";
+                    assert stream.actorStats() == null : "Unread actor stats";
+                    for (int i = 0; i < AvatarStream.ACTOR_STATS; i++) map.putFloat(AvatarStream.ACTOR_AT + 4 * i, i / 2f);
+                    RawFrameBus.INT.setRelease(map, AvatarStream.ACTOR_STATE, 1);
+                    float[] actorStats = stream.actorStats();
+                    assert actorStats.length == 131 && actorStats[0] == 0 && actorStats[130] == 65f;
+                    assert stream.poll(table, now, System.nanoTime()) == null : "The adapter's report is not reserved bytes";
                     // Native release, then reaping deletes the mapping and the request says stopped.
                     RawFrameBus.INT.setRelease(map, 196, 2);
                     try { stream.poll(table, now, System.nanoTime()); throw new AssertionError("A stopped producer must end the stream"); }
@@ -422,10 +472,11 @@ public final class AvatarStreamTest {
                 }
             }
             // A slot of the previous format (an older adapter) ends the stream with the reason.
-            assert refusedWith(directory, table, AvatarStream.HEADER + AvatarStream.SLOT + 24, 2)
-                    .equals("Pose slot format 2, this build reads 3: install the matching adapter");
-            // The header stays reserved after the shot count.
-            assert refusedWith(directory, table, AvatarStream.SHOTS_AT + 4, 1).equals("Pose mapping reserved bytes changed");
+            assert refusedWith(directory, table, AvatarStream.HEADER + AvatarStream.SLOT + 24, 3)
+                    .equals("Pose slot format 3, this build reads 4: install the matching adapter");
+            // The header stays reserved between the camera and the gains word, and after the adapter's report.
+            assert refusedWith(directory, table, 308, 1).equals("Pose mapping reserved bytes changed");
+            assert AvatarStream.ACTOR_END == 1036 && refusedWith(directory, table, AvatarStream.ACTOR_END, 1).equals("Pose mapping reserved bytes changed");
             // A refused slot ends the stream: bit 2 without bit 0, an unknown bit, a camera pitch without bit 2, a non-finite one.
             assert refused(directory, table, 4, 0).equals("Invalid controller rotation status");
             assert refused(directory, table, 17, 0).equals("Invalid controller rotation status");
@@ -449,7 +500,7 @@ public final class AvatarStreamTest {
         } finally {
             try (var files = Files.walk(directory)) { files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
         }
-        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation and combat");
+        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation, combat, gauge gains, heals and the Tachy row");
     }
 
     /** Why a fresh stream (its run named by status) refuses one native slot with this controller status and camera pitch. */

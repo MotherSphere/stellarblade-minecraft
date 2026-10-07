@@ -70,6 +70,46 @@ final class AvatarStats {
         else log.info("Stats: maximum health {} for EVE's max HP {}", player.getMaxHealth(), stats.maxHp());
     }
 
+    /**
+     * Stellar Blade's heals as Minecraft's: the adapter mirrors the player's health share into Stellar Blade's HP, so the
+     * game accepts and spends its own heals, and counts the HP they add. The render thread reports that count (-1: none),
+     * the server heals the same share of the player's maximum health and publishes the share after it with the count it
+     * applied, and the adapter writes nothing more until that acknowledgement arrives.
+     */
+    record Mirror(float share, int acknowledged) { static final Mirror OFF = new Mirror(0, 0); }
+    static final long MAX_HEAL_STEP = 100000; // A larger step of the count is not a heal: adopted, not applied.
+    private static volatile long reported = -1;
+    private static volatile Mirror mirror = Mirror.OFF;
+    private static long applied = -1; // Server thread: the count last applied, -1 before a baseline.
+
+    /** Render thread, each controlled frame: AvatarStream.healed() while EVE is the bridged player, else -1. */
+    static void reportHeals(long counter) { reported = counter; }
+    /** Any thread: the health word's share and acknowledged count. */
+    static Mirror mirror() { return mirror; }
+
+    /** Server thread, each tick: the heals counted since the last tick, applied while active (EVE drives the living player). */
+    static void heal(ServerPlayerEntity player, boolean active) {
+        long counter = reported;
+        if (counter < 0) { stopHeals(); return; }
+        long points = heals(applied, counter);
+        applied = counter;
+        if (points > 0 && active && player.isAlive()) player.heal(healthFor(points, current().maxHp(), player.getMaxHealth()));
+        mirror = new Mirror(active && player.isAlive() ? Math.clamp(player.getHealth() / player.getMaxHealth(), 0f, 1f) : 0, (int) applied);
+    }
+    /** Server thread: forgets the count, so the next one is a baseline. */
+    static void stopHeals() {
+        applied = -1;
+        mirror = Mirror.OFF;
+    }
+
+    /** Heal points from the count applied (-1: none, a baseline) to counter, as u32 counts; a step above MAX_HEAL_STEP gives none. */
+    static long heals(long applied, long counter) {
+        long step = (counter - applied) & 0xFFFFFFFFL;
+        return applied < 0 || step > MAX_HEAL_STEP ? 0 : step;
+    }
+    /** Minecraft health for Stellar Blade HP points: the same share of the maximum. */
+    static float healthFor(long points, float maxHp, float maxHealth) { return points * maxHealth / Math.max(maxHp, 1); }
+
     static String status(float[] stats) {
         Values v = Values.of(stats);
         return v == null ? " Stats not read." : String.format(" Stats: max HP %.0f (health x%.2f), attack %.0f (strikes x%.2f),"

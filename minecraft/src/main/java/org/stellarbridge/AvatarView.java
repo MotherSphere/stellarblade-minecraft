@@ -299,6 +299,7 @@ public final class AvatarView {
                 current.windowNanos = nanos;
             }
             if (!current.posed) return;
+            AvatarCombat.watch(current.stream.gauges(), nanos);
             interpolate(current.ring, current.times, current.newest, current.count, wallMillis() - current.interval, current.pose);
             var link = StellarBridge.renderingContext();
             current.anchored = current.table.anchor() != null && link != null && current.table.session().equals(link.session());
@@ -311,9 +312,15 @@ public final class AvatarView {
                 // A locked target turns Minecraft's camera first; Stellar Blade's follows it. Without the link no EVE aims.
                 if (current.anchored) AvatarLock.frame(nanos); else AvatarLock.release();
                 // Minecraft yaw + 90 and negated pitch are Unreal's; the adapter turns toward them while input is forwarded.
-                // Minecraft's yaw keeps counting turns; the adapter takes one turn.
-                if (player != null)
+                // Minecraft's yaw keeps counting turns; the adapter takes one turn. Its health and gains words go first, so
+                // the camera's fresh time covers them.
+                if (player != null) {
+                    AvatarStats.reportHeals(current.anchored ? current.stream.healed() : -1);
+                    var health = current.anchored ? AvatarStats.mirror() : AvatarStats.Mirror.OFF;
+                    int[] earned = AvatarCombat.earned();
+                    current.stream.feedback(health.share(), health.acknowledged(), earned[0], earned[1]);
                     current.stream.look(-player.getPitch(), (float) Math.IEEEremainder(player.getYaw() + 90.0, 360), System.currentTimeMillis());
+                }
                 ControlBridge.avatarFrame();
             }
         } catch (IOException | RuntimeException failure) {
@@ -533,7 +540,7 @@ public final class AvatarView {
                                    int health, int shown, int absorption, boolean blinking) {
         Live current = live;
         if (!replaces(player)) return false;
-        AvatarHud.render(context, x, y, lines, maxHealth, health, shown, absorption, blinking, current.stream.gauges());
+        AvatarHud.render(context, x, y, lines, maxHealth, health, shown, absorption, blinking, current.stream.gauges(), current.stream.actorStats());
         return true;
     }
 
@@ -565,8 +572,13 @@ public final class AvatarView {
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
                 + hiddenStatus(current) + AvatarCombat.status() + current.gun.status(current.stream.shots())
                 + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
-                + AvatarStats.status(current.stats)
+                + AvatarStats.status(current.stats) + reportStatus(current.stream.report())
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
+    }
+
+    private static String reportStatus(long[] report) {
+        return String.format(" Gauge gains: the adapter granted Beta %d, Burst %d. Heals: %d Stellar Blade HP converted; mirror %s;"
+                + " %d Stellar Blade losses overwritten.", report[3], report[4], report[0], new String[] {"off", "on", "held"}[(int) report[1]], report[2]);
     }
 
     /** The streamed meshes left out of the newest pose: hidden in Stellar Blade (EVE's drone between appearances) or without data. */
@@ -603,6 +615,7 @@ public final class AvatarView {
         live = null;
         halted = false;
         AvatarStats.publish(null);
+        AvatarStats.reportHeals(-1);
         AvatarLock.release();
         if (current.controlled) {
             current.stream.lookOff();

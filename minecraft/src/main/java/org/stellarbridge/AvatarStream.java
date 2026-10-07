@@ -20,10 +20,11 @@ import java.util.List;
 final class AvatarStream implements AutoCloseable {
     static final int HEADER = 4096, SLOT = 65536, SLOT_HEADER = 128, CAPACITY = (SLOT - SLOT_HEADER) / 4, TOTAL = HEADER + 3 * SLOT;
     /**
-     * Component status bits; HIDDEN: Stellar Blade does not draw the component (its floats still arrive). Slot format 3:
-     * format 2's HIDDEN bit, plus the dolly refusal at slot byte 56 and the drone shot count in the header.
+     * Component status bits; HIDDEN: Stellar Blade does not draw the component (its floats still arrive). Slot format 4:
+     * format 2's HIDDEN bit, format 3's dolly refusal at slot byte 56 and drone shot count in the header, plus the
+     * adapter's report at header 488..1036 and Minecraft's health and gains words at 280 and 312.
      */
-    static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8, FORMAT = 3;
+    static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8, FORMAT = 4;
     private static final long MAX = 9007199254740991L;
     private static final byte[] MAGIC = "SBMCPOS1".getBytes(StandardCharsets.US_ASCII);
 
@@ -45,6 +46,10 @@ final class AvatarStream implements AutoCloseable {
     static final int MAX_EFFECTS = 8, EFFECT_FLOATS = 11, GAUGES = 5, EVADES = 7, STATS = 8;
     static final int STATS_STATE = 448, STATS_AT = 452; // Header bytes of EVE's stats: state, then floats.
     static final int SHOTS_AT = STATS_AT + 4 * STATS; // Header byte of her drone's shot count, right after the stats.
+    // Minecraft's health and gains words beside its camera, then the adapter's report after the shot count: heal count,
+    // mirror state, overwritten losses, Beta and Burst granted, then the player actor's stat array (state, floats).
+    static final int HEALTH_AT = 280, GAINS_AT = 312, HEALED_AT = 488, MIRROR_AT = 492, LOST_AT = 496, GRANTED_AT = 500,
+            ACTOR_STATE = 508, ACTOR_AT = 512, ACTOR_STATS = 131, ACTOR_END = ACTOR_AT + 4 * ACTOR_STATS; // 1036
     /** An active effect of a pose: its asset name and Unreal world position. */
     record Effect(String name, double x, double y, double z) { }
     /** A material parameter the game animates (scalar: 1 float, vector: 4) on a component's material slot. */
@@ -212,6 +217,17 @@ final class AvatarStream implements AutoCloseable {
     }
 
     /**
+     * Minecraft's words for the adapter, written as look() is and read only while its camera is fresh: at HEALTH_AT the
+     * bridged player's health share (0: none) and the adapter's heal count Minecraft applied, at GAINS_AT its cumulative
+     * Beta and Burst base points (wrapping u32).
+     */
+    void feedback(float share, int acknowledged, int beta, int burst) {
+        if (map == null || stopped || producerPid == 0 || (int) RawFrameBus.INT.getAcquire(map, 196) != 1) return;
+        RawFrameBus.LONG.setRelease(map, HEALTH_AT, Integer.toUnsignedLong(Float.floatToRawIntBits(share)) | (long) acknowledged << 32);
+        RawFrameBus.LONG.setRelease(map, GAINS_AT, Integer.toUnsignedLong(beta) | (long) burst << 32);
+    }
+
+    /**
      * EVE's gauges from the header (state 1 at 320, floats at 324): Beta, its maximum, Burst, its maximum and the Burst
      * unlock stat, or null when the adapter could not read them. Checked as the adapter checks them.
      */
@@ -258,6 +274,28 @@ final class AvatarStream implements AutoCloseable {
      */
     long shots() {
         return map == null || stopped ? 0 : Integer.toUnsignedLong(map.getInt(SHOTS_AT));
+    }
+
+    /** The adapter's heal count (u32 at HEALED_AT): Stellar Blade HP points healed above its mirrored value since it loaded. */
+    long healed() {
+        return map == null || stopped ? 0 : Integer.toUnsignedLong(map.getInt(HEALED_AT));
+    }
+
+    /** The adapter's report, unsigned: heal count, mirror state (0 off, 1 written, 2 held), overwritten losses, Beta and Burst granted. */
+    long[] report() {
+        if (map == null) return new long[5];
+        int mirror = map.getInt(MIRROR_AT);
+        return new long[] {Integer.toUnsignedLong(map.getInt(HEALED_AT)), mirror >= 0 && mirror <= 2 ? mirror : 0,
+                Integer.toUnsignedLong(map.getInt(LOST_AT)), Integer.toUnsignedLong(map.getInt(GRANTED_AT)),
+                Integer.toUnsignedLong(map.getInt(GRANTED_AT + 4))};
+    }
+
+    /** The player actor's raw stat array (ACTOR_STATS floats; users check each index they read), or null unread. */
+    float[] actorStats() {
+        if (map == null || stopped || (int) RawFrameBus.INT.getAcquire(map, ACTOR_STATE) != 1) return null;
+        float[] values = new float[ACTOR_STATS];
+        map.slice(ACTOR_AT, 4 * ACTOR_STATS).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(values);
+        return values;
     }
 
     /** Producer statistics: published poses, then last, maximum and mean native read microseconds. */
@@ -468,8 +506,9 @@ final class AvatarStream implements AutoCloseable {
         require(map.getInt(8) == 1 && map.getInt(12) == HEADER && map.getInt(16) == SLOT && map.getInt(20) == CAPACITY
                 && map.getInt(28) == TOTAL, "Pose mapping layout changed");
         zeros(24, 28); zeros(64, 96); zeros(100, 128); zeros(132, 192); zeros(204, 208); zeros(240, 256); zeros(260, 264);
-        zeros(280, 288); zeros(308, 320); zeros(372, STATS_STATE); zeros(SHOTS_AT + 4, HEADER);
-        // 288..308: Minecraft's camera; 320..372: EVE's gauges and evades; 448..484: her stats; 484..488: her drone's shots.
+        zeros(308, GAINS_AT); zeros(372, STATS_STATE); zeros(ACTOR_END, HEADER);
+        // 280..288: Minecraft's health word; 288..308: its camera; 312..320: its gains word; 320..372: EVE's gauges and evades;
+        // 448..484: her stats; 484..488: her drone's shots; 488..1036: the adapter's report.
     }
     private void zeros(int from, int to) throws IOException {
         for (int i = from; i < to; i++) require(map.get(i) == 0, "Pose mapping reserved bytes changed");

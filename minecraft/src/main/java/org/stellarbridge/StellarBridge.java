@@ -168,6 +168,7 @@ public final class StellarBridge implements ClientModInitializer {
         control = null;
         pauseBinding = null;
         AvatarCombat.restoreTime(true);
+        AvatarStats.stopHeals();
         NativeSceneExport.stop();
         if (previous == null) return;
         AvatarStats.apply(previous.player, AvatarStats.Values.BASE); // Minecraft's own maximum health again.
@@ -193,6 +194,7 @@ public final class StellarBridge implements ClientModInitializer {
         }
         current.answer();
         if (!dead) AvatarStats.apply(current.player, AvatarStats.current()); // A respawned player gets them anew.
+        AvatarStats.heal(current.player, !dead && overrides(current.player));
         try {
             if (++current.ticks % 4 == 0) current.publish();
             if (dead) { // The terrain heartbeat goes on; EVE drives nobody until the respawn.
@@ -316,11 +318,11 @@ public final class StellarBridge implements ClientModInitializer {
      * EVE's blade or drone (shot) struck an entity the client saw: Minecraft damages it as the bridged player's attack, on
      * the server thread.
      */
-    static void strike(int entityId, float amount, double knockback, boolean charged, boolean shot) {
+    static void strike(int entityId, float amount, double knockback, boolean charged, boolean first, boolean shot) {
         Control current = control;
         if (current == null) return;
         current.server.execute(() -> {
-            if (overrides(current.owner)) AvatarCombat.strike(current.owner, entityId, amount, knockback, charged, shot);
+            if (overrides(current.owner)) AvatarCombat.strike(current.owner, entityId, amount, knockback, charged, first, shot);
         });
     }
 
