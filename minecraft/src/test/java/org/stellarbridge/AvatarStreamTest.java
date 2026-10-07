@@ -114,6 +114,32 @@ public final class AvatarStreamTest {
                 new org.joml.Vector3d(1, 1, -1), new org.joml.Vector3d(1, 1, -2)) : "A swing in front of the box";
         assert AvatarCombat.sweeps(zombie, new org.joml.Vector3d(-0.5, 1, 1), new org.joml.Vector3d(-0.5, 1, -1),
                 new org.joml.Vector3d(0.5, 1, 1), new org.joml.Vector3d(0.5, 1, -1)) : "A blade crossing the box between two frames";
+        // EVE's body moves an entity inside it out along the line between them, at most SHOVE, and leaves the rest alone.
+        var eve = AvatarCombat.body(net.minecraft.util.math.Vec3d.ZERO);
+        var east = new net.minecraft.util.math.Box(0.3, 0, -0.3, 0.9, 1.95, 0.3); // A zombie 0.6 blocks east of her feet.
+        var out = AvatarCombat.shove(eve, east, AvatarCombat.SHOVE);
+        assert Math.abs(out.x - 0.1) < 1e-3 && out.y == 0 && Math.abs(out.z) < 1e-9 && !eve.intersects(east.offset(out)) : out;
+        var slanted = east.offset(-0.2, 0, 0.4); // Nearest corner (0.1, 0.1): out along the diagonal, to her cylinder's edge.
+        out = AvatarCombat.shove(eve, slanted, AvatarCombat.SHOVE);
+        assert Math.abs(out.x - out.z) < 1e-9 && out.x > 0 && AvatarCombat.shove(eve, slanted.offset(out), 1).lengthSquared() == 0
+                && AvatarCombat.shove(eve, slanted.offset(out.multiply(0.99)), 1).lengthSquared() > 0 : out;
+        var corner = new net.minecraft.util.math.Box(0.283, 0, 0.283, 0.883, 1.95, 0.883); // In her square, outside her cylinder.
+        assert eve.intersects(corner) && AvatarCombat.shove(eve, corner, 1).lengthSquared() == 0 : "A corner off her cylinder is outside";
+        out = AvatarCombat.shove(eve, east.offset(-0.6, 0, 0), AvatarCombat.SHOVE);
+        assert out.x == AvatarCombat.SHOVE && out.z == 0 : "Centred on her: +X, at most SHOVE a tick";
+        assert AvatarCombat.shove(eve, east.offset(0.1, 0, 0), 1).lengthSquared() == 0 : "Touching her is outside";
+        assert AvatarCombat.shove(eve, east.offset(0, AvatarCombat.BODY_HEIGHT, 0), 1).lengthSquared() == 0 : "Above her head";
+        // Stellar Blade's walls: the eight nearest her feet, clipped to the patch, relative to the origin, no slivers.
+        var patch = new net.minecraft.util.math.Box(-3.5, 62, -3.5, 5.5, 68, 5.5);
+        var origin = new net.minecraft.util.math.Vec3d(1, 64, 1);
+        var around = new java.util.ArrayList<net.minecraft.util.math.Box>();
+        for (int i = 9; i >= 1; i--) around.add(new net.minecraft.util.math.Box(1 + i * 0.3, 64, 0.7, 1.6 + i * 0.3, 65.95, 1.3));
+        var walls = StellarBridge.mobWalls(patch, origin, origin, around);
+        assert walls.size() == 8 && Math.abs(walls.get(0).minX() - 0.3) < 1e-9 && walls.get(0).minY() == 0
+                && Math.abs(walls.get(7).minX() - 2.4) < 1e-9 : "The eight nearest, nearest first, relative to the origin";
+        walls = StellarBridge.mobWalls(patch, origin, origin, java.util.List.of(new net.minecraft.util.math.Box(5, 64, 1, 6, 66, 2),
+                new net.minecraft.util.math.Box(5.495, 64, 3, 6, 66, 4)));
+        assert walls.size() == 1 && walls.get(0).maxX() == 4.5 : "Clipped to the patch; a sliver past its edge is dropped";
         // Stellar Blade's HUD: a bar's lit columns, a gauge's cubes and quarters.
         assert AvatarHud.lit(20, 20) == 27 && AvatarHud.lit(1, 20) == 2 && AvatarHud.lit(0, 20) == 0 && AvatarHud.lit(5, 0) == 0;
         assert java.util.Arrays.equals(AvatarHud.cubes(450, 1000, 16), new int[] {5, 2, 1}) : "Two cubes, then a quarter of the third";

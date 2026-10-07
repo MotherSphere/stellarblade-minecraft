@@ -24,6 +24,17 @@ local function overlaps(spec,position,radius,half_height)
     local dz=math.max(math.abs(position.Z-c.Z)-e.Z-(half_height-radius),0)
     return dx*dx+dy*dy+dz*dz < radius*radius-0.000001
 end
+Terrain.overlaps=overlaps
+-- A Minecraft box relative to the bridge origin ({minX,minY,minZ,maxX,maxY,maxZ}, blocks) as an Unreal box around anchor a.
+function Terrain.mapped(box,a,scale,role)
+    return {role=role,center={
+        X=a.X+(box[1]+box[4])*scale/2,
+        -- Swapping the up axes preserves the native camera's visible handedness.
+        Y=a.Y+(box[3]+box[6])*scale/2,
+        Z=a.Z+(box[2]+box[5])*scale/2},
+        extent={X=(box[4]-box[1])*scale/2,Y=(box[6]-box[3])*scale/2,
+            Z=(box[5]-box[2])*scale/2}}
+end
 
 function Terrain.new(engine,scale)
     scale=scale or 100
@@ -84,16 +95,7 @@ function Terrain.new(engine,scale)
         if #fixture.guards+#fixture.terrain+#fixture.pending==0 then fixture=nil end
         return #errors==0,table.concat(errors,'; ')
     end
-    local function mapped(box,role)
-        local a=fixture.anchor
-        return {role=role,center={
-            X=a.X+(box[1]+box[4])*scale/2,
-            -- Swapping the up axes preserves the native camera's visible handedness.
-            Y=a.Y+(box[3]+box[6])*scale/2,
-            Z=a.Z+(box[2]+box[5])*scale/2},
-            extent={X=(box[4]-box[1])*scale/2,Y=(box[6]-box[3])*scale/2,
-                Z=(box[5]-box[2])*scale/2}}
-    end
+    local function mapped(box,role) return Terrain.mapped(box,fixture.anchor,scale,role) end
     local function lab_guards(bounds,half_height)
         local pad=25/scale
         local x0,y0,z0,x1,y1,z1=table.unpack(bounds)

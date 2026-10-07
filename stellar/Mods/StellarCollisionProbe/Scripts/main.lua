@@ -47,7 +47,9 @@ function engine.snapshot()
     assert(valid(capsule), 'The controlled pawn has no capsule; no scene changes made.')
     return {pawn_id=pawn:GetAddress(),world_id=world:GetAddress(),
         position=vec(pawn:K2_GetActorLocation()), rotation=rot(pawn:K2_GetActorRotation()),
-        half_height=capsule:GetScaledCapsuleHalfHeight(),radius=capsule:GetScaledCapsuleRadius()}
+        half_height=capsule:GetScaledCapsuleHalfHeight(),radius=capsule:GetScaledCapsuleRadius(),
+        -- Stellar Blade lets her pass through characters (its evades): mob walls step aside too.
+        ignoring=(function() local ok,v=pcall(function() return pawn.bIgnoreCharacterCollision end); return ok and v==true end)()}
 end
 function engine.control_context()
     local pawn,world=player()
@@ -118,6 +120,47 @@ end
 function engine.set_visual_visible(handle,visible)
     if valid(handle.visual) then handle.visual:SetActorHiddenInGame(not visible) end
 end
+-- Minecraft's mobs (mobs.lua): a TriggerBox that blocks only EVE's capsule channel, so her movement stops at it while
+-- cameras, traces and attacks ignore it; no overlap events and no visual. It waits 100 m up, without collision.
+function engine.blocker_spawn()
+    local pawn,world = player()
+    local class = StaticFindObject('/Script/Engine.TriggerBox')
+    assert(valid(class), 'TriggerBox class unavailable in this game build.')
+    local at = pawn:K2_GetActorLocation()
+    local actor = world:SpawnActor(class,{X=at.X,Y=at.Y,Z=at.Z+10000},{Pitch=0,Yaw=0,Roll=0})
+    assert(valid(actor), 'TriggerBox could not be spawned.')
+    return actor
+end
+-- The caller owns the spawned actor before this fallible setup, so a failure leaves it to the caller's release.
+function engine.blocker_configure(actor)
+    local capsule = player().CapsuleComponent
+    assert(valid(capsule), 'EVE has no capsule.')
+    local channel = capsule:GetCollisionObjectType()
+    local box = actor.CollisionComponent
+    assert(valid(box) and box:IsA('/Script/Engine.BoxComponent'), 'TriggerBox has no BoxComponent.')
+    box:SetMobility(2)
+    box:SetGenerateOverlapEvents(false)
+    box:SetCollisionEnabled(0)
+    box:SetCollisionObjectType(1) -- WorldDynamic, which EVE's capsule blocks, as it blocks the terrain.
+    box:SetCollisionResponseToAllChannels(0) -- Ignore
+    box:SetCollisionResponseToChannel(channel,2) -- Block: her capsule's own channel only (24 in the pinned build).
+    pcall(function() box.CanCharacterStepUpOn = 0 end) -- ECB_No: she does not walk up onto a small mob.
+    actor:SetActorEnableCollision(true,false)
+    return 'blocks channel '..tostring(channel)
+end
+-- A box spec, or nil to leave it where it is; solid false takes collision away before moving, so a blocking box never
+-- lands inside EVE. QueryOnly: her movement sweeps are queries, and no physics body reacts to it.
+function engine.blocker_place(actor, spec, solid)
+    local box = actor.CollisionComponent
+    if not solid then box:SetCollisionEnabled(0) end
+    if spec then
+        box:SetBoxExtent(spec.extent,true)
+        assert(actor:K2_SetActorLocation(spec.center,false,{},true), 'A mob wall could not be moved.')
+    end
+    if solid then box:SetCollisionEnabled(1) end
+    assert(box:GetCollisionEnabled()==(solid and 1 or 0), 'A mob wall kept the wrong collision mode.')
+end
+function engine.blocker_destroy(actor) if valid(actor) then actor:K2_DestroyActor() end end
 function engine.move(position, rotation)
     local pawn = player()
     local hit = {}
@@ -141,6 +184,7 @@ local pose_recorder
 local pose_stream
 local combat
 local lock
+local mobs
 local last_hd_frame
 local configured,config = pcall(require,'bridge_config')
 if configured then
@@ -171,6 +215,8 @@ if configured then
     combat=require('combat_events').new(require('pose_adapter').new(),config.directory,os.time,os.clock,log,entered_link)
     -- Minecraft's lock-on target: Stellar Blade's own lock-on on a hidden proxy, so EVE faces and strafes around it.
     lock=require('lock_on').new(require('pose_adapter').new(),config.directory,os.time,os.clock,log,entered_link)
+    -- Minecraft's mobs near EVE: invisible walls that stop her as Minecraft's own blocks do.
+    mobs=require('mobs').new(engine,config.directory,os.time,os.clock,log,entered_link)
 end
 local function cancel_hd(message)
     hd_session.cancel(message)
@@ -338,6 +384,7 @@ local actions = {
         if hd_session then attempt('HD capture',function() return hd_session.stop('F11 return requested') end) end
         if stream then attempt('Capture',function() return stream.stop('return requested') end) end
         if lock then attempt('Lock-on',function() return lock.release('F11 return requested') end) end
+        if mobs then attempt('Mob walls',function() return mobs.release('F11 return requested') end) end
         -- Each optional cleanup is independent of EVE's guarded return.
         local inspected,state=pcall(active.status)
         attempt('Return',active.restore,inspected and state=='idle')
@@ -463,6 +510,8 @@ if bridge then
             if not fought then report_result('combat',false,'Combat events paused: '..tostring(fight_error)) end
             local locked,lock_error=pcall(lock.tick) -- Nor does the lock-on.
             if not locked then report_result('lock',false,'Lock-on paused: '..tostring(lock_error)) end
+            local walled,wall_error=pcall(mobs.tick) -- Nor do the mob walls.
+            if not walled then report_result('mobs',false,'Mob walls paused: '..tostring(wall_error)) end
             pcall(report_cadence,frame) -- Optional diagnostics never cancel capture or input.
         end)
         hd_pending=false

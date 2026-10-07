@@ -62,6 +62,16 @@ public final class BridgeProtocolTest {
         assert encodeLock("a".repeat(32), 4, 0, null).contains("\nTARGET none\n");
         rejects(() -> encodeLock("a".repeat(32), 1, 0, new double[] {5000, 0, 0}));
         rejects(() -> encodeLock("a".repeat(32), 1, 0, new double[] {Double.NaN, 0, 0}));
+        // Mob walls for Stellar Blade follow the shared fixture; too many, too thin, out-of-range boxes and bad sessions are refused.
+        List<Box> mobs = List.of(new Box(1.2, 0, -0.3, 1.8, 1.95, 0.3), new Box(-3.5, 0, 2, -2.1, 0.9, 3.4));
+        assert encodeMobs("a".repeat(32), 5, 1760000000000L, mobs).equals(Files.readString(root.resolve("protocol/fixtures/mobs.txt")));
+        assert encodeMobs("a".repeat(32), 1, 0, List.of()).endsWith("\nCOUNT 0\nEND 1\n");
+        rejects(() -> encodeMobs("a".repeat(32), 1, 0, Collections.nCopies(9, mobs.get(0))));
+        rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, 0.005, 1, 1))));
+        rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, 33, 1, 1))));
+        rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, Double.NaN, 1, 1))));
+        rejects(() -> encodeMobs("A".repeat(32), 1, 0, mobs));
+        rejects(() -> encodeMobs("a".repeat(32), 0, 0, mobs));
         rejects(() -> encodeTerrain(terrain(Collections.nCopies(257,new Box(0,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(new Terrain("BAD",7,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
         rejects(() -> encodeTerrain(new Terrain(terrain.session(),0,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
@@ -75,6 +85,6 @@ public final class BridgeProtocolTest {
             Files.writeString(exchange.resolve("terrain-java.txt"), encoded);
             if (Files.exists(exchange.resolve("eve-lua.txt"))) verifyEve(parseEve(Files.readString(exchange.resolve("eve-lua.txt"))));
         }
-        System.out.println("PASS protocol Java: valid EVE, malformed snapshots, terrain validation, freshness");
+        System.out.println("PASS protocol Java: valid EVE, malformed snapshots, terrain validation, mob walls, freshness");
     }
 }

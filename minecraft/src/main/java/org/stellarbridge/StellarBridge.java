@@ -180,6 +180,8 @@ public final class StellarBridge implements ClientModInitializer {
                             new CaptureFrame.Position(current.origin.x, current.origin.y, current.origin.z),
                             current.world.getRegistryKey().getValue().toString(), current.player.getUuid()));
             move(current.player, position);
+            AvatarCombat.shove(current.player);
+            current.publishMobs();
         } catch (IOException | IllegalArgumentException exception) {
             stop(exception.getMessage());
         }
@@ -310,6 +312,19 @@ public final class StellarBridge implements ClientModInitializer {
 
     record RenderingContext(String session, int revision, CaptureFrame.Position origin, String dimension, UUID owner) { }
 
+    /**
+     * The walls Stellar Blade gets for the entities' boxes: the MOBS nearest EVE's feet (by each box's bottom centre),
+     * clipped to the patch, relative to the origin, without slivers thinner than 0.01 block.
+     */
+    static List<BridgeProtocol.Box> mobWalls(Box patch, Vec3d origin, Vec3d feet, List<Box> boxes) {
+        return boxes.stream()
+                .sorted(java.util.Comparator.comparingDouble(box -> feet.squaredDistanceTo((box.minX + box.maxX) / 2, box.minY, (box.minZ + box.maxZ) / 2)))
+                .limit(BridgeProtocol.MOBS)
+                .map(box -> box.intersection(patch).offset(origin.negate()))
+                .filter(box -> box.getLengthX() >= 0.01 && box.getLengthY() >= 0.01 && box.getLengthZ() >= 0.01)
+                .map(box -> new BridgeProtocol.Box(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ)).toList();
+    }
+
     private static final class Session {
         final IntegratedServer server;
         ServerPlayerEntity player; // Replaced by the respawned player after a death.
@@ -321,7 +336,8 @@ public final class StellarBridge implements ClientModInitializer {
         List<BridgeProtocol.Box> boxes = List.of();
         int revision;
         int ticks;
-        long combatSeq, lockSeq;
+        long combatSeq, lockSeq, mobSeq;
+        boolean mobsListed; // The last eve-mobs.txt listed at least one entity.
 
         Session(IntegratedServer server, ServerPlayerEntity player, BridgeFiles files) {
             this.server = server;
@@ -343,6 +359,25 @@ public final class StellarBridge implements ClientModInitializer {
             // Vanilla recentres chunk loading and sending only from move packets, which the bridge cancels.
             world.getChunkManager().updatePosition(respawned);
             LOG.info("Bridge kept through a death: the respawned player returns to the anchor");
+        }
+
+        /**
+         * Each tick EVE's position is applied: the living entities in the patch that her body shoves, nearest first and
+         * clipped to the patch, for Stellar Blade's walls (eve-mobs.txt). An empty list is written once, then nothing;
+         * Lua drops its walls when the heartbeat stops. A failure only costs the walls, never the session.
+         */
+        void publishMobs() {
+            Box patch = new Box(origin.x + BOUNDS.minX(), origin.y + BOUNDS.minY(), origin.z + BOUNDS.minZ(),
+                    origin.x + BOUNDS.maxX(), origin.y + BOUNDS.maxY(), origin.z + BOUNDS.maxZ());
+            List<BridgeProtocol.Box> mobs = mobWalls(patch, origin, player.getPos(), world.getOtherEntities(player, patch,
+                    AvatarCombat.shoved(player)).stream().map(Entity::getBoundingBox).toList());
+            if (mobs.isEmpty() && !mobsListed) return;
+            try {
+                files.write("eve-mobs.txt", BridgeProtocol.encodeMobs(id, ++mobSeq, System.currentTimeMillis(), mobs));
+                mobsListed = !mobs.isEmpty();
+            } catch (IOException | IllegalArgumentException failure) {
+                LOG.warn("Mob walls not delivered to Stellar Blade: {}", failure.toString());
+            }
         }
 
         void publish() throws IOException {

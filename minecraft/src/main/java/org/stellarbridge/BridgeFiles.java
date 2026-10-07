@@ -78,6 +78,7 @@ final class BridgeFiles {
         Files.deleteIfExists(checked("terrain.txt"));
         Files.deleteIfExists(checked("eve-combat.txt"));
         Files.deleteIfExists(checked("eve-lock.txt"));
+        Files.deleteIfExists(checked("eve-mobs.txt"));
     }
 
     Path checked(String filename) throws IOException {

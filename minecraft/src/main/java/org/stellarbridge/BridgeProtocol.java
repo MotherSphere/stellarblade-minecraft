@@ -85,6 +85,28 @@ public final class BridgeProtocol {
                 + "\nEND " + seq + "\n";
     }
 
+    static final int MOBS = 8;
+
+    /**
+     * Minecraft's living entities around EVE for Stellar Blade's walls: at most MOBS boxes relative to the bridge origin in
+     * blocks (Minecraft axes, three decimals, within ±32), nearest first.
+     */
+    public static String encodeMobs(String session, long seq, long time, List<Box> mobs) {
+        require(matches(SESSION, session), "Invalid session");
+        require(seq > 0 && seq <= MAX_TIME && time >= 0 && time <= MAX_TIME, "Invalid sequence or timestamp");
+        require(mobs != null && mobs.size() <= MOBS, "Invalid mob count");
+        StringBuilder text = new StringBuilder("SBMC_MOBS 1\nSESSION ").append(session).append("\nSEQ ").append(seq)
+            .append("\nTIME ").append(time).append("\nCOUNT ").append(mobs.size()).append('\n');
+        for (Box box : mobs) {
+            checkBox(box);
+            // Lua refuses an empty box; three decimals keep a box this thick.
+            require(box.maxX - box.minX >= 0.01 && box.maxY - box.minY >= 0.01 && box.maxZ - box.minZ >= 0.01, "Box too thin");
+            text.append(String.format(java.util.Locale.ROOT, "MOB %.3f %.3f %.3f %.3f %.3f %.3f\n",
+                box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ));
+        }
+        return text.append("END ").append(seq).append('\n').toString();
+    }
+
     public static String encodeTerrain(Terrain terrain) {
         require(terrain != null && matches(SESSION,terrain.session), "Invalid session");
         require(terrain.seq > 0 && terrain.time >= 0 && terrain.time <= MAX_TIME, "Invalid sequence or timestamp");

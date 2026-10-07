@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.MovementType;
 import net.minecraft.entity.Tameable;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.entity.damage.DamageTypes;
@@ -19,6 +20,7 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.projectile.PersistentProjectileEntity;
 import net.minecraft.entity.projectile.ProjectileEntity;
 import net.minecraft.entity.projectile.TridentEntity;
+import net.minecraft.predicate.entity.EntityPredicates;
 import net.minecraft.particle.ParticleTypes;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -38,7 +40,8 @@ import org.joml.Vector3d;
  * a little earlier a parry (no damage), and a held guard lets a fifth through, all as in Stellar Blade; Minecraft's
  * unblockable damage goes through any guard. While the bridge session lasts but EVE cannot answer (a pause menu over a
  * running world, no live link), nothing hurts her. Her Stellar Blade stats (AvatarStats) scale her strikes and reduce,
- * approximately, the damage she takes.
+ * approximately, the damage she takes. Her
+ * body is solid to them: each tick a living entity inside it is moved out to its edge.
  */
 public final class AvatarCombat {
     // Strike damage per Stellar Blade trail style (SWING: no effect data, the swing heuristic), doubled for a charged
@@ -58,6 +61,9 @@ public final class AvatarCombat {
     // A perfect dodge runs Minecraft's world at SLOW_RATE ticks per second for SLOW_NANOS of real time.
     static final float SLOW_RATE = 6;
     static final long SLOW_NANOS = 1_500_000_000L;
+    // EVE's body: Stellar Blade's movement capsule (CH_P_EVE_01_Blueprint CollisionCylinder, radius 40 cm, half height
+    // 95 cm) standing on her feet, in blocks; an entity inside it moves out by at most SHOVE blocks a tick.
+    static final double BODY_RADIUS = 0.4, BODY_HEIGHT = 1.9, SHOVE = 0.5;
 
     enum Defense { PERFECT_PARRY, PARRY, PERFECT_DODGE, DODGE, GUARD, HIT }
 
@@ -230,6 +236,60 @@ public final class AvatarCombat {
             slowed.getTickManager().setTickRate(normalRate);
             slowed = null;
         }
+    }
+
+    /**
+     * Server thread, each tick Stellar Blade's position is applied: the living entities Minecraft would let push a player
+     * (their own pushability, the team collision rule) are moved out of EVE's body with block collision, as an opening
+     * shulker box moves them, before any client sees them inside her. Stellar Blade owns her position, so she never yields.
+     */
+    static void shove(ServerPlayerEntity player) {
+        Box body = body(player.getPos());
+        for (Entity entity : player.getServerWorld().getOtherEntities(player, body, shoved(player))) {
+            Vec3d out = shove(body, entity.getBoundingBox(), SHOVE);
+            if (out.lengthSquared() == 0) continue;
+            boolean ground = entity.isOnGround();
+            try {
+                entity.move(MovementType.SHULKER_BOX, out);
+                entity.setOnGround(ground); // A level move reads as airborne until the entity's own next move.
+            } catch (RuntimeException failure) { // A mod's entity must never end the session.
+                if (!shoveFailed) org.slf4j.LoggerFactory.getLogger("stellar_bridge").warn("EVE's body could not move {}: {}", entity, failure.toString());
+                shoveFailed = true;
+            }
+        }
+    }
+    private static boolean shoveFailed; // Server thread: a failed shove was logged once.
+
+    /** The entities EVE's body shoves and Stellar Blade's walls stand for: living, unmounted, pushable by a player. */
+    static java.util.function.Predicate<Entity> shoved(PlayerEntity player) {
+        return EntityPredicates.canBePushedBy(player).and(entity -> entity instanceof LivingEntity && !entity.hasVehicle());
+    }
+
+    /** EVE's body standing on feet. */
+    static Box body(Vec3d feet) {
+        return new Box(feet.x - BODY_RADIUS, feet.y, feet.z - BODY_RADIUS, feet.x + BODY_RADIUS, feet.y + BODY_HEIGHT, feet.z + BODY_RADIUS);
+    }
+
+    /**
+     * The level move, at most max long, that takes box out of EVE's body: the cylinder of body's half width around its
+     * vertical axis, over its height (Stellar Blade's capsule; body is its bounding box). With her axis outside the
+     * box, along the line from the axis to the box's nearest point; with it inside, along the box's shortest way out
+     * (+X first on a tie). A tenth of a millimetre more for rounding.
+     */
+    static Vec3d shove(Box body, Box box, double max) {
+        if (!body.intersects(box)) return Vec3d.ZERO; // Above, below or clear of the square around her.
+        double cx = (body.minX + body.maxX) / 2, cz = (body.minZ + body.maxZ) / 2, r = body.getLengthX() / 2;
+        double dx = Math.clamp(cx, box.minX, box.maxX) - cx, dz = Math.clamp(cz, box.minZ, box.maxZ) - cz, d = Math.hypot(dx, dz);
+        if (d > 1e-9) {
+            if (d >= r) return Vec3d.ZERO; // A corner in the square but outside the cylinder.
+            double distance = Math.min(r - d + 1e-4, max);
+            return new Vec3d(dx / d * distance, 0, dz / d * distance);
+        }
+        double[] exits = {cx + r - box.minX, box.maxX - (cx - r), cz + r - box.minZ, box.maxZ - (cz - r)}; // +X, -X, +Z, -Z.
+        int way = 0;
+        for (int i = 1; i < exits.length; i++) if (exits[i] < exits[way]) way = i;
+        double distance = Math.min(exits[way] + 1e-4, max);
+        return new Vec3d(way == 0 ? distance : way == 1 ? -distance : 0, 0, way == 2 ? distance : way == 3 ? -distance : 0);
     }
 
     /** Living entities EVE's blade may strike: not players, armor stands or the player's own pets. */
