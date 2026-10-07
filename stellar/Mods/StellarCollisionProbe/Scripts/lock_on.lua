@@ -6,9 +6,13 @@
 -- undoes everything, retried every frame until done; spawn, follow and engage errors together stop new locks after
 -- SPAWN_TRIES, so a broken proxy is never respawned frame after frame. Routine lines stop at ROUTINE_LINES, keeping
 -- the rest of the log budget for releases and failures. Game-thread only; call tick each native frame.
--- While locked, follow clears Stellar Blade's soft lock-rotation disable (counted on the held lines).
+-- While locked, follow clears Stellar Blade's soft lock-rotation disable (counted on the held lines). LockTrace lines,
+-- TRACE_LINES per Lua load on their own budget, sample EVE's facing on the first locked frame, a clear, a change of her
+-- lock-rotation-disabling step count, running skill or idle turn, a yaw step of TRACE_YAW degrees, and every
+-- TRACE_EVERY seconds while that count is up; the engage also lists Stellar Blade's characters within NEAR cm.
 local Lock={}
 local FRESH_MS,LEASE,RETRY,REPORT,SPAWN_TRIES,ROUTINE_LINES=2500,0.6,0.25,1,3,200
+local TRACE_LINES,TRACE_YAW,TRACE_EVERY,NEAR=2000,3,0.1,3500 -- NEAR: a margin over the lock evade target filter's 30 m.
 -- While locked, EVE's sword is drawn as Stellar Blade's lock-on draws it, checked every DRAW_WAIT seconds (its draw Show
 -- attaches the sword 0.337 s in). A draw that did not stick by the next check is retried with the attach event sent at
 -- once, DRAWS tries in a row at most; release sheathes it if we drew. Stellar Blade owns the sword while in battle (after
@@ -29,12 +33,23 @@ function Lock.parse(text)
 end
 -- wall: Unix seconds; real: monotonic seconds; link: the entered link ({session=,anchor=,scale=}) or nil.
 function Lock.new(engine,directory,wall,real,log,link)
-    local api,lines,swept,spawn_failures={},0,false,0
+    local api,lines,traced,swept,spawn_failures={},0,0,false,0
     local last,seen -- The newest accepted publication, and when its sequence arrived.
-    -- {proxy=,camera=,engaged=,retry=,relocks=,clears=,report=,draw=,draws=,drew=} while EVE is locked for Minecraft.
+    -- {proxy=,camera=,engaged=,retry=,relocks=,clears=,report=,draw=,draws=,drew=,trace=} while EVE is locked for Minecraft.
     local held
     local undo -- A lock whose release failed, retried first every frame.
     local function note(message) if lines<300 then lines=lines+1; log('Lock: '..message) end end
+    local function trace(now,cleared)
+        local ok,s=pcall(engine.lock_trace,held.proxy)
+        if not (ok and s and s.facing) then return end
+        local p=held.trace
+        if p and not cleared and s.rotoff==p.rotoff and s.skill==p.skill and s.turning==p.turning
+            and math.abs((s.yaw-p.yaw+540)%360-180)<TRACE_YAW and not ((s.rotoff or 0)>0 and now-p.at>=TRACE_EVERY) then return end
+        traced,s.at,held.trace=traced+1,now,s
+        log(string.format('LockTrace: t %.2f facing %.1f yaw %.1f at %.0f %.0f target %.0f %.0f vel %.0f %.0f rotoff %s soft %s%s'..
+            ' skill %s turning %s input %s %s',now,s.facing,s.yaw,s.x,s.y,s.tx,s.ty,s.fwd,s.right,tostring(s.rotoff),tostring(s.soft),
+            cleared and ' (cleared)' or '',tostring(s.skill),tostring(s.turning),tostring(s.inf),tostring(s.inr)))
+    end
     local function status(proxy)
         local ok,line=pcall(engine.lock_status,proxy)
         return ok and line or 'status failed: '..tostring(line)
@@ -98,6 +113,7 @@ function Lock.new(engine,directory,wall,real,log,link)
         local ok,locked,cleared=pcall(engine.lock_follow,held.proxy,at)
         if not ok then spawn_failures=spawn_failures+1; api.release('error: '..tostring(locked)); return end
         if cleared then held.clears=held.clears+1 end
+        if locked and traced<TRACE_LINES then trace(now,cleared) end
         if not locked and now>=held.retry then
             held.retry=now+RETRY
             if held.engaged then
@@ -106,7 +122,10 @@ function Lock.new(engine,directory,wall,real,log,link)
             end
             local engaged,result=pcall(engine.lock_engage,held.proxy,at)
             if not engaged then spawn_failures=spawn_failures+1; api.release('error: '..tostring(result)); return end
-            if result and not held.engaged then note('engaged: '..status(held.proxy)) end
+            if result and not held.engaged then
+                note('engaged: '..status(held.proxy))
+                note('near: '..tostring(select(2,pcall(engine.lock_neighbours,held.proxy,NEAR))))
+            end
             held.engaged=held.engaged or result
         end
         if locked and now>=held.draw and held.draws<DRAWS then

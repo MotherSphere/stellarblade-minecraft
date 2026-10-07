@@ -676,27 +676,67 @@ function Adapter.new()
         engine.play_show(SHEATHE)
         return string.format('sheathing with %s (sword was %s@%s)',fold,state,socket)
     end
+    local function peek(read) -- An unreadable value is nil; false stays false (battle false).
+        local ok,v=pcall(read)
+        if ok then return value_of(v) end
+        return nil
+    end
+    -- EVE's place and yaw, the proxy's place and bearing from her (proxy: valid, or nil) and her velocity in her own frame.
+    local function lock_view(eve,proxy)
+        local p,r=value_of(eve:K2_GetActorLocation()),value_of(eve:K2_GetActorRotation())
+        local t=proxy and value_of(proxy:K2_GetActorLocation())
+        local v,yaw=value_of(eve:GetVelocity()),math.rad(r.Yaw)
+        return p,r,t,t and math.deg(math.atan(t.Y-p.Y,t.X-p.X)),v.X*math.cos(yaw)+v.Y*math.sin(yaw),-v.X*math.sin(yaw)+v.Y*math.cos(yaw)
+    end
+    -- Stellar Blade's soft lock-rotation disable and its lock-rotation-disabling step count, the facing gates of 0x216b882.
+    local function soft(eve) return peek(function() return eve.bSoftDisableLockOnCharacterRotation end) end
+    local function rotoff(eve) return peek(function() return eve.DisableLockOnCharacterRotaion end) end -- The game's spelling.
     -- What Stellar Blade checks each frame and what its lock gives EVE, as one line.
     function engine.lock_status(proxy)
         local eve=character()
-        local function get(read) local ok,v=pcall(read); if ok then return v end end -- Keeps false (battle false).
-        local p,r=value_of(eve:K2_GetActorLocation()),value_of(eve:K2_GetActorRotation())
         proxy=valid(proxy)
-        local t=proxy and value_of(proxy:K2_GetActorLocation())
-        local bearing=t and math.deg(math.atan(t.Y-p.Y,t.X-p.X))
+        local p,r,t,bearing,fwd,right=lock_view(eve,proxy)
         local function off(yaw) return yaw and bearing and string.format('%.0f',(yaw-bearing+540)%360-180) or 'n/a' end
-        local camera=get(function() return value_of(valid(UE.GetPlayerController()).PlayerCameraManager:GetCameraRotation()).Yaw end)
-        local v,yaw=value_of(eve:GetVelocity()),math.rad(r.Yaw)
-        local dolly=get(function() return valid(eve.CameraBoom).CameraDollyAlpha end) -- 1 frames her from her hips, looking up.
+        local camera=peek(function() return value_of(valid(UE.GetPlayerController()).PlayerCameraManager:GetCameraRotation()).Yaw end)
+        local dolly=peek(function() return valid(eve.CameraBoom).CameraDollyAlpha end) -- 1 frames her from her hips, looking up.
         return string.format('IsLockOn %s, anim IsLockOn %s; facing %s, camera %s deg off target; dist %s cm; vel fwd %.0f right %.0f; '..
-            'hide %.2f; mode %s freecam %s flying %s; target unavailable %s; disable control %s target %s; dolly %s; battle %s sword %s',
-            tostring(eve:IsLockOn()),tostring(get(function() return valid(eve.Mesh):GetAnimInstance().IsLockOn end)),off(r.Yaw),off(camera),
-            t and string.format('%.0f',math.sqrt((t.X-p.X)^2+(t.Y-p.Y)^2)) or 'n/a',
-            v.X*math.cos(yaw)+v.Y*math.sin(yaw),-v.X*math.sin(yaw)+v.Y*math.cos(yaw),eve.HideTimeForLockOnCharacter,
-            tostring(get(function() return eve.CharacterMovement.MovementMode end)),tostring(eve.bFreeCamMode),tostring(eve.bFlyingAction),
+            'hide %.2f; mode %s freecam %s flying %s; target unavailable %s; disable control %s target %s; dolly %s; battle %s sword %s; '..
+            'soft %s rotoff %s',
+            tostring(eve:IsLockOn()),tostring(peek(function() return valid(eve.Mesh):GetAnimInstance().IsLockOn end)),off(r.Yaw),off(camera),
+            t and string.format('%.0f',math.sqrt((t.X-p.X)^2+(t.Y-p.Y)^2)) or 'n/a',fwd,right,eve.HideTimeForLockOnCharacter,
+            tostring(peek(function() return eve.CharacterMovement.MovementMode end)),tostring(eve.bFreeCamMode),tostring(eve.bFlyingAction),
             tostring(proxy and proxy.UnavailableLockOn),tostring(eve.bDisableLockOnControl),tostring(eve.bDisableLockonTarget),
-            dolly and string.format('%.2f',dolly) or 'n/a',tostring(get(function() return eve:IsBattle() end)),
-            get(function() return string.format('%s@%s',sword(eve)) end) or 'n/a')
+            dolly and string.format('%.2f',dolly) or 'n/a',tostring(peek(function() return eve:IsBattle() end)),
+            peek(function() return string.format('%s@%s',sword(eve)) end) or 'n/a',tostring(soft(eve)),tostring(rotoff(eve)))
+    end
+    -- Debug, for LockTrace lines: EVE's yaw against the proxy and what turns her, each unreadable value nil. facing as in
+    -- lock_status; skill bRunningSkill, turning bIdleTurning, inf/inr her last MoveForward and MoveRight inputs.
+    function engine.lock_trace(proxy)
+        local eve=character()
+        local p,r,t,bearing,fwd,right=lock_view(eve,valid(proxy))
+        return {yaw=r.Yaw,facing=bearing and (r.Yaw-bearing+540)%360-180,x=p.X,y=p.Y,tx=t and t.X,ty=t and t.Y,fwd=fwd,right=right,
+            rotoff=rotoff(eve),soft=soft(eve),skill=peek(function() return eve.bRunningSkill end),
+            turning=peek(function() return eve.bIdleTurning end),inf=peek(function() return eve.LastMoveFowardInput end),
+            inr=peek(function() return eve.LastMoveRightInput end)}
+    end
+    -- Debug, once per engage: Stellar Blade's characters within radius cm of EVE (horizontally) but her and the proxy, as
+    -- 'name tribe T at X Y Z (d cm, bearing B, hidden H)'. A lock evade's second rule move turns her to the nearest enemy
+    -- within 30 m when the simulation has no lock target (SetStep 0x1bf660f); FindAllOf walks every object.
+    function engine.lock_neighbours(proxy,radius)
+        local eve=character()
+        local p,skip,out=value_of(eve:K2_GetActorLocation()),{[eve:GetAddress()]=true},{}
+        proxy=valid(proxy)
+        if proxy then skip[proxy:GetAddress()]=true end
+        for _,o in ipairs(FindAllOf('SBCharacter') or {}) do
+            o=valid(o)
+            local q=o and not skip[o:GetAddress()] and value_of(o:K2_GetActorLocation())
+            local d=q and math.sqrt((q.X-p.X)^2+(q.Y-p.Y)^2)
+            if d and d<=radius then
+                out[#out+1]=string.format('%s tribe %s at %.0f %.0f %.0f (%.0f cm, bearing %.0f, hidden %s)',text(o:GetFName()),
+                    tostring(peek(function() return text(o.Tribe) end)),q.X,q.Y,q.Z,d,math.deg(math.atan(q.Y-p.Y,q.X-p.X)),tostring(o.bHidden))
+            end
+        end
+        return #out>0 and table.concat(out,'; ') or 'none within '..radius..' cm'
     end
     -- Stellar Blade's HUD as its own HUD logic fills it (reflected Blueprint variables the logic writes by name, then fires
     -- their parameterless events): the heal and util item slots (WB_MainHUD_ItemSlot_C WB_MainHUD_HealItem and

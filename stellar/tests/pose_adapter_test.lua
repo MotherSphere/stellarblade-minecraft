@@ -318,6 +318,23 @@ assert(locked==false and cleared==false and holder.bSoftDisableLockOnCharacterRo
 holder.LockOnCharacter,lockedOn=proxy,false
 locked,cleared=swords.lock_follow(proxy,{X=1,Y=2,Z=3})
 assert(locked==false and cleared==false and holder.bSoftDisableLockOnCharacterRotation==true,'Nor while not locked on')
+holder.bSoftDisableLockOnCharacterRotation,lockedOn,holder.DisableLockOnCharacterRotaion=false,true,2
+local status=swords.lock_status(proxy)
+assert(status:find('facing -90, camera n/a deg off target; dist 100 cm',1,true) and status:find('; soft false rotoff 2$'),status)
+-- LockTrace samples: unreadable values are nil, not errors.
+holder.bRunningSkill,holder.LastMoveFowardInput=true,0.5
+setmetatable(holder,{__index=function(_,key) if key=='bIdleTurning' then error('no such property') end end})
+local sample=swords.lock_trace(proxy)
+setmetatable(holder,nil)
+assert(sample.facing==-90 and sample.yaw==0 and sample.tx==0 and sample.ty==100 and sample.rotoff==2 and sample.soft==false
+    and sample.skill==true and sample.turning==nil and sample.inf==0.5 and sample.inr==nil,'A trace sample')
+-- The engage's neighbours: Stellar Blade characters within the radius, horizontally, but EVE and the proxy.
+local function standing(name,x,y,z) return object(name,{Tribe=fname('Enemy'),bHidden=false,K2_GetActorLocation=function() return {X=x,Y=y,Z=z} end}) end
+FindAllOf=function(name) assert(name=='SBCharacter'); return {holder,proxy,standing('Near',0,1000,-2000),standing('Far',4000,0,0)} end
+local near=swords.lock_neighbours(proxy,3500)
+assert(near=='Near tribe Enemy at 0 1000 -2000 (1000 cm, bearing 90, hidden false)',near)
+FindAllOf=function() return {holder,proxy} end
+assert(swords.lock_neighbours(proxy,3500)=='none within 3500 cm')
 -- Stellar Blade's HUD widgets: item slots by name, the dash slot and bullet slots by class; kept while valid; while one is
 -- missing, searched again 2 s later, doubling up to 30 s (2 s again once a search finds one), at once when one found went.
 local function thumb(texture) return object('Image_Item_Thumb',{Brush=wrap({ResourceObject=texture and object(texture)})}) end
@@ -374,4 +391,4 @@ RegisterHook=function(path,fn) hooked={path=path,fn=fn} end
 widgets.watch_consume(print)
 assert(hooked.path=='/Script/SB.SBNetworkPlayerController:ServerRequest_ItemBucketItemConsume' and hooked.fn==print)
 os.clock=real_clock
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone, the sword Shows per weapon and hairstyle, the lock soft-disable clear, and the HUD widgets')
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone, the sword Shows per weapon and hairstyle, the lock soft-disable clear, status, trace and neighbours, and the HUD widgets')
