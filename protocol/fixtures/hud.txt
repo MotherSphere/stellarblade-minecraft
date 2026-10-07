@@ -1,0 +1,10 @@
+SBMC_HUD 1
+SESSION aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+SEQ 7
+TIME 1760000000000
+HEAL tumbler 3 5 1
+UTIL shock 2 0.40 1
+AMMO Bullet_Normal 120 0.00
+DASH 0.25
+USES 1 0 0 0
+END 7

@@ -123,7 +123,7 @@ public final class AvatarView {
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> { off(); reap(); });
     }
 
-    private static Path bridgeDirectory() {
+    static Path bridgeDirectory() {
         return Path.of(System.getProperty("stellarbridge.directory",
                 Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
     }
@@ -570,6 +570,7 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
+                + AvatarItems.status()
                 + hiddenStatus(current) + AvatarCombat.status() + current.gun.status(current.stream.shots())
                 + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
                 + AvatarStats.status(current.stats) + reportStatus(current.stream.report())

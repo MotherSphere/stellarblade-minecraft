@@ -63,6 +63,7 @@ public final class StellarBridge implements ClientModInitializer {
         CapturePreview.initialize();
         CaptureView.initialize();
         AvatarView.initialize();
+        AvatarItems.initialize();
         NativeSceneExport.initialize();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             if (environment != CommandManager.RegistrationEnvironment.INTEGRATED) return;

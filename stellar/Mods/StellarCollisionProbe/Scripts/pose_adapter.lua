@@ -690,6 +690,74 @@ function Adapter.new()
             dolly and string.format('%.2f',dolly) or 'n/a',tostring(get(function() return eve:IsBattle() end)),
             get(function() return string.format('%s@%s',sword(eve)) end) or 'n/a')
     end
+    -- Stellar Blade's HUD as its own HUD logic fills it (reflected Blueprint variables the logic writes by name, then fires
+    -- their parameterless events): the heal and util item slots (WB_MainHUD_ItemSlot_C WB_MainHUD_HealItem and
+    -- WB_MainHUD_UtilItem; WB_MainHUD_Lower1Item for the log), EVE's selected drone bullet (SBCharacter
+    -- CurrentBulletItemAlias) with its WB_Tps_Bullet2_Slot_C, and the dash attack's WB_MainHUD_Dash_Slot_C. Kept while
+    -- valid. FindAllOf walks every object on the game thread, so while one is missing they are looked for again after
+    -- HUD_RETRY seconds, doubling up to HUD_RETRY_MAX (back to HUD_RETRY once a search finds one), and at once when one
+    -- found went. Each slot: {thumb=, count=, max=, cooldown=, usable=}; thumb is Image_Item_Thumb's brush texture name;
+    -- an unreadable property is nil. search: what a search made by this call cost, {ms=, missing=, retry=}.
+    local HUD_RETRY,HUD_RETRY_MAX=2,30
+    local HUD_SLOTS={heal='WB_MainHUD_HealItem',util='WB_MainHUD_UtilItem',lower='WB_MainHUD_Lower1Item'}
+    local widgets,bullets,hud_next,hud_wait={},{},-math.huge,HUD_RETRY
+    local function get(object,name)
+        local ok,value=pcall(function() return value_of(object[name]) end)
+        if ok then return value end
+    end
+    local function name_of(object,name)
+        local ok,value=pcall(function() return text(object[name]) end)
+        if ok then return value end
+    end
+    local function missing()
+        local list={}
+        for _,key in ipairs({'heal','util','lower','dash'}) do if not widgets[key] then list[#list+1]=key end end
+        if #bullets==0 then list[#list+1]='bullets' end
+        return list
+    end
+    local function find_hud()
+        local went=false
+        for key,widget in pairs(widgets) do if not valid(widget) then widgets[key]=nil; went=true end end
+        for i=#bullets,1,-1 do if not valid(bullets[i]) then table.remove(bullets,i); went=true end end
+        if went then hud_next,hud_wait=-math.huge,HUD_RETRY end
+        if #missing()==0 or os.clock()<hud_next then return nil end
+        local start,before=os.clock(),#missing()
+        if not (widgets.heal and widgets.util and widgets.lower) then -- Each class is walked only while one of its widgets is missing.
+            for _,o in ipairs(FindAllOf('WB_MainHUD_ItemSlot_C') or {}) do
+                o=valid(o)
+                local name=o and text(o:GetFName())
+                for key,wanted in pairs(HUD_SLOTS) do if name==wanted and not widgets[key] then widgets[key]=o end end
+            end
+        end
+        if not widgets.dash then for _,o in ipairs(FindAllOf('WB_MainHUD_Dash_Slot_C') or {}) do widgets.dash=widgets.dash or valid(o) end end
+        if #bullets==0 then for _,o in ipairs(FindAllOf('WB_Tps_Bullet2_Slot_C') or {}) do bullets[#bullets+1]=valid(o) end end
+        local now,left=os.clock(),missing()
+        if #left<before then hud_wait=HUD_RETRY end
+        hud_next=now+hud_wait
+        local retry=#left>0 and hud_wait or nil
+        if retry then hud_wait=math.min(hud_wait*2,HUD_RETRY_MAX) end
+        return {ms=(now-start)*1000,missing=#left>0 and table.concat(left,', ') or 'none',retry=retry}
+    end
+    local function slot(widget)
+        if not widget then return nil end
+        local ok,thumb=pcall(function()
+            local texture=valid(value_of(value_of(value_of(widget.Image_Item_Thumb).Brush).ResourceObject))
+            return texture and text(texture:GetFName()) or nil
+        end)
+        return {thumb=ok and thumb or nil,count=get(widget,'ItemCount'),max=get(widget,'RecoveryPotionMaxCount'),
+            cooldown=get(widget,'CoolTimePercent'),usable=get(widget,'SlotUseAllow')}
+    end
+    function engine.hud()
+        local result={search=find_hud(),heal=slot(widgets.heal),util=slot(widgets.util),lower=slot(widgets.lower)}
+        result.dash=widgets.dash and get(widgets.dash,'CoolTimeProgress')
+        result.bullet=name_of(valid(UE.GetPlayer()),'CurrentBulletItemAlias')
+        for _,b in ipairs(result.bullet and bullets or {}) do
+            if name_of(b,'ItemAlias')==result.bullet then result.ammo={count=get(b,'ItemCount'),cooldown=get(b,'CooltimePercent')}; break end
+        end
+        return result
+    end
+    -- Registers fn on the item-consume request (ServerRequest_ItemBucketItemConsume); a probe: it may never fire in single player.
+    function engine.watch_consume(fn) RegisterHook('/Script/SB.SBNetworkPlayerController:ServerRequest_ItemBucketItemConsume',fn) end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)
         local bones,morphs={},{}

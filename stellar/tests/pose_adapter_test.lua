@@ -298,4 +298,53 @@ missing[WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword']=true
 played={}; blade.state='Sword'
 local drew,err=pcall(swords.lock_draw,false)
 assert(not drew and tostring(err):find('Eve_UnFoldSword.Eve_UnFoldSword is not loaded',1,true),'No Show at all is an error: '..tostring(err))
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone and the sword Shows per weapon and hairstyle')
+-- Stellar Blade's HUD widgets: item slots by name, the dash slot and bullet slots by class; kept while valid; while one is
+-- missing, searched again 2 s later, doubling up to 30 s (2 s again once a search finds one), at once when one found went.
+local function thumb(texture) return object('Image_Item_Thumb',{Brush=wrap({ResourceObject=texture and object(texture)})}) end
+local healSlot=object('WB_MainHUD_HealItem',{ItemCount=3,RecoveryPotionMaxCount=5,CoolTimePercent=0,SlotUseAllow=true,Image_Item_Thumb=thumb('Icon_PotionR')})
+local utilSlot=object('WB_MainHUD_UtilItem',{ItemCount=wrap(2),CoolTimePercent=0.4,Image_Item_Thumb=thumb(nil)})
+setmetatable(utilSlot,{__index=function(_,key) if key=='SlotUseAllow' then error('no such property') end end})
+local lowerSlot=object('WB_MainHUD_Lower1Item',{ItemCount=0})
+local dashSlot=object('WB_Dash_Slot',{CoolTimeProgress=0.25})
+local bulletSlots={object('Slot0',{ItemAlias=fname('Bullet_Scatter'),ItemCount=8,CooltimePercent=0}),
+    object('Slot1',{ItemAlias=wrap(fname('Bullet_Normal')),ItemCount=120,CooltimePercent=0.5})}
+local instances={WB_MainHUD_ItemSlot_C={object('WB_MainHUD_HealItem_Old',{}),healSlot,utilSlot},WB_MainHUD_Dash_Slot_C={dashSlot},WB_Tps_Bullet2_Slot_C={}}
+local walks={}
+FindAllOf=function(class) walks[class]=(walks[class] or 0)+1; return instances[class] end
+local shooter=object('EVE',{CurrentBulletItemAlias=fname('Bullet_Normal')})
+package.loaded.UEHelpers.GetPlayer=function() return shooter end
+clock=100; os.clock=function() return clock end
+local widgets=require('pose_adapter').new()
+local function walked() local n=0; for _,count in pairs(walks) do n=n+count end; return n end
+local hud=widgets.hud()
+assert(hud.search and hud.search.missing=='lower, bullets' and hud.search.retry==2 and hud.search.ms==0,'The first call searches: '..tostring(hud.search and hud.search.missing))
+assert(hud.heal.thumb=='Icon_PotionR' and hud.heal.count==3 and hud.heal.max==5 and hud.heal.cooldown==0 and hud.heal.usable==true)
+assert(hud.util.thumb==nil and hud.util.count==2 and hud.util.cooldown==0.4 and hud.util.usable==nil,'Unreadable values are nil')
+assert(hud.lower==nil and hud.dash==0.25 and hud.bullet=='Bullet_Normal' and hud.ammo==nil,'No bullet slot, no ammo')
+local searches={}
+for _,t in ipairs({101,101.9,102,105.9,106,113.9,114,129.9,130,159.9,160}) do
+    clock=t
+    local before=walked()
+    if widgets.hud().search then searches[#searches+1]=t end
+    assert((walked()>before)==(searches[#searches]==t),'A search walks the missing classes')
+end
+assert(table.concat(searches,' ')=='102 106 114 130 160','A missing widget is searched for 2, 4, 8, 16 then 30 s later: '..table.concat(searches,' '))
+assert(walks.WB_MainHUD_Dash_Slot_C==1,'A found class is not walked again')
+instances.WB_Tps_Bullet2_Slot_C=bulletSlots
+instances.WB_MainHUD_ItemSlot_C[#instances.WB_MainHUD_ItemSlot_C+1]=lowerSlot
+clock=190; hud=widgets.hud()
+assert(hud.search.missing=='none' and hud.search.retry==nil and hud.lower.count==0,'Everything found')
+assert(hud.ammo.count==120 and hud.ammo.cooldown==0.5,'The selected bullet\'s slot gives the ammo')
+local before=walked()
+clock=1000; assert(widgets.hud().search==nil and walked()==before,'Found widgets are kept')
+utilSlot.IsValid=function() return false end
+instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot}
+hud=widgets.hud()
+assert(hud.search and hud.search.missing=='util' and hud.search.retry==2 and hud.util==nil,'A widget that went is searched for at once')
+assert(walks.WB_MainHUD_ItemSlot_C==8 and walks.WB_MainHUD_Dash_Slot_C==1,'Only its class is walked')
+local hooked
+RegisterHook=function(path,fn) hooked={path=path,fn=fn} end
+widgets.watch_consume(print)
+assert(hooked.path=='/Script/SB.SBNetworkPlayerController:ServerRequest_ItemBucketItemConsume' and hooked.fn==print)
+os.clock=real_clock
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone, the sword Shows per weapon and hairstyle, and the HUD widgets')

@@ -132,6 +132,12 @@ package.loaded.requests={new=function(directory,wall,logger,linked,offered,run)
     request_args={linked=linked,offered=offered,run=run}
     return {tick=function() request_ticks=request_ticks+1; if request_error then error('request read failed') end end}
 end}
+local hud_args,hud_ticks,hud_error,hud_after=nil,0,false,nil
+package.loaded.hud_items={new=function(engine,directory,wall,logger,link)
+    assert(type(engine)=='table' and directory=='/unused' and wall==os.time and type(logger)=='function' and type(link)=='function')
+    hud_args={link=link}
+    return {tick=function() hud_ticks=hud_ticks+1; hud_after=request_ticks; if hud_error then error('widgets unreadable') end end}
+end}
 package.loaded.native_scene={new=function(_,received,directory,scale) assert(received==bridge and directory=='/unused' and scale==100); return scene end}
 package.loaded.scene_adapter={new=function()return {} end}
 Key={F1='F1',F2='F2',F4='F4',F5='F5',F6='F6',F7='F7',F8='F8',F9='F9',F11='F11'}
@@ -345,3 +351,11 @@ assert(requested and returns==returned+1 and state=='idle' and request_args.link
 requested,message=request_args.run('nonsense')
 assert(requested==false and message:find('Use status',1,true) and logs[#logs]:find('STOP: ',1,true),'A failed action reports false and its message')
 print('PASS session request wiring: bridge-timer ticks, nonfatal failures, link and terrain sessions, shared key actions')
+-- Stellar Blade's HUD slots: read by the bridge timer after session requests, for the link the pose stream follows.
+ticks=hud_ticks
+loop(); drain(); assert(hud_ticks==ticks+1 and hud_after==request_ticks,'The bridge timer reads the HUD slots after session requests')
+hud_error=true; loop(); drain(); hud_error=false
+assert(logs[#logs]:find('STOP: HUD slots paused: ',1,true) and logs[#logs]:find('widgets unreadable',1,true),'HUD failures are reported')
+loop(); drain(); assert(hud_ticks==ticks+3,'The bridge timer keeps running after a HUD failure')
+assert(hud_args.link==stream_link,'The HUD slots follow the entered link')
+print('PASS HUD slot wiring: bridge-timer reads after session requests, nonfatal failures, the entered link')
