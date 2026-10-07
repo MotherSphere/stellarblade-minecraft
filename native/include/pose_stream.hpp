@@ -59,6 +59,7 @@ struct Effects {
 struct Table {
   std::string run;
   uint64_t generation = 0;
+  std::string session; // Lua's link session, or "none".
   std::optional<Controller> controller;
   std::vector<Component> components;
   std::vector<Parameter> parameters;
@@ -219,8 +220,9 @@ void count_evades(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &);
 // image's TurnClockVtableRva. True if it stamped.
 constexpr uintptr_t TurnClockRva = 0x7032560, TurnClockVtableRva = 0x5bf9120;
 bool hold_battle(uintptr_t world, uintptr_t clock, uintptr_t vtable);
-// eve-lock.txt (SBMC_LOCK 1): its TIME while it names a target, else 0.
-uint64_t parse_lock(std::string_view text);
+// eve-lock.txt (SBMC_LOCK 1): its TIME while it names a target for session
+// (the link Lua's component table names), else 0.
+uint64_t parse_lock(std::string_view text, std::string_view session);
 // Look input for one gameplay poll: Minecraft's camera motion since the last
 // poll, plus for yaw a share of the remaining gap to the controller's rotation,
 // so the game's camera follows like it follows a mouse. The controller's pitch

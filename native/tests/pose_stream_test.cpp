@@ -157,7 +157,12 @@ int main() {
            parsed->floats == 40 + 12 && "The Lua fixture parses natively");
   }
   auto table = parse_components(components(4, 0x10, 0x20));
-  assert(table && table->generation == 4 && table->components.size() == 2);
+  assert(table && table->generation == 4 && table->components.size() == 2 && table->session == "none");
+  {
+    auto linked = components(4, 0x10, 0x20);
+    linked.replace(linked.find("SESSION none"), 12, "SESSION " + std::string(32, 'c'));
+    assert(parse_components(linked)->session == std::string(32, 'c') && "The link's session, for the lock file");
+  }
   assert(table->floats == (10 + 30 + 2) + (10 + 2));
   assert(table->components[1].bones == 0 && table->components[1].morphs == 2);
   std::string good = components(4, 0x10, 0x20);
@@ -800,15 +805,17 @@ int main() {
     auto lock_file = [](const char *seq, const char *target, const char *end) {
       return "SBMC_LOCK 1\nSESSION " + Run + "\nSEQ " + seq + "\nTIME 1000\nTARGET " + target + "\nEND " + end + "\n";
     };
-    assert(parse_lock(lock_file("3", "1.000 2.000 3.000", "3")) == 1000 && "A held target gives its time");
+    assert(parse_lock(lock_file("3", "1.000 2.000 3.000", "3"), Run) == 1000 && "A held target gives its time");
+    assert(parse_lock(lock_file("3", "1.000 2.000 3.000", "3"), std::string(32, 'b')) == 0 && "Not for another session");
+    assert(parse_lock(lock_file("3", "1.000 2.000 3.000", "3"), "none") == 0 && "Nor without a link");
     {
       std::ifstream shared("protocol/fixtures/lock.txt", std::ios::binary); // The file Java and Lua parse too.
       std::string text((std::istreambuf_iterator<char>(shared)), std::istreambuf_iterator<char>());
-      assert(parse_lock(text) == 1760000000000ull && "The shared lock fixture parses");
+      assert(parse_lock(text, std::string(32, 'a')) == 1760000000000ull && "The shared lock fixture parses");
     }
-    assert(parse_lock(lock_file("4", "none", "4")) == 0 && "A release gives none");
-    assert(parse_lock(lock_file("4", "1.000 2.000 3.000", "5")) == 0 && "A torn file gives none");
-    assert(parse_lock("") == 0);
+    assert(parse_lock(lock_file("4", "none", "4"), Run) == 0 && "A release gives none");
+    assert(parse_lock(lock_file("4", "1.000 2.000 3.000", "5"), Run) == 0 && "A torn file gives none");
+    assert(parse_lock("", Run) == 0);
   }
   on_gameplay_poll(); // Nothing installed yet.
   poll_files(directory.wstring(), request(now), slots, "", now);

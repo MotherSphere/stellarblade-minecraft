@@ -163,12 +163,11 @@ std::optional<Request> parse_request(std::string_view text) {
 std::optional<Table> parse_components(std::string_view text) {
   Lines lines(text, 65536);
   Table table;
-  std::string session;
   uint64_t count = 0;
   if (!lines.literal("SBMC_POSE_COMPONENTS 1") || !lines.text("RUN", table.run) ||
       !identity(table.run) || !lines.num("GENERATION", table.generation) ||
-      !table.generation || !lines.text("SESSION", session) ||
-      (session != "none" && !identity(session)) || lines.at >= lines.rows.size())
+      !table.generation || !lines.text("SESSION", table.session) ||
+      (table.session != "none" && !identity(table.session)) || lines.at >= lines.rows.size())
     return {};
   auto anchor = split(lines.rows[lines.at++]);
   bool none = anchor.size() == 2 && anchor[1] == "none";
@@ -674,12 +673,12 @@ bool hold_battle(uintptr_t world, uintptr_t clock, uintptr_t vtable) {
   return true;
 }
 
-uint64_t parse_lock(std::string_view text) {
+uint64_t parse_lock(std::string_view text, std::string_view linked) {
   Lines lines(text, 256);
   std::string session;
   uint64_t seq = 0, time = 0;
   bool target = lines.literal("SBMC_LOCK 1") && lines.text("SESSION", session) &&
-                identity(session) && lines.num("SEQ", seq) && lines.num("TIME", time) &&
+                identity(session) && session == linked && lines.num("SEQ", seq) && lines.num("TIME", time) &&
                 lines.field("TARGET", 3).size() == 3 && lines.end(seq);
   return target ? time : 0;
 }
@@ -1069,7 +1068,8 @@ void poll_files(const std::wstring &directory, std::string_view request_text,
   bool wanted = request && request->active && fresh(request->time, wall);
   auto next = wanted ? select_components(slot0, slot1, request->run)
                      : std::optional<Table>{};
-  auto locked_at = parse_lock(lock_text);
+  // Only a lock of the session Lua links counts: another Minecraft session's file opens nothing.
+  auto locked_at = next ? parse_lock(lock_text, next->session) : 0;
   std::lock_guard<std::mutex> guard(lock);
   minecraft_lock = locked_at;
   if (!wanted) {
