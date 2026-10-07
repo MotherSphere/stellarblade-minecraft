@@ -226,8 +226,9 @@ struct Grants {
   uint32_t beta = 0, burst = 0, granted[2] = {};
 };
 // One poll: with fed (fresh words of the run that owns forwarded input) grants the step since the totals last seen,
-// adopting the new totals first so a step is applied once; without, forgets them (points earned meanwhile never land).
-void grant_poll(uintptr_t world, const Feedback *fed, Grants &);
+// adopting the new totals first so a step is applied once. Without, keeps them while live (that run still owns input and
+// the stream is active: its words are only stale), else forgets them (points earned meanwhile never land).
+void grant_poll(uintptr_t world, bool live, const Feedback *fed, Grants &);
 // EVE's HP mirror. Stellar Blade refuses a heal at full HP (ConditionTable ActorProperty_HP_Less, per mille), and
 // Minecraft judges her hits, so SB HP (stat 1, +0x11c) carries Minecraft's share of MaxHP (stat 2, +0x120): mirrored().
 // While active, SB HP above the last value written or seen is an SB heal (healed += its points); below it, a loss

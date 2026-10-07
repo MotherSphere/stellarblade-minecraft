@@ -719,7 +719,7 @@ int main() {
       Feedback f;
       f.beta = beta;
       f.burst = burst;
-      grant_poll(w, &f, grants);
+      grant_poll(w, true, &f, grants);
     };
     feed(15, 0);
     assert(grants.known && value(14) == 400 && value(18) == 130 && "First sighting is a baseline");
@@ -729,17 +729,20 @@ int main() {
     assert(value(14) == 417 && grants.granted[0] == 17 && "A step applies once");
     feed(30, 200);
     assert(value(18) == 330 && grants.granted[1] == 200 && "Burst at its own rate");
-    grant_poll(w, nullptr, grants);
-    assert(!grants.known && "No fresh words: the totals are forgotten");
+    grant_poll(w, true, nullptr, grants);
+    feed(45, 200);
+    assert(value(14) == 434 && grants.granted[0] == 34 && "Stale words skip: the step lands at the next fresh poll");
+    grant_poll(w, false, nullptr, grants);
+    assert(!grants.known && "Input or stream lost: the totals are forgotten");
     feed(60, 200);
-    assert(value(14) == 417 && "Rebaseline after losing the input");
+    assert(value(14) == 434 && "Rebaseline after losing the input");
     feed(1061, 200);
-    assert(value(14) == 417 && "A step above 1000 is adopted, not granted");
+    assert(value(14) == 434 && "A step above 1000 is adopted, not granted");
     stat(116, 0);
     feed(1061, 400);
     assert(value(18) == 330 && grants.granted[1] == 200 && "Locked Burst gains nothing");
     feed(1076, 400);
-    assert(value(14) == 434 && "Beta still gains");
+    assert(value(14) == 451 && "Beta still gains");
     stat(14, 995);
     auto before = grants.granted[0];
     feed(1091, 400);
@@ -761,7 +764,7 @@ int main() {
     wrapped.beta = 0xFFFFFFF0;
     Feedback over;
     over.beta = 0x0F;
-    grant_poll(w, &over, wrapped);
+    grant_poll(w, true, &over, wrapped);
     // 31 points (0x0F - 0xFFFFFFF0 in u32) at rate 0.13: 31 + ceil(4.03) = 35.
     assert(value(14) == 435 && wrapped.granted[0] == 35 && "U32 wrap");
     // The HP mirror: Minecraft's share of MaxHP, a quarter at least, 1 per mille under full, never 0.

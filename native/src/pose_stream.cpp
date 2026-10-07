@@ -606,9 +606,9 @@ bool grant_gauges(uintptr_t world, uint32_t beta, uint32_t burst, uint32_t added
     added[1] = add(burst, g[2], g[3], rates[1], BurstRateCap, 0x160);
   return true;
 }
-void grant_poll(uintptr_t world, const Feedback *fed, Grants &g) {
+void grant_poll(uintptr_t world, bool live, const Feedback *fed, Grants &g) {
   if (!fed) {
-    g.known = false;
+    g.known = g.known && live; // Stale words skip: the totals are cumulative, so their step lands at the next fresh poll.
     return;
   }
   uint32_t beta = fed->beta - g.beta, burst = fed->burst - g.burst; // u32 wrap
@@ -1118,9 +1118,9 @@ bool guarded_actor(uintptr_t world, float *out) {
   }
 }
 // A player actor freed under the poll faults before the write at worst; the record is forgotten without a restore.
-void guarded_grants(uintptr_t world, const Feedback *fed, Grants &g) {
+void guarded_grants(uintptr_t world, bool live, const Feedback *fed, Grants &g) {
   __try {
-    grant_poll(world, fed, g);
+    grant_poll(world, live, fed, g);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     g.known = false;
   }
@@ -1185,7 +1185,7 @@ bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) 
 bool guarded_gauges(uintptr_t world, float *out) { return read_gauges(world, out); }
 bool guarded_stats(uintptr_t world, float *out) { return read_stats(world, out); }
 bool guarded_actor(uintptr_t world, float *out) { return read_actor(world, out); }
-void guarded_grants(uintptr_t world, const Feedback *fed, Grants &g) { grant_poll(world, fed, g); }
+void guarded_grants(uintptr_t world, bool live, const Feedback *fed, Grants &g) { grant_poll(world, live, fed, g); }
 void guarded_mirror(uintptr_t world, float share, uint32_t acknowledged, bool fresh, uint64_t wall, HealthMirror &m) {
   mirror_health(world, share, acknowledged, fresh, wall, m);
 }
@@ -1265,9 +1265,10 @@ void on_gameplay_poll(std::string_view owner) {
   // Minecraft's gauge points and health share act only for the run that owns forwarded input, with its words fresh;
   // grants come before the gauges are read, so this slot shows them. The mirror's restore runs without a stream too.
   bool granted = !owner.empty() && owner == producer.run();
+  bool live = granted && producer.active(wall);
   Feedback fed;
-  bool heard = granted && producer.active(wall) && producer.feedback(wall, fed);
-  guarded_grants(game_world(), heard ? &fed : nullptr, grants);
+  bool heard = live && producer.feedback(wall, fed);
+  guarded_grants(game_world(), live, heard ? &fed : nullptr, grants);
   if (heard || mirror.active)
     guarded_mirror(game_world(), heard ? fed.share : 0, fed.acknowledged, heard, wall, mirror);
   if (!table || !engine.objects || !producer.active(wall))
