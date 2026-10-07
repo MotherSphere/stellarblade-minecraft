@@ -102,7 +102,7 @@ function engine.configure(handle, spec)
     box:SetMobility(2)
     box:SetGenerateOverlapEvents(false)
     box:SetBoxExtent(spec.extent,true)
-    box:SetCollisionObjectType(1) -- WorldDynamic; bilateral response must be tested in game.
+    box:SetCollisionObjectType(1) -- WorldDynamic: EVE's capsule blocks on it, as the in-game avatar sessions showed.
     box:SetCollisionResponseToAllChannels(2) -- Block
     box:SetCollisionEnabled(3) -- QueryAndPhysics
     -- Stellar Blade adds inFastUpdate; use the non-fast path for this experiment.

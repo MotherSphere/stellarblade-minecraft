@@ -58,6 +58,8 @@ The scripts refuse existing foreign or modified content and record ownership man
 
 Proton must load the native adapter. Retain existing overrides and add `xinput1_3=n,b` to the game's `WINEDLLOVERRIDES`, or set the equivalent game-specific Wine registry override to `native,builtin`. The installers do not change overrides or Steam options. Do not replace `dinput8.dll`, `dwmapi.dll` or UE4SS to install this adapter.
 
+Avatar mode also needs the private avatar pack in `~/.local/share/stellar-blade-minecraft/avatar` (or `-Dstellarbridge.avatar=<dir>`), built from your own game installation and never part of this repository; see [the avatar view](diagnostics.md#avatar-view-experimental). Without it, `/stellaravatar` reports that the pack holds no EVE mesh; the capture views still work.
+
 Follow the [main session sequence](../README.md#start-a-session). All bridge components start inactive.
 
 ## Update and remove
