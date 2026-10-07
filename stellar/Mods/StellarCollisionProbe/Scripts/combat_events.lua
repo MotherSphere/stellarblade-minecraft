@@ -7,9 +7,10 @@
 --   direction, and movement block) and the attacker's (FX_Parry_Just: sparks, sound, a 0.15 s time scale of 0.25,
 --   post-process, camera shake), or the bare parry sparks if that one fails; a parry plays the parried-hit Show, a guard
 --   the guarded-hit Show for its strength with the key's hit-level check lifted for the call;
--- * a landed hit makes her react toward the attack: three variants of her stock light-hit Show take turns until one
---   animates her (a full-body or additive custom-animation alpha above zero REACTION_SAMPLE seconds later, from none
---   before), which is then kept; a try while she was already animating or moving tells nothing and is not counted.
+-- * a landed hit makes her react toward the attack: three variants of her stock light-hit Show (the strong-hit Show for
+--   hit_strong, the light one if that is unavailable) take turns until one animates her (a full-body or additive
+--   custom-animation alpha above zero REACTION_SAMPLE seconds later, from none before), which is then kept for both
+--   strengths; a try while she was already animating or moving tells nothing and is not counted.
 -- Every in-memory change (a Show's lifted key, a reaction's lifted gate or held tag, the time dilation) is undone on
 -- time, retried every frame until it is.
 -- Game-thread only; call tick each native frame. Events count only for the entered link's session.
@@ -31,7 +32,7 @@ local GATE='SBShowAnimKey_0' -- The guarded-hit body key checks a hit level, whi
 local FX='/Game/Art/FX/Char/PC/Skill/'
 local EVADE_EFFECTS={FX..'Evade/NS_A_EvadeBody_01.NS_A_EvadeBody_01',FX..'Evade/NS_A_EvadeParticle_02.NS_A_EvadeParticle_02'}
 local PARRY_EFFECT=FX..'Parry/NS_JustParry_02.NS_JustParry_02'
-local EVENTS={perfect_dodge=true,perfect_parry=true,parry=true,guard=true,guard_strong=true,hit=true}
+local EVENTS={perfect_dodge=true,perfect_parry=true,parry=true,guard=true,guard_strong=true,hit=true,hit_strong=true}
 function Combat.parse(text)
     if type(text)~='string' or #text>512 then return nil end
     local session,seq,time,event,yaw,ending=text:match('^SBMC_COMBAT 2\nSESSION (%x+)\nSEQ (%d+)\nTIME (%d+)\nEVENT ([%a_]+) (%S+)\nEND (%d+)\n$')
@@ -118,7 +119,7 @@ function Combat.new(engine,directory,wall,real,log,link)
             if animated and not chosen then chosen=pending.method; verdict='; reaction kept'
             elseif not chosen and (busy or moved) then reactions=reactions-1; verdict=busy and '; inconclusive, EVE was already animating' or '; inconclusive, EVE was moving'
             elseif not chosen and reactions>=PROBES then verdict='; no variant animated EVE, reactions off' end
-            note(string.format('hit %d %s: %s%s',pending.seq,pending.method,ok and line or 'sample failed: '..tostring(line),verdict))
+            note(string.format('%s %d %s: %s%s',pending.event,pending.seq,pending.method,ok and line or 'sample failed: '..tostring(line),verdict))
         end
         -- Every frame until it works: a lifted gate or a held tag must never stay.
         if pending and real()>=pending.at+REACTION_RESTORE then
@@ -126,7 +127,7 @@ function Combat.new(engine,directory,wall,real,log,link)
             if ok then pending=nil
             elseif not pending.restore_failed then
                 pending.restore_failed=true
-                note(string.format('hit %d %s: restore failed, retrying: %s',pending.seq,pending.method,tostring(why)))
+                note(string.format('%s %d %s: restore failed, retrying: %s',pending.event,pending.seq,pending.method,tostring(why)))
             end
         end
         -- Every frame until it works: a key is a shared asset object.
@@ -165,7 +166,8 @@ function Combat.new(engine,directory,wall,real,log,link)
         last=event.seq
         if math.abs(wall()*1000-event.time)>FRESH_MS then return end
         local answer=''
-        if event.event~='hit' then trace={at=real(),seq=event.seq,event=event.event} end -- A Show that animates EVE.
+        local hit=event.event=='hit' or event.event=='hit_strong'
+        if not hit then trace={at=real(),seq=event.seq,event=event.event} end -- A Show that animates EVE.
         if event.event=='perfect_dodge' then
             local before,was=evade_bodies(),state()
             local info,played=show(JUST_EVADE,event.yaw,'SBShowAnimKey_0')
@@ -179,14 +181,14 @@ function Combat.new(engine,directory,wall,real,log,link)
             answer='; '..show(PARRIED,event.yaw)
         elseif GUARDED[event.event] then
             answer='; '..show(GUARDED[event.event],event.yaw,nil,GATE)
-        elseif event.event=='hit' and event.yaw and not pending and (chosen or reactions<PROBES) and real()-last_reaction>=REACTION_GAP then
+        elseif hit and event.yaw and not pending and (chosen or reactions<PROBES) and real()-last_reaction>=REACTION_GAP then
             reactions=reactions+1
             last_reaction=real()
             local method=chosen or VARIANTS[(reactions-1)%#VARIANTS+1]
-            local ok,info,sample=pcall(engine.hit_reaction,event.yaw,method)
+            local ok,info,sample=pcall(engine.hit_reaction,event.yaw,method,event.event=='hit_strong')
             answer='; reaction '..(ok and info or method..' failed: '..tostring(info))
                 ..(not ok and not chosen and reactions==PROBES and '; no variant animated EVE, reactions off' or '')
-            if ok then pending={at=real(),sample=sample,seq=event.seq,method=method} end
+            if ok then pending={at=real(),sample=sample,seq=event.seq,method=method,event=event.event} end
         end
         note(string.format('%s %d%s%s',event.event,event.seq,event.yaw and string.format(' from %.0f deg',event.yaw) or '',answer))
     end

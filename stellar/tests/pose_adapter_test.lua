@@ -127,6 +127,48 @@ assert(key.bStopAtMove==true,'The stop-at-move comes back through the restore')
 refuse=true
 assert(not pcall(engine.play_show,SHOW_PATH,0,'SBShowAnimKey_0','SBShowAnimKey_0'))
 assert(key.bStopAtMove==true and key.bCheckHitLevel==true,'A refused play restores both keys')
+-- Hit reactions: the gate lifts, until the restore, the hit-level check of the key Stellar Blade picks for the attack's
+-- angle in the Show asked for (the strong Show's front key reaches 50 degrees, the light one's 45); a strong Show that
+-- cannot be loaded falls back to the light one.
+FName=function(name) return name end
+local HIT='/Game/Art/Show/Hit/'
+local LIGHT,STRONG=HIT..'Result_Hit_Stand_LightAttack.Result_Hit_Stand_LightAttack',HIT..'Result_Hit_Stand_StrongAttack.Result_Hit_Stand_StrongAttack'
+local hitObjects,strongLoaded,libraryShow,played={},true,nil,nil
+for _,path in ipairs({LIGHT,STRONG}) do
+    hitObjects[path]=object(path:match('[^.]+$'))
+    for _,name in ipairs({'SBShowAnimKey_1','SBShowAnimKey_2'}) do hitObjects[path..':'..name]=object(name,{bCheckHitLevel=true}) end
+end
+StaticFindObject=function(path)
+    if path=='/Script/SB.SBCharacter' then local c=object('Class'); c.name='SBCharacter'; return c end
+    if path=='/Script/SB.Default__SBBlueprintLibrary' then return object('Library',{PlaySBShowToPlayerCharacter=function(_,show) libraryShow=show end}) end
+    if path:find(STRONG,1,true)==1 and not strongLoaded then return nil end
+    return hitObjects[path]
+end
+eve.Mesh=object('Mesh',{GetSocketTransform=function() return {Translation={X=0,Y=0,Z=0}} end})
+function eve:PlaySingleShow(path)
+    played={path=path}
+    for name,o in pairs(hitObjects) do if o.bCheckHitLevel==false then played.lifted=name end end
+end
+local function react(yaw,method,strong)
+    local hitInfo,sample=engine.hit_reaction(yaw,method,strong)
+    local lifted=played and played.lifted
+    engine.hit_restore(sample)
+    for name,o in pairs(hitObjects) do assert(o.bCheckHitLevel~=false,name..' stays lifted') end
+    return hitInfo,lifted
+end
+local hitInfo,lifted=react(47,'gate',true)
+assert(played.path==STRONG and lifted==STRONG..':SBShowAnimKey_2'
+    and hitInfo=='gate SBShowAnimKey_2, attack from the right (47 deg), Result_Hit_Stand_StrongAttack',hitInfo)
+hitInfo,lifted=react(47,'gate',false)
+assert(played.path==LIGHT and lifted==LIGHT..':SBShowAnimKey_1' and hitInfo:find('Result_Hit_Stand_LightAttack$'),hitInfo)
+hitInfo,lifted=react(-120,'gate',true)
+assert(lifted==STRONG..':SBShowAnimKey_1' and hitInfo:find('from the left (-120 deg)',1,true),hitInfo)
+react(0,'library',true)
+assert(libraryShow==hitObjects[STRONG],'The library plays the strong Show')
+strongLoaded=false
+hitInfo,lifted=react(47,'gate',true)
+assert(played.path==LIGHT and lifted==LIGHT..':SBShowAnimKey_1'
+    and hitInfo:find('Result_Hit_Stand_LightAttack (strong Show unavailable: ',1,true) and hitInfo:find(STRONG..' is not loaded)',1,true),hitInfo)
 local unseen=effect('NC3','NS_A_LensFlare_Drone',true,'FX_Lens')
 unseen.IsVisible=function() return false end
 sword.AttachChildren=tarray({unseen})
@@ -194,4 +236,4 @@ os.clock=real_clock
 FindAllOf=function() error('FindAllOf unavailable') end
 local failing,why=require('pose_adapter').new().identities()
 assert(#failing==2 and why:find('unavailable: ',1,true),'A failing drone search leaves EVE streaming')
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts and the drone')
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength and the drone')

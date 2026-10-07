@@ -9,7 +9,8 @@ local parsed=Combat.parse(fixture)
 assert(parsed and parsed.session==string.rep('a',32) and parsed.seq==7 and parsed.time==1760000000000 and parsed.event=='hit' and parsed.yaw==-135)
 assert(Combat.parse(fixture:gsub('hit %-135.0','perfect_dodge none')).yaw==nil)
 assert(Combat.parse(fixture:gsub('hit','guard_strong')).event=='guard_strong' and Combat.parse(fixture:gsub('hit','parry')).event=='parry')
-for _,bad in ipairs({fixture:gsub('SBMC_COMBAT 2','SBMC_COMBAT 1'),fixture:gsub('hit','dodge'),fixture:gsub('%-135.0','200'),fixture:gsub('END 7','END 8'),fixture:gsub('SESSION a','SESSION A'),fixture:sub(1,-2)}) do
+assert(Combat.parse(fixture:gsub('hit','hit_strong')).event=='hit_strong')
+for _,bad in ipairs({fixture:gsub('SBMC_COMBAT 2','SBMC_COMBAT 1'),fixture:gsub('hit','dodge'),fixture:gsub('hit','hit_heavy'),fixture:gsub('%-135.0','200'),fixture:gsub('END 7','END 8'),fixture:gsub('SESSION a','SESSION A'),fixture:sub(1,-2)}) do
     assert(Combat.parse(bad)==nil,bad)
 end
 
@@ -18,7 +19,7 @@ local wall,real=1791300000,100.0
 local dilation,dilations,effects,shows,logged=1,{},{},{},{}
 local on_eve={} -- Effect labels on EVE's mesh.
 local takes=true -- Whether Stellar Blade takes a played Show (its evade effect appears on EVE).
-local reactions,restores,alphas,busy,speed={},0,{},false,0
+local reactions,strengths,restores,alphas,busy,speed={},{},0,{},false,0
 local engine={}
 function engine.time_dilation(value) local previous=dilation; dilation=value; dilations[#dilations+1]=value; return previous end
 function engine.play_effect(path) effects[#effects+1]=path:match('[^.]+$') end
@@ -34,7 +35,10 @@ function engine.play_show(path,yaw,held,gate)
 end
 function engine.anim_state() return 'custom alpha 1.00' end
 function engine.eve_effects() return on_eve end
-function engine.hit_reaction(yaw,method) reactions[#reactions+1]=method; return method..' toward '..yaw,{method=method,busy=busy} end
+function engine.hit_reaction(yaw,method,strong)
+    reactions[#reactions+1]=method; strengths[#reactions]=strong
+    return method..' toward '..yaw,{method=method,busy=busy}
+end
 function engine.hit_sample(sample) local a=alphas[sample.method] or 0; return string.format('alpha %.2f',a),a,0,speed end
 function engine.hit_restore() restores=restores+1 end
 local place={session=SESSION}
@@ -140,15 +144,23 @@ real=real+0.3; combat.tick()
 assert(last():find('reaction kept',1,true),last())
 real=real+0.8; combat.tick()
 real=real+1; event('hit'); combat.tick()
-assert(reactions[3]=='library','The animating variant is kept')
+assert(reactions[3]=='library' and strengths[3]==false,'The animating variant is kept')
 real=real+1.1; combat.tick()
+-- A strong hit asks the kept variant for the strong-hit Show, sampled and undone the same way; no Show trace follows.
+local before_strong=#logged
+real=real+1; event('hit_strong'); combat.tick()
+assert(reactions[4]=='library' and strengths[4]==true and last():find('hit_strong '..seq..' from 90 deg; reaction library',1,true),last())
+real=real+0.3; combat.tick()
+assert(last():find('hit_strong '..seq..' library: alpha 0.80',1,true),last())
+real=real+0.8; combat.tick()
+assert(restores==4 and not table.concat(logged,'\n',before_strong+1):find('+0.6s',1,true),'Undone after it plays, untraced')
 -- A failed undo is retried every frame.
 local undo=engine.hit_restore
 engine.hit_restore=function() error('map gone') end
 real=real+1; event('hit'); combat.tick(); real=real+1.2; combat.tick(); combat.tick()
 assert(last():find('restore failed, retrying',1,true),last())
 engine.hit_restore=undo; combat.tick()
-assert(restores==4,'The undo succeeds once it can')
+assert(restores==5,'The undo succeeds once it can')
 -- A try while EVE already animates or moves tells nothing: not counted, the same variant comes back.
 local function probe_combat() return Combat.new(engine,directory,function() return wall end,function() return real end,function(line) logged[#logged+1]=line end,function() return place end) end
 alphas,reactions,busy={library=1},{},true
@@ -172,4 +184,4 @@ local reported=0
 for _,line in ipairs(logged) do if line:find('unsupported event version 1',1,true) then reported=reported+1 end end
 assert(reported==1,'A version mismatch is reported once')
 os.remove(directory..'/eve-combat.txt'); os.remove(directory)
-print('Combat events: parse, session binding, staleness, perfect-dodge Show with its fallback, parry and guard Shows, reaction variants and their undo')
+print('Combat events: parse, session binding, staleness, perfect-dodge Show with its fallback, parry and guard Shows, light and strong reaction variants and their undo')

@@ -65,7 +65,7 @@ public final class BridgeProtocol {
             .append(' ').append(box.maxX).append(' ').append(box.maxY).append(' ').append(box.maxZ).append('\n');
     }
 
-    static final List<String> COMBAT_EVENTS = List.of("perfect_dodge", "perfect_parry", "parry", "guard", "guard_strong", "hit");
+    static final List<String> COMBAT_EVENTS = List.of("perfect_dodge", "perfect_parry", "parry", "guard", "guard_strong", "hit", "hit_strong");
 
     /** A combat event for Stellar Blade: the defense at an impact and the attacker's Unreal yaw in degrees (NaN: none). */
     public static String encodeCombat(String session, long seq, long time, String event, double yaw) {

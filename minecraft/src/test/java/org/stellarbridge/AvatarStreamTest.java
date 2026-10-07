@@ -85,7 +85,9 @@ public final class AvatarStreamTest {
         assert AvatarCombat.defense(impact, impact - 400_000_000L, impact - 300_000_000L, true) == AvatarCombat.Defense.DODGE : "A dodge outranks a late parry";
         assert AvatarCombat.event(AvatarCombat.Defense.GUARD, AvatarCombat.STRONG_HIT).equals("guard_strong")
                 && AvatarCombat.event(AvatarCombat.Defense.GUARD, 7.9f).equals("guard")
-                && AvatarCombat.event(AvatarCombat.Defense.PERFECT_PARRY, 20).equals("perfect_parry");
+                && AvatarCombat.event(AvatarCombat.Defense.PERFECT_PARRY, 20).equals("perfect_parry")
+                && AvatarCombat.event(AvatarCombat.Defense.HIT, AvatarCombat.STRONG_HIT).equals("hit_strong")
+                && AvatarCombat.event(AvatarCombat.Defense.HIT, 7.9f).equals("hit");
         // The guard's cooldown: a press sooner than 0.4 s after the previous press does not count.
         long first = impact - 1_000_000_000L;
         assert AvatarCombat.counted(Long.MIN_VALUE, Long.MIN_VALUE, first) == first : "A first press counts";

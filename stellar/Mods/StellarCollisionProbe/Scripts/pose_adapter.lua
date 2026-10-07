@@ -422,29 +422,33 @@ function Adapter.new()
     end
     -- The Niagara and Cascade effects active on EVE's body mesh, as labels.
     function engine.eve_effects() return (engine.effects({{handle=assert(valid(pawn().Mesh),'EVE has no mesh.')}})) end
-    -- EVE's hit reaction toward an attack from yaw, by one of three variants of the stock light-hit Show, which a plain
+    -- EVE's hit reaction toward an attack from yaw, by one of three variants of a stock hit Show, which a plain
     -- PlaySingleShow cannot animate (its full-body keys check a hit level, its additive key the AdditivePlay tag).
+    -- Both Shows have the same keys: the additive SBShowAnimKey_0, the full-body SBShowAnimKey_2 within front degrees
+    -- of EVE's facing and SBShowAnimKey_1 beyond (the other two only play on a TachyNPC).
     -- Returns a description and a sample for hit_sample and hit_restore.
-    local HIT_SHOW='/Game/Art/Show/Hit/Result_Hit_Stand_LightAttack.Result_Hit_Stand_LightAttack'
+    local HIT='/Game/Art/Show/Hit/'
+    local LIGHT_HIT={path=HIT..'Result_Hit_Stand_LightAttack.Result_Hit_Stand_LightAttack',front=45}
+    local STRONG_HIT={path=HIT..'Result_Hit_Stand_StrongAttack.Result_Hit_Stand_StrongAttack',front=50}
     local REACTIONS={}
     -- The library builds the Show as a real hit on the player character: a full-body hit, from the front only.
-    function REACTIONS.library()
-        valid(StaticFindObject('/Script/SB.Default__SBBlueprintLibrary')):PlaySBShowToPlayerCharacter(loaded(HIT_SHOW))
+    function REACTIONS.library(show)
+        valid(StaticFindObject('/Script/SB.Default__SBBlueprintLibrary')):PlaySBShowToPlayerCharacter(loaded(show.path))
         return 'library'
     end
-    -- Lift the hit-level check of the key Stellar Blade would pick for this side, in memory, until hit_restore.
-    function REACTIONS.gate(eve,at,side)
-        local key=show_key(HIT_SHOW,side=='front' and 'SBShowAnimKey_2' or 'SBShowAnimKey_1','SBShowAnimKey')
+    -- Lift the hit-level check of the key Stellar Blade would pick for this angle, in memory, until hit_restore.
+    function REACTIONS.gate(show,eve,at,relative)
+        local key=show_key(show.path,math.abs(relative)<=show.front and 'SBShowAnimKey_2' or 'SBShowAnimKey_1','SBShowAnimKey')
         key.bCheckHitLevel=false
         local function restore() if valid(key) then key.bCheckHitLevel=true end end -- The asset's value.
-        local ok,why=pcall(function() eve:PlaySingleShow(HIT_SHOW,true,at) end)
+        local ok,why=pcall(function() eve:PlaySingleShow(show.path,true,at) end)
         if not ok then restore(); error(why,0) end
         return 'gate '..key:GetFName():ToString(),restore
     end
     -- The additive flinch needs AdditivePlay in EVE's transient ShowKeyTagMap: counted as the game counts it, so a real
     -- skill's tag survives the restore.
-    function REACTIONS.tag(eve,at)
-        loaded(HIT_SHOW)
+    function REACTIONS.tag(show,eve,at)
+        loaded(show.path)
         local tag=FName('AdditivePlay')
         local function count(tags) return tags:Contains(tag) and tonumber(value_of(tags:Find(tag))) or 0 end
         local tags=value_of(eve.ShowKeyTagMap)
@@ -456,7 +460,7 @@ function Adapter.new()
             local n=count(now)
             if n<=1 then now:Remove(tag) else now:Add(tag,n-1) end
         end
-        local ok,why=pcall(function() eve:PlaySingleShow(HIT_SHOW,true,at) end)
+        local ok,why=pcall(function() eve:PlaySingleShow(show.path,true,at) end)
         if not ok then restore(); error(why,0) end
         return string.format('tag AdditivePlay %d+1',before),restore
     end
@@ -466,16 +470,22 @@ function Adapter.new()
     end
     local function custom(eve) return alpha(eve,function(e) return e:GetCurrentCustomAnimAlpha(0) end) end
     local function additive(eve) return alpha(eve,function(e) return e:GetCurrentCustomAnimAddtiveAlpha() end) end -- The game's spelling.
-    function engine.hit_reaction(yaw,method)
+    -- strong: the strong-hit Show, or the light one when that cannot be loaded.
+    function engine.hit_reaction(yaw,method,strong)
         local react=assert(REACTIONS[method],'unknown reaction '..tostring(method))
         local eve=character()
         local mesh=assert(valid(eve.Mesh),'EVE has no mesh.')
         local at,side,relative=toward(eve,yaw)
+        local show,fallback=LIGHT_HIT,''
+        if strong then
+            local ok,why=pcall(loaded,STRONG_HIT.path)
+            if ok then show=STRONG_HIT else fallback=' (strong Show unavailable: '..tostring(why)..')' end
+        end
         -- Busy: EVE already plays a Show (an attack, a guard, a dodge), so the alphas cannot tell this reaction apart.
         local sample={eve=eve,mesh=mesh,head=head(mesh),busy=(custom(eve) or 0)>0.01 or (additive(eve) or 0)>0.01}
         local info
-        info,sample.restore=react(eve,at,side)
-        return string.format('%s, attack from the %s (%.0f deg)',info,side,relative),sample
+        info,sample.restore=react(show,eve,at,relative)
+        return string.format('%s, attack from the %s (%.0f deg), %s%s',info,side,relative,show.path:match('[^.]+$'),fallback),sample
     end
     -- Head travel in mesh space, EVE's custom-animation alphas (her own getters) and her horizontal speed: returns a line,
     -- the full-body and additive alphas, which tell whether a reaction played, and the speed (moving cancels one).

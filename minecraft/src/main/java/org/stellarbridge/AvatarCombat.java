@@ -56,7 +56,8 @@ public final class AvatarCombat {
     // so mashing the guard parries nothing, while a deliberate tap always does.
     static final long GUARD_COOLDOWN = 400_000_000L;
     // A held guard's share of the damage (Stellar Blade's SkillDamageWhenGuard deals 0.2 of an attack, SkillDamage 1),
-    // and the attack damage from which EVE takes it with her strong guarded-hit reaction.
+    // and the attack damage (before EVE's reductions) from which she answers a guarded or landed hit with its strong
+    // reaction.
     static final float GUARD_SHARE = 0.2f, STRONG_HIT = 8;
     // A perfect dodge runs Minecraft's world at SLOW_RATE ticks per second for SLOW_NANOS of real time.
     static final float SLOW_RATE = 6;
@@ -111,9 +112,10 @@ public final class AvatarCombat {
         return guardHeld ? Defense.GUARD : Defense.HIT;
     }
 
-    /** The combat event Stellar Blade answers for a verdict: a guarded strong attack has its own reaction. */
+    /** The combat event Stellar Blade answers for a verdict: a strong attack guarded or landed has its own reaction. */
     static String event(Defense defense, float amount) {
-        return defense == Defense.GUARD && amount >= STRONG_HIT ? "guard_strong" : defense.name().toLowerCase(java.util.Locale.ROOT);
+        String name = defense.name().toLowerCase(java.util.Locale.ROOT);
+        return (defense == Defense.GUARD || defense == Defense.HIT) && amount >= STRONG_HIT ? name + "_strong" : name;
     }
 
     /**
@@ -150,7 +152,7 @@ public final class AvatarCombat {
             boolean hurt = applied(player, source, amount);
             if (hurt) {
                 counts.incrementAndGet(1 + defense.ordinal());
-                StellarBridge.combatEvent("hit", source.getPosition());
+                StellarBridge.combatEvent(event(defense, amount), source.getPosition());
             }
             return hurt;
         }
