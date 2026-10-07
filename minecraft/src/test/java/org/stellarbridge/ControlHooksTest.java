@@ -102,7 +102,7 @@ public final class ControlHooksTest {
         held[ControlBridge.BURST] = false;
         held[ControlBridge.SKILLS + 3] = false;
         held[ControlBridge.AIM] = true;
-        assert ControlBridge.buttons(held, since, 0) == 0x10000 : "Minecraft's sprint key aims the drone (LT)";
+        assert ControlBridge.buttons(held, since, 0) == 0x10000 : "The aim key (Ctrl) aims the drone (LT)";
         held[ControlBridge.ATTACK] = true;
         assert ControlBridge.buttons(held, since, 0) == (0x10000 | 0x20000) : "Attack while aiming fires (RT), not X";
         held[ControlBridge.AIM] = false;

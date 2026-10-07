@@ -165,7 +165,8 @@ public final class AvatarView {
         var options = source.getClient().options;
         if (options.getPerspective().isFirstPerson()) options.setPerspective(net.minecraft.client.option.Perspective.THIRD_PERSON_BACK);
         source.sendFeedback(Text.literal("EVE avatar control requested. Release held controls; forwarding starts once her pose is fresh and Stellar Blade"
-                + " grants input. Minecraft owns the camera; Stellar Blade's camera follows its yaw. B switches EVE/build mode."));
+                + " grants input. Minecraft owns the camera; Stellar Blade's camera follows its yaw and, through its camera dolly, its pitch."
+                + " B switches EVE/build mode."));
         return 1;
     }
 
