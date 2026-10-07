@@ -608,14 +608,44 @@ function Adapter.new()
     end
     -- EVE's sword while Minecraft locks: Stellar Blade's lock-on enters battle, which plays her character draw Show and
     -- the sword's unfold Show (attach to the hand at 0.337 s, blade Opacity 0 to 1, FX, sound); ours plays the same pair,
-    -- and the stock pair back on release. Left to Stellar Blade while it is in battle (the native adapter keeps an
-    -- attack's battle mode while Minecraft locks) or forces the sword folded or hidden. instant: the draw Shows' own
-    -- attach event, sent at once (the blade still unfolds through the Show).
+    -- and the sword's fold Show with her sheathe Show on release. Left to Stellar Blade while it is in battle (the native
+    -- adapter keeps an attack's battle mode while Minecraft locks) or forces the sword folded or hidden. instant: the draw
+    -- Shows' own attach event, sent at once (the blade still unfolds through the Show). Her draw and sheathe Shows are
+    -- the same in every EVE row of CharacterAppearanceTable (Player, Player_NoHead); the sword's are the UnFoldShow and
+    -- FoldShow of the EquipmentTable row her EquipmentDataList names at EquipmentType_Weapon (the list follows
+    -- ESBEquipmentType, not her mesh slots). While her hairstyle hides the ponytail (bHidePonyTail), Stellar Blade plays
+    -- the LightSword1 pair's Weapon/Eve/NonPonyTail/<name>_NonTail copies (0x1a2d6a0, called at 0x1a7f358 in the draw
+    -- transit, gated by 0x1a738d0, whose result 0x1a72070 copies into bHidePonyTail through 0x1a73770 -> 0x20374e0); the
+    -- Fusion pair has none. Another
+    -- row, or a chosen Show that fails to play, falls back to the LightSword1 pair (STOCK).
     local BASIC,WEAPON='/Game/Art/Show/CH_P_EVE_01/Basic/','/Game/Art/Show/Weapon/Eve/'
-    local DRAW,UNFOLD=BASIC..'Eve_Drawing_Moving_LockOn.Eve_Drawing_Moving_LockOn',WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword'
-    local SHEATHE,FOLD=BASIC..'Eve_Swording_Moving.Eve_Swording_Moving',WEAPON..'Eve_FoldSword.Eve_FoldSword'
+    local DRAW=BASIC..'Eve_Drawing_Moving_LockOn.Eve_Drawing_Moving_LockOn'
+    local SHEATHE=BASIC..'Eve_Swording_Moving.Eve_Swording_Moving'
+    local WEAPON_SLOT=5 -- ESBSkelMeshSlot::ESBMesh_Weapon1
+    local WEAPON_ROW=2 -- EquipmentDataList's EquipmentType_Weapon (1), as a Lua index.
+    local STOCK={unfold='Eve_UnFoldSword',fold='Eve_FoldSword'} -- LightSword1's row.
+    local SWORD_SHOWS={LightSword1=STOCK,Eve_Fusion_Sword={unfold='Eve_UnFoldSword_Fusion',fold='Eve_FoldSword_Fusion'}}
+    local function weapon_show(name,tail)
+        return tail and WEAPON..'NonPonyTail/'..name..'_NonTail.'..name..'_NonTail' or WEAPON..name..'.'..name
+    end
+    -- Plays the sword's Show (which: 'unfold' or 'fold') for EVE's weapon and hairstyle; returns what played and why.
+    local function play_sword(eve,which)
+        local read,row=pcall(function() return text(value_of(eve.EquipmentDataList)[WEAPON_ROW]) end)
+        local seen,hidden=pcall(function() return value_of(eve.bHidePonyTail) end)
+        local weapon=read and row or 'unread'
+        local ponytail=not seen and 'unread' or hidden==true and 'hidden' or 'shown'
+        local shows=SWORD_SHOWS[weapon]
+        local path=weapon_show((shows or STOCK)[which],ponytail=='hidden' and (shows or STOCK)==STOCK)
+        local why=(shows and weapon or 'weapon '..weapon..' unknown, stock pair')..', ponytail '..ponytail
+        local ok,err=pcall(engine.play_show,path)
+        if ok then return string.format('%s [%s]',path:match('[^.]+$'),why) end
+        local stock=weapon_show(STOCK[which],false)
+        if path==stock then error(err,0) end
+        engine.play_show(stock)
+        return string.format('%s [%s; %s failed: %s]',stock:match('[^.]+$'),why,path:match('[^.]+$'),tostring(err))
+    end
     local function sword(eve) -- The sword AnimBP's state (Draw or CriticalDraw in hand, Sword in the hair) and socket.
-        local w=valid(eve:GetSBSkeletalMeshComponent(5)) -- ESBSkelMeshSlot::ESBMesh_Weapon1
+        local w=valid(eve:GetSBSkeletalMeshComponent(WEAPON_SLOT))
         if not w then return 'none','-' end
         return text(w:GetCustomAnimStateName()),text(w:GetAttachSocketName())
     end
@@ -625,8 +655,8 @@ function Adapter.new()
         local state,socket=sword(eve)
         if state=='Draw' or state=='CriticalDraw' or stellar_owns(eve) then return nil end
         if instant then eve:NotifyShowEvent(FName('CriticalDraw'),FName('CriticalDraw')) else engine.play_show(DRAW) end
-        engine.play_show(UNFOLD) -- After the attach, which then happens even if this Show fails.
-        return string.format('%s (sword was %s@%s)',instant and 'instant draw' or 'drawing',state,socket)
+        local unfold=play_sword(eve,'unfold') -- After the attach, which then happens even if this Show fails.
+        return string.format('%s with %s (sword was %s@%s)',instant and 'instant draw' or 'drawing',unfold,state,socket)
     end
     function engine.lock_sheathe()
         local eve=valid(UE.GetPlayer())
@@ -634,8 +664,9 @@ function Adapter.new()
         local state,socket=sword(eve)
         if stellar_owns(eve) then return string.format('left to Stellar Blade (sword %s@%s)',state,socket) end
         if state~='Draw' and state~='CriticalDraw' then return string.format('already sheathed (sword %s@%s)',state,socket) end
-        engine.play_show(FOLD); engine.play_show(SHEATHE)
-        return string.format('sheathing (sword was %s@%s)',state,socket)
+        local fold=play_sword(eve,'fold')
+        engine.play_show(SHEATHE)
+        return string.format('sheathing with %s (sword was %s@%s)',fold,state,socket)
     end
     -- What Stellar Blade checks each frame and what its lock gives EVE, as one line.
     function engine.lock_status(proxy)

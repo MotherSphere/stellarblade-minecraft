@@ -236,4 +236,66 @@ os.clock=real_clock
 FindAllOf=function() error('FindAllOf unavailable') end
 local failing,why=require('pose_adapter').new().identities()
 assert(#failing==2 and why:find('unavailable: ',1,true),'A failing drone search leaves EVE streaming')
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength and the drone')
+-- The lock's sword Shows: the unfold and fold Shows of the row EquipmentDataList names at EquipmentType_Weapon (1, Lua index
+-- 2; the list follows ESBEquipmentType, so index 6 is a hair row), their
+-- NonPonyTail copies for LightSword1 while the ponytail is hidden, LightSword1's when the row is unknown, unreadable or
+-- its Show does not play; the character draw and sheathe Shows stay.
+local SHOW,WEAPON='/Game/Art/Show/','/Game/Art/Show/Weapon/Eve/'
+local DRAW,SHEATHE=SHOW..'CH_P_EVE_01/Basic/Eve_Drawing_Moving_LockOn.Eve_Drawing_Moving_LockOn',SHOW..'CH_P_EVE_01/Basic/Eve_Swording_Moving.Eve_Swording_Moving'
+local blade=object('Weapon1',{state='Sword',socket='SC_SwordingPoint'})
+function blade:GetCustomAnimStateName() return fname(self.state) end
+function blade:GetAttachSocketName() return fname(self.socket) end
+local function slots(row) local list={}; for i=1,16 do list[i]=fname('None') end; list[2]=wrap(fname(row)); list[6]=wrap(fname('CH_P_EVE_Hair')); return list end
+local holder=object('EVE',{EquipmentDataList=slots('LightSword1'),bHidePonyTail=false,bForceFoldWeapon=false,bForceFoldWeaponStance=false,bForceWeaponHide=false})
+function holder:IsA(class) return class.name=='SBCharacter' end
+function holder:IsBattle() return false end
+function holder:GetSBSkeletalMeshComponent(slot) assert(slot==5); return blade end
+function holder:K2_GetActorLocation() return {X=0,Y=0,Z=0} end
+function holder:K2_GetActorRotation() return {Pitch=0,Yaw=0,Roll=0} end
+local played,missing={},{}
+function holder:PlaySingleShow(path) played[#played+1]=path end
+package.loaded.UEHelpers.GetPlayer=function() return holder end
+package.loaded.UEHelpers.GetPlayerController=function() return object('Controller',{K2_GetPawn=function() return holder end}) end
+StaticFindObject=function(path)
+    if path=='/Script/SB.SBCharacter' then local c=object('Class'); c.name='SBCharacter'; return c end
+    return not missing[path] and object(path:match('[^.]+$')) or nil
+end
+local swords=require('pose_adapter').new()
+local function draw()
+    played={}; blade.state='Sword'
+    local line=swords.lock_draw(false)
+    assert(played[1]==DRAW and #played==2,line)
+    return played[2],line
+end
+local path,line=draw()
+assert(path==WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword','LightSword1 with the ponytail: the stock unfold')
+assert(line=='drawing with Eve_UnFoldSword [LightSword1, ponytail shown] (sword was Sword@SC_SwordingPoint)',line)
+holder.bHidePonyTail=true
+path,line=draw()
+assert(path==WEAPON..'NonPonyTail/Eve_UnFoldSword_NonTail.Eve_UnFoldSword_NonTail',path)
+assert(line:find('with Eve_UnFoldSword_NonTail [LightSword1, ponytail hidden]',1,true),line)
+holder.EquipmentDataList=slots('Eve_Fusion_Sword')
+path,line=draw()
+assert(path==WEAPON..'Eve_UnFoldSword_Fusion.Eve_UnFoldSword_Fusion','The Fusion pair has no NonPonyTail copy: '..path)
+blade.state='Draw'; played={}
+line=swords.lock_sheathe()
+assert(played[1]==WEAPON..'Eve_FoldSword_Fusion.Eve_FoldSword_Fusion' and played[2]==SHEATHE and #played==2,line)
+assert(line=='sheathing with Eve_FoldSword_Fusion [Eve_Fusion_Sword, ponytail hidden] (sword was Draw@SC_SwordingPoint)',line)
+holder.EquipmentDataList=slots('Skull_Sword'); holder.bHidePonyTail=wrap(false)
+path,line=draw()
+assert(path==WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword' and line:find('[weapon Skull_Sword unknown, stock pair, ponytail shown]',1,true),line)
+holder.EquipmentDataList={}; holder.bHidePonyTail=nil
+setmetatable(holder,{__index=function(_,key) if key=='bHidePonyTail' then error('no such property') end end})
+path,line=draw()
+assert(path==WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword' and line:find('[weapon unread unknown, stock pair, ponytail unread]',1,true),line)
+setmetatable(holder,nil)
+holder.EquipmentDataList=slots('LightSword1'); holder.bHidePonyTail=true
+missing[WEAPON..'NonPonyTail/Eve_UnFoldSword_NonTail.Eve_UnFoldSword_NonTail']=true
+path,line=draw()
+assert(path==WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword','A copy that does not play falls back to the stock Show')
+assert(line:find('with Eve_UnFoldSword [LightSword1, ponytail hidden; Eve_UnFoldSword_NonTail failed: ',1,true),line)
+missing[WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword']=true
+played={}; blade.state='Sword'
+local drew,err=pcall(swords.lock_draw,false)
+assert(not drew and tostring(err):find('Eve_UnFoldSword.Eve_UnFoldSword is not loaded',1,true),'No Show at all is an error: '..tostring(err))
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone and the sword Shows per weapon and hairstyle')
