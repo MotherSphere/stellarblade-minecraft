@@ -89,7 +89,7 @@ public final class CaptureContinuousTest {
 
                 // A terrain revision change discards the old view but still completes the producer ACK.
                 id = id();
-                try (var color = begin(directory, id, firstRun, 1)) { stream.mailbox.revision(2); }
+                try (var color = begin(directory, id, firstRun, 1)) { stream.mailbox.revision(2, System.nanoTime()); }
                 awaitAck(directory, firstRun, id);
                 assert stream.mailbox.take() == null;
                 retireFiles(directory, id);

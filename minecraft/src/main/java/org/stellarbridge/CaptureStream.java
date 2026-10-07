@@ -251,10 +251,12 @@ final class CaptureStream implements AutoCloseable {
             return active == null ? null : new Request(active.epoch, active.session, active.revision, active.origin, previousId, active.run);
         }
 
-        synchronized void revision(int revision) {
+        /** A new terrain revision gets its own deadline from nowNanos: Lua may take a while to import a moved window. */
+        synchronized void revision(int revision, long nowNanos) {
             if (active == null || active.revision == revision) return;
             active = new Request(++epoch, active.session, revision, active.origin, previousId, active.run);
             discardPending();
+            startedNanos = lastNewNanos = nowNanos;
             reason = "waiting for terrain revision " + revision;
         }
 

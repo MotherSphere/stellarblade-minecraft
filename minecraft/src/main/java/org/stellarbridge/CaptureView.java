@@ -195,7 +195,7 @@ public final class CaptureView {
                 return;
             }
             if (request.revision() != context.revision()) {
-                stream.mailbox.revision(context.revision());
+                stream.mailbox.revision(context.revision(), System.nanoTime());
                 clearView();
             }
             if (stream.mailbox.expired(System.nanoTime())) {

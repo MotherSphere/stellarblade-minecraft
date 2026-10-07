@@ -300,7 +300,7 @@ public final class RawFrameBusTest {
                 try (var frame = take(stream)) {
                     assert frame.raw != null && frame.color == null && frame.raw.color.get(3) == (byte) 128;
                 }
-                stream.mailbox.revision(2);
+                stream.mailbox.revision(2, System.nanoTime());
                 now = System.currentTimeMillis(); peer.ready(now);
                 peer.publish(2, metadata(2, 2, now / 1000, 2).replace(RUN, run), now);
                 await(() -> (long) RawFrameBus.LONG.getAcquire(peer.map, 272) == 2);

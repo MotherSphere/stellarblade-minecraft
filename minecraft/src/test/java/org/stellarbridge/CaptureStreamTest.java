@@ -54,7 +54,7 @@ public final class CaptureStreamTest {
             assert started.await(2, TimeUnit.SECONDS);
             if (invalidation == 0) mailbox.stop("off");
             if (invalidation == 1) mailbox.start(SESSION, 5, ORIGIN, 0);
-            if (invalidation == 2) mailbox.revision(6);
+            if (invalidation == 2) mailbox.revision(6, 0);
             release.countDown();
             worker.join(2000);
             assert !worker.isAlive() && delayed.color == null && mailbox.take() == null;
@@ -64,6 +64,10 @@ public final class CaptureStreamTest {
         mailbox.publish(mailbox.request(), revision, 100, 1_000_000_000L);
         assert mailbox.take() == revision : "A new terrain revision must recover without reactivation";
         revision.close();
+        // A later revision (a moved window Lua is still importing) gets its own deadline, not what is left of the last frame's.
+        mailbox.revision(7, 2_900_000_000L);
+        assert !mailbox.expired(3_100_000_000L) && !mailbox.expired(4_899_999_999L) && mailbox.expired(4_900_000_000L);
+        mailbox.revision(6, 4_000_000_000L);
         var changedPawn = prepared("100-6", 6, 12);
         mailbox.publish(mailbox.request(), changedPawn, 100, 1_500_000_000L);
         assert changedPawn.color == null && mailbox.request() == null;
