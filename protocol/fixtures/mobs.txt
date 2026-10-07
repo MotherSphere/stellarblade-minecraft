@@ -1,4 +1,4 @@
-SBMC_MOBS 1
+SBMC_MOBS 2
 SESSION aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 SEQ 5
 TIME 1760000000000

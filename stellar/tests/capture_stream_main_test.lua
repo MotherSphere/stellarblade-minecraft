@@ -33,6 +33,8 @@ function bridge.create() state='ready'; return true,'created' end
 function bridge.enter() state='entered'; return true,'entered' end
 function bridge.restore() returns=returns+1; state='idle'; return true,'returned' end
 function bridge.tick() if tick_error then error('bridge failed') end end
+local bridge_steps=0
+function bridge.step() bridge_steps=bridge_steps+1 end
 function bridge.pose()
     if state~='entered' then return nil end
     return {session=string.rep('a',32),ack=1,state=state,position={x=0,y=0,z=0},anchor={X=1,Y=2,Z=3}}
@@ -303,7 +305,9 @@ os.time=wall_clock
 hd_active=false; keys.F11(); drain()
 print('PASS bounded native cadence reports: idle and live, wall-second gate, nonfatal diagnostics')
 command('posetest'); assert(pose_starts==1 and logs[#logs]:find('OK: pose recording',1,true),'The console command starts one pose recording')
+local steps=bridge_steps
 next_hd_frame(); assert(pose_frames[#pose_frames]==native_frame,'Each native frame ticks the pose probe once with its frame count')
+assert(bridge_steps==steps+1,'Each native frame continues the terrain import once')
 print('PASS pose probe console command and per-frame tick')
 local ticks=stream_ticks
 loop(); drain(); assert(stream_ticks==ticks+1,'The bridge timer checks the pose stream')

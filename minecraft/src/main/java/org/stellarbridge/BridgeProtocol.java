@@ -12,6 +12,8 @@ public final class BridgeProtocol {
     private static final Pattern UNSIGNED = Pattern.compile("[0-9]+");
     /** Merged collision boxes in one terrain snapshot; a full packet must also fit in 64 KiB. */
     static final int MAX_BOXES = 1024;
+    /** How far from the bridge origin, in blocks, the terrain window, EVE and the mob walls may go. */
+    static final double MAX_REACH = 2048;
 
     public record Box(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {}
     public record Terrain(String session, int seq, long time, String dimension,
@@ -52,8 +54,8 @@ public final class BridgeProtocol {
         return fields;
     }
     private static void checkBox(Box box) {
-        require(box != null && bounded(box.minX,32) && bounded(box.minY,32) && bounded(box.minZ,32)
-            && bounded(box.maxX,32) && bounded(box.maxY,32) && bounded(box.maxZ,32)
+        require(box != null && bounded(box.minX,MAX_REACH) && bounded(box.minY,MAX_REACH) && bounded(box.minZ,MAX_REACH)
+            && bounded(box.maxX,MAX_REACH) && bounded(box.maxY,MAX_REACH) && bounded(box.maxZ,MAX_REACH)
             && box.minX < box.maxX && box.minY < box.maxY && box.minZ < box.maxZ, "Invalid box");
     }
     private static Box fixed(Box box) {
@@ -95,13 +97,13 @@ public final class BridgeProtocol {
 
     /**
      * Minecraft's living entities around EVE for Stellar Blade's walls: at most MOBS boxes relative to the bridge origin in
-     * blocks (Minecraft axes, three decimals, within ±32), nearest first.
+     * blocks (Minecraft axes, three decimals, within ±MAX_REACH), nearest first.
      */
     public static String encodeMobs(String session, long seq, long time, List<Box> mobs) {
         require(matches(SESSION, session), "Invalid session");
         require(seq > 0 && seq <= MAX_TIME && time >= 0 && time <= MAX_TIME, "Invalid sequence or timestamp");
         require(mobs != null && mobs.size() <= MOBS, "Invalid mob count");
-        StringBuilder text = new StringBuilder("SBMC_MOBS 1\nSESSION ").append(session).append("\nSEQ ").append(seq)
+        StringBuilder text = new StringBuilder("SBMC_MOBS 2\nSESSION ").append(session).append("\nSEQ ").append(seq)
             .append("\nTIME ").append(time).append("\nCOUNT ").append(mobs.size()).append('\n');
         for (Box box : mobs) {
             checkBox(box);
@@ -156,18 +158,21 @@ public final class BridgeProtocol {
         // budget inside one packet. A box that rounding collapses is refused.
         List<Box> boxes = terrain.boxes.stream().map(BridgeProtocol::fixed).toList();
         require(new java.util.HashSet<>(boxes).size() == boxes.size(), "Duplicate box");
-        StringBuilder text = new StringBuilder("SBMC 2 TERRAIN\nSESSION ").append(terrain.session)
+        StringBuilder text = new StringBuilder("SBMC 3 TERRAIN\nSESSION ").append(terrain.session)
             .append("\nSEQ ").append(terrain.seq).append("\nTIME ").append(terrain.time)
             .append("\nWORLD ").append(terrain.dimension).append(' ').append(terrain.originX)
             .append(' ').append(terrain.originY).append(' ').append(terrain.originZ).append('\n');
-        appendBox(text,"BOUNDS",terrain.bounds);
+        Box b = terrain.bounds;
+        appendBox(text,"BOUNDS",b);
         text.append("COUNT ").append(terrain.boxes.size()).append('\n');
         for (Box box : boxes) {
             checkBox(box);
-            require(box.minX >= terrain.bounds.minX && box.minY >= terrain.bounds.minY && box.minZ >= terrain.bounds.minZ
-                && box.maxX <= terrain.bounds.maxX && box.maxY <= terrain.bounds.maxY && box.maxZ <= terrain.bounds.maxZ,
-                "Box outside region");
-            appendBox(text,"BOX",box);
+            require(box.minX >= b.minX && box.minY >= b.minY && box.minZ >= b.minZ
+                && box.maxX <= b.maxX && box.maxY <= b.maxY && box.maxZ <= b.maxZ, "Box outside region");
+            // Relative to the window's minimum corner: lines stay as short far from the origin as near it. The reader
+            // adds the corner back and rounds to the same ten-thousandth.
+            appendBox(text,"BOX",fixed(new Box(box.minX - b.minX, box.minY - b.minY, box.minZ - b.minZ,
+                box.maxX - b.minX, box.maxY - b.minY, box.maxZ - b.minZ)));
         }
         text.append("END ").append(terrain.seq).append('\n');
         require(text.length() <= 65536, "Packet too large");
@@ -181,7 +186,7 @@ public final class BridgeProtocol {
             require(value == '\n' || value >= 32 && value <= 126, "Packet must contain printable ASCII and LF");
         }
         String[] lines = text.split("\n",-1);
-        require(lines.length == 8 && lines[0].equals("SBMC 1 EVE") && lines[7].isEmpty(), "Invalid EVE framing");
+        require(lines.length == 8 && lines[0].equals("SBMC 2 EVE") && lines[7].isEmpty(), "Invalid EVE framing");
         String session = fields(lines[1],"SESSION",2)[1];
         require(matches(SESSION,session), "Invalid session");
         int seq = (int) unsigned(fields(lines[2],"SEQ",2)[1],1,Integer.MAX_VALUE);
@@ -190,7 +195,7 @@ public final class BridgeProtocol {
         require(state[1].equals("ready") || state[1].equals("entered") || state[1].equals("idle"), "Invalid state");
         int ack = (int) unsigned(state[2],1,Integer.MAX_VALUE);
         String[] position = fields(lines[5],"POS",4);
-        double x = decimal(position[1],64), y = decimal(position[2],64), z = decimal(position[3],64);
+        double x = decimal(position[1],MAX_REACH), y = decimal(position[2],MAX_REACH), z = decimal(position[3],MAX_REACH);
         require(unsigned(fields(lines[6],"END",2)[1],1,Integer.MAX_VALUE) == seq, "Footer sequence mismatch");
         return new Eve(session,seq,time,state[1],ack,x,y,z);
     }

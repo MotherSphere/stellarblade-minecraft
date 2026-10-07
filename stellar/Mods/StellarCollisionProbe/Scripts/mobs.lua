@@ -1,4 +1,4 @@
--- Minecraft's mobs as walls for EVE (eve-mobs.txt, SBMC_MOBS 1): each listed box gets an invisible box actor in the lab
+-- Minecraft's mobs as walls for EVE (eve-mobs.txt, SBMC_MOBS 2): each listed box gets an invisible box actor in the lab
 -- that blocks only EVE's own capsule channel, so she stops at a mob as at a block while cameras, traces and attacks pass
 -- through it; it has no mesh, AI or damage and is never a lock-on target. A box that would land inside EVE waits without
 -- collision until she has left it, as terrain updates wait, so Stellar Blade never shoves her out of it. A newer SEQ of
@@ -10,7 +10,7 @@ local Mobs={}
 local FRESH_MS,LEASE,MAX,TRIES=2500,0.6,8,3
 function Mobs.parse(text)
     if type(text)~='string' or #text>1024 then return nil end
-    local session,seq,time,count,body,ending=text:match('^SBMC_MOBS 1\nSESSION (%x+)\nSEQ (%d+)\nTIME (%d+)\nCOUNT (%d)\n(.-)END (%d+)\n$')
+    local session,seq,time,count,body,ending=text:match('^SBMC_MOBS 2\nSESSION (%x+)\nSEQ (%d+)\nTIME (%d+)\nCOUNT (%d)\n(.-)END (%d+)\n$')
     if not session or #session~=32 or session:find('[^0-9a-f]') or seq~=ending or tonumber(count)>MAX then return nil end
     local boxes={}
     for line in body:gmatch('([^\n]*)\n') do
@@ -18,7 +18,7 @@ function Mobs.parse(text)
         if #box~=6 then return nil end
         for i=1,6 do
             box[i]=tonumber(box[i])
-            if not box[i] or box[i]~=box[i] or math.abs(box[i])>32 then return nil end
+            if not box[i] or box[i]~=box[i] or math.abs(box[i])>2048 then return nil end
         end
         if box[1]>=box[4] or box[2]>=box[5] or box[3]>=box[6] then return nil end
         boxes[#boxes+1]=box

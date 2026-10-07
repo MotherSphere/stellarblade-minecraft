@@ -27,12 +27,12 @@ function Bridge.new(terrain,directory,log,clock)
         local text=f:read(65537); f:close()
         return Protocol.parse_terrain_cached(text or '',parsed)
     end
+    -- The window (bounds) follows EVE within one binding; the session, dimension and origin never move.
     local function same_binding(packet)
         if packet.session~=current.session or packet.dimension~=current.dimension then return false end
         for _,axis in ipairs({'x','y','z'}) do
             if packet.origin[axis]~=current.origin[axis] then return false end
         end
-        for i=1,6 do if packet.bounds[i]~=current.bounds[i] then return false end end
         return true
     end
     local function publish(pose,state)
@@ -127,6 +127,14 @@ function Bridge.new(terrain,directory,log,clock)
         end
         local pose,err=terrain.pose()
         if pose then safe_publish(pose) else report('Pose unavailable: '..tostring(err)) end
+    end
+    -- Each native frame: continues a terrain revision's import within the frame budget and reports how it ended, each
+    -- distinct message once (heartbeats reset report's own repeat filter).
+    local last_step
+    function api.step()
+        if not current or stopping then return end
+        local _,message=terrain.step()
+        if message and message~=last_step then last_step=message; report(message) end
     end
     return api
 end

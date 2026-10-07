@@ -9,8 +9,10 @@ local parsed=Mobs.parse(fixture)
 assert(parsed and parsed.session==string.rep('a',32) and parsed.seq==5 and #parsed.boxes==2)
 assert(parsed.boxes[1][1]==1.2 and parsed.boxes[1][5]==1.95 and parsed.boxes[2][6]==3.4)
 assert(#Mobs.parse((fixture:gsub('COUNT 2\n.-END','COUNT 0\nEND'))).boxes==0)
+assert(Mobs.parse((fixture:gsub('MOB 1%.200 0%.000 %-0%.300 1%.800','MOB 2047.200 0.000 -0.300 2047.800'))).boxes[1][4]==2047.8,
+    'walls travel with the terrain window')
 local nine=fixture:gsub('COUNT 2\n(MOB [^\n]+\n)','COUNT 9\n'..string.rep('%1',9))
-for _,bad in ipairs({fixture:gsub('END 5','END 6'),fixture:gsub('COUNT 2','COUNT 3'),fixture:gsub('1.200','40'),
+for _,bad in ipairs({fixture:gsub('END 5','END 6'),fixture:gsub('COUNT 2','COUNT 3'),fixture:gsub('1.200','2049'),fixture:gsub('SBMC_MOBS 2','SBMC_MOBS 1'),
         fixture:gsub('1.200','nan'),fixture:gsub('1.200','1.900'),fixture:gsub('MOB 1.200 ','MOB '),fixture:sub(1,-2),
         fixture:gsub('SESSION a','SESSION A'),nine}) do
     assert(Mobs.parse(bad)==nil,bad)
@@ -51,7 +53,7 @@ local function publish(boxes,session,time)
     seq=seq+1
     local lines={}
     for _,b in ipairs(boxes) do lines[#lines+1]=string.format('MOB %.3f %.3f %.3f %.3f %.3f %.3f\n',table.unpack(b)) end
-    write('eve-mobs.txt',string.format('SBMC_MOBS 1\nSESSION %s\nSEQ %d\nTIME %d\nCOUNT %d\n%sEND %d\n',
+    write('eve-mobs.txt',string.format('SBMC_MOBS 2\nSESSION %s\nSEQ %d\nTIME %d\nCOUNT %d\n%sEND %d\n',
         session or SESSION,seq,time or wall*1000,#boxes,table.concat(lines),seq))
 end
 local function last() return logged[#logged] end

@@ -34,17 +34,20 @@ public final class BridgeProtocolTest {
             fixture.replace("END 9", "END 8"), fixture.replace("SEQ 9", "SEQ 0"),
             fixture.replace("SEQ 9", "SEQ 2147483648"), fixture.replace("entered 7", "entered 0"),
             fixture.replace("entered", "flying"), fixture.replace("-1.25", "NaN"),
-            fixture.replace("-1.25", "1e999"), fixture.replace("-1.25", "65"),
+            fixture.replace("-1.25", "1e999"), fixture.replace("-1.25", "2048.001"),
             fixture.replace("-1.25", "0x1.0p0"), fixture.replace("SEQ ", "SEQ  "),
             fixture.replace("SESSION 0", "SESSION G"), fixture.replace("1791110001", "-1"),
-            fixture.replace("1791110001", "9007199254740992"), "x".repeat(65537))) {
+            fixture.replace("1791110001", "9007199254740992"), fixture.replace("SBMC 2", "SBMC 1"), "x".repeat(65537))) {
             rejects(() -> parseEve(invalid));
         }
         rejects(() -> parseEve(null));
+        check(parseEve(fixture.replace("-1.25", "-2048")).x() == -2048, "EVE may travel MAX_REACH blocks from the origin");
         Terrain terrain = terrain(List.of(new Box(-4.5,-1,-4.5,4.5,0,4.5), new Box(1,0,-1,2,1.5,0)));
         String encoded = encodeTerrain(terrain);
-        check(encoded.startsWith("SBMC 2 TERRAIN\n") && encoded.endsWith("END 7\n"), "Framing mismatch");
+        check(encoded.startsWith("SBMC 3 TERRAIN\n") && encoded.endsWith("END 7\n"), "Framing mismatch");
         check(encoded.contains("COUNT 2\n"), "Box count mismatch");
+        check(encoded.contains("\nBOUNDS -4.5 -2.0 -4.5 4.5 4.0 4.5\n") && encoded.contains("\nBOX 0.0 1.0 0.0 9.0 2.0 9.0\n")
+            && encoded.contains("\nBOX 5.5 2.0 3.5 6.5 3.5 4.5\n"), "Boxes are relative to the window's minimum corner");
         rejects(() -> encodeTerrain(terrain(List.of(new Box(1,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(-5,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(0,0,0,Double.NaN,1,1)))));
@@ -70,7 +73,9 @@ public final class BridgeProtocolTest {
         assert encodeMobs("a".repeat(32), 1, 0, List.of()).endsWith("\nCOUNT 0\nEND 1\n");
         rejects(() -> encodeMobs("a".repeat(32), 1, 0, Collections.nCopies(9, mobs.get(0))));
         rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, 0.005, 1, 1))));
-        rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, 33, 1, 1))));
+        rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, 2049, 1, 1))));
+        assert encodeMobs("a".repeat(32), 1, 0, List.of(new Box(2000, 70, -2000, 2000.6, 71.8, -1999.4)))
+                .contains("\nMOB 2000.000 70.000 -2000.000 2000.600 71.800 -1999.400\n") : "Mobs travel with the window";
         rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, Double.NaN, 1, 1))));
         rejects(() -> encodeMobs("A".repeat(32), 1, 0, mobs));
         rejects(() -> encodeMobs("a".repeat(32), 0, 0, mobs));
@@ -111,7 +116,18 @@ public final class BridgeProtocolTest {
             offset.add(new Box(x, y, z, x + 0.12500000000000003, y + 1.0000000000000002, z + 0.12500000000000003));
         }
         String bamboo = encodeTerrain(new Terrain(terrain.session(), 7, 1791110000, "minecraft:overworld", 0.5, 64, -0.5, large, offset));
-        check(bamboo.contains("BOX -16.1771 -3.9 -16.2771 -16.0521 -2.9 -16.1521\n"), "Coordinates at a ten-thousandth of a block");
+        check(bamboo.contains("BOX 0.3229 0.1 0.2229 0.4479 1.1 0.3479\n"), "Coordinates at a ten-thousandth of a block");
+        // The window travels up to MAX_REACH from the origin; relative boxes keep the full budget in one packet there.
+        Box far = new Box(-2047.5, -1000, -2047.5, -2007.5, -976, -2007.5);
+        List<Box> distant = new java.util.ArrayList<>();
+        for (int i = 0; i < MAX_BOXES; i++) {
+            double x = -2047.4375 + i % 32 * 1.25, z = -2047.4375 + i / 32 * 1.25;
+            distant.add(new Box(x, -999.9375, z, x + 0.875, -998.0625, z + 0.875));
+        }
+        String distantText = encodeTerrain(new Terrain(terrain.session(), 7, 1791110000, "minecraft:overworld", 0.5, 64, -0.5, far, distant));
+        check(distantText.contains("\nBOX 0.0625 0.0625 0.0625 0.9375 1.9375 0.9375\n"), "Far boxes stay short");
+        rejects(() -> encodeTerrain(new Terrain(terrain.session(), 7, 1791110000, "minecraft:overworld", 0.5, 64, -0.5,
+            new Box(2009, 0, 0, 2049, 24, 40), List.of())));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(0, 0, 0, 0.00004, 1, 1))))); // Collapsed by rounding.
         rejects(() -> encodeTerrain(new Terrain("BAD",7,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
         rejects(() -> encodeTerrain(new Terrain(terrain.session(),0,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
@@ -123,6 +139,8 @@ public final class BridgeProtocolTest {
             Path exchange = Path.of(args[1]);
             Files.createDirectories(exchange);
             Files.writeString(exchange.resolve("terrain-java.txt"), encoded);
+            Files.writeString(exchange.resolve("terrain-far-java.txt"), distantText);
+            Files.writeString(exchange.resolve("terrain-bamboo-java.txt"), bamboo);
             if (Files.exists(exchange.resolve("eve-lua.txt"))) verifyEve(parseEve(Files.readString(exchange.resolve("eve-lua.txt"))));
         }
         System.out.println("PASS protocol Java: valid EVE, malformed snapshots, terrain validation, mob walls, session requests, freshness");

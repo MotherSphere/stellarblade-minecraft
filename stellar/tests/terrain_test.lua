@@ -8,13 +8,15 @@ local function check(name, run)
 end
 local function backend()
     local b = {live={},next_id=0,pawn_id=1,world_id=2,
-        position={X=10,Y=20,Z=100},moves=0,events={}}
+        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0}
+    function b.time() return b.clock end
     function b.snapshot()
         return {pawn_id=b.pawn_id,world_id=b.world_id,
             position={X=b.position.X,Y=b.position.Y,Z=b.position.Z},
             rotation={Pitch=0,Yaw=0,Roll=0},half_height=90,radius=35}
     end
     function b.spawn(spec)
+        b.clock=b.clock+b.spawn_cost -- Seconds each spawn takes, for the frame budget.
         b.next_id=b.next_id+1
         if b.fail_spawn==b.next_id then error('spawn failed') end
         local a={id=b.next_id,spec=spec}
@@ -214,6 +216,18 @@ check('failed update rolls back new actors while preserving the live patch',func
     assert(t.update(packet(2))); assert(t.restore())
 end)
 
+check('a failure on the second new box also removes the first',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter()); local count=b.count()
+    local boxes={{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3},{-3,0,-3,-2,1,-2}}
+    b.fail_configure=b.next_id+2
+    assert(not t.update(packet(2,boxes)))
+    assert(b.count()==count and t.status()=='entered' and t.pose().ack==1)
+    b.fail_configure=nil
+    assert(t.update(packet(2,boxes))); assert(b.count()==count+2 and t.pose().ack==2)
+    assert(t.restore())
+end)
+
 check('failed update cleanup retains every actor and blocks further mutation',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
@@ -237,12 +251,11 @@ end)
 check('context and anchor changes cannot move EVE or mutate existing terrain',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local count=b.count(); local moves=b.moves
-    for _,field in ipairs({'session','dimension','origin','bounds'}) do
+    for _,field in ipairs({'session','dimension','origin'}) do
         local p=packet(2)
         if field=='session' then p.session=string.rep('a',32)
         elseif field=='dimension' then p.dimension='minecraft:the_nether'
-        elseif field=='origin' then p.origin.x=1.5
-        else p.bounds[1]=-3.5 end
+        else p.origin.x=1.5 end
         assert(not t.update(p)); assert(b.count()==count and b.moves==moves)
     end
     b.world_id=3
@@ -260,5 +273,162 @@ check('old revisions and missing guard actors cannot enter or change the terrain
     for id,a in pairs(b.live) do if a.spec.role=='lab-floor' then b.live[id]=nil end end
     assert(not t.enter()); assert(b.moves==0)
     assert(t.restore())
+end)
+
+-- The window follows EVE: Minecraft moves its bounds within the same anchor.
+local function moved(seq,boxes,bounds)
+    local p=packet(seq,boxes); p.bounds=bounds; return p
+end
+local function roles(t,role)
+    local found={}
+    for _,spec in ipairs(t.shapes()) do if spec.role==role then found[#found+1]=spec end end
+    return found
+end
+check('a window move spawns the new guards and terrain before removing the old ones',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    local old={}
+    for id in pairs(b.live) do old[id]=true end
+    b.events={}
+    local ok,message=t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5}))
+    assert(ok and message:find('1 boxes added, 1 removed, 0 kept',1,true) and message:find('window moved',1,true),message)
+    local first_destroy,spawns
+    for i,event in ipairs(b.events) do
+        if event[1]=='destroy' then first_destroy=first_destroy or i else assert(not first_destroy,'a spawn after a removal') end
+    end
+    spawns=first_destroy-1
+    assert(spawns==7 and #b.events==14,'six guards and the new floor, then the old floor and the six old guards')
+    for id in pairs(old) do assert(not b.live[id],'every old actor is gone') end
+    assert(t.pose().ack==2 and t.status()=='entered')
+    local walls=roles(t,'lab-wall')
+    assert(#walls==4 and #roles(t,'lab-floor')==1 and #roles(t,'lab-ceiling')==1)
+    local xs={}
+    for _,wall in ipairs(walls) do xs[#xs+1]=wall.center.X-wall.extent.X end
+    table.sort(xs)
+    assert(xs[1]==10+(-2.5-0.25)*100 and xs[4]==10+6.5*100,'the side walls stand at the new bounds')
+    assert(t.restore()); assert(b.count()==0)
+end)
+
+check('after a window moved away from the anchor, F11 then F5 relinks once the window is back at the anchor',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    b.position.X=b.position.X+8*100 -- She walked 8 blocks east.
+    local far={4.5,-2,-4.5,12.5,4,4.5}
+    local ok,message=t.update(moved(2,{{4.5,-1,-4.5,12.5,0,4.5}},far))
+    assert(ok and message:find('window moved',1,true) and t.pose().ack==2,message)
+    assert(t.restore()); assert(b.count()==0)
+    ok,message=t.create(moved(2,{{4.5,-1,-4.5,12.5,0,4.5}},far))
+    assert(not ok and message:find('anchor must fit',1,true),'The far window cannot hold the anchor: '..tostring(message))
+    assert(t.create(packet(3)),'Minecraft brought the window back to the anchor')
+    assert(t.enter() and t.status()=='entered'); assert(t.restore())
+end)
+
+check('a window move is deferred while EVE is outside the new window or a new guard would intersect her',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    local count=b.count(); b.events={}
+    local ok,message=t.update(moved(2,{{11.5,-1,-4.5,20.5,0,4.5}},{11.5,-2,-4.5,20.5,4,4.5}))
+    assert(not ok and message:find('EVE is outside the new window',1,true),message)
+    ok,message=t.update(moved(2,{{-0.2,-1,-4.5,8.8,0,4.5}},{-0.2,-2,-4.5,8.8,4,4.5}))
+    assert(not ok and message:find('a new guard intersects EVE',1,true),message)
+    assert(#b.events==0 and b.count()==count and t.pose().ack==1 and t.status()=='entered')
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5})),'the move is retried with a later packet')
+    assert(t.pose().ack==2)
+    assert(t.restore())
+end)
+
+check('a failed guard spawn rolls the window move back',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    local count,floor=b.count(),imported(b)
+    b.fail_configure=b.next_id+3
+    assert(not t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5})))
+    assert(b.count()==count and b.live[floor.id] and t.status()=='entered' and t.pose().ack==1)
+    assert(#roles(t,'lab-wall')==4,'only the applied window keeps its guards')
+    b.fail_configure=nil
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5})))
+    assert(t.pose().ack==2 and b.count()==count)
+    assert(t.restore())
+end)
+
+-- Ten small boxes away from EVE (the floor stays): b.spawn_cost 1.5 ms imports three per 4 ms frame.
+local function scattered()
+    local boxes={{-4.5,-1,-4.5,4.5,0,4.5}}
+    for i=1,10 do boxes[#boxes+1]={-4.5+i*0.5,1,2,-4.25+i*0.5,2,3} end
+    return boxes
+end
+check('a large revision imports a few boxes per frame and keeps the applied revision until it is complete',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    local count=b.count(); b.spawn_cost=0.0015
+    local ok,message=t.update(packet(2,scattered()))
+    assert(ok and message=='Importing Minecraft collision revision 2: 7 boxes left.',message)
+    assert(t.pose().ack==1 and b.count()==count+3)
+    ok,message=t.update(packet(2,scattered()))
+    assert(ok and message=='Importing Minecraft collision revision 2: 7 boxes left.' and b.count()==count+3,
+        'a heartbeat of the importing revision changes nothing')
+    ok,message=t.step(); assert(ok and message==nil and b.count()==count+6 and t.pose().ack==1)
+    assert(t.step())
+    ok,message=t.step()
+    assert(ok and message:find('revision 2: 10 boxes added, 0 removed, 1 kept',1,true) and message:find('over 4 frames',1,true),message)
+    assert(t.pose().ack==2 and b.count()==count+10)
+    ok,message=t.step(); assert(ok and message==nil,'nothing left to import')
+    assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a newer revision during an import keeps what is already spawned',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.spawn_cost=0.0015
+    assert(t.update(packet(2,scattered())))
+    local spawned={}
+    for id,a in pairs(b.live) do if a.spec.role=='minecraft' then spawned[id]=a end end
+    local boxes=scattered(); table.remove(boxes,3); boxes[#boxes+1]={2,1,2,3,2,3}
+    b.events={}
+    assert(t.update(packet(3,boxes)))
+    for id in pairs(spawned) do assert(b.live[id],'spawned boxes stay until the import ends') end
+    local done
+    for _=1,5 do
+        local ok,message=t.step(); assert(ok)
+        if message then done=message; break end
+    end
+    assert(done and done:find('revision 3: 8 boxes added, 1 removed, 3 kept',1,true),done)
+    local destroyed=0
+    for _,event in ipairs(b.events) do if event[1]=='destroy' then destroyed=destroyed+1 end end
+    assert(destroyed==1 and t.pose().ack==3 and b.count()==6+#boxes,'only the dropped box goes, once')
+    assert(t.restore())
+end)
+
+check('a queued box EVE walked into waits until she leaves',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.spawn_cost=0.0015
+    local boxes=scattered(); boxes[#boxes+1]={2,0,-1,3,1,0}
+    assert(t.update(packet(2,boxes)))
+    local count=b.count()
+    b.position={X=260,Y=-30,Z=795} -- Minecraft (2.5, 0.05, -0.5): inside the last queued box.
+    local ok,message
+    for _=1,3 do ok,message=t.step() end
+    assert(ok and message:find('waiting',1,true) and b.count()==count+7 and t.pose().ack==1,message)
+    ok,message=t.step(); assert(ok and message:find('waiting',1,true) and b.count()==count+7)
+    b.position={X=10,Y=20,Z=795}
+    ok,message=t.step()
+    assert(ok and message:find('revision 2: 11 boxes added',1,true) and t.pose().ack==2,message)
+    assert(t.restore())
+end)
+
+check('a window moved back during its import drops the new guards at once',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.spawn_cost=0.0015
+    local boxes=scattered(); boxes[1]={-2.5,-1,-4.5,6.5,0,4.5}
+    assert(t.update(moved(2,boxes,{-2.5,-2,-4.5,6.5,4,4.5})))
+    assert(#roles(t,'lab-wall')==8 and t.pose().ack==1,'both windows are guarded while the move imports')
+    assert(t.update(packet(3,scattered())))
+    assert(#roles(t,'lab-wall')==4,'the applied window keeps only its own guards')
+    local done
+    for _=1,5 do
+        local ok,message=t.step(); assert(ok)
+        if message then done=message; break end
+    end
+    assert(done and not done:find('window moved',1,true) and t.pose().ack==3,done)
+    assert(t.restore()); assert(b.count()==0)
 end)
 print(string.format('%d terrain lifecycle tests passed; native physics requires in-game verification.',tests))

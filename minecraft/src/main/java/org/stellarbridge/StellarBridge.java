@@ -3,8 +3,12 @@ package org.stellarbridge;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.DoubleStream;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
@@ -39,7 +43,6 @@ import org.slf4j.LoggerFactory;
 
 public final class StellarBridge implements ClientModInitializer {
     private static final Logger LOG = LoggerFactory.getLogger("stellar_bridge");
-    static final BridgeProtocol.Box BOUNDS = new BridgeProtocol.Box(-16.5, -4, -16.5, 16.5, 8, 16.5);
     private static Session session; // Integrated server thread only.
     private static volatile Control control; // Immutable publication to client and packet threads.
     private static volatile PauseBinding pauseBinding; // Independent of EVE pose freshness; never exposes Session.
@@ -149,7 +152,7 @@ public final class StellarBridge implements ClientModInitializer {
         Session current = session;
         source.sendFeedback(() -> Text.literal(current == null ? "Stellar Bridge is inactive."
                 : "Stellar Bridge: revision " + current.revision + ", " + current.boxes.size()
-                    + " boxes, slowest terrain publication " + current.slowestPublish / 1_000_000 + " ms, EVE position "
+                    + " boxes, window around block " + Session.middle(current.centre).toShortString() + ", slowest terrain publication " + current.slowestPublish / 1_000_000 + " ms, EVE position "
                     + (control == null ? "waiting" : "active") + "."), false);
         return 1;
     }
@@ -199,6 +202,8 @@ public final class StellarBridge implements ClientModInitializer {
             BridgeProtocol.Eve eve = current.gate.accept(current.files.readEve(current.id), current.revision, now());
             if (eve == null) {
                 control = null;
+                // Once she has left the link, the window returns to the anchor, where Stellar Blade imports it again.
+                if (current.gate.away(now())) current.feet = current.origin;
                 return;
             }
             Vec3d position = current.origin.add(eve.x(), eve.y(), eve.z());
@@ -207,6 +212,9 @@ public final class StellarBridge implements ClientModInitializer {
                             new CaptureFrame.Position(current.origin.x, current.origin.y, current.origin.z),
                             current.world.getRegistryKey().getValue().toString(), current.player.getUuid()));
             move(current.player, position);
+            current.feet = position; // The terrain window follows her from the next publication.
+            // Vanilla recentres chunk loading and sending only from move packets, which the bridge cancels.
+            current.world.getChunkManager().updatePosition(current.player);
             AvatarCombat.shove(current.player);
             current.publishMobs();
         } catch (IOException | IllegalArgumentException exception) {
@@ -369,9 +377,13 @@ public final class StellarBridge implements ClientModInitializer {
         final BridgeFiles files;
         final String id = UUID.randomUUID().toString().replace("-", "");
         final Vec3d origin;
-        final PoseGate gate = new PoseGate(id, BOUNDS);
+        final PoseGate gate = new PoseGate(id);
+        int[] centre; // The terrain window's centre cell (world); it follows EVE.
+        BridgeProtocol.Box bounds; // The published window, relative to the origin.
+        Vec3d feet; // EVE's feet (world) as last applied, or the origin before that.
+        final Map<Long, TerrainGeometry.Cell> cells = new HashMap<>(); // Merged cells for reuse across publications.
+        long heldWarned; // Wall milliseconds of the last action-bar warning about a held window.
         List<BridgeProtocol.Box> boxes = List.of();
-        List<Box> parts = List.of();
         long slowestPublish; // Nanoseconds of the slowest terrain publication (scan, merge, write) this session.
         int revision;
         int ticks;
@@ -391,6 +403,9 @@ public final class StellarBridge implements ClientModInitializer {
             VoxelShape support = world.getBlockState(floor).getCollisionShape(world, floor, ShapeContext.of(player));
             if (support.isEmpty() || Math.abs(support.getMax(Direction.Axis.Y) - 1) > 0.00001)
                 throw new IllegalArgumentException("The starting block must have a full-height collision floor");
+            feet = origin;
+            centre = new int[] {TerrainGeometry.cell(origin.x), TerrainGeometry.cell(origin.y), TerrainGeometry.cell(origin.z)};
+            bounds = TerrainGeometry.window(centre, origin);
         }
 
         /** Each tick: Stellar Blade's answer to the pending session request, in chat; a request unanswered after ANSWER, once. */
@@ -409,7 +424,7 @@ public final class StellarBridge implements ClientModInitializer {
                 request = null;
             } else if (System.nanoTime() - request.sentNanos() > ANSWER) {
                 player.sendMessage(Text.literal("Stellar Blade did not answer /stellar " + request.action()
-                        + ". Check that its Lua load line mentions /stellar import, enter and return, or use its key."), false);
+                        + ". Check that it runs Lua revision 48, or use its key."), false);
                 LOG.info("Session request {} {}: no answer", request.seq(), request.action());
                 request = null;
             }
@@ -429,8 +444,8 @@ public final class StellarBridge implements ClientModInitializer {
          * Lua drops its walls when the heartbeat stops. A failure only costs the walls, never the session.
          */
         void publishMobs() {
-            Box patch = new Box(origin.x + BOUNDS.minX(), origin.y + BOUNDS.minY(), origin.z + BOUNDS.minZ(),
-                    origin.x + BOUNDS.maxX(), origin.y + BOUNDS.maxY(), origin.z + BOUNDS.maxZ());
+            Box patch = new Box(origin.x + bounds.minX(), origin.y + bounds.minY(), origin.z + bounds.minZ(),
+                    origin.x + bounds.maxX(), origin.y + bounds.maxY(), origin.z + bounds.maxZ());
             List<BridgeProtocol.Box> mobs = mobWalls(patch, origin, player.getPos(), world.getOtherEntities(player, patch,
                     AvatarCombat.shoved(player)).stream().map(Entity::getBoundingBox).toList());
             if (mobs.isEmpty() && !mobsListed) return;
@@ -442,56 +457,100 @@ public final class StellarBridge implements ClientModInitializer {
             }
         }
 
+        /**
+         * Publishes the terrain window, moved to follow EVE's feet when TerrainGeometry.follow asks. A move that cannot
+         * be made (unloaded chunks, too many boxes, too large a packet, the reach limit) holds the current window with an
+         * action-bar warning at most every 5 s; EVE then meets its walls. A failure of the current window stops the session.
+         */
         void publish() throws IOException {
             long started = System.nanoTime();
-            // The patch must stay loaded without the player entity: a dead player leaves the world after a second. The
-            // ticket lasts 5 ticks and is renewed every 4, so it lapses by itself once the session ends.
-            // Radius 2 keeps every chunk within two of the anchor's fully loaded, which covers the patch and its border.
-            world.getChunkManager().addTicket(ChunkTicketType.POST_TELEPORT, new ChunkPos(BlockPos.ofFloored(origin)), 2, player.getId());
+            // The window must stay loaded without the player entity: a dead player leaves the world after a second. The
+            // ticket lasts 5 ticks and is renewed every 4, so it lapses by itself once the session ends. Radius 3 around
+            // the window's centre chunk covers the window, its border and the next window one move away.
+            world.getChunkManager().addTicket(ChunkTicketType.POST_TELEPORT, new ChunkPos(middle(centre)), 3, player.getId());
+            int[] wanted = TerrainGeometry.follow(centre, feet);
+            Snapshot next = null;
+            if (!Arrays.equals(wanted, centre)) {
+                // The wanted window's chunks load too, even far from the player, as when it returns to the anchor.
+                world.getChunkManager().addTicket(ChunkTicketType.POST_TELEPORT, new ChunkPos(middle(wanted)), 3, player.getId());
+                try { next = snapshot(wanted); }
+                catch (IllegalArgumentException held) { hold(held.getMessage()); }
+            }
+            if (next == null) next = snapshot(centre);
+            files.publish(next.text);
+            long elapsed = System.nanoTime() - started;
+            slowestPublish = Math.max(slowestPublish, elapsed);
+            if (next.revision != revision) {
+                gate.published(next.revision, next.bounds);
+                LOG.info("Terrain revision={} boxes={} window={} publish={} ms", next.revision, next.boxes.size(),
+                        Arrays.toString(next.centre), elapsed / 1_000_000);
+            }
+            centre = next.centre;
+            bounds = next.bounds;
+            boxes = next.boxes;
+            revision = next.revision;
+            NativeSceneExport.capture(server, world, player.getUuid(), new NativeScene.Binding(id, revision,
+                    world.getRegistryKey().getValue().toString(), new CaptureFrame.Position(origin.x, origin.y, origin.z)));
+        }
+
+        /** The block in the middle of window cell c. */
+        static BlockPos middle(int[] c) {
+            int half = TerrainGeometry.CELL / 2;
+            return new BlockPos(c[0] * TerrainGeometry.CELL + half, c[1] * TerrainGeometry.CELL + half, c[2] * TerrainGeometry.CELL + half);
+        }
+
+        private record Snapshot(int[] centre, BridgeProtocol.Box bounds, List<BridgeProtocol.Box> boxes, int revision, String text) { }
+
+        /** The encoded window around cell c, without changing the session. */
+        private Snapshot snapshot(int[] c) {
+            BridgeProtocol.Box window = TerrainGeometry.window(c, origin);
+            if (DoubleStream.of(window.minX(), window.minY(), window.minZ(), window.maxX(), window.maxY(), window.maxZ())
+                    .anyMatch(v -> Math.abs(v) > BridgeProtocol.MAX_REACH))
+                throw new IllegalArgumentException("EVE is near the bridge's reach, " + (int) BridgeProtocol.MAX_REACH + " blocks from the start");
+            List<BridgeProtocol.Box> next = TerrainGeometry.merge(scan(window), window, origin.x, origin.y, origin.z, cells);
+            int nextRevision = revision == 0 || !next.equals(boxes) || !window.equals(bounds) ? Math.addExact(revision, 1) : revision;
+            return new Snapshot(c, window, next, nextRevision, BridgeProtocol.encodeTerrain(new BridgeProtocol.Terrain(id,
+                    nextRevision, now(), world.getRegistryKey().getValue().toString(), origin.x, origin.y, origin.z, window, next)));
+        }
+
+        /**
+         * Collision shapes relative to the origin inside window, plus one block around it for shapes that protrude into it.
+         * Rows outside the world's height are empty; Stellar Blade's lab floor and ceiling still bound EVE.
+         */
+        private List<VoxelShape> scan(BridgeProtocol.Box window) {
             List<VoxelShape> shapes = new ArrayList<>();
-            List<Box> parts = new ArrayList<>();
-            int x0 = MathHelper.floor(origin.x), y0 = MathHelper.floor(origin.y), z0 = MathHelper.floor(origin.z);
-            // Include one neighboring block for collision shapes that protrude across the fixed patch boundary.
-            int reach = (int) BOUNDS.maxX() + 1, top = MathHelper.ceil(origin.y + BOUNDS.maxY());
+            int top = MathHelper.ceil(origin.y + window.maxY());
             ShapeContext context = ShapeContext.of(player);
-            for (int x = x0 - reach; x <= x0 + reach; x++) {
-                for (int z = z0 - reach; z <= z0 + reach; z++) {
-                    if (!world.isChunkLoaded(x >> 4, z >> 4)) throw new IllegalArgumentException("All test-area chunks must remain loaded");
-                    for (int y = y0 + (int) BOUNDS.minY() - 1; y <= y0 + (int) BOUNDS.maxY(); y++) {
+            for (int x = MathHelper.floor(origin.x + window.minX()) - 1; x <= MathHelper.ceil(origin.x + window.maxX()); x++) {
+                for (int z = MathHelper.floor(origin.z + window.minZ()) - 1; z <= MathHelper.ceil(origin.z + window.maxZ()); z++) {
+                    if (!world.isChunkLoaded(x >> 4, z >> 4)) throw new IllegalArgumentException("Terrain chunks are not loaded");
+                    int bottom = Math.max(MathHelper.floor(origin.y + window.minY()) - 1, world.getBottomY());
+                    for (int y = bottom; y <= Math.min(top, world.getTopY() - 1); y++) {
                         BlockPos position = new BlockPos(x, y, z);
-                        if (world.isOutOfHeightLimit(position)) throw new IllegalArgumentException("The test area exceeds the world height limit");
                         VoxelShape shape = world.getBlockState(position).getCollisionShape(world, position, context);
                         // Fluids are not simulated: EVE cannot enter them, a wall from the fluid up to the first solid
-                        // block above it (ice over a pond, a floor over cave water) or the patch's top.
-                        if (!world.getFluidState(position).isEmpty() && y - origin.y >= BOUNDS.minY()) {
+                        // block above it (ice over a pond, a floor over cave water) or the window's top.
+                        if (!world.getFluidState(position).isEmpty() && y - origin.y >= window.minY()) {
                             int column = x, row = z;
                             int end = TerrainGeometry.fluidWallEnd(y, top, above -> {
                                 BlockPos at = new BlockPos(column, above, row);
                                 return world.getFluidState(at).isEmpty() && !world.getBlockState(at).getCollisionShape(world, at, context).isEmpty();
                             });
-                            shape = VoxelShapes.cuboid(0, 0, 0, 1, Math.min(end - y, BOUNDS.maxY() - (y - origin.y)), 1);
+                            shape = VoxelShapes.cuboid(0, 0, 0, 1, Math.min(end - y, window.maxY() - (y - origin.y)), 1);
                         }
-                        if (shape.isEmpty()) continue;
-                        shape = shape.offset(x - origin.x, y - origin.y, z - origin.z);
-                        shapes.add(shape);
-                        parts.addAll(shape.getBoundingBoxes());
+                        if (!shape.isEmpty()) shapes.add(shape.offset(x - origin.x, y - origin.y, z - origin.z));
                     }
                 }
             }
-            // Merging is the costly step; heartbeats with unchanged block shapes reuse the last result.
-            List<BridgeProtocol.Box> next = parts.equals(this.parts) ? boxes
-                    : TerrainGeometry.merge(shapes, BOUNDS, origin.x, origin.y, origin.z);
-            this.parts = parts;
-            int nextRevision = revision == 0 || !next.equals(boxes) ? Math.addExact(revision, 1) : revision;
-            files.publish(BridgeProtocol.encodeTerrain(new BridgeProtocol.Terrain(id, nextRevision, now(),
-                    world.getRegistryKey().getValue().toString(), origin.x, origin.y, origin.z, BOUNDS, next)));
-            long elapsed = System.nanoTime() - started;
-            slowestPublish = Math.max(slowestPublish, elapsed);
-            if (nextRevision != revision) LOG.info("Terrain revision={} boxes={} publish={} ms", nextRevision, next.size(), elapsed / 1_000_000);
-            boxes = next;
-            revision = nextRevision;
-            NativeSceneExport.capture(server, world, player.getUuid(), new NativeScene.Binding(id, revision,
-                    world.getRegistryKey().getValue().toString(), new CaptureFrame.Position(origin.x, origin.y, origin.z)));
+            return shapes;
+        }
+
+        private void hold(String reason) {
+            long now = System.currentTimeMillis();
+            if (now - heldWarned < 5000) return;
+            heldWarned = now;
+            player.sendMessage(Text.literal("Stellar Bridge: the terrain window cannot follow EVE: " + reason), true);
+            LOG.warn("Terrain window held at cell {}: {}", Arrays.toString(centre), reason);
         }
     }
 }

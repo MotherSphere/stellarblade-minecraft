@@ -4,8 +4,8 @@ The shared directory is private to the local user (0700). Text snapshots are bou
 
 | Product | Producer | Reader | Contract |
 |---|---|---|---|
-| Terrain | Minecraft | Lua | `SBMC 2 TERRAIN`, fixed anchor, revision and at most 1024 distinct merged boxes |
-| EVE position | Lua | Minecraft | `SBMC 1 EVE`, session, state, acknowledged terrain revision and feet position |
+| Terrain | Minecraft | Lua | `SBMC 3 TERRAIN`, fixed anchor, revision, the window following EVE and at most 1024 distinct merged boxes relative to its corner |
+| EVE position | Lua | Minecraft | `SBMC 2 EVE`, session, state, acknowledged terrain revision and feet position within ±2048 blocks |
 | Native terrain visuals | Minecraft | Lua | Independent visual revision and supported face/texture data |
 | Capture request | Minecraft | Lua/native | `SBMC_CAPTURE_SESSION 2`, RUN, SESSION, TIME, SIZE, STATE, END |
 | Raw frame | Native | Minecraft | Mapping v1 containing frame-v6 metadata, RGBA8 and R32F depth |
@@ -16,10 +16,14 @@ The shared directory is private to the local user (0700). Text snapshots are bou
 | Pose | Native | Minecraft | Pose mapping v1, slot format 3, with world, component-space bone and morph-weight floats |
 | Combat event | Minecraft | Lua | `SBMC_COMBAT 2`, SESSION, SEQ, TIME, EVENT and attacker yaw, END |
 | Lock-on target | Minecraft | Lua | `SBMC_LOCK 1`, SESSION, SEQ, TIME, TARGET position or `none`, END |
-| Mob walls | Minecraft | Lua | `SBMC_MOBS 1`, SESSION, SEQ, TIME, COUNT and up to eight MOB boxes, END |
+| Mob walls | Minecraft | Lua | `SBMC_MOBS 2`, SESSION, SEQ, TIME, COUNT and up to eight MOB boxes, END |
 | Session request / answer | Minecraft / Lua | Lua / Minecraft | `SBMC_REQUEST 1`, SESSION, SEQ, TIME, ACTION, END; `SBMC_REQUEST_ACK 1`, SESSION, SEQ, ACTION, RESULT, MESSAGE, END |
 
 Positions use Unreal `(X,Y,Z)` to Minecraft `(X,Z,Y)` with 100 Unreal units per block and the session's anchor transform. Native camera/depth and feet position must match the terrain link; mixing older coordinate bases is unsupported.
+
+## Terrain window
+
+Minecraft replaces [`terrain.txt`](fixtures/terrain.txt) every 4 server ticks: SESSION, SEQ (the revision, raised when the boxes or the window change), TIME in Unix seconds, `WORLD dimension x y z` (the fixed bridge origin), `BOUNDS minX minY minZ maxX maxY maxZ`, `COUNT n` (at most 1024), n distinct `BOX` lines and `END` with SEQ. BOUNDS is the window relative to the origin, within ±2048 blocks: five by three by five world-aligned cells of 8 blocks around EVE's cell, moved by whole cells once her feet are two cells from its centre horizontally, or within 4 blocks of its floor or 6 of its ceiling. Each BOX is relative to the window's minimum corner and rounded to a ten-thousandth of a block, so a full packet fits 64 KiB anywhere in reach; Lua adds the corner back and rounds again, recovering Minecraft's coordinates exactly, and refuses boxes outside the window, empty or duplicate after rounding. Lua names formats 1 and 2 as an older Minecraft mod. Within one session, dimension and origin, a new BOUNDS is a window move, not a new link: Lua spawns the new window's guards, then its missing boxes within 4 ms per native frame, and only then removes the boxes the revision no longer has and the old guards; it acknowledges the revision (`STATE ... ack`) only once that is done, and defers a move while EVE's feet are outside the new window or a new guard would intersect her capsule. Minecraft keeps the window of each of its last 64 revisions and applies EVE's position only inside the window of the revision she acknowledges.
 
 ## Raw mapping v1
 
@@ -61,7 +65,7 @@ While Minecraft's lock-on holds a target, it replaces [`eve-lock.txt`](fixtures/
 
 ## Mob walls
 
-While EVE's position is applied, Minecraft replaces [`eve-mobs.txt`](fixtures/mobs.txt) each server tick: SESSION, SEQ (increasing, repeated by `END`), TIME in Unix milliseconds, `COUNT n` (0 to 8), then n lines `MOB minX minY minZ maxX maxY maxZ`: the nearest living entities that EVE's body shoves and that intersect the patch, clipped to it, relative to the bridge origin in blocks (Minecraft axes, three decimals, within ±32, every side at least 0.01). An empty list is written once, then nothing until an entity is back. Lua takes a newer SEQ of the entered link's session (a first one only within 2.5 seconds of TIME) and keeps the list for 0.6 seconds after the newest: one TriggerBox per box at its Unreal position (anchor + (x, z, y) × scale), WorldDynamic, ignoring every channel except the object type of EVE's capsule, which it blocks, query-only, without overlap events or character step-up. A box that would intersect EVE's capsule is placed without collision until she has left it, and every box is without collision while Stellar Blade lets her pass through characters (`bIgnoreCharacterCollision`, during her evades); unused boxes stay parked without collision. A box is owned before its setup, and a move or collision mode that does not take is an error. Walls are WorldDynamic objects, so a Stellar Blade query by object type (rather than by channel) may still find them. Staleness, link loss, F11 or an error destroys every box, retried every frame until done; three spawn or placement errors stop new walls. Stopping the bridge deletes the file.
+While EVE's position is applied, Minecraft replaces [`eve-mobs.txt`](fixtures/mobs.txt) each server tick: SESSION, SEQ (increasing, repeated by `END`), TIME in Unix milliseconds, `COUNT n` (0 to 8), then n lines `MOB minX minY minZ maxX maxY maxZ`: the nearest living entities that EVE's body shoves and that intersect the terrain window, clipped to it, relative to the bridge origin in blocks (Minecraft axes, three decimals, within ±2048, every side at least 0.01). An empty list is written once, then nothing until an entity is back. Lua takes a newer SEQ of the entered link's session (a first one only within 2.5 seconds of TIME) and keeps the list for 0.6 seconds after the newest: one TriggerBox per box at its Unreal position (anchor + (x, z, y) × scale), WorldDynamic, ignoring every channel except the object type of EVE's capsule, which it blocks, query-only, without overlap events or character step-up. A box that would intersect EVE's capsule is placed without collision until she has left it, and every box is without collision while Stellar Blade lets her pass through characters (`bIgnoreCharacterCollision`, during her evades); unused boxes stay parked without collision. A box is owned before its setup, and a move or collision mode that does not take is an error. Walls are WorldDynamic objects, so a Stellar Blade query by object type (rather than by channel) may still find them. Staleness, link loss, F11 or an error destroys every box, retried every frame until done; three spawn or placement errors stop new walls. Stopping the bridge deletes the file.
 
 ## Session requests
 
