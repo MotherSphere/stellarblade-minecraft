@@ -47,36 +47,38 @@ local function answer() local a=read('eve-request-ack.txt'); return a and a:matc
 local function result() return (answer()) end
 
 requests.tick(); assert(#ran==0 and read('eve-request-ack.txt')==nil,'No request, nothing runs and nothing answers')
--- Enter and return need a link of the request's session; refused without running.
+-- Enter needs a link of the request's session; refused without running.
 ask('enter'); assert(#ran==0 and result()=='refused' and select(2,answer()):find('SEQ 1\nACTION enter\n',1,true))
 assert(logged[#logged]=='Request: enter 1 refused: No Minecraft link to enter; import first.',logged[#logged])
-ask('return'); assert(#ran==0 and result()=='refused')
 -- Import before a link: only for the session terrain.txt names.
 terrain=B; ask('import'); assert(#ran==0 and result()=='refused' and logged[#logged]:find('names another session',1,true))
 terrain=nil; ask('import'); assert(#ran==0 and logged[#logged]:find('names no session',1,true))
 offered_error=true; ask('import'); offered_error=false
 assert(#ran==0 and result()=='refused' and logged[#logged]:find('session check failed: ',1,true),'A failed check refuses')
-terrain=A; ask('import'); assert(ran[1]=='mirror' and result()=='ok' and logged[#logged]=='Request: import 6 from Minecraft')
-local _,text=answer(); assert(text:find('MESSAGE mirror done\nEND 6\n',1,true))
+terrain=A; ask('import'); assert(ran[1]=='mirror' and result()=='ok' and logged[#logged]=='Request: import 5 from Minecraft')
+local _,text=answer(); assert(text:find('MESSAGE mirror done\nEND 5\n',1,true))
 -- The same request again, an older SEQ or a stale one never runs twice.
 requests.tick(); requests.tick(); assert(#ran==1,'A request runs once')
-ask('enter',A,nil,5); assert(#ran==1,'An older SEQ is ignored')
-ask('enter',A,wall*1000-2501); assert(#ran==1,'Older than 2.5 s is ignored')
-ask('enter',A,wall*1000+2501); assert(#ran==1,'Further than 2.5 s ahead is ignored')
-ask('enter',A,wall*1000-2500); assert(ran[2]=='enter' and result()=='ok','A newer SEQ within 2.5 s runs')
+ask('enter',A,nil,4); assert(#ran==1,'An older SEQ is ignored')
+ask('enter',A,wall*1000-2501,7); assert(#ran==1,'Older than 2.5 s is ignored')
+ask('enter',A,wall*1000+2501,8); assert(#ran==1,'Further than 2.5 s ahead is ignored')
+ask('enter',A,wall*1000-2500,9); assert(ran[2]=='enter' and result()=='ok','A newer SEQ within 2.5 s runs')
+ask('enter',A,wall*1000+2500); assert(ran[3]=='enter' and result()=='ok','Up to 2.5 s ahead runs')
 -- Another session's request is refused while a link exists, import included.
-ask('return',B,nil,1); assert(#ran==2 and result()=='refused' and logged[#logged]:find('Another Minecraft session is linked.',1,true))
-terrain=B; ask('import',B); assert(#ran==2 and logged[#logged]:find('return EVE first',1,true))
+ask('return',B,nil,1); assert(#ran==3 and result()=='refused' and logged[#logged]:find('Another Minecraft session is linked.',1,true))
+terrain=B; ask('import',B); assert(#ran==3 and logged[#logged]:find('return EVE first',1,true))
 terrain=A
 -- A failing action answers failed with its message; a throwing one too.
-results.restore=false; ask('return',A,nil,20); assert(ran[3]=='restore' and result()=='failed')
-results.restore=nil; link=A
+results.restore=false; ask('return',A,nil,20); assert(ran[4]=='restore' and result()=='failed')
+-- A failed return leaves no link (the bridge is stopping) but can be retried, like F11.
+results.restore=nil; ask('return'); assert(ran[5]=='restore' and result()=='ok','A failed return can be retried')
+link=A
 local throwing=Requests.new(directory,function() return wall end,function() end,function() return A end,function() return A end,
     function() error('action threw') end)
 seq=seq+1; write('eve-request.txt',string.format('SBMC_REQUEST 1\nSESSION %s\nSEQ %d\nTIME %d\nACTION enter\nEND %d\n',A,seq,wall*1000,seq))
 throwing.tick(); assert(result()=='failed' and select(2,answer()):find('action threw',1,true))
 -- An unwritable answer is logged, never thrown.
 os.remove(directory..'/eve-request-ack.txt'); assert(os.execute('mkdir '..directory..'/eve-request-ack.tmp'))
-ask('return'); assert(ran[4]=='restore' and logged[#logged]:find('Request: answer not written: ',1,true))
+ask('return'); assert(ran[6]=='restore' and logged[#logged]:find('Request: answer not written: ',1,true))
 os.execute('rm -r '..directory)
 print('PASS session requests: shared fixtures, freshness, SEQ, session gates, refusals and answers')

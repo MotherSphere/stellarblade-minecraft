@@ -1,7 +1,8 @@
 -- Minecraft's session requests (eve-request.txt, SBMC_REQUEST 1): /stellar import, enter and return run the same actions
 -- as F5, F8 and F11, without Stellar Blade's window. A request runs once: within 2.5 seconds of TIME, with a newer SEQ
 -- when it comes from the session of the last request taken. Import needs the session terrain.txt names (and no other linked session); enter
--- and return need the link's own session; anything else is refused without running. Every request taken is answered in
+-- needs the link's own session; return any session but another linked one, so a failed return can be retried like F11. Anything
+-- else is refused without running. Every request taken is answered in
 -- eve-request-ack.txt (SBMC_REQUEST_ACK 1) with ok, failed or refused and the action's message. Game-thread only.
 local Requests={}
 local FRESH_MS,MESSAGE=2500,400
@@ -35,8 +36,10 @@ function Requests.new(directory,wall,log,linked,offered,run)
             local named=offered()
             if named~=request.session then return 'Minecraft terrain names '..(named and 'another session' or 'no session')..'.' end
             if link and link~=request.session then return 'Another Minecraft session is linked; return EVE first.' end
-        elseif link~=request.session then
-            return link and 'Another Minecraft session is linked.' or 'No Minecraft link to '..request.action..'; import first.'
+        elseif link and link~=request.session then
+            return 'Another Minecraft session is linked.'
+        elseif not link and request.action=='enter' then
+            return 'No Minecraft link to enter; import first.'
         end
     end
     local function answer(request,result,message)

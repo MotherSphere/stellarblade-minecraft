@@ -406,7 +406,7 @@ public final class StellarBridge implements ClientModInitializer {
                 request = null;
             } else if (System.nanoTime() - request.sentNanos() > ANSWER) {
                 player.sendMessage(Text.literal("Stellar Blade did not answer /stellar " + request.action()
-                        + ". Check that it runs Lua revision 47 with a save loaded, or use its key."), false);
+                        + ". Check that its Lua load line mentions /stellar import, enter and return, or use its key."), false);
                 LOG.info("Session request {} {}: no answer", request.seq(), request.action());
                 request = null;
             }
