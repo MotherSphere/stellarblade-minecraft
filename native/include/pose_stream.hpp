@@ -358,7 +358,7 @@ public:
 // worker passes the request file, both component slots and Minecraft's lock
 // file; the verified gameplay XInput poll gives EVE the lock-on evades, without
 // their turns away from the target (patch_lock_rows, walked when the lock
-// starts or ends), while Minecraft locks and owner (the run whose input is
+// starts or ends and again after a fault), while Minecraft locks and owner (the run whose input is
 // forwarded) is set and keeps
 // her in the battle mode an attack started meanwhile, counts her evade starts and drone shots,
 // when owner is this stream's run adds Minecraft's gauge points and mirrors its

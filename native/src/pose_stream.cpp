@@ -1112,7 +1112,7 @@ Follow following;
 DollyWrite dolly_write;
 uint64_t minecraft_lock = 0; // eve-lock.txt's TIME while Minecraft holds a target.
 EvadeStarts evade_starts;
-bool rows_locked = false; // The lock state patch_lock_rows last completed a walk for.
+int rows_locked = 0; // The lock state patch_lock_rows last completed a walk for; -1 after a fault.
 constexpr uint32_t RowsFault = ~0u;
 Grants grants;
 HealthMirror mirror;
@@ -1348,13 +1348,11 @@ void on_gameplay_poll(std::string_view owner) {
     if (locked)
       evade_starts.counts[6] = changed;
   }
-  if (locked != rows_locked) { // About 5900 rows walked, so only when the lock starts or ends.
+  if (int(locked) != rows_locked) { // About 5900 rows walked, so only when the lock starts or ends (or after a fault).
     auto rows = guarded_rows(locked);
-    if (rows != RowsFault) {
-      rows_locked = locked;
-      if (locked)
-        evade_starts.counts[7] = rows; // Kept after the release, as word 6 is.
-    }
+    rows_locked = rows == RowsFault ? -1 : int(locked);
+    if (locked && rows != RowsFault)
+      evade_starts.counts[7] = rows; // Kept after the release, as word 6 is.
   }
   if (locked)
     guarded_battle(game_world());
