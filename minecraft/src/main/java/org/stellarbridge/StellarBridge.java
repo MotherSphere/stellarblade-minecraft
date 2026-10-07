@@ -489,8 +489,13 @@ public final class StellarBridge implements ClientModInitializer {
             bounds = next.bounds;
             boxes = next.boxes;
             revision = next.revision;
-            NativeSceneExport.capture(server, world, player.getUuid(), new NativeScene.Binding(id, revision,
-                    world.getRegistryKey().getValue().toString(), new CaptureFrame.Position(origin.x, origin.y, origin.z)));
+            // Native visuals read the 9 × 9 columns around the anchor: once the window has left it and its chunks have
+            // unloaded, never load them back for that (the last scene lapses within a second).
+            int x = MathHelper.floor(origin.x), z = MathHelper.floor(origin.z);
+            if (world.isChunkLoaded((x - 4) >> 4, (z - 4) >> 4) && world.isChunkLoaded((x + 4) >> 4, (z - 4) >> 4)
+                    && world.isChunkLoaded((x - 4) >> 4, (z + 4) >> 4) && world.isChunkLoaded((x + 4) >> 4, (z + 4) >> 4))
+                NativeSceneExport.capture(server, world, player.getUuid(), new NativeScene.Binding(id, revision,
+                        world.getRegistryKey().getValue().toString(), new CaptureFrame.Position(origin.x, origin.y, origin.z)));
         }
 
         /** The block in the middle of window cell c. */
