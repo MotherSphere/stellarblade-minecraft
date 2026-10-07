@@ -18,6 +18,7 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.LightmapTextureManager;
 import net.minecraft.client.render.WorldRenderer;
 import net.minecraft.client.world.ClientWorld;
@@ -100,7 +101,10 @@ public final class AvatarView {
                             off();
                             context.getSource().sendFeedback(Text.literal("EVE avatar removed."));
                             return 1;
-                        }))));
+                        }))
+                        .then(ClientCommandManager.literal("shading")
+                                .then(ClientCommandManager.literal("auto").executes(context -> shading(context.getSource(), false)))
+                                .then(ClientCommandManager.literal("entity").executes(context -> shading(context.getSource(), true))))));
         WorldRenderEvents.AFTER_ENTITIES.register(AvatarView::render);
         // While a perfect dodge slows Minecraft's world, a cold tint shows it.
         net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((context, tick) -> {
@@ -390,6 +394,13 @@ public final class AvatarView {
         return true;
     }
 
+    private static int shading(FabricClientCommandSource source, boolean entity) {
+        ShaderPacks.forced = entity;
+        source.sendFeedback(Text.literal(entity ? "EVE is drawn through Minecraft's entity programs, as under a shader pack."
+                : "EVE uses her own shaders unless a shader pack is in use."));
+        return 1;
+    }
+
     private static void draw(WorldRenderContext context, AvatarModel model, AvatarRenderer renderer, AvatarRecording.Pose pose,
                              Matrix4d placement, Vec3d camera) {
         float[] root = pose.world()[model.parts.get(0).component()];
@@ -397,6 +408,14 @@ public final class AvatarView {
         int light = WorldRenderer.getLightmapCoordinates(context.world(), BlockPos.ofFloored(feet.x, feet.y + 1, feet.z));
         Matrix4f projectionView = new Matrix4f(context.projectionMatrix()).mul(context.positionMatrix());
         renderer.sampleTrail(pose, placement, camera.x, camera.y, camera.z, System.nanoTime() / 1e9);
+        if (ShaderPacks.active()) {
+            // A shader pack resolves the frame from its own buffers: only Minecraft's programs, which it replaces, reach them.
+            renderer.drawEntity(context.positionMatrix(), context.projectionMatrix(), lightmap(context.lightmapTextureManager()), overlay(),
+                    LightmapTextureManager.getBlockLightCoordinates(light), LightmapTextureManager.getSkyLightCoordinates(light),
+                    GameRenderer.getRenderTypeEntityCutoutNoNullProgram(), GameRenderer.getRenderTypeEntityTranslucentProgram(),
+                    GameRenderer.getRenderTypeEyesProgram());
+            return;
+        }
         Vec3d sky = context.world().getSkyColor(context.camera().getPos(), context.tickCounter().getTickDelta(false));
         renderer.draw(projectionView, lightmap(context.lightmapTextureManager()),
                 LightmapTextureManager.getBlockLightCoordinates(light), LightmapTextureManager.getSkyLightCoordinates(light),
@@ -413,6 +432,15 @@ public final class AvatarView {
         manager.disable();
         RenderSystem.setShaderTexture(2, previousShaderTexture);
         GlStateManager._bindTexture(bound);
+        return id;
+    }
+
+    /** The hurt overlay's GL texture, as Minecraft gives it to entity programs. */
+    private static int overlay() {
+        int previous = RenderSystem.getShaderTexture(1);
+        MinecraftClient.getInstance().gameRenderer.getOverlayTexture().setupOverlayColor();
+        int id = RenderSystem.getShaderTexture(1);
+        RenderSystem.setShaderTexture(1, previous);
         return id;
     }
 
@@ -515,7 +543,8 @@ public final class AvatarView {
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
                 + AvatarCombat.status() + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
-                + AvatarStats.status(current.stats);
+                + AvatarStats.status(current.stats)
+                + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
     }
 
     private static String evadeStatus(int[] evades) {

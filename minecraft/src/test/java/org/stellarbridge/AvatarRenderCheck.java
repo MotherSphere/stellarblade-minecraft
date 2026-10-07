@@ -19,7 +19,8 @@ import org.lwjgl.stb.STBImageWrite;
  * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees [glow | hurt | fx=A+B]]: the
  * camera (default 3.2 blocks from her front, looking at 0.9 blocks) orbits by degrees around her feet; glow streams an
  * orange sword-edge glow as a special attack would; hurt draws her red hurt flash; fx plays those effect assets for 0.2 s before each frame, at the blade
- * tip for NS_A_ParTrail ones and at the hilt otherwise.
+ * tip for NS_A_ParTrail ones and at the hilt otherwise. A last argument entity draws her as under a shader pack, through
+ * Minecraft's own cut-out entity and eyes programs (read from the client jar), with a sword glow.
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
@@ -60,8 +61,16 @@ public final class AvatarRenderCheck {
 
         AvatarRecording recording = AvatarRecording.read(poses);
         AvatarModel model = AvatarModel.load(pack, recording.components, new java.util.HashMap<>());
+        boolean entity = java.util.List.of(args).contains("entity");
+        net.minecraft.client.gl.ShaderProgram cutout = entity ? vanilla("rendertype_entity_cutout_no_cull") : null;
+        net.minecraft.client.gl.ShaderProgram translucent = entity ? vanilla("rendertype_entity_translucent") : null;
+        net.minecraft.client.gl.ShaderProgram eyes = entity ? vanilla("rendertype_eyes") : null;
+        int overlay = entity ? overlay() : 0;
+        RenderSystem.setShaderLights(new org.joml.Vector3f(0.2f, 1, -0.7f).normalize(), new org.joml.Vector3f(-0.2f, 1, 0.7f).normalize());
+        RenderSystem.setShaderFogStart(1000); // As the own shaders' fog below: none within the scene.
+        RenderSystem.setShaderFogEnd(2000);
         try (AvatarRenderer renderer = new AvatarRenderer(model, pack)) {
-            if (args.length > 5 && args[5].equals("glow")) renderer.parameters(java.util.Map.of(
+            if (args.length > 5 && (args[5].equals("glow") || entity)) renderer.parameters(java.util.Map.of(
                     "CH_W_Sword_02_Blade_Edge/Opacity", new float[] {1}, "CH_W_Sword_02_Blade_Edge/Emissive_Intensity", new float[] {4},
                     "CH_W_Sword_02_Blade_Edge/Emissive_Color", new float[] {1, 0.35f, 0.05f, 1}));
             if (args.length > 5 && args[5].equals("hurt")) renderer.hurt(true);
@@ -116,7 +125,8 @@ public final class AvatarRenderCheck {
                 GL11.glViewport(i * tileWidth, 0, tileWidth, tileHeight);
                 long started = System.nanoTime();
                 // Daylight: the clear color as sky, a pale horizon as fog color (fog itself starts beyond the scene).
-                renderer.draw(projection.mul(view), lightmap, 15, 15, 1000, 2000, new float[] {0.75f, 0.84f, 1f, 1f},
+                if (entity) renderer.drawEntity(view, projection, lightmap, overlay, 15, 15, cutout, translucent, eyes);
+                else renderer.draw(projection.mul(view), lightmap, 15, 15, 1000, 2000, new float[] {0.75f, 0.84f, 1f, 1f},
                         new float[] {0.47f, 0.65f, 1f});
                 GL11.glFinish();
                 System.out.printf("t=%s s: draw + finish %.2f ms%n", times[i], (System.nanoTime() - started) / 1e6);
@@ -131,6 +141,29 @@ public final class AvatarRenderCheck {
         System.out.println("wrote " + out);
         GLFW.glfwDestroyWindow(window);
         GLFW.glfwTerminate();
+    }
+
+    /** One of Minecraft's core programs, from the client jar on the classpath, in the entity vertex format. */
+    static net.minecraft.client.gl.ShaderProgram vanilla(String name) throws java.io.IOException {
+        var jar = (net.minecraft.resource.ResourcePack) java.lang.reflect.Proxy.newProxyInstance(AvatarRenderCheck.class.getClassLoader(),
+                new Class<?>[] {net.minecraft.resource.ResourcePack.class}, (proxy, method, arguments) -> method.getName().equals("getId") ? "vanilla" : null);
+        return new net.minecraft.client.gl.ShaderProgram(id -> {
+            String path = "/assets/" + id.getNamespace() + "/" + id.getPath();
+            return AvatarRenderCheck.class.getResource(path) == null ? java.util.Optional.empty()
+                    : java.util.Optional.of(new net.minecraft.resource.Resource(jar, () -> AvatarRenderCheck.class.getResourceAsStream(path)));
+        }, name, net.minecraft.client.render.VertexFormats.POSITION_COLOR_TEXTURE_OVERLAY_LIGHT_NORMAL);
+    }
+
+    /** Minecraft's overlay texture: red hurt rows below 8, opaque white (no tint) from 8. */
+    static int overlay() {
+        ByteBuffer texels = BufferUtils.createByteBuffer(16 * 16 * 4);
+        for (int v = 0; v < 16; v++) for (int u = 0; u < 16; u++) texels.put(v < 8 ? new byte[] {(byte) 255, 0, 0, (byte) 0xb2} : new byte[] {-1, -1, -1, -1});
+        int id = GL11.glGenTextures();
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, id);
+        GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, 16, 16, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, texels.flip());
+        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
+        return id;
     }
 
     /** CPU copy of the vertex shader's morphing and skinning: the part's extent around EVE's feet, in blocks. */

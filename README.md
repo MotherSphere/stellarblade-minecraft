@@ -4,11 +4,11 @@ Experimental passthrough for playing EVE in Minecraft Java on Linux, with Stella
 
 **Minecraft is the primary game and renderer.** Minecraft owns the world, inventory, menus and block interactions. Stellar Blade simulates EVE: her controller, animations, skills and effects. In the main **avatar mode** (`/stellaravatar play`), Minecraft draws her own meshes from the bone poses the native adapter streams every Stellar Blade frame, with Minecraft's camera; Stellar Blade's camera follows it. The older **capture mode** (`/stellarview play`) composites her captured color and depth instead, at a lower rate; it stays as a fallback and for comparison.
 
-The prototype supports a bounded terrain/collision link, keyboard/mouse forwarding from Minecraft, EVE's combat against Minecraft's mobs, including mods' mobs ([combat](#combat)), Stellar Blade's lock-on, and its HUD. General world streaming and Iris/shader-pack compatibility are not implemented. Hair and transparency still need work. In capture mode, Minecraft's displayed FPS is distinct from the rate of new EVE images.
+The prototype supports a bounded terrain/collision link, keyboard/mouse forwarding from Minecraft, EVE's combat against Minecraft's mobs, including mods' mobs ([combat](#combat)), Stellar Blade's lock-on, and its HUD. General world streaming is not implemented. Under an Iris shader pack, avatar mode is meant to draw EVE through Minecraft's entity programs so the pack shades her, with fewer material details; this is experimental and not yet validated in game ([shader packs](docs/diagnostics.md#shader-packs)). Hair and transparency still need work. In capture mode, Minecraft's displayed FPS is distinct from the rate of new EVE images.
 
 ## Start a session
 
-First follow [setup and build instructions](docs/setup.md). Use a private creative or survival test world, Fast/Fancy graphics without Iris, and a backed-up Stellar Blade save in a clear outdoor location.
+First follow [setup and build instructions](docs/setup.md). Use a private creative or survival test world and a backed-up Stellar Blade save in a clear outdoor location. Avatar mode runs with Fast, Fancy or Fabulous graphics; Iris shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris.
 
 1. In Minecraft, stand on a full block and run `/stellar start`.
 2. In Stellar Blade, load EVE, press **F5** to import collision, then **F8** to enter the elevated lab. The lab must be clear of existing level geometry.

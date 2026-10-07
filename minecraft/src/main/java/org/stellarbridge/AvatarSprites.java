@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+import net.minecraft.client.gl.ShaderProgram;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3d;
@@ -25,7 +26,8 @@ import org.lwjgl.system.MemoryStack;
  * Stellar Blade's effects on EVE redrawn as glowing sprites with the game's own effect textures ({@code fx.<texture>.png}
  * in the pack). Each effect asset has a recipe of emitters, approximating its Niagara emitters: sparks streaking along
  * their velocity, flares and rings facing the camera, lightning along the blade, wind streaks around EVE. Particles are
- * simulated on the CPU and drawn additively after EVE. Render thread only; AvatarRenderer saves and restores GL state.
+ * simulated on the CPU and drawn additively after EVE (under a shader pack through Minecraft's eyes program; the effect
+ * textures are gray). Render thread only; AvatarRenderer saves and restores GL state.
  */
 final class AvatarSprites implements AutoCloseable {
     /** Camera-facing square, streak along the velocity, or wide horizontal flare. */
@@ -88,7 +90,8 @@ final class AvatarSprites implements AutoCloseable {
     private final Random random = new Random();
     private final Map<String, Integer> textureIndex = new HashMap<>();
     private final int[] textures;
-    private final int program, viewProjection, fogStart, fogEnd, fogColor, array, buffer;
+    private static final float[] UP = {0, 1, 0, 1}, FULL_BRIGHT = {240, 240, 0, 1};
+    private final int program, viewProjection, fogStart, fogEnd, fogColor, array, buffer, entityArray;
     private final FloatBuffer vertices = BufferUtils.createFloatBuffer(CAPACITY * VERTICES * FLOATS);
     // Particles, structure of arrays; positions are absolute Minecraft coordinates.
     private final double[] x = new double[CAPACITY], y = new double[CAPACITY], z = new double[CAPACITY];
@@ -143,6 +146,7 @@ final class AvatarSprites implements AutoCloseable {
         GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, FLOATS * 4, 12);
         GL20.glVertexAttribPointer(2, 4, GL11.GL_FLOAT, false, FLOATS * 4, 20);
         for (int a = 0; a < 3; a++) GL20.glEnableVertexAttribArray(a);
+        entityArray = GL30.glGenVertexArrays();
         GlStateManager._glBindVertexArray(previousArray);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousBuffer);
     }
@@ -224,9 +228,53 @@ final class AvatarSprites implements AutoCloseable {
 
     /** Draws the particles additively, depth tested without depth writes, grouped by texture. */
     void draw(Matrix4f projectionView, float start, float stop, float[] fog) {
-        if (count == 0) return;
-        vertices.clear();
         int[] first = new int[textures.length], size = new int[textures.length];
+        if (!upload(first, size)) return;
+        GlStateManager._glUseProgram(program);
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            GL20.glUniformMatrix4fv(viewProjection, false, projectionView.get(stack.mallocFloat(16)));
+        }
+        GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler0"), 0);
+        GL20.glUniform1f(fogStart, start);
+        GL20.glUniform1f(fogEnd, stop);
+        GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
+        GlStateManager._activeTexture(GL13.GL_TEXTURE0);
+        additive();
+        GlStateManager._glBindVertexArray(array);
+        for (int t = 0; t < textures.length; t++) {
+            if (size[t] == 0) continue;
+            GlStateManager._bindTexture(textures[t]);
+            GL11.glDrawArrays(GL11.GL_TRIANGLES, first[t], size[t]);
+        }
+    }
+
+    /** The same particles through Minecraft's eyes program (a shader pack's while one is in use). */
+    void drawEntity(ShaderProgram eyes, Matrix4f view, Matrix4f projection) {
+        int[] first = new int[textures.length], size = new int[textures.length];
+        if (!upload(first, size)) return;
+        GlStateManager._glBindVertexArray(entityArray);
+        ShaderPacks.inputs(eyes, Map.of("Position", new ShaderPacks.Feed(buffer, 3, FLOATS * 4, 0),
+                "UV0", new ShaderPacks.Feed(buffer, 2, FLOATS * 4, 12), "Color", new ShaderPacks.Feed(buffer, 4, FLOATS * 4, 20)),
+                Map.of("Normal", UP, "UV1", ShaderPacks.NO_OVERLAY, "UV2", FULL_BRIGHT));
+        additive();
+        for (int t = 0; t < textures.length; t++) {
+            if (size[t] == 0) continue;
+            ShaderPacks.bind(eyes, textures[t], view, projection);
+            GL11.glDrawArrays(GL11.GL_TRIANGLES, first[t], size[t]);
+        }
+        eyes.unbind();
+    }
+
+    private static void additive() {
+        GlStateManager._enableBlend();
+        GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
+        GlStateManager._depthMask(false);
+    }
+
+    /** Uploads every particle's quad grouped by texture into first and size (in vertices); false without particles. */
+    private boolean upload(int[] first, int[] size) {
+        if (count == 0) return false;
+        vertices.clear();
         Vector3f right = rotation.transform(new Vector3f(1, 0, 0)), up = rotation.transform(new Vector3f(0, 1, 0));
         int written = 0;
         for (int t = 0; t < textures.length; t++) {
@@ -243,24 +291,7 @@ final class AvatarSprites implements AutoCloseable {
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buffer);
         GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, vertices);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousBuffer);
-        GlStateManager._glUseProgram(program);
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            GL20.glUniformMatrix4fv(viewProjection, false, projectionView.get(stack.mallocFloat(16)));
-        }
-        GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler0"), 0);
-        GL20.glUniform1f(fogStart, start);
-        GL20.glUniform1f(fogEnd, stop);
-        GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
-        GlStateManager._activeTexture(GL13.GL_TEXTURE0);
-        GlStateManager._enableBlend();
-        GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
-        GlStateManager._depthMask(false);
-        GlStateManager._glBindVertexArray(array);
-        for (int t = 0; t < textures.length; t++) {
-            if (size[t] == 0) continue;
-            GlStateManager._bindTexture(textures[t]);
-            GL11.glDrawArrays(GL11.GL_TRIANGLES, first[t], size[t]);
-        }
+        return true;
     }
 
     private void quad(int i, Vector3f right, Vector3f up) {
@@ -304,6 +335,7 @@ final class AvatarSprites implements AutoCloseable {
     @Override
     public void close() {
         if (array != 0) GL30.glDeleteVertexArrays(array);
+        if (entityArray != 0) GL30.glDeleteVertexArrays(entityArray);
         if (buffer != 0) GL15.glDeleteBuffers(buffer);
         if (program != 0) GL20.glDeleteProgram(program);
     }

@@ -7,7 +7,7 @@
 - A game-compatible UE4SS installation with `LoopInGameThreadWithDelay`. The development baseline is v3.0.1 Beta #0 (`08a0733`). Stock or newer loaders are not assumed interchangeable.
 - Proton baseline: `proton-cachyos-11.0-20261005-slr-x86_64_v3`. Other versions require validation.
 
-Use a separate private creative or survival Minecraft world without LAN players, fluids, vehicles or player effects. In survival, EVE can die: use `keepInventory` or an empty inventory there. Use Fast/Fancy graphics without Iris. Back up Stellar Blade saves outside the game before using the lab. The prototype does not suppress autosaves.
+Use a separate private creative or survival Minecraft world without LAN players, fluids, vehicles or player effects. In survival, EVE can die: use `keepInventory` or an empty inventory there. Avatar mode runs with any graphics mode; Iris (with Sodium) shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris. Back up Stellar Blade saves outside the game before using the lab. The prototype does not suppress autosaves.
 
 ## Build and check
 
@@ -29,6 +29,8 @@ cmake --build build/native-windows
 ```
 
 Adding `-DSTELLAR_INPUT_BUILD_FIXTURE=ON` builds isolated Windows checks. Never install `stellar_input_fixture.dll` or the fake host in a game directory. Run fixture executables only in a separate test directory and Wine/Proton prefix. They do not establish native gameplay or GPU compatibility.
+
+The avatar's GPU paths are checked offline, outside `tools/check.py` (they need a GPU and the private avatar pack), with `./gradlew avatarRenderCheck` in `minecraft/` (see [diagnostics](diagnostics.md#avatar-view-experimental)); its last argument `entity` renders through Minecraft's own entity programs, the path used under a shader pack.
 
 `python tools/check.py --only windows --windows-toolchain /absolute/path/to/clang-cl-msvc.cmake --wine /path/to/wine` builds both Windows trees (`build/native-windows` and `build/native-windows-fixture`) and runs every Windows check under that Wine or Proton binary in a throwaway prefix and working directory. With `STELLAR_WINDOWS_TOOLCHAIN` and `STELLAR_WINE` set, the complete `python tools/check.py` includes it; otherwise it reports `SKIP windows`.
 

@@ -2,9 +2,12 @@ package org.stellarbridge;
 
 import com.mojang.blaze3d.platform.GlStateManager;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
+import net.minecraft.client.gl.ShaderProgram;
 import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Vector3d;
@@ -22,6 +25,7 @@ import org.lwjgl.system.MemoryStack;
  * without them a trail shows while the held blade turns fast relative to EVE's chest (a flip turns both together).
  * The ribbon covers the style's lifetime, from its head color to its faded one, drawn additively with the game's
  * trail texture. The pack describes it beside the weapon mesh in {@code <mesh>.trail.txt} with {@code <mesh>.trail.png}.
+ * Under a shader pack the ribbon goes through Minecraft's eyes program with the texture's glow baked in gray.
  * Render thread only; AvatarRenderer saves and restores the GL state around draw.
  */
 final class AvatarTrail implements AutoCloseable {
@@ -48,6 +52,7 @@ final class AvatarTrail implements AutoCloseable {
     static final float BRIGHTNESS = 0.9f;
     private static final int CAPACITY = 128, FLOATS = 9; // Samples kept; per vertex position, UV and RGBA.
     private static final String[] ATTRIBUTES = {"Position", "UV0", "Color"};
+    private static final float[] UP = {0, 1, 0, 1}, FULL_BRIGHT = {240, 240, 0, 1};
 
     /**
      * {@code SBAVTRAIL 1}, {@code BEGIN bone x y z} and {@code END bone x y z} (sockets in Unreal units in that bone's
@@ -85,7 +90,7 @@ final class AvatarTrail implements AutoCloseable {
     private static final Vector3d ORIGIN = new Vector3d(), UNIT_X = new Vector3d(1, 0, 0), UNIT_Y = new Vector3d(0, 1, 0);
     private final int part, beginBone, endBone, holderPart, holderBone, chestBone;
     private final Spec spec;
-    private final int program, viewProjection, fogStart, fogEnd, fogColor, array, buffer, texture;
+    private final int program, viewProjection, fogStart, fogEnd, fogColor, array, buffer, texture, glowTexture, entityArray;
     private final double[] times = new double[CAPACITY], strengths = new double[CAPACITY];
     private final Vector3d[] begins = new Vector3d[CAPACITY], ends = new Vector3d[CAPACITY];
     private final FloatBuffer vertices = BufferUtils.createFloatBuffer(2 * CAPACITY * FLOATS);
@@ -96,8 +101,8 @@ final class AvatarTrail implements AutoCloseable {
     private boolean followsGame, gameTrail; // Whether the game's trail state is known, and whether one plays.
     private int newest = -1, count;
 
-    /** The trail of the first pack mesh with a description, or null. The texture belongs to the caller. */
-    static AvatarTrail load(AvatarModel model, Path pack, TextureLoader textures) throws IOException {
+    /** The trail of the first pack mesh with a description, or null; glows loads its texture through glow(). Textures belong to the caller. */
+    static AvatarTrail load(AvatarModel model, Path pack, TextureLoader textures, TextureLoader glows) throws IOException {
         for (int p = 0; p < model.parts.size(); p++) {
             AvatarMesh mesh = model.parts.get(p).mesh();
             Path file = pack.resolve(mesh.name + ".trail.txt");
@@ -110,18 +115,27 @@ final class AvatarTrail implements AutoCloseable {
             if (texture == 0) return null;
             AvatarMesh body = model.parts.get(holder).mesh();
             return new AvatarTrail(spec, p, bone(mesh, spec.beginBone), bone(mesh, spec.endBone), holder,
-                    bone(body, spec.holderBone), bone(body, spec.chestBone), texture);
+                    bone(body, spec.holderBone), bone(body, spec.chestBone), texture, glows.load(mesh.name + ".trail.png"));
         }
         return null;
     }
     interface TextureLoader { int load(String name) throws IOException; }
+
+    /** Bakes trail.fsh's glow of each RGBA texel (gradient in red, streak noise in green) into opaque gray. */
+    static void glow(ByteBuffer rgba) {
+        for (int i = 0; i + 3 < rgba.capacity(); i += 4) {
+            double r = (rgba.get(i) & 0xff) / 255.0, g = (rgba.get(i + 1) & 0xff) / 255.0, t = Math.clamp((r - 0.15) / 0.65, 0, 1);
+            byte value = (byte) Math.round(Math.min(1, t * t * (3 - 2 * t) * (0.7 + 0.6 * g)) * 255);
+            rgba.put(i, value).put(i + 1, value).put(i + 2, value).put(i + 3, (byte) 255);
+        }
+    }
     private static int bone(AvatarMesh mesh, String name) {
         for (int k = 0; k < mesh.bones.length; k++) if (mesh.bones[k].name().equals(name)) return k;
         throw new IllegalArgumentException(mesh.name + " has no bone " + name);
     }
 
-    private AvatarTrail(Spec spec, int part, int beginBone, int endBone, int holderPart, int holderBone, int chestBone, int texture)
-            throws IOException {
+    private AvatarTrail(Spec spec, int part, int beginBone, int endBone, int holderPart, int holderBone, int chestBone, int texture,
+                        int glowTexture) throws IOException {
         this.spec = spec;
         this.part = part;
         this.beginBone = beginBone;
@@ -130,6 +144,7 @@ final class AvatarTrail implements AutoCloseable {
         this.holderBone = holderBone;
         this.chestBone = chestBone;
         this.texture = texture;
+        this.glowTexture = glowTexture;
         for (int i = 0; i < CAPACITY; i++) {
             begins[i] = new Vector3d();
             ends[i] = new Vector3d();
@@ -150,6 +165,7 @@ final class AvatarTrail implements AutoCloseable {
         GL20.glVertexAttribPointer(1, 2, GL11.GL_FLOAT, false, FLOATS * 4, 12);
         GL20.glVertexAttribPointer(2, 4, GL11.GL_FLOAT, false, FLOATS * 4, 20);
         for (int a = 0; a < 3; a++) GL20.glEnableVertexAttribArray(a);
+        entityArray = GL30.glGenVertexArrays();
         GlStateManager._glBindVertexArray(previousArray);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousBuffer);
     }
@@ -224,7 +240,47 @@ final class AvatarTrail implements AutoCloseable {
      * nothing is visible.
      */
     boolean draw(Matrix4f projectionView, float start, float stop, float[] fog) {
-        if (count == 0) return false;
+        int drawn = upload();
+        if (drawn == 0) return false;
+        GlStateManager._glUseProgram(program);
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            GL20.glUniformMatrix4fv(viewProjection, false, projectionView.get(stack.mallocFloat(16)));
+        }
+        GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler0"), 0);
+        GL20.glUniform1f(fogStart, start);
+        GL20.glUniform1f(fogEnd, stop);
+        GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
+        GlStateManager._activeTexture(GL13.GL_TEXTURE0);
+        GlStateManager._bindTexture(texture);
+        additive();
+        GlStateManager._glBindVertexArray(array);
+        GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, drawn);
+        return true;
+    }
+
+    /** The same ribbon through Minecraft's eyes program (a shader pack's while one is in use), its glow baked in gray. */
+    void drawEntity(ShaderProgram eyes, Matrix4f view, Matrix4f projection) {
+        int drawn = upload();
+        if (drawn == 0) return;
+        GlStateManager._glBindVertexArray(entityArray);
+        ShaderPacks.inputs(eyes, Map.of("Position", new ShaderPacks.Feed(buffer, 3, FLOATS * 4, 0),
+                "UV0", new ShaderPacks.Feed(buffer, 2, FLOATS * 4, 12), "Color", new ShaderPacks.Feed(buffer, 4, FLOATS * 4, 20)),
+                Map.of("Normal", UP, "UV1", ShaderPacks.NO_OVERLAY, "UV2", FULL_BRIGHT));
+        additive();
+        ShaderPacks.bind(eyes, glowTexture, view, projection);
+        GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, drawn);
+        eyes.unbind();
+    }
+
+    private static void additive() {
+        GlStateManager._enableBlend();
+        GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
+        GlStateManager._depthMask(false);
+    }
+
+    /** Uploads the ribbon as of the newest sample; the vertex count, 0 when nothing is visible. */
+    private int upload() {
+        if (count == 0) return 0;
         double now = times[newest];
         vertices.clear();
         int drawn = 0;
@@ -242,38 +298,25 @@ final class AvatarTrail implements AutoCloseable {
             put(ends[at], life, 1, r, g, b, intensity);
             drawn += 2;
         }
-        if (!visible || drawn < 4) return false;
+        if (!visible || drawn < 4) return 0;
         vertices.flip();
         int previousBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buffer);
         GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, vertices);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousBuffer);
-        GlStateManager._glUseProgram(program);
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            GL20.glUniformMatrix4fv(viewProjection, false, projectionView.get(stack.mallocFloat(16)));
-        }
-        GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler0"), 0);
-        GL20.glUniform1f(fogStart, start);
-        GL20.glUniform1f(fogEnd, stop);
-        GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
-        GlStateManager._activeTexture(GL13.GL_TEXTURE0);
-        GlStateManager._bindTexture(texture);
-        GlStateManager._enableBlend();
-        GlStateManager._blendFuncSeparate(GL11.GL_ONE, GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
-        GlStateManager._depthMask(false);
-        GlStateManager._glBindVertexArray(array);
-        GL11.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, drawn);
-        return true;
+        return drawn;
     }
 
+    /** One ribbon vertex; the color is premultiplied by its intensity, as additive programs read it. */
     private void put(Vector3d at, float u, float v, float r, float g, float b, float a) {
         vertices.put((float) (at.x - camera.x)).put((float) (at.y - camera.y)).put((float) (at.z - camera.z))
-                .put(Math.min(u, 0.98f)).put(v).put(r).put(g).put(b).put(a);
+                .put(Math.min(u, 0.98f)).put(v).put(r * a).put(g * a).put(b * a).put(1);
     }
 
     @Override
     public void close() {
         if (array != 0) GL30.glDeleteVertexArrays(array);
+        if (entityArray != 0) GL30.glDeleteVertexArrays(entityArray);
         if (buffer != 0) GL15.glDeleteBuffers(buffer);
         if (program != 0) GL20.glDeleteProgram(program);
     }

@@ -133,7 +133,21 @@ public final class AvatarModelTest {
                 && AvatarTrail.strength(1) == 0 && AvatarTrail.strength(100) == 1;
         double middle = AvatarTrail.strength((AvatarTrail.SWING_START + AvatarTrail.SWING_FULL) / 2);
         assert Math.abs(middle - 0.5) < 1e-9 : "Smooth ramp between the thresholds";
-        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cut-out mipmaps and weapon trails");
+        // Shader packs: Minecraft's names for Iris's inputs, generic value kinds by GL type, the trail's glow baked in gray.
+        assert ShaderPacks.input("iris_UV2").equals("UV2") && ShaderPacks.input("at_tangent").equals("at_tangent");
+        // The path never goes to our own programs under a pack: forced, in use, or Iris's answer failing all draw through
+        // Minecraft's entity programs; without Iris, or with it and no pack, our own shaders.
+        assert ShaderPacks.decide(true, false, () -> false) && ShaderPacks.decide(false, true, () -> true);
+        assert ShaderPacks.decide(false, true, () -> { throw new IllegalStateException("Iris API"); }) : "A failing answer is a pack";
+        assert !ShaderPacks.decide(false, false, () -> true) && !ShaderPacks.decide(false, true, () -> false);
+        assert ShaderPacks.kind(org.lwjgl.opengl.GL20.GL_INT_VEC2) == 1 && ShaderPacks.kind(org.lwjgl.opengl.GL30.GL_UNSIGNED_INT_VEC3) == 2
+                && ShaderPacks.kind(org.lwjgl.opengl.GL20.GL_FLOAT_VEC4) == 0;
+        ByteBuffer glow = ByteBuffer.allocate(12).put(new byte[] {(byte) 255, (byte) 255, 9, 0, 30, (byte) 255, 9, 0, (byte) 166, 0, 9, 7});
+        AvatarTrail.glow(glow);
+        assert glow.get(0) == (byte) 255 && glow.get(2) == (byte) 255 && glow.get(3) == (byte) 255 : "Band and noise saturate";
+        assert glow.get(4) == 0 && glow.get(6) == 0 && glow.get(7) == (byte) 255 : "Below the band: dark and opaque";
+        assert (glow.get(8) & 0xff) == 155 && glow.get(9) == glow.get(8) && glow.get(10) == glow.get(8) : "smoothstep(0.15, 0.8, r) * 0.7";
+        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cut-out mipmaps, weapon trails and shader-pack inputs");
     }
 
     /** Applies bone row matrices (GLSL mat3x4 layout) to an Unreal reference-space point. */

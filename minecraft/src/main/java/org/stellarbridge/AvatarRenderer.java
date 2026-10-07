@@ -1,6 +1,7 @@
 package org.stellarbridge;
 
 import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.systems.RenderSystem;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -11,6 +12,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import net.minecraft.client.gl.ShaderProgram;
+import net.minecraft.client.render.OverlayTexture;
 import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
@@ -36,9 +39,14 @@ import org.lwjgl.system.MemoryUtil;
  * (subsurface color). A translucent slot ships {@code <slot>.overlay.png} instead: premultiplied color drawn after
  * every opaque section without writing depth. A {@code <slot>.glow.png} slot is such an overlay drawn only while the game
  * raises the slot's streamed Opacity, its emissive map tinted by Emissive_Color times Emissive_Intensity (and the _2 pair).
+ * While a shader pack is in use, drawEntity draws the same buffers through Minecraft's entity programs instead.
  */
 final class AvatarRenderer implements AutoCloseable {
     private static final String[] ATTRIBUTES = {"Position", "Normal", "UV0", "BoneIds", "BoneWeights", "MorphPosition", "MorphNormal"};
+    // Skinned vertices captured by transform feedback for drawEntity: camera-relative position, unit normal, tangent.
+    private static final String[] SKINNED = {"relative", "unitNormal", "tangent"};
+    private static final int SKINNED_BYTES = 40;
+    private static final float[] WHITE = {1, 1, 1, 1}, FULL_BRIGHT = {240, 240, 0, 1};
     private final AvatarModel model;
     // Texture units: base 0, normal 1, Minecraft's lightmap 2, surface 3, emissive 4, hair 5, scatter 6.
     private static final int[] UNITS = {0, 1, 3, 4, 5, 6};
@@ -48,13 +56,14 @@ final class AvatarRenderer implements AutoCloseable {
         int base() { return maps[0]; }
     }
     private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, overlayPass,
-            opacity, emissiveTint, hurtTint;
+            opacity, emissiveTint, hurtTint, skinning, skinningBones;
     private Map<String, float[]> parameters = Map.of();
     private boolean hurt;
     private AvatarTrail trail; // The weapon's swing trail, when the pack describes one.
     private AvatarSprites sprites; // The game's effects as sprites, when the pack has their textures.
     private final Vector3d hilt = new Vector3d(), tip = new Vector3d();
     private final int[] arrays, vertexBuffers, indexBuffers, morphBuffers;
+    private final int[] skinned, entityArrays; // Per part for drawEntity: transform feedback buffer, vertex array.
     private final float[][] appliedWeights; // Morph weights currently uploaded per part.
     private final FloatBuffer[] morphOffsets;
     private final Material[][] sectionMaterials;
@@ -72,6 +81,8 @@ final class AvatarRenderer implements AutoCloseable {
         vertexBuffers = new int[count];
         indexBuffers = new int[count];
         morphBuffers = new int[count];
+        skinned = new int[count];
+        entityArrays = new int[count];
         appliedWeights = new float[count][];
         morphOffsets = new FloatBuffer[count];
         sectionMaterials = new Material[count][];
@@ -92,6 +103,8 @@ final class AvatarRenderer implements AutoCloseable {
             hurtTint = GL20.glGetUniformLocation(program, "Hurt");
             hairShading = GL20.glGetUniformLocation(program, "Hair");
             cutoff = GL20.glGetUniformLocation(program, "AlphaCutoff");
+            skinning = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES, SKINNED);
+            skinningBones = GL20.glGetUniformLocation(skinning, "Bones");
             GlStateManager._glUseProgram(program);
             for (int unit = 0; unit <= 6; unit++) GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler" + unit), unit);
             // Defaults for missing maps: flat normal; full occlusion, roughness 0.8, no metal, 4 % reflectance; black.
@@ -131,8 +144,14 @@ final class AvatarRenderer implements AutoCloseable {
                 }
                 sectionMaterials[p] = new Material[mesh.sections.length];
                 for (int s = 0; s < mesh.sections.length; s++) sectionMaterials[p][s] = material(pack, mesh.sections[s].material());
+                skinned[p] = GL15.glGenBuffers();
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, skinned[p]);
+                GL15.glBufferData(GL15.GL_ARRAY_BUFFER, (long) SKINNED_BYTES * mesh.vertexCount, GL15.GL_DYNAMIC_COPY);
+                entityArrays[p] = GL30.glGenVertexArrays();
+                GlStateManager._glBindVertexArray(entityArrays[p]); // Its inputs follow the program drawing it (ShaderPacks.inputs).
+                GL15.glBindBuffer(GL15.GL_ELEMENT_ARRAY_BUFFER, indexBuffers[p]);
             }
-            trail = AvatarTrail.load(model, pack, name -> texture(pack, name, 0));
+            trail = AvatarTrail.load(model, pack, name -> texture(pack, name, 0), name -> texture(pack, name, 0, AvatarTrail::glow));
             sprites = AvatarSprites.load(name -> texture(pack, name, 0));
             complete = true;
         } finally {
@@ -148,19 +167,7 @@ final class AvatarRenderer implements AutoCloseable {
      * Minecraft's sky color, reflected by glossy surfaces in proportion to the sky light.
      */
     void draw(Matrix4f projectionView, int lightmap, int blockLight, int skyLight, float start, float end, float[] fog, float[] sky) {
-        int program0 = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), array0 = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
-        int active0 = GlStateManager._getActiveTexture();
-        int[] bound0 = new int[7];
-        int[] blendFunction0 = {GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB), GL11.glGetInteger(GL14.GL_BLEND_DST_RGB),
-                GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA), GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA)};
-        boolean depth0 = GL11.glIsEnabled(GL11.GL_DEPTH_TEST), cull0 = GL11.glIsEnabled(GL11.GL_CULL_FACE), blend0 = GL11.glIsEnabled(GL11.GL_BLEND);
-        boolean mask0 = GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK);
-        int function0 = GL11.glGetInteger(GL11.GL_DEPTH_FUNC);
-        for (int unit = 0; unit < bound0.length; unit++) {
-            GlStateManager._activeTexture(GL13.GL_TEXTURE0 + unit);
-            bound0[unit] = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-        }
-        try {
+        restoring(() -> {
             GlStateManager._activeTexture(GL13.GL_TEXTURE2);
             GlStateManager._bindTexture(lightmap);
             GlStateManager._enableDepthTest();
@@ -178,9 +185,7 @@ final class AvatarRenderer implements AutoCloseable {
             GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
             GL20.glUniform3f(skyColor, sky[0], sky[1], sky[2]);
             GL20.glUniform1f(hurtTint, hurt ? 1 : 0);
-            GL20.glVertexAttrib3f(5, 0, 0, 0);
-            GL20.glVertexAttrib3f(6, 0, 0, 0);
-            for (int p = 0; p < arrays.length; p++) if (morphBuffers[p] != 0) uploadMorphs(p);
+            uploadMorphs();
             // Opaque and cut-out sections first; translucent overlays then blend over them without writing depth.
             for (boolean overlays : new boolean[] {false, true}) {
                 if (overlays) {
@@ -197,14 +202,8 @@ final class AvatarRenderer implements AutoCloseable {
                         Material material = sectionMaterials[p][s];
                         if (material.base() == 0 || material.overlay() != overlays) continue;
                         float[] tint = {1, 1, 1};
-                        float shown = 1;
-                        if (material.glow()) {
-                            shown = parameter(material.slot(), "Opacity", 0);
-                            if (shown <= 0.001f) continue;
-                            for (int k = 0; k < 3; k++)
-                                tint[k] = parameter(material.slot(), "Emissive_Color", k) * parameter(material.slot(), "Emissive_Intensity", 0)
-                                        + parameter(material.slot(), "Emissive_Color_2", k) * parameter(material.slot(), "Emissive_Intensity_2", 0);
-                        }
+                        float shown = material.glow() ? glow(material.slot(), tint) : 1;
+                        if (shown <= 0.001f) continue;
                         GL20.glUniform1f(opacity, Math.min(shown, 1));
                         GL20.glUniform3f(emissiveTint, tint[0], tint[1], tint[2]);
                         for (int k = 0; k < UNITS.length; k++) {
@@ -219,14 +218,127 @@ final class AvatarRenderer implements AutoCloseable {
             }
             if (trail != null) trail.draw(projectionView, start, end, fog);
             if (sprites != null) sprites.draw(projectionView, start, end, fog);
+        });
+    }
+
+    /**
+     * Draws through Minecraft's entity programs, which a shader pack replaces with its own (see ShaderPacks): the parts
+     * skinned on the GPU by transform feedback, opaque and cut-out sections with the cut-out entity program, lit by the
+     * lightmap at her feet and tinted by the hurt overlay as entities are; overlays and glows, the trail and the effect
+     * sprites additively with the eyes program, as Minecraft draws glowing eyes. Maps beyond the base texture are unused.
+     * View is the world's camera rotation and projection its projection; positions stay camera-relative.
+     */
+    private static boolean missingWarned; // A missing entity program was logged once.
+    void drawEntity(Matrix4f view, Matrix4f projection, int lightmap, int overlay, int blockLight, int skyLight,
+                    ShaderProgram cutout, ShaderProgram translucent, ShaderProgram eyes) {
+        restoring(() -> {
+            uploadMorphs();
+            skin();
+            RenderSystem.setShaderTexture(1, overlay);
+            RenderSystem.setShaderTexture(2, lightmap);
+            GlStateManager._enableDepthTest();
+            GlStateManager._depthFunc(GL11.GL_LEQUAL);
+            GlStateManager._disableCull();
+            float[] hurtUv = {OverlayTexture.getU(0), OverlayTexture.getV(hurt), 0, 1}, light = {16 * blockLight, 16 * skyLight, 0, 1};
+            // Passes: opaque and cut-out sections; overlays blended over them as our own path blends them (premultiplied);
+            // glows added as Minecraft adds glowing eyes.
+            String[] names = {"cut-out entity", "translucent entity", "eyes"};
+            for (int pass = 0; pass < 3; pass++) {
+                ShaderProgram shader = pass == 0 ? cutout : pass == 1 ? translucent : eyes;
+                if (shader == null) {
+                    if (!missingWarned) org.slf4j.LoggerFactory.getLogger("stellar_bridge").warn("EVE avatar: Minecraft's {} program is unavailable; part of her is not drawn", names[pass]);
+                    missingWarned = true;
+                    continue;
+                }
+                if (pass > 0) {
+                    GlStateManager._enableBlend();
+                    GlStateManager._blendFuncSeparate(GL11.GL_ONE, pass == 1 ? GL11.GL_ONE_MINUS_SRC_ALPHA : GL11.GL_ONE, GL11.GL_ZERO, GL11.GL_ONE);
+                    GlStateManager._depthMask(false);
+                } else {
+                    GlStateManager._disableBlend();
+                    GlStateManager._depthMask(true);
+                }
+                for (int p = 0; p < arrays.length; p++) {
+                    GlStateManager._glBindVertexArray(entityArrays[p]);
+                    AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
+                    for (int s = 0; s < sections.length; s++) {
+                        Material material = sectionMaterials[p][s];
+                        int wanted = !material.overlay() ? 0 : material.glow() ? 2 : 1;
+                        if (material.base() == 0 || wanted != pass) continue;
+                        float[] tint = {1, 1, 1};
+                        float shown = material.glow() ? Math.min(glow(material.slot(), tint), 1) : 1;
+                        if (shown <= 0.001f) continue;
+                        // ponytail: the entity programs keep texels down to alpha 0.1, not our 0.5 (0.25 for hair), so faint
+                        // card fringes show; binary-alpha copies of the cut-out textures would match, at their memory cost.
+                        float[] color = material.glow() ? new float[] {tint[0] * shown, tint[1] * shown, tint[2] * shown, 1} : WHITE;
+                        ShaderPacks.inputs(shader, feeds(p), Map.of("Color", color, "UV1", hurtUv, "UV2", pass == 2 ? FULL_BRIGHT : light));
+                        ShaderPacks.bind(shader, material.base(), view, projection);
+                        GL11.glDrawElements(GL11.GL_TRIANGLES, sections[s].indexCount(), GL11.GL_UNSIGNED_INT, 4L * sections[s].firstIndex());
+                    }
+                }
+                shader.unbind();
+            }
+            if (eyes != null && trail != null) trail.drawEntity(eyes, view, projection);
+            if (eyes != null && sprites != null) sprites.drawEntity(eyes, view, projection);
+        });
+    }
+
+    /** Where drawEntity's programs read a part: skinned positions, normals and tangents, the pack's UVs. */
+    private Map<String, ShaderPacks.Feed> feeds(int part) {
+        var uv = new ShaderPacks.Feed(vertexBuffers[part], 2, AvatarMesh.VERTEX_BYTES, 24);
+        return Map.of("Position", new ShaderPacks.Feed(skinned[part], 3, SKINNED_BYTES, 0), "Normal", new ShaderPacks.Feed(skinned[part], 3, SKINNED_BYTES, 12),
+                "at_tangent", new ShaderPacks.Feed(skinned[part], 4, SKINNED_BYTES, 24), "UV0", uv, "mc_midTexCoord", uv);
+    }
+
+    /** Skins every part into its transform feedback buffer with the palettes; nothing is rasterized. */
+    private void skin() {
+        int generic0 = GL11.glGetInteger(GL30.GL_TRANSFORM_FEEDBACK_BUFFER_BINDING), indexed0 = GL30.glGetIntegeri(GL30.GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, 0);
+        int program0 = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM); // Minecraft's and Iris's program caches stay truthful.
+        GlStateManager._glUseProgram(skinning);
+        GL11.glEnable(GL30.GL_RASTERIZER_DISCARD);
+        try {
+            for (int p = 0; p < arrays.length; p++) {
+                GlStateManager._glBindVertexArray(arrays[p]);
+                GL21.glUniformMatrix3x4fv(skinningBones, false, palettes[p]);
+                GL30.glBindBufferBase(GL30.GL_TRANSFORM_FEEDBACK_BUFFER, 0, skinned[p]);
+                GL30.glBeginTransformFeedback(GL11.GL_POINTS);
+                GL11.glDrawArrays(GL11.GL_POINTS, 0, model.parts.get(p).mesh().vertexCount);
+                GL30.glEndTransformFeedback();
+            }
+        } finally {
+            GL11.glDisable(GL30.GL_RASTERIZER_DISCARD);
+            GL30.glBindBufferBase(GL30.GL_TRANSFORM_FEEDBACK_BUFFER, 0, indexed0);
+            GL15.glBindBuffer(GL30.GL_TRANSFORM_FEEDBACK_BUFFER, generic0);
+            GlStateManager._glUseProgram(program0);
+        }
+    }
+
+    /** Runs a draw with the GL and shader-texture state it may change saved first and restored after. */
+    private static void restoring(Runnable draw) {
+        int program0 = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), array0 = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+        int buffer0 = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING), active0 = GlStateManager._getActiveTexture();
+        int[] bound0 = new int[7], shaderTextures0 = {RenderSystem.getShaderTexture(0), RenderSystem.getShaderTexture(1), RenderSystem.getShaderTexture(2)};
+        int[] blendFunction0 = {GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB), GL11.glGetInteger(GL14.GL_BLEND_DST_RGB),
+                GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA), GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA)};
+        boolean depth0 = GL11.glIsEnabled(GL11.GL_DEPTH_TEST), cull0 = GL11.glIsEnabled(GL11.GL_CULL_FACE), blend0 = GL11.glIsEnabled(GL11.GL_BLEND);
+        boolean mask0 = GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK);
+        int function0 = GL11.glGetInteger(GL11.GL_DEPTH_FUNC);
+        for (int unit = 0; unit < bound0.length; unit++) {
+            GlStateManager._activeTexture(GL13.GL_TEXTURE0 + unit);
+            bound0[unit] = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+        }
+        try {
+            draw.run();
         } finally {
             GlStateManager._glBindVertexArray(array0);
             GlStateManager._glUseProgram(program0);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buffer0);
             for (int unit = 0; unit < bound0.length; unit++) {
                 GlStateManager._activeTexture(GL13.GL_TEXTURE0 + unit);
                 GlStateManager._bindTexture(bound0[unit]);
             }
             GlStateManager._activeTexture(active0);
+            for (int k = 0; k < shaderTextures0.length; k++) RenderSystem.setShaderTexture(k, shaderTextures0[k]);
             if (depth0) GlStateManager._enableDepthTest(); else GlStateManager._disableDepthTest();
             if (cull0) GlStateManager._enableCull(); else GlStateManager._disableCull();
             if (blend0) GlStateManager._enableBlend(); else GlStateManager._disableBlend();
@@ -281,11 +393,24 @@ final class AvatarRenderer implements AutoCloseable {
     void parameters(Map<String, float[]> values) {
         parameters = values;
     }
+    /** A glow slot's streamed Opacity; tint becomes Emissive_Color times Emissive_Intensity plus the _2 pair. */
+    private float glow(String slot, float[] tint) {
+        for (int k = 0; k < 3; k++)
+            tint[k] = parameter(slot, "Emissive_Color", k) * parameter(slot, "Emissive_Intensity", 0)
+                    + parameter(slot, "Emissive_Color_2", k) * parameter(slot, "Emissive_Intensity_2", 0);
+        return parameter(slot, "Opacity", 0);
+    }
     private float parameter(String slot, String name, int channel) {
         float[] value = parameters.get(slot + "/" + name);
         return value == null ? 0 : value[channel];
     }
 
+    /** Current morph deltas for every part; parts without morphs read the zero generic attributes 5 and 6. */
+    private void uploadMorphs() {
+        GL20.glVertexAttrib3f(5, 0, 0, 0);
+        GL20.glVertexAttrib3f(6, 0, 0, 0);
+        for (int p = 0; p < arrays.length; p++) if (morphBuffers[p] != 0) uploadMorphs(p);
+    }
     private void uploadMorphs(int part) {
         float[] weights = model.morphWeights[part];
         boolean changed = false;
@@ -317,9 +442,12 @@ final class AvatarRenderer implements AutoCloseable {
             if (vertexBuffers[i] != 0) GL15.glDeleteBuffers(vertexBuffers[i]);
             if (indexBuffers[i] != 0) GL15.glDeleteBuffers(indexBuffers[i]);
             if (morphBuffers[i] != 0) GL15.glDeleteBuffers(morphBuffers[i]);
-            arrays[i] = vertexBuffers[i] = indexBuffers[i] = morphBuffers[i] = 0;
+            if (skinned[i] != 0) GL15.glDeleteBuffers(skinned[i]);
+            if (entityArrays[i] != 0) GL30.glDeleteVertexArrays(entityArrays[i]);
+            arrays[i] = vertexBuffers[i] = indexBuffers[i] = morphBuffers[i] = skinned[i] = entityArrays[i] = 0;
         }
         if (program != 0) GL20.glDeleteProgram(program);
+        if (skinning != 0) GL20.glDeleteProgram(skinning);
         if (trail != null) trail.close();
         trail = null;
         if (sprites != null) sprites.close();
@@ -344,11 +472,16 @@ final class AvatarRenderer implements AutoCloseable {
 
     /** One RGBA texture of the pack, or 0 when absent. With a cutoff, mipmaps keep the cut-out coverage. */
     private int texture(Path pack, String name, float cutoff) throws IOException {
-        Integer known = textures.get(name);
+        return texture(pack, name, cutoff, null);
+    }
+    /** The same, its texels first changed in place by convert when given (a separate texture). */
+    private int texture(Path pack, String name, float cutoff, java.util.function.Consumer<ByteBuffer> convert) throws IOException {
+        String key = convert == null ? name : name + "#converted";
+        Integer known = textures.get(key);
         if (known != null) return known;
         Path file = pack.resolve(name);
         if (!file.normalize().startsWith(pack.normalize()) || !Files.isRegularFile(file)) {
-            textures.put(name, 0);
+            textures.put(key, 0);
             return 0;
         }
         byte[] bytes = Files.readAllBytes(file);
@@ -359,12 +492,13 @@ final class AvatarRenderer implements AutoCloseable {
             ByteBuffer pixels = STBImage.stbi_load_from_memory(encoded, width, height, channels, 4);
             if (pixels == null) throw new IOException(file.getFileName() + ": " + STBImage.stbi_failure_reason());
             try {
+                if (convert != null) convert.accept(pixels);
                 id = upload(pixels, width.get(0), height.get(0), cutoff);
             } finally {
                 STBImage.stbi_image_free(pixels);
             }
         }
-        textures.put(name, id);
+        textures.put(key, id);
         return id;
     }
 
@@ -478,11 +612,13 @@ final class AvatarRenderer implements AutoCloseable {
         return shader;
     }
 
-    static int link(int vertex, int fragment, String[] attributes) throws IOException {
+    /** A program with attributes at their indices; varyings, when given, are captured interleaved by transform feedback. */
+    static int link(int vertex, int fragment, String[] attributes, String... varyings) throws IOException {
         int program = GL20.glCreateProgram();
         GL20.glAttachShader(program, vertex);
         GL20.glAttachShader(program, fragment);
         for (int i = 0; i < attributes.length; i++) GL20.glBindAttribLocation(program, i, attributes[i]);
+        if (varyings.length > 0) GL30.glTransformFeedbackVaryings(program, varyings, GL30.GL_INTERLEAVED_ATTRIBS);
         GL20.glLinkProgram(program);
         GL20.glDeleteShader(vertex);
         GL20.glDeleteShader(fragment);
