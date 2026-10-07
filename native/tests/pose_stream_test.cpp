@@ -1060,13 +1060,17 @@ int main() {
       r[0x171] = ignore;
       return r;
     };
-    std::vector<std::vector<uint8_t>> moves = {row(1000601), row(1000701), row(1001104), row(1000601, 0.25f)};
+    std::vector<std::vector<uint8_t>> moves = {row(1000601), row(1000701), row(1001104), row(1000601, 0.25f),
+                                               row(1000701), row(1000601)};
     std::vector<std::vector<uint8_t>> skills = {row(1001104), row(1001105), row(1001106), row(1004202), row(1007102),
-                                                row(1001105, 0.3f, 1)};
+                                                row(1001105, 0.3f, 1), row(1004202)};
+    put_f32(moves[4], 0xdc, 25); // As the Show's embedded copy of the Move2 limits.
+    put_f32(moves[5], 0xd8, 0);
+    skills[6][0x172] = 0;
     std::vector<std::vector<uint8_t>> stray = {row(1000601)}, late = {row(1000701)};
     // A UDataTable per table (RowMap at +0x30: 0x18-byte name, row, next id), each a live object in the array.
     std::vector<uint8_t> move_table(0x80), skill_table(0x80), stray_table(0x80), late_table(0x80);
-    std::vector<uint8_t> move_pairs(0x18 * 4), skill_pairs(0x18 * 6), stray_pairs(0x18), late_pairs(0x18);
+    std::vector<uint8_t> move_pairs(0x18 * 6), skill_pairs(0x18 * 7), stray_pairs(0x18), late_pairs(0x18);
     std::vector<int32_t> move_heap, skill_heap, stray_heap, late_heap, main_heap, second_heap;
     auto rows = [&](std::vector<uint8_t> &pairs, std::vector<std::vector<uint8_t>> &list) {
       for (size_t i = 0; i < list.size(); i++)
@@ -1076,8 +1080,8 @@ int main() {
     rows(skill_pairs, skills);
     rows(stray_pairs, stray);
     rows(late_pairs, late);
-    tset(move_table, 0x30, move_pairs, 0x18, 0x10, move_heap, {{}, {0, 1}, {2}, {3}}); // Two chained in one bucket.
-    tset(skill_table, 0x30, skill_pairs, 0x18, 0x10, skill_heap, {{0, 1}, {2, 3}, {4}, {5}});
+    tset(move_table, 0x30, move_pairs, 0x18, 0x10, move_heap, {{}, {0, 1}, {2}, {3, 4, 5}}); // Chained in one bucket.
+    tset(skill_table, 0x30, skill_pairs, 0x18, 0x10, skill_heap, {{0, 1}, {2, 3}, {4}, {5, 6}});
     tset(stray_table, 0x30, stray_pairs, 0x18, 0x10, stray_heap, {{0}});
     tset(late_table, 0x30, late_pairs, 0x18, 0x10, late_heap, {{0}});
     auto item = [&](int32_t index, std::vector<uint8_t> &object, int32_t serial) {
@@ -1104,13 +1108,14 @@ int main() {
     auto byte = [](std::vector<uint8_t> &r, size_t field) { return int(r[field]); };
     auto patched = [&](int value) { // The seven fields.
       return byte(moves[0], 0xbc) == value && byte(moves[1], 0xbc) == value &&
-             std::all_of(skills.begin(), skills.end() - 1, [&](auto &r) { return byte(r, 0x170) == value; });
+             std::all_of(skills.begin(), skills.begin() + 5, [&](auto &r) { return byte(r, 0x170) == value; });
     };
-    // Untouched: a move-table row with a skill ID, a move row off the fingerprint, a skill row with IgnoreLockOn, a row
-    // under key 7.
+    // Untouched: a move-table row with a skill ID, move rows off the fingerprint, skill rows with IgnoreLockOn or
+    // without bSwitchBattleMode, a row under key 7.
     auto decoys = [&]() {
       return byte(moves[2], 0xbc) == 1 && byte(moves[2], 0x170) == 1 && byte(moves[3], 0xbc) == 1 &&
-             byte(skills[5], 0x170) == 1 && byte(stray[0], 0xbc) == 1 && byte(stray[0], 0x170) == 1;
+             byte(moves[4], 0xbc) == 1 && byte(moves[5], 0xbc) == 1 && byte(skills[5], 0x170) == 1 &&
+             byte(skills[6], 0x170) == 1 && byte(stray[0], 0xbc) == 1 && byte(stray[0], 0x170) == 1;
     };
     assert(patch_lock_rows(0, o, true) == 0 && patch_lock_rows(reg, 0, true) == 0 && patched(1) && "No registry or objects, nothing written");
     assert(patch_lock_rows(reg, o, true) == 7 && patched(0) && decoys() && "Locked: the seven rows hold 0, the decoys untouched");
