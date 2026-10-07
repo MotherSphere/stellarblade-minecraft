@@ -7,6 +7,8 @@ import java.util.TreeMap;
  * confined.
  */
 final class PoseGate {
+    /** Seconds without a packet after which Stellar Blade counts as stopped; a pause menu stays well under it. */
+    static final long STOPPED = 30;
     private final String session;
     // Each terrain window from the first revision that published it; older ones go once EVE acknowledges a newer one.
     private final TreeMap<Integer, BridgeProtocol.Box> windows = new TreeMap<>();
@@ -45,9 +47,9 @@ final class PoseGate {
 
     /**
      * Whether EVE has left the link: no packet yet, or the newest says she returned (idle) or only imported (ready), or
-     * is no longer fresh (Stellar Blade stopped publishing).
+     * is STOPPED seconds old (Stellar Blade stopped publishing).
      */
     boolean away(long now) {
-        return latest == null || !latest.state().equals("entered") || !BridgeProtocol.fresh(latest.time(), now);
+        return latest == null || !latest.state().equals("entered") || now - latest.time() > STOPPED;
     }
 }

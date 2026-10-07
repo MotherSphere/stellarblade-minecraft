@@ -15,7 +15,8 @@ public final class BridgeRuntimeTest {
         var entered = new BridgeProtocol.Eve(SESSION, 4, 100, "entered", 1, 1, 0, 2);
         assert gate.accept(entered, 1, 100) == entered && !gate.away(100);
         assert gate.accept(entered, 1, 105) == entered;
-        assert gate.accept(entered, 1, 106) == null && gate.away(106) : "Expired pose must release movement";
+        assert gate.accept(entered, 1, 106) == null && !gate.away(106) : "Expired pose must release movement, but not the window";
+        assert gate.away(100 + PoseGate.STOPPED + 1) && !gate.away(100 + PoseGate.STOPPED) : "Stopped after STOPPED seconds";
         assert gate.accept(new BridgeProtocol.Eve(SESSION, 3, 105, "entered", 1, 1, 0, 2), 1, 105) == null : "Reject sequence rollback";
         assert gate.accept(new BridgeProtocol.Eve(SESSION, 4, 105, "entered", 1, 2, 0, 2), 1, 105) == null : "A sequence cannot mutate";
         assert gate.accept(new BridgeProtocol.Eve(SESSION, 5, 105, "idle", 1, 1, 0, 2), 1, 105) == null && gate.away(105)
