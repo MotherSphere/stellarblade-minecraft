@@ -318,6 +318,7 @@ local widgets=require('pose_adapter').new()
 local function walked() local n=0; for _,count in pairs(walks) do n=n+count end; return n end
 local hud=widgets.hud()
 assert(hud.search and hud.search.missing=='lower, bullets' and hud.search.retry==2 and hud.search.ms==0,'The first call searches: '..tostring(hud.search and hud.search.missing))
+assert(hud.found_util==true,'The search found the util widget')
 assert(hud.heal.thumb=='Icon_PotionR' and hud.heal.count==3 and hud.heal.max==5 and hud.heal.cooldown==0 and hud.heal.usable==true)
 assert(hud.util.thumb==nil and hud.util.count==2 and hud.util.cooldown==0.4 and hud.util.usable==nil,'Unreadable values are nil')
 assert(hud.lower==nil and hud.dash==0.25 and hud.bullet=='Bullet_Normal' and hud.ammo==nil,'No bullet slot, no ammo')
@@ -332,7 +333,7 @@ assert(table.concat(searches,' ')=='102 106 114 130 160','A missing widget is se
 assert(walks.WB_MainHUD_Dash_Slot_C==1,'A found class is not walked again')
 instances.WB_MainHUD_ItemSlot_C[#instances.WB_MainHUD_ItemSlot_C+1]=lowerSlot
 clock=190; hud=widgets.hud()
-assert(hud.search.missing=='bullets' and hud.search.retry==2 and hud.lower.count==0,'A search that finds one waits 2 s again')
+assert(hud.search.missing=='bullets' and hud.search.retry==2 and hud.lower.count==0 and hud.found_util==false,'A search that finds one waits 2 s again')
 instances.WB_Tps_Bullet2_Slot_C=bulletSlots
 clock=192; hud=widgets.hud()
 assert(hud.search.missing=='none' and hud.search.retry==nil and walks.WB_MainHUD_ItemSlot_C==7,'Everything found, the item slots not walked again')
@@ -342,8 +343,12 @@ clock=193; assert(widgets.hud().search==nil and walked()==before,'Found widgets 
 utilSlot.IsValid=function() return false end
 instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot}
 hud=widgets.hud()
-assert(hud.search and hud.search.missing=='util' and hud.search.retry==2 and hud.util==nil,'A widget that went is searched for at once')
+assert(hud.search and hud.search.missing=='util' and hud.search.retry==2 and hud.util==nil and hud.found_util==false,'A widget that went is searched for at once')
 assert(walks.WB_MainHUD_ItemSlot_C==8 and walks.WB_MainHUD_Dash_Slot_C==1 and walks.WB_Tps_Bullet2_Slot_C==8,'Only its class is walked')
+instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot,object('WB_MainHUD_UtilItem',{ItemCount=0})}
+clock=195; hud=widgets.hud()
+assert(hud.found_util==true and hud.util.count==0,'A new util widget is flagged')
+clock=196; assert(widgets.hud().found_util==false,'Only in the call that found it')
 local hooked
 RegisterHook=function(path,fn) hooked={path=path,fn=fn} end
 widgets.watch_consume(print)

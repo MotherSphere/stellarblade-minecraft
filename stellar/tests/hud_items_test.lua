@@ -50,24 +50,32 @@ state.search={ms=7.25,missing='none'}
 hud.tick()
 assert(logs('widget search 7.2 ms, missing none')==1,'A slow search is logged')
 state.search=nil
--- Uses: a drop of the same item; a selection from the last unit; a refill.
+-- Uses, once a second read agrees: a drop of the same item; a selection from the last unit; a refill.
 state.util=slot('Grenade',1); hud.tick()
 text,seq=newest()
-assert(seq==3 and text:find('\nUSES 1 0 0 0\n',1,true) and logs('HUD: shock used (2 -> 1)')==1,'A change publishes at once')
-state.util=slot('TrapGrenade',2); text=second()
+assert(seq==3 and text:find('\nUTIL shock 1 ',1,true) and text:find('\nUSES 0 0 0 0\n',1,true),'One read of a drop is no use yet')
+hud.tick(); text,seq=newest()
+assert(seq==4 and text:find('\nUSES 1 0 0 0\n',1,true) and logs('HUD: shock used (2 -> 1)')==1,'The agreeing read counts it, published at once')
+state.util=slot('TrapGrenade',2); text=stable()
 assert(text:find('\nUTIL mine 2 ',1,true) and text:find('\nUSES 1 0 0 0\n',1,true),'A selection is not a use')
 assert(logs('util slot changed from Grenade at 1 to TrapGrenade (a last use is not counted)')==1)
-state.util=slot('TrapGrenade',1); text=second()
+state.util=slot('TrapGrenade',1); text=stable()
 assert(text:find('\nUSES 1 0 1 0\n',1,true))
-state.util=slot('TrapGrenade',2); text=second()
+state.util=slot('TrapGrenade',2); text=stable()
 assert(text:find('\nUSES 1 0 1 0\n',1,true),'A refill is not a use')
-state.util=slot('HealGrenade',3); second(); state.util=slot('HealGrenade',2); text=second()
-state.util=slot('Icon_PotionR',3); second(); state.util=slot('Icon_PotionR',2); text=second()
+state.util=slot('HealGrenade',3); stable(); state.util=slot('HealGrenade',2); text=stable()
+state.util=slot('Icon_PotionR',3); stable(); state.util=slot('Icon_PotionR',2); text=stable()
 assert(text:find('\nUTIL tumbler 2 ',1,true) and text:find('\nUSES 1 0 1 0\n',1,true),'Field and tumbler drops are not combat uses')
+-- A selection read between Stellar Blade's count and thumbnail writes: the new count under the old item.
+state.util=slot('Grenade',3); stable(); state.util=slot('Grenade',1); second(); state.util=slot('TrapGrenade',1); text=stable()
+assert(text:find('\nUTIL mine 1 ',1,true) and text:find('\nUSES 1 0 1 0\n',1,true),'A read no other agrees with is not a drop')
+-- A new util widget (a level load) starts again: its first values are no drop from the old one's.
+state.found_util=true; state.util=slot('TrapGrenade',0); hud.tick(); state.found_util=nil; text=second()
+assert(text:find('\nUTIL mine 0 ',1,true) and text:find('\nUSES 1 0 1 0\n',1,true),'A new widget is no use')
 -- Leaving the link forgets the util slot: a lower count after it is not a use.
-state.util=slot('Grenade',3); second()
+state.util=slot('Grenade',3); stable()
 place=nil; wall=wall+1; hud.tick(); place={session=SESSION}
-state.util=slot('Grenade',2); text=second()
+state.util=slot('Grenade',2); text=stable()
 assert(text:find('\nUSES 1 0 1 0\n',1,true),'A drop across a link loss is not counted')
 -- A failing read: nothing published, one line for the same message.
 _,seq=newest()

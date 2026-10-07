@@ -2,7 +2,8 @@
 -- (engine.hud): the heal and util slots, EVE's selected drone bullet with its ammo, the dash attack's cooldown, and the
 -- uses of each combat consumable since this Lua loaded. A util count that drops while its item (the slot's thumbnail
 -- texture) stays the same is that many uses; a rise (a refill) or another item (a selection) is none, so Stellar Blade
--- stays authoritative for selection, counts, cooldowns and conditions. Published while a link is entered, when the
+-- stays authoritative for selection, counts, cooldowns and conditions. A read counts once the next one agrees: Stellar
+-- Blade writes the count and the thumbnail apart (the brush may load later). Published while a link is entered, when the
 -- content changes and at least every wall second, in alternating slots (SEQ % 2). Game-thread only; call tick on the
 -- 200 ms bridge timer.
 local Hud={}
@@ -32,7 +33,7 @@ end
 function Hud.new(engine,directory,wall,log,link)
     local api,lines,seq,consumed,errors={},0,0,0,{}
     local uses={shock=0,pulse=0,mine=0,sonic=0}
-    local util -- The util slot at the last read with a link: {kind=,count=,thumb=}.
+    local util,pending -- The util slot at the last two agreeing reads with a link, {kind=,count=,thumb=}; the last read.
     local shown,searched -- The last logged read; whether a widget search was logged.
     local key,second -- The last publication's content (without SEQ and TIME) and wall second.
     local function note(message) if lines<LINES then lines=lines+1; log('HUD: '..message) end end
@@ -61,7 +62,7 @@ function Hud.new(engine,directory,wall,log,link)
     local function v(x) return x==nil and '-' or math.type(x)=='float' and string.format('%.2f',x) or tostring(x) end
     function api.tick()
         local here=link()
-        if not here then util=nil; return end
+        if not here then util,pending=nil,nil; return end
         local ok,read=pcall(engine.hud)
         if not ok then
             local message=tostring(read)
@@ -75,13 +76,20 @@ function Hud.new(engine,directory,wall,log,link)
         end
         local s=read.util
         local kind,count=Hud.kind(s and s.thumb),s and tonumber(s.count)
-        if util and kind~=util.kind then
-            if util.count==1 then note(string.format('util slot changed from %s at 1 to %s (a last use is not counted)',v(util.thumb),v(s and s.thumb))) end
-        elseif util and util.count and count and count<util.count then
-            if uses[kind] then uses[kind]=uses[kind]+util.count-count end
-            note(string.format('%s used (%s -> %s)',kind,v(util.count),v(count)))
+        if read.found_util then util,pending=nil,nil end -- A new widget's values are no drop from the old one's.
+        if pending and pending.kind==kind and pending.count==count then
+            -- ponytail: widget polling; a last unit whose slot at once shows another item is not counted (logged instead),
+            -- and a thumbnail that lags its count past a second read reads as a drop. Hook FSBItemBucketItemConsume::Simulate
+            -- (0x141b0bd90) or walk the native item buckets if the grouped test shows misses.
+            if util and kind~=util.kind then
+                if util.count==1 then note(string.format('util slot changed from %s at 1 to %s (a last use is not counted)',v(util.thumb),v(s and s.thumb))) end
+            elseif util and util.count and count and count<util.count then
+                if uses[kind] then uses[kind]=uses[kind]+util.count-count end
+                note(string.format('%s used (%s -> %s)',kind,v(util.count),v(count)))
+            end
+            util={kind=kind,count=count,thumb=s and s.thumb}
         end
-        util={kind=kind,count=count,thumb=s and s.thumb}
+        pending={kind=kind,count=count}
         local h,u,l,a=read.heal or {},s or {},read.lower or {},read.ammo or {}
         local values={v(h.thumb),v(h.count),v(h.max),v(h.usable),v(u.thumb),v(u.count),v(u.cooldown),v(u.usable),v(l.thumb),v(l.count),
             v(read.bullet),v(a.count),v(read.dash)}

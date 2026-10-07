@@ -697,7 +697,8 @@ function Adapter.new()
     -- valid. FindAllOf walks every object on the game thread, so while one is missing they are looked for again after
     -- HUD_RETRY seconds, doubling up to HUD_RETRY_MAX (back to HUD_RETRY once a search finds one), and at once when one
     -- found went. Each slot: {thumb=, count=, max=, cooldown=, usable=}; thumb is Image_Item_Thumb's brush texture name;
-    -- an unreadable property is nil. search: what a search made by this call cost, {ms=, missing=, retry=}.
+    -- an unreadable property is nil. search: what a search made by this call cost, {ms=, missing=, retry=}. found_util:
+    -- this call's search found the util widget, so its values are no continuation of an earlier one's.
     local HUD_RETRY,HUD_RETRY_MAX=2,30
     local HUD_SLOTS={heal='WB_MainHUD_HealItem',util='WB_MainHUD_UtilItem',lower='WB_MainHUD_Lower1Item'}
     local widgets,bullets,hud_next,hud_wait={},{},-math.huge,HUD_RETRY
@@ -748,7 +749,9 @@ function Adapter.new()
             cooldown=get(widget,'CoolTimePercent'),usable=get(widget,'SlotUseAllow')}
     end
     function engine.hud()
+        local util=widgets.util
         local result={search=find_hud(),heal=slot(widgets.heal),util=slot(widgets.util),lower=slot(widgets.lower)}
+        result.found_util=widgets.util~=nil and widgets.util~=util
         result.dash=widgets.dash and get(widgets.dash,'CoolTimeProgress')
         result.bullet=name_of(valid(UE.GetPlayer()),'CurrentBulletItemAlias')
         for _,b in ipairs(result.bullet and bullets or {}) do
