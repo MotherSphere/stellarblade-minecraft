@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.regex.Pattern;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -120,6 +121,7 @@ final class AvatarItems {
         ClientTickEvents.END_CLIENT_TICK.register(AvatarItems::read);
         HudRenderCallback.EVENT.register((context, tick) -> draw(context));
         ServerTickEvents.END_SERVER_TICK.register(AvatarItems::tick);
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> mines.clear()); // No tick drops them after the last one; they hold its world.
     }
 
     private static void read(MinecraftClient client) {
