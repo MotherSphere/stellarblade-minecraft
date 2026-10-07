@@ -315,7 +315,7 @@ public final class AvatarView {
                 // Minecraft's yaw keeps counting turns; the adapter takes one turn. Its health and gains words go first, so
                 // the camera's fresh time covers them.
                 if (player != null) {
-                    AvatarStats.reportHeals(current.anchored ? current.stream.healed() : -1);
+                    AvatarStats.reportHeals(current.stream.healed()); // An unanchored frame keeps the count: heals wait.
                     var health = current.anchored ? AvatarStats.mirror() : AvatarStats.Mirror.OFF;
                     int[] earned = AvatarCombat.earned();
                     current.stream.feedback(health.share(), health.acknowledged(), earned[0], earned[1]);

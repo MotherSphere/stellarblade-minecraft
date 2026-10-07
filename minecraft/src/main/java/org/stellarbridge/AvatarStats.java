@@ -82,19 +82,30 @@ final class AvatarStats {
     private static volatile Mirror mirror = Mirror.OFF;
     private static long applied = -1; // Server thread: the count last applied, -1 before a baseline.
 
-    /** Render thread, each controlled frame: AvatarStream.healed() while EVE is the bridged player, else -1. */
+    /** Render thread: AvatarStream.healed() each controlled frame, -1 once the stream stops. */
     static void reportHeals(long counter) { reported = counter; }
     /** Any thread: the health word's share and acknowledged count. */
     static Mirror mirror() { return mirror; }
 
     /** Server thread, each tick: the heals counted since the last tick, applied while active (EVE drives the living player). */
     static void heal(ServerPlayerEntity player, boolean active) {
+        boolean alive = player.isAlive();
+        long points = due(active, alive);
+        if (points > 0) player.heal(healthFor(points, current().maxHp(), player.getMaxHealth()));
+        if (applied >= 0) mirror = new Mirror(active && alive ? Math.clamp(player.getHealth() / player.getMaxHealth(), 0f, 1f) : 0, (int) applied);
+    }
+    /**
+     * Server thread: the heal points of the reported count to apply now. Taken (the count becomes the one applied) while
+     * active or once the player is dead; while the player lives undriven (a lapsed link) they wait unacknowledged, so the
+     * adapter keeps Stellar Blade's healed HP, unwritten, until Minecraft applies them.
+     */
+    static long due(boolean active, boolean alive) {
         long counter = reported;
-        if (counter < 0) { stopHeals(); return; }
+        if (counter < 0) stopHeals();
+        if (counter < 0 || !active && alive) return 0;
         long points = heals(applied, counter);
         applied = counter;
-        if (points > 0 && active && player.isAlive()) player.heal(healthFor(points, current().maxHp(), player.getMaxHealth()));
-        mirror = new Mirror(active && player.isAlive() ? Math.clamp(player.getHealth() / player.getMaxHealth(), 0f, 1f) : 0, (int) applied);
+        return alive ? points : 0;
     }
     /** Server thread: forgets the count, so the next one is a baseline. */
     static void stopHeals() {
