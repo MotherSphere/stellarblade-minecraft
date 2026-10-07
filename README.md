@@ -2,9 +2,9 @@
 
 Experimental passthrough for playing EVE in Minecraft Java on Linux, with Stellar Blade running through Proton.
 
-**Minecraft is the primary game and renderer.** Minecraft owns the world, inventory, menus and block interactions. Stellar Blade supplies EVE's native controller, animations and rendered appearance. The bridge composites her captured color and depth into Minecraft; it does not reimplement her combat system in Java. An experimental [avatar view](docs/diagnostics.md#avatar-view-experimental) draws her own meshes in Minecraft from recorded or live bone poses.
+**Minecraft is the primary game and renderer.** Minecraft owns the world, inventory, menus and block interactions. Stellar Blade simulates EVE: her controller, animations, skills and effects. In the main **avatar mode** (`/stellaravatar play`), Minecraft draws her own meshes from the bone poses the native adapter streams every Stellar Blade frame, with Minecraft's camera; Stellar Blade's camera follows it. The older **capture mode** (`/stellarview play`) composites her captured color and depth instead, at a lower rate; it stays as a fallback and for comparison.
 
-The prototype supports a bounded terrain/collision link, continuous framebuffer-sized EVE capture and keyboard/mouse forwarding from Minecraft. With the avatar view, EVE fights Minecraft's mobs, including mods' mobs ([combat](#combat)). General world streaming and Iris/shader-pack compatibility are not implemented. Hair/transparency and capture latency still need work. Minecraft's displayed FPS is distinct from the rate of new EVE images.
+The prototype supports a bounded terrain/collision link, keyboard/mouse forwarding from Minecraft, EVE's combat against Minecraft's mobs, including mods' mobs ([combat](#combat)), Stellar Blade's lock-on, and its HUD. General world streaming and Iris/shader-pack compatibility are not implemented. Hair and transparency still need work. In capture mode, Minecraft's displayed FPS is distinct from the rate of new EVE images.
 
 ## Start a session
 
@@ -12,9 +12,9 @@ First follow [setup and build instructions](docs/setup.md). Use a private creati
 
 1. In Minecraft, stand on a full block and run `/stellar start`.
 2. In Stellar Blade, load EVE, press **F5** to import collision, then **F8** to enter the elevated lab. The lab must be clear of existing level geometry.
-3. Return to Minecraft and run **`/stellarview play`**. Close chat and release held controls. Forwarding begins after a fresh displayed image and a neutral native acknowledgement.
+3. Return to Minecraft and run **`/stellaravatar play`** (or `/stellarview play` for capture mode). Close chat and release held controls. Forwarding begins once EVE's streamed pose (in capture mode: a displayed image) is fresh and the native adapter acknowledges neutral input.
 4. Use **B** to switch between EVE controls and Minecraft build interactions. This binding is configurable in Minecraft's Controls menu.
-5. To stop, use **`/stellarview off`**, then **F11** in Stellar Blade to return EVE, then **`/stellar stop`** in Minecraft.
+5. To stop, use **`/stellaravatar off`** (or `/stellarview off`), then **F11** in Stellar Blade to return EVE, then **`/stellar stop`** in Minecraft.
 
 Do not save, travel, load another save or reload Lua while EVE is in the lab. The bridge does not disable autosave. If returning fails, supporting collision stays in place so F11 can be retried.
 
@@ -31,8 +31,9 @@ The patch is fixed around the starting anchor: **9 × 6 × 9 blocks**, at most 2
 | `/stellarview gain <1..32767>` | Native camera sensitivity; default 2500 |
 | `/stellarview status` | Image delivery, Minecraft FPS and stream state |
 | `/stellarview off` | Stop rendering/input and restore the normal camera |
-| `/stellaravatar play` | Experimental: EVE drawn by Minecraft from her streamed pose, Minecraft camera, no capture |
-| `/stellaravatar live`, `/stellaravatar status`, `/stellaravatar off` | Avatar without input forwarding, stream statistics, stop |
+| `/stellaravatar play` | Avatar mode: EVE drawn by Minecraft from her streamed pose, Minecraft camera, controls forwarded |
+| `/stellaravatar live`, `/stellaravatar status`, `/stellaravatar off` | Avatar without input forwarding, stream, camera, gauge, combat and evade statistics, stop |
+| `/stellaravatar replay` | Loop the latest `sbmc posetest` recording (no Stellar Blade needed) |
 
 EVE mode follows Stellar Blade's default controller layout:
 
