@@ -94,6 +94,14 @@ assert(text:find('\nUSES 3 0 1 0\n',1,true),'A drop of two is two uses: '..text)
 state.util=slot('FlashGrenade',0); text=stable(); second(); second()
 assert(text:find('\nUSES 3 0 1 0\n',1,true),'A selection to a lower count is not a use')
 assert(logs('; util FlashGrenade 0 cool 0 use true;')==1,'Unchanged values are logged once')
+-- Ammo is logged where it appears, not at each shot; read lines have their own budget, so they cannot hide a use.
+local lines=#logged
+state.bullet,state.ammo='Bullet_Normal',{count=120,cooldown=0}; second()
+for n=119,100,-1 do state.ammo.count=n; second() end
+assert(#logged==lines+1 and logged[#logged]:find('; bullet Bullet_Normal 120;',1,true),'One line for the ammo')
+for n=1,200 do state.heal=slot('Icon_PotionR',n%2); hud.tick() end
+state.util=slot('FlashGrenade',2); stable(); state.util=slot('FlashGrenade',1); text=stable()
+assert(text:find('\nUSES 3 0 1 1\n',1,true) and logs('HUD: sonic used (2 -> 1)')==1 and logs('HUD: heal ')==150,'Read lines stop at 150, uses still log')
 -- The consume probe: the first five requests are logged.
 for _=1,6 do consume() end
 assert(logs('consume request seen')==5 and logs('consume request seen (5)')==1)

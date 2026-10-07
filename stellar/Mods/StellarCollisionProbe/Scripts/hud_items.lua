@@ -7,7 +7,7 @@
 -- content changes and at least every wall second, in alternating slots (SEQ % 2). Game-thread only; call tick on the
 -- 200 ms bridge timer.
 local Hud={}
-local LINES=200
+local LINES,READS=200,150 -- Read-value lines have their own budget, so a value that keeps changing cannot hide a use.
 -- ItemTable.Asset2D, the thumbnail texture's name, to the item's kind.
 Hud.KINDS={Icon_PotionR='tumbler',Icon_Potion='potion',Icon_PotionSmall='lingering',HealGrenade='field',Grenade='shock',
     PluseGrenade='pulse',TrapGrenade='mine',FlashGrenade='sonic',WbPump='pump'}
@@ -31,7 +31,7 @@ function Hud.format(session,seq,time,state)
 end
 -- engine: hud() and watch_consume(fn) (pose_adapter); wall: Unix seconds; link: the entered link ({session=}) or nil.
 function Hud.new(engine,directory,wall,log,link)
-    local api,lines,seq,consumed,errors={},0,0,0,{}
+    local api,lines,reads,seq,consumed,errors={},0,0,0,0,{}
     local uses={shock=0,pulse=0,mine=0,sonic=0}
     local util,pending -- The util slot at the last two agreeing reads with a link, {kind=,count=,thumb=}; the last read.
     local shown,searched -- The last logged read; whether a widget search was logged.
@@ -94,10 +94,13 @@ function Hud.new(engine,directory,wall,log,link)
         local values={v(h.thumb),v(h.count),v(h.max),v(h.usable),v(u.thumb),v(u.count),v(u.cooldown),v(u.usable),v(l.thumb),v(l.count),
             v(read.bullet),v(a.count),v(read.dash)}
         local line=string.format('heal %s %s/%s use %s; util %s %s cool %s use %s; lower %s %s; bullet %s %s; dash %s',table.unpack(values))
-        -- A running cooldown is logged where it starts and ends, not at each step.
-        values[7],values[13]=tostring((tonumber(u.cooldown) or 0)>0),tostring((tonumber(read.dash) or 0)>0)
+        -- A running cooldown is logged where it starts and ends, not at each step; ammo where it appears or goes, not at each shot.
+        values[7],values[12],values[13]=tostring((tonumber(u.cooldown) or 0)>0),tostring(a.count~=nil),tostring((tonumber(read.dash) or 0)>0)
         local seen=table.concat(values,' ')
-        if seen~=shown then shown=seen; note(line) end
+        if seen~=shown then
+            shown=seen
+            if reads<READS then reads=reads+1; log('HUD: '..line) end
+        end
         local alias=read.bullet
         local state={heal=item(read.heal),util=item(s),dash=type(read.dash)=='number' and read.dash or nil,
             uses={uses.shock,uses.pulse,uses.mine,uses.sonic}}
