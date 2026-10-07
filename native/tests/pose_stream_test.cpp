@@ -702,11 +702,13 @@ int main() {
     assert(!read_gauges(w, g) && !read_stats(w, s) && "The player index stays within the actor count");
     put_i32(manager, 0x3c, 1);
     // AddStat's gauge gain: the rate capped, truncated to thousandths, the bonus rounded up with the rate's sign.
-    assert(gauge_gain(15, 0, .4f) == 15 && gauge_gain(15, .06f, .4f) == 16 && gauge_gain(15, .13f, .4f) == 17 &&
-           gauge_gain(65, .13f, .4f) == 74 && gauge_gain(200, .27f, .75f) == 254 && "Points plus ceil(points x rate)");
-    assert(gauge_gain(15, .9f, .4f) == 21 && "The rate is capped");
-    assert(gauge_gain(15, .0669f, .4f) == 16 && "The rate is truncated to thousandths (ceil(15 x 0.0669) would give 17)");
-    assert(gauge_gain(15, -.1f, .4f) == 13 && "A negative rate takes its bonus away");
+    assert(gauge_gain(15, 0, BetaRateCap) == 15 && gauge_gain(15, .06f, BetaRateCap) == 16 &&
+           gauge_gain(15, .13f, BetaRateCap) == 17 && gauge_gain(65, .13f, BetaRateCap) == 74 &&
+           gauge_gain(200, .27f, BurstRateCap) == 254 && "Points plus ceil(points x rate)");
+    assert(gauge_gain(15, .9f, BetaRateCap) == 21 && gauge_gain(200, .9f, BurstRateCap) == 350 && "The rate is capped");
+    assert(gauge_gain(15, .0669f, BetaRateCap) == 16 && "The rate is truncated to thousandths (ceil(15 x 0.0669) would give 17)");
+    assert(gauge_gain(100, .1009f, BetaRateCap) == 110 && "Thousandths truncated, not rounded (101 would give 111)");
+    assert(gauge_gain(15, -.1f, BetaRateCap) == 13 && "A negative rate takes its bonus away");
     // Minecraft's points land in Beta and Burst as AddStat adds a hit's.
     auto value = [&](uint32_t index) {
       float v;
@@ -767,9 +769,31 @@ int main() {
     grant_poll(w, true, &over, wrapped);
     // 31 points (0x0F - 0xFFFFFFF0 in u32) at rate 0.13: 31 + ceil(4.03) = 35.
     assert(value(14) == 435 && wrapped.granted[0] == 35 && "U32 wrap");
+    stat(14, 400); stat(18, 130); stat(64, .9f); stat(111, .9f);
+    Grants capped;
+    capped.known = true;
+    auto step = [&](uint32_t beta, uint32_t burst) {
+      Feedback f;
+      f.beta = beta;
+      f.burst = burst;
+      grant_poll(w, true, &f, capped);
+    };
+    step(15, 200);
+    assert(value(14) == 421 && value(18) == 480 && "Each gauge's rate capped at its own maximum");
+    step(15, 1201);
+    assert(value(18) == 480 && "A Burst step above 1000 is adopted, not granted");
+    step(15, 2201);
+    assert(value(18) == 1600 && "A step of exactly 1000 is granted");
+    stat(18, 130);
+    for (float bad : {std::nanf(""), 2 * GaugeLimit}) {
+      stat(111, bad);
+      step(15, capped.burst + 15);
+      assert(value(18) == 130 && "A Burst rate non-finite or beyond the limit writes nothing");
+    }
     // The HP mirror: Minecraft's share of MaxHP, a quarter at least, 1 per mille under full, never 0.
     assert(mirrored(1, 2000) == 2000 && mirrored(.5f, 2000) == 1000 && mirrored(.9999f, 2000) == 1998 &&
            mirrored(.1f, 2000) == 500 && mirrored(.01f, 2) == 1 && mirrored(.5f, 2) == 1 && "Never 0");
+    assert(mirrored(.6669f, 2000) == 1333 && "Floored");
     stat(1, 2000);
     HealthMirror m;
     mirror_health(w, .5f, 0, true, 1000, m);
@@ -784,10 +808,11 @@ int main() {
     stat(1, 1400); // Stellar Blade's own damage.
     mirror_health(w, .75f, 1000, true, 1200, m);
     assert(m.lost == 1 && value(1) == 1500 && "A loss is counted and overwritten");
-    mirror_health(w, 0, 0, false, 1700, m);
+    // The lease counts from the last usable share (1200), not from the activation (1000).
+    mirror_health(w, 0, 0, false, 2100, m);
     assert(m.state == MirrorHeld && value(1) == 1500 && "A stale share holds");
     stat(1, 1600);
-    mirror_health(w, 0, 0, false, 1800, m);
+    mirror_health(w, 0, 0, false, 2150, m);
     assert(m.healed == 1100 && "Counted while stale");
     mirror_health(w, 0, 0, false, 2201, m);
     assert(value(1) == 2000 && m.state == MirrorOff && !m.active && "Restored after the lease");
@@ -820,6 +845,16 @@ int main() {
     stat(1, 1234);
     mirror_health(w, .5f, 0, false, 3000, idle);
     assert(idle.state == MirrorOff && !idle.active && !idle.actor && value(1) == 1234 && "Idle: nothing read or written");
+    HealthMirror checked;
+    stat(1, 2000);
+    mirror_health(w, .5f, 0, true, 4000, checked);
+    stat(1, 2500);
+    mirror_health(w, .5f, 0, true, 4050, checked);
+    assert(checked.state == MirrorOff && value(1) == 2500 && checked.healed == 0 && "HP above MaxHP is refused, not a heal");
+    stat(1, 1000);
+    stat(2, 1800);
+    mirror_health(w, 0, 0, false, 5100, checked);
+    assert(value(1) == 1800 && !checked.active && "The restore is clamped to MaxHP");
     // The player actor's whole stat array, in order.
     for (uint32_t i = 0; i < ActorStats; i++)
       stat(i, i + 0.25f);
