@@ -78,6 +78,7 @@ public final class AvatarView {
         List<AvatarStream.Effect> effects = List.of(); // The game's active effects on EVE in the newest sample.
         final AvatarEffects particles = new AvatarEffects();
         final AvatarCombat.Blade blade = new AvatarCombat.Blade();
+        final AvatarCombat.Gun gun = new AvatarCombat.Gun();
         long effectSamples; // Samples with at least one active effect.
         double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
         double pitchSum, pitchMax; // Pitch gap in degrees between Minecraft's camera and the camera pitch of synced poses.
@@ -335,8 +336,11 @@ public final class AvatarView {
                 var origin = link.origin();
                 placement = new Matrix4d().translation(origin.x() - camera.x, origin.y() - camera.y, origin.z() - camera.z)
                         .mul(AvatarModel.unrealToMinecraft(anchor[3])).translate(-anchor[0], -anchor[1], -anchor[2]);
-                // In first person the camera is inside EVE's head, as Minecraft hides its own player there.
-                if (MinecraftClient.getInstance().options.getPerspective().isFirstPerson()) return;
+                // In first person the camera is inside EVE's head, as Minecraft hides its own player there; her shots leave her eyes.
+                if (MinecraftClient.getInstance().options.getPerspective().isFirstPerson()) {
+                    current.gun.update(current.stream.shots(), true, () -> null);
+                    return;
+                }
             } else {
                 float[] root = current.pose.world()[current.model.parts.get(0).component()];
                 if (current.relativeOrigin == null) current.relativeOrigin = new Vector3d(root[4], root[5], root[6]);
@@ -355,12 +359,14 @@ public final class AvatarView {
             long nanos = System.nanoTime();
             if (!current.renderer.effects(effects, new Vector3d(camera.x, camera.y, camera.z), context.camera().getRotation(), nanos / 1e9))
                 current.particles.spawn(current.effects, placement, camera, nanos);
-            // At the bridged position EVE is the player: she flashes red when hurt, and her blade strikes entities.
+            // At the bridged position EVE is the player: she flashes red when hurt, her blade and her drone's shots strike entities.
             var player = MinecraftClient.getInstance().player;
             boolean bridged = current.anchored && link != null && player != null;
             current.renderer.hurt(bridged && player.hurtTime > 0);
             draw(context, current.model, current.renderer, current.pose, placement, camera);
             if (bridged) current.blade.update(current.renderer, current.effects, nanos / 1e9);
+            current.gun.update(current.stream.shots(), bridged,
+                    () -> AvatarCombat.muzzle(current.model, current.table.components(), current.drawn, current.pose, placement, camera));
         } catch (RuntimeException failure) {
             stopLive(failure.getMessage());
             LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
@@ -557,7 +563,8 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + hiddenStatus(current) + AvatarCombat.status() + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
+                + hiddenStatus(current) + AvatarCombat.status() + current.gun.status(current.stream.shots())
+                + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
                 + AvatarStats.status(current.stats)
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
     }

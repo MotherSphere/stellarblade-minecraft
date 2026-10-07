@@ -304,12 +304,15 @@ public final class StellarBridge implements ClientModInitializer {
         });
     }
 
-    /** EVE's blade struck an entity the client saw: Minecraft damages it as the bridged player's attack, on the server thread. */
-    static void strike(int entityId, float amount, double knockback, boolean charged) {
+    /**
+     * EVE's blade or drone (shot) struck an entity the client saw: Minecraft damages it as the bridged player's attack, on
+     * the server thread.
+     */
+    static void strike(int entityId, float amount, double knockback, boolean charged, boolean shot) {
         Control current = control;
         if (current == null) return;
         current.server.execute(() -> {
-            if (overrides(current.owner)) AvatarCombat.strike(current.owner, entityId, amount, knockback, charged);
+            if (overrides(current.owner)) AvatarCombat.strike(current.owner, entityId, amount, knockback, charged, shot);
         });
     }
 

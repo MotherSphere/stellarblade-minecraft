@@ -598,6 +598,19 @@ int main() {
            "Reserved bytes around them");
     assert(direct.publish(3, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades) &&
            stellar_shared::load32(view.base, StatsState) == 0 && "Unreadable stats clear their state");
+    // Her drone's shots: one word at ShotsAt, right after the stats; the rest stays reserved. The dolly refusal, the
+    // argument before them, keeps its own slot word.
+    float turned[4] = {0, 90, 0, 0};
+    assert(direct.publish(4, &state, 1, pose, 10, turned, 0, now, 0, nullptr, evades, stats, DollyLag, 5));
+    assert(ShotsAt == StatsAt + 4 * StatFloats && stellar_shared::plain<uint32_t>(view.base, ShotsAt) == 5 && "Shots at 484");
+    uint32_t refusals = 0;
+    for (uint32_t i = 0; i < 3; i++) {
+      auto *slot = view.base + Header + SlotBytes * i;
+      if (stellar_shared::plain<uint64_t>(slot, 16) == 4)
+        refusals += stellar_shared::plain<uint32_t>(slot, 56) == DollyLag;
+    }
+    assert(refusals == 1 && "The refusal in the published slot at 56");
+    assert(std::all_of(view.base + ShotsAt + 4, view.base + Header, [](uint8_t b) { return b == 0; }) && "Nothing after them");
     direct.stop();
   }
   auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
@@ -720,9 +733,30 @@ int main() {
     count_evades(w, false, 6000, starts);
     start(root, 0);
     assert(count(true, 6100, {2, 1, 1, 3, 0, 2}) && "A cut counts with the lock state its dodge started in");
+    // Her drone's shots: real starts of TPSFire nodes whose action fires (RangedFireItem 1, RangedFireSkill 2).
+    std::vector<uint8_t> slug(0xb8), railgun(0xb8), misfire(0xb8);
+    for (auto *n : {&slug, &railgun, &misfire})
+      put_i32(*n, 0x18, 44);
+    put_i32(slug, 0x30, 1); put_i32(railgun, 0x30, 2); put_i32(misfire, 0x30, 0);
+    assert(starts.shots == 0);
+    start(slug, 10);
+    assert(count(false, 6200, {2, 1, 1, 3, 0, 2}) && starts.shots == 1 && "A shot, no evade");
+    assert(count(false, 6210, {2, 1, 1, 3, 0, 2}) && starts.shots == 1 && "Counted once");
+    start(slug, 10.1f);
+    assert(count(true, 6300, {2, 1, 1, 3, 0, 2}) && starts.shots == 2 && "Held fire restarts it: locked or not");
+    start(railgun, 11);
+    assert(count(false, 6400, {2, 1, 1, 3, 0, 2}) && starts.shots == 3 && "A skill shot (railgun, missile)");
+    start(misfire, 12);
+    assert(count(false, 6500, {2, 1, 1, 3, 0, 2}) && starts.shots == 3 && "The empty gun's misfire is no shot");
+    start(slug, 0);
+    assert(count(false, 6600, {2, 1, 1, 3, 0, 2}) && starts.shots == 3 && "A zeroed time is no shot");
+    start(normal, 13);
+    count_evades(w, false, 6700, starts);
+    start(slug, 14);
+    assert(count(false, 6750, {3, 1, 1, 3, 0, 2}) && starts.shots == 4 && "A shot ends a dodge's window early without a cut");
     put_ptr(set, 0x178, 0);
     start(normal, 9);
-    assert(count(false, 7000, {2, 1, 1, 3, 0, 2}) && "Not her command set, nothing counted");
+    assert(count(false, 7000, {3, 1, 1, 3, 0, 2}) && starts.shots == 4 && "Not her command set, nothing counted");
     put_ptr(set, 0x178, uintptr_t(actor.data()));
     assert(patch_evades(w, true) == 3);
     std::vector<uint8_t> other(0x2700);
@@ -788,7 +822,7 @@ int main() {
     assert(middle == (1 | 4) && stellar_shared::load64(base, 216) == 1);
     auto *slot = base + Header + SlotBytes * 1;
     assert(stellar_shared::plain<uint64_t>(slot, 0) == 1 && stellar_shared::plain<uint64_t>(slot, 16) == 7);
-    assert(stellar_shared::plain<uint32_t>(slot, 24) == 2 && "Format 2 carries the Hidden status bit");
+    assert(stellar_shared::plain<uint32_t>(slot, 24) == 3 && "Format 3 carries the shot count");
     assert(stellar_shared::plain<uint32_t>(slot, 28) == 2 && stellar_shared::plain<uint32_t>(slot, 32) == 54);
     assert(stellar_shared::plain<uint32_t>(slot, 64) == 7 && stellar_shared::plain<uint32_t>(slot, 68) == (WorldValid | MorphsValid));
     assert(stellar_shared::plain<float>(slot, 128 + 4 * 4) == 100);
@@ -799,6 +833,7 @@ int main() {
            "Without the pinned game world the gauges and stats stay unreadable");
     for (uint32_t i = 0; i < EvadeWords; i++)
       assert(stellar_shared::plain<uint32_t>(base, 344 + 4 * i) == 0 && "Nor are evades counted");
+    assert(stellar_shared::plain<uint32_t>(base, ShotsAt) == 0 && "Nor shots");
     on_gameplay_poll();
     assert(stellar_shared::load64(base, 216) == 2 && stellar_shared::load32(base, 128) == (0 | 4));
     // Minecraft's camera: applied only for the run that owns forwarded input, fresh and in range.

@@ -19,8 +19,11 @@ import java.util.List;
  */
 final class AvatarStream implements AutoCloseable {
     static final int HEADER = 4096, SLOT = 65536, SLOT_HEADER = 128, CAPACITY = (SLOT - SLOT_HEADER) / 4, TOTAL = HEADER + 3 * SLOT;
-    /** Component status bits; HIDDEN: Stellar Blade does not draw the component (its floats still arrive). Slot format 2. */
-    static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8, FORMAT = 2;
+    /**
+     * Component status bits; HIDDEN: Stellar Blade does not draw the component (its floats still arrive). Slot format 3:
+     * format 2's HIDDEN bit, plus the dolly refusal at slot byte 56 and the drone shot count in the header.
+     */
+    static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8, FORMAT = 3;
     private static final long MAX = 9007199254740991L;
     private static final byte[] MAGIC = "SBMCPOS1".getBytes(StandardCharsets.US_ASCII);
 
@@ -41,6 +44,7 @@ final class AvatarStream implements AutoCloseable {
     /** Up to MAX_EFFECTS active effects per pose: an index into Table.effects, then a world transform (11 floats). */
     static final int MAX_EFFECTS = 8, EFFECT_FLOATS = 11, GAUGES = 5, EVADES = 7, STATS = 8;
     static final int STATS_STATE = 448, STATS_AT = 452; // Header bytes of EVE's stats: state, then floats.
+    static final int SHOTS_AT = STATS_AT + 4 * STATS; // Header byte of her drone's shot count, right after the stats.
     /** An active effect of a pose: its asset name and Unreal world position. */
     record Effect(String name, double x, double y, double z) { }
     /** A material parameter the game animates (scalar: 1 float, vector: 4) on a component's material slot. */
@@ -246,6 +250,14 @@ final class AvatarStream implements AutoCloseable {
             if (!Float.isFinite(values[i]) || Math.abs(values[i]) > 100000) return null;
         }
         return values[0] > 0 && values[2] > 0 ? values : null;
+    }
+
+    /**
+     * EVE's drone shots from the header (u32 at SHOTS_AT): her shots that fired (TPSFire command starts with a ranged-fire
+     * action) since the adapter loaded, as an unsigned count; 0 until the first.
+     */
+    long shots() {
+        return map == null || stopped ? 0 : Integer.toUnsignedLong(map.getInt(SHOTS_AT));
     }
 
     /** Producer statistics: published poses, then last, maximum and mean native read microseconds. */
@@ -456,8 +468,8 @@ final class AvatarStream implements AutoCloseable {
         require(map.getInt(8) == 1 && map.getInt(12) == HEADER && map.getInt(16) == SLOT && map.getInt(20) == CAPACITY
                 && map.getInt(28) == TOTAL, "Pose mapping layout changed");
         zeros(24, 28); zeros(64, 96); zeros(100, 128); zeros(132, 192); zeros(204, 208); zeros(240, 256); zeros(260, 264);
-        zeros(280, 288); zeros(308, 320); zeros(372, STATS_STATE); zeros(STATS_AT + 4 * STATS, HEADER);
-        // 288..308: Minecraft's camera; 320..372: EVE's gauges and evades; 448..484: her stats.
+        zeros(280, 288); zeros(308, 320); zeros(372, STATS_STATE); zeros(SHOTS_AT + 4, HEADER);
+        // 288..308: Minecraft's camera; 320..372: EVE's gauges and evades; 448..484: her stats; 484..488: her drone's shots.
     }
     private void zeros(int from, int to) throws IOException {
         for (int i = from; i < to; i++) require(map.get(i) == 0, "Pose mapping reserved bytes changed");

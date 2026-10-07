@@ -15,7 +15,8 @@
 
 namespace stellar_pose {
 namespace {
-constexpr uint32_t Slots = 3, Dirty = 4, Format = 2; // 2: component status bit 3 (Hidden).
+// 2: component status bit 3 (Hidden); 3: the dolly refusal at slot byte 56 and the drone shot count at header byte ShotsAt.
+constexpr uint32_t Slots = 3, Dirty = 4, Format = 3;
 constexpr uint64_t Lease = 3000, LockLease = 600; // LockLease: Lua's own lock lease.
 using stellar_input::detail::identity;
 using stellar_input::detail::Lines;
@@ -537,7 +538,8 @@ struct EvadePatch {
   bool seen; // Visited by the current restoring walk.
 };
 std::vector<EvadePatch> evade_patches;
-constexpr uint32_t EvadeCommand = 24; // ESBSkillCommandState::Evade
+constexpr uint32_t EvadeCommand = 24, TPSFireCommand = 44; // ESBSkillCommandState::Evade, ::TPSFire
+constexpr uint32_t RangedFireItem = 1, RangedFireSkill = 2;  // ESBSkillCommandActionType
 // EVE's command set (FSBActor +0x530) while it is hers (owner at +0x178).
 uintptr_t command_set(uintptr_t actor) {
   auto set = actor ? at<uintptr_t>(actor + 0x530) : 0;
@@ -643,7 +645,15 @@ void count_evades(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) {
       e.counts[3 * e.opened_locked + 2]++;
     return;
   }
-  if (!node || at<uint32_t>(node + 0x18) != EvadeCommand)
+  if (!node)
+    return;
+  auto command = at<uint32_t>(node + 0x18);
+  if (command == TPSFireCommand) {
+    auto action = at<uint32_t>(node + 0x30);
+    e.shots += action == RangedFireItem || action == RangedFireSkill;
+    return;
+  }
+  if (command != EvadeCommand)
     return;
   bool first = at<uint8_t>(node + 0xb0) != 0;
   e.counts[3 * locked + !first]++;
@@ -799,7 +809,8 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
                        uint32_t count, const float *payload, uint32_t floats,
                        const float *rotation, uint32_t look,
                        uint64_t wall, uint32_t read_us, const float *gauges,
-                       const uint32_t *evades, const float *stats, uint32_t refusal) {
+                       const uint32_t *evades, const float *stats, DollyRefusal refusal,
+                       uint32_t shots) {
   auto &self = *impl_;
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
       !count || count > MaxComponents || floats > Capacity) {
@@ -842,6 +853,8 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   if (stats)
     std::memcpy(self.base + StatsAt, stats, sizeof(float) * StatFloats);
   exchange32(self.base, StatsState, stats ? 1 : 0);
+  // Her drone's shots at ShotsAt.
+  put(self.base, ShotsAt, shots);
   put(self.base, 224, read_us);
   put(self.base, 228, self.max_us);
   store64(self.base, 232, self.total_us);
@@ -1132,6 +1145,7 @@ void on_gameplay_poll(std::string_view owner) {
                    offset, rotated ? rotation : nullptr,
                    (applied ? LookApplied : 0u) | (synced ? PitchSynced : 0u) | (granted ? InputGranted : 0u), wall,
                    static_cast<uint32_t>(std::min<uint64_t>(elapsed, UINT32_MAX)),
-                   gauged ? gauges : nullptr, evade_starts.counts, statted ? stats : nullptr, refusal);
+                   gauged ? gauges : nullptr, evade_starts.counts, statted ? stats : nullptr,
+                   static_cast<DollyRefusal>(refusal), evade_starts.shots);
 }
 } // namespace stellar_pose

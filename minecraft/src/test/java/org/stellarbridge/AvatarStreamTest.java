@@ -131,6 +131,20 @@ public final class AvatarStreamTest {
         assert out.x == AvatarCombat.SHOVE && out.z == 0 : "Centred on her: +X, at most SHOVE a tick";
         assert AvatarCombat.shove(eve, east.offset(0.1, 0, 0), 1).lengthSquared() == 0 : "Touching her is outside";
         assert AvatarCombat.shove(eve, east.offset(0, AvatarCombat.BODY_HEIGHT, 0), 1).lengthSquared() == 0 : "Above her head";
+        // Her drone's shots hit the first box along the aim, up to its end (the range, or a block that stopped it).
+        var eyes = new net.minecraft.util.math.Vec3d(0, 1, 0);
+        var aim = new net.minecraft.util.math.Vec3d(10, 1, 0);
+        var boxes = java.util.List.of(new net.minecraft.util.math.Box(4, 0, -1, 5, 2, 1), new net.minecraft.util.math.Box(2, 0, -1, 3, 2, 1),
+                new net.minecraft.util.math.Box(-3, 0, -1, -2, 2, 1), new net.minecraft.util.math.Box(2, 3, -1, 3, 4, 1));
+        assert AvatarCombat.firstHit(eyes, aim, boxes) == 1 : "The nearest box on the aim, not the list's first";
+        assert AvatarCombat.firstHit(eyes, new net.minecraft.util.math.Vec3d(1.5, 1, 0), boxes) == -1 : "Beyond the aim's end";
+        assert AvatarCombat.firstHit(new net.minecraft.util.math.Vec3d(-2.5, 1, 0), aim, boxes) == 2 : "A box around the eyes at once";
+        assert AvatarCombat.firstHit(eyes, aim, java.util.List.of()) == -1 && AvatarCombat.firstHit(eyes, aim, boxes.subList(2, 4)) == -1
+                : "Behind her or above the aim";
+        // New shots from the adapter's count: none for the first count seen, at most BURST in a frame.
+        assert AvatarCombat.shots(-1, 5) == 0 && AvatarCombat.shots(5, 5) == 0 && AvatarCombat.shots(5, 7) == 2
+                && AvatarCombat.shots(5, 100) == AvatarCombat.BURST && AvatarCombat.shots(7, 3) == 0;
+        assert AvatarCombat.SHOT < AvatarCombat.LIGHT && AvatarCombat.RANGE == 30;
         // Stellar Blade's walls: the eight nearest her feet, clipped to the patch, relative to the origin, no slivers.
         var patch = new net.minecraft.util.math.Box(-3.5, 62, -3.5, 5.5, 68, 5.5);
         var origin = new net.minecraft.util.math.Vec3d(1, 64, 1);
@@ -326,6 +340,28 @@ public final class AvatarStreamTest {
                     AvatarModel armed = new AvatarModel(withWeapon.components(), Map.of("CH_P_EVE_52_TypeB", mesh, "CH_NPC_Drone", drone));
                     assert !AvatarStream.decode(withWeapon, new AvatarStream.Sample(8, now, 1, new int[] {3, 1}, java.util.Arrays.copyOf(doubled, 60), null, false, Float.NaN, false, 0),
                             armed, AvatarStream.emptyPose(withWeapon), new boolean[2]) : "A sword without bones drops the pose";
+                    // Her drone's shots leave its bullet socket while a drone part is drawn, else her right hand.
+                    var shooting = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(
+                            new AvatarRecording.Component("CharacterMesh0", "CH_P_EVE_52_TypeB", null, new String[] {"Root", AvatarCombat.HAND}, new String[0], 0),
+                            new AvatarRecording.Component("Drone.CharacterMesh0", "CH_NPC_Drone", null, new String[] {"Root", AvatarCombat.DRONE_MUZZLE}, new String[0], 0)),
+                            java.util.List.of(), java.util.List.of(), false, 60);
+                    AvatarModel shooter = new AvatarModel(shooting.components(), Map.of(
+                            "CH_P_EVE_52_TypeB", AvatarMesh.parse("CH_P_EVE_52_TypeB", AvatarModelTest.mesh(AvatarCombat.HAND, b -> { })),
+                            "CH_NPC_Drone", AvatarMesh.parse("CH_NPC_Drone", AvatarModelTest.mesh(AvatarCombat.DRONE_MUZZLE, b -> { }))));
+                    var shooterPose = AvatarStream.emptyPose(shooting);
+                    assert AvatarStream.decode(shooting, new AvatarStream.Sample(9, now, 1, new int[] {3, 3}, java.util.Arrays.copyOf(doubled, 60), null, false, Float.NaN, false, 0),
+                            shooter, shooterPose, new boolean[2]);
+                    var placement = new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT);
+                    shooter.palettes(shooterPose, placement, new FloatBuffer[] {FloatBuffer.allocate(24), FloatBuffer.allocate(24)}, true);
+                    var camera = new net.minecraft.util.math.Vec3d(10, 20, 30);
+                    // The socket (0.163, -11.05, 0.133) on the bone 100 units below the component, both turned 90 degrees about X.
+                    var fromDrone = AvatarCombat.muzzle(shooter, shooting.components(), new boolean[] {true, true}, shooterPose, placement, camera);
+                    assert fromDrone.from().equals("drone") && fromDrone.at().distanceTo(new net.minecraft.util.math.Vec3d(11.00163, 22.8895, 30.99867)) < 1e-4
+                            : fromDrone;
+                    var fromHand = AvatarCombat.muzzle(shooter, shooting.components(), new boolean[] {true, false}, shooterPose, placement, camera);
+                    assert fromHand.from().equals("hand") && fromHand.at().distanceTo(new net.minecraft.util.math.Vec3d(11, 23, 31)) < 1e-4 : fromHand;
+                    assert AvatarCombat.muzzle(model, twoBones.components(), new boolean[] {true}, pose, placement, camera) == null
+                            : "Neither a drone nor her right hand: from her eyes";
                     // A part is drawn again only after two consecutive poses showed it.
                     boolean[] drawnNow = new boolean[2];
                     AvatarStream.steady(drawnNow, new boolean[] {true, false}, new boolean[] {true, true});
@@ -372,6 +408,11 @@ public final class AvatarStreamTest {
                     assert stream.stats() == null : "Nor is a non-finite rate";
                     RawFrameBus.INT.setRelease(map, AvatarStream.STATS_STATE, 0);
                     assert stream.stats() == null : "Unreadable again";
+                    // Her drone's shots follow the stats: an unsigned count at 484.
+                    assert AvatarStream.SHOTS_AT == 484 && stream.shots() == 0 : "No shot counted yet";
+                    map.putInt(AvatarStream.SHOTS_AT, -2);
+                    assert stream.shots() == 0xFFFFFFFEL;
+                    assert stream.poll(table, now, System.nanoTime()) == null : "Counted shots are not reserved bytes";
                     // Native release, then reaping deletes the mapping and the request says stopped.
                     RawFrameBus.INT.setRelease(map, 196, 2);
                     try { stream.poll(table, now, System.nanoTime()); throw new AssertionError("A stopped producer must end the stream"); }
@@ -381,7 +422,10 @@ public final class AvatarStreamTest {
                 }
             }
             // A slot of the previous format (an older adapter) ends the stream with the reason.
-            assert refusedFormat(directory, table).equals("Pose slot format 1, this build reads 2: install the matching adapter");
+            assert refusedWith(directory, table, AvatarStream.HEADER + AvatarStream.SLOT + 24, 2)
+                    .equals("Pose slot format 2, this build reads 3: install the matching adapter");
+            // The header stays reserved after the shot count.
+            assert refusedWith(directory, table, AvatarStream.SHOTS_AT + 4, 1).equals("Pose mapping reserved bytes changed");
             // A refused slot ends the stream: bit 2 without bit 0, an unknown bit, a camera pitch without bit 2, a non-finite one.
             assert refused(directory, table, 4, 0).equals("Invalid controller rotation status");
             assert refused(directory, table, 17, 0).equals("Invalid controller rotation status");
@@ -421,18 +465,19 @@ public final class AvatarStreamTest {
         }
     }
 
-    private static String refusedFormat(Path directory, AvatarStream.Table table) throws Exception {
+    /** Why a fresh stream refuses its first native slot once value is written at offset of the mapping. */
+    private static String refusedWith(Path directory, AvatarStream.Table table, int offset, int value) throws Exception {
         long now = System.currentTimeMillis();
-        try (var stream = new AvatarStream(directory, "f".repeat(32), now);
+        try (var stream = new AvatarStream(directory, String.format("f%031x", offset), now);
              var channel = FileChannel.open(stream.path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
             var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
             assert (boolean) RawFrameBus.INT.compareAndSet(map, 192, 0, 777);
             RawFrameBus.LONG.setRelease(map, 208, now);
             RawFrameBus.INT.setRelease(map, 196, 1);
             publish(map, 1, 1, 1, now, new int[] {7, 5}, payload());
-            map.putInt(AvatarStream.HEADER + AvatarStream.SLOT + 24, 1);
+            map.putInt(offset, value);
             stream.poll(table, now, System.nanoTime());
-            throw new AssertionError("Accepted format 1");
+            throw new AssertionError("Accepted " + value + " at " + offset);
         } catch (java.io.IOException refusal) {
             return refusal.getMessage();
         }

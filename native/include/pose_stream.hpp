@@ -179,16 +179,23 @@ uint32_t patch_evades(uintptr_t world, bool locked);
 // whose time goes to 0 more than EvadeMarginMs before its window's end counts
 // as cut. counts, the header's words after the gauges: first, double, cut
 // while unlocked, the same while locked, then the caller's word (the nodes the
-// latest locked poll's patch_evades left changed). world as for read_gauges;
-// wall in milliseconds.
+// latest locked poll's patch_evades left changed). A real start of a node
+// whose command is TPSFire (44) counts a drone shot when its action (+0x30,
+// the row's CommandActionType, stored at 0x1d287e2) fires: RangedFireItem (1)
+// or RangedFireSkill (2); her Skill (0) rows of that command are the empty
+// gun's misfires. world as for read_gauges; wall in milliseconds.
 constexpr uint32_t EvadeWords = 7;
 static_assert(344 + 4 * EvadeWords <= StatsState, "The evade words must end before the stats");
+// Header byte of the drone shot count (u32), right after the stats.
+constexpr size_t ShotsAt = 484;
+static_assert(StatsAt + 4 * StatFloats <= ShotsAt, "The shot count must follow the stats");
 struct EvadeStarts {
   uintptr_t node = 0;
   uint32_t start = 0;  // The start time's bits.
   uint64_t opened = 0; // Wall time of the newest first dodge while its window is open.
   bool opened_locked = false;
   uint32_t counts[EvadeWords] = {};
+  uint32_t shots = 0; // Her drone's shots since the adapter loaded.
 };
 // ponytail: one fixed margin for both polls' frame lag; below about 10 fps a window that ended on time may count as cut.
 constexpr uint64_t EvadeMarginMs = 200;
@@ -254,12 +261,13 @@ public:
   // (zero unless look carries PitchSynced); look: LookApplied, PitchSynced,
   // InputGranted.
   // evades: EvadeWords words for the header, or none; stats: StatFloats
-  // floats, or none (unreadable).
+  // floats, or none (unreadable); shots: the drone shot count for ShotsAt.
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
                uint32_t look, uint64_t wall, uint32_t read_us,
                const float *gauges = nullptr, const uint32_t *evades = nullptr,
-               const float *stats = nullptr, uint32_t refusal = DollyNone);
+               const float *stats = nullptr, DollyRefusal refusal = DollyNone,
+               uint32_t shots = 0);
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
   bool look(uint64_t wall, float &pitch, float &yaw) const;
@@ -272,7 +280,7 @@ public:
 // worker passes the request file, both component slots and Minecraft's lock
 // file; the verified gameplay XInput poll gives EVE the lock-on evades while
 // Minecraft locks and owner (the run whose input is forwarded) is set and keeps
-// her in the battle mode an attack started meanwhile, counts her evade starts,
+// her in the battle mode an attack started meanwhile, counts her evade starts and drone shots,
 // reads the controller, turns the game's camera toward Minecraft's when owner
 // is this stream's run, then reads the components and publishes. None of them
 // throws.
