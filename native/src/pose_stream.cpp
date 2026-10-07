@@ -633,8 +633,10 @@ void mirror_health(uintptr_t world, float share, uint32_t acknowledged, bool fre
   if (!fresh && !m.active)
     return; // Idle: no read at all.
   auto actor = player_actor(world);
-  if (!actor)
-    return; // Not spawned: the record waits for her return.
+  if (!actor) {
+    m.last = std::nanf(""); // Not spawned: the record waits for her return, whose HP is no heal (NaN compares false).
+    return;
+  }
   if (actor != m.actor) { // Another actor has its own HP.
     m.active = false;
     m.actor = actor;

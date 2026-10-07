@@ -233,7 +233,8 @@ void grant_poll(uintptr_t world, const Feedback *fed, Grants &);
 // While active, SB HP above the last value written or seen is an SB heal (healed += its points); below it, a loss
 // (lost++), overwritten. Writes only with a usable share (fresh, finite, in (0, 1]) and once Minecraft acknowledged every
 // counted heal (the first write of an activation excepted); MirrorLease ms without a usable share restores the HP read
-// before its first write (at least 1). Another player actor drops the record; none keeps it.
+// before its first write (at least 1). Another player actor drops the record; none keeps it, and her HP on return is a
+// new base, not a heal.
 constexpr float MirrorFloor = 0.25f; // ponytail: margin against SB's own damage at low mirrored HP; heals above 75 % clip.
 constexpr uint64_t MirrorLease = 1000;
 enum MirrorState : uint32_t { MirrorOff, MirrorWritten, MirrorHeld };

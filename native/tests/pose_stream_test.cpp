@@ -797,9 +797,11 @@ int main() {
     put_i32(actor, 0x2600, 3);
     mirror_health(w, .75f, 1100, true, 2400, m);
     assert(m.state == MirrorOff && value(1) == 1000 && m.active && "No spawned player: nothing written, the record kept");
+    stat(1, 2000); // Her respawn refills her HP while she is away.
     put_i32(actor, 0x2600, 1);
     mirror_health(w, .75f, 1100, true, 2450, m);
-    assert(value(1) == 1500 && m.state == MirrorWritten && m.original == 2000 && "Back: it continues with her original HP");
+    assert(value(1) == 1500 && m.state == MirrorWritten && m.original == 2000 && m.healed == 1100 &&
+           "Back: her HP on return is no heal, and it continues with her original HP");
     std::vector<uint8_t> next(0x2700);
     put_i32(next, 0x2600, 1);
     float next_hp[2] = {3000, 4000};
