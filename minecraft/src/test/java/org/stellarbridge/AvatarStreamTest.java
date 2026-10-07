@@ -247,6 +247,11 @@ public final class AvatarStreamTest {
             assert refused(directory, table, 9, 0).equals("Invalid controller rotation status");
             assert refused(directory, table, 1, -17).equals("Pose mapping reserved bytes changed");
             assert refused(directory, table, 5, Float.NaN).equals("Non-finite camera pitch");
+            // Each bit decodes alone: 5 is the dolly set while the yaw follow stopped, 3 a turn without the dolly.
+            var held = slot(directory, table, 5, -17);
+            assert !held.lookApplied() && held.cameraPitch() == -17;
+            var turned = slot(directory, table, 3, 0);
+            assert turned.lookApplied() && Float.isNaN(turned.cameraPitch());
             // A stream the producer never claimed is cancelled and removed.
             try (var unclaimed = new AvatarStream(directory, "d".repeat(32), System.currentTimeMillis())) {
                 assert unclaimed.reap() && !Files.exists(unclaimed.path);
@@ -259,8 +264,18 @@ public final class AvatarStreamTest {
 
     /** Why a fresh stream (its run named by status) refuses one native slot with this controller status and camera pitch. */
     private static String refused(Path directory, AvatarStream.Table table, int status, float pitch) throws Exception {
+        try {
+            slot(directory, table, status, pitch);
+            throw new AssertionError("Accepted controller status " + status);
+        } catch (java.io.IOException refusal) {
+            return refusal.getMessage();
+        }
+    }
+
+    /** What a fresh stream (its run named by status and pitch) decodes from one native slot with this controller status and camera pitch. */
+    private static AvatarStream.Sample slot(Path directory, AvatarStream.Table table, int status, float pitch) throws Exception {
         long now = System.currentTimeMillis();
-        try (var stream = new AvatarStream(directory, String.format("%032x", status), now);
+        try (var stream = new AvatarStream(directory, String.format("%024x%08x", status, Float.floatToRawIntBits(pitch)), now);
              var channel = FileChannel.open(stream.path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
             var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
             assert (boolean) RawFrameBus.INT.compareAndSet(map, 192, 0, 777);
@@ -268,10 +283,7 @@ public final class AvatarStreamTest {
             RawFrameBus.INT.setRelease(map, 196, 1);
             publish(map, 1, 1, 1, now, new int[] {7, 5}, payload());
             map.putInt(AvatarStream.HEADER + AvatarStream.SLOT + 36, status).putFloat(AvatarStream.HEADER + AvatarStream.SLOT + 52, pitch);
-            stream.poll(table, now, System.nanoTime());
-            throw new AssertionError("Accepted controller status " + status);
-        } catch (java.io.IOException refusal) {
-            return refusal.getMessage();
+            return stream.poll(table, now, System.nanoTime());
         }
     }
 

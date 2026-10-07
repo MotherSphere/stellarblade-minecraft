@@ -438,7 +438,10 @@ constexpr size_t CameraBoom = 0x5c0, TPSMode = 0x1528, FishingMode = 0x1690, Slo
                  DollyTrack = 0x2f8, ControllerRotation = 0x370, CameraBlend = 0x374,
                  DollyBlend = 0x3c0, DollyBlendTarget = 0x3c8, DollyBlends = 0x3d8, DollyMode = 0x3e0;
 constexpr uint8_t RotationLag = 0x40;
-bool steer_dolly(const Engine &engine, const Controller &c, float look_pitch, float &camera) {
+bool steer_dolly(const Engine &engine, const Controller &c, float look_pitch, float &camera,
+                 DollyWrite &last) {
+  auto previous = last;
+  last = {};
   auto pawn = static_cast<uintptr_t>(c.pawn);
   if (!engine.objects || !engine.boom_vtable || !alive(engine.objects, pawn) ||
       at<uint64_t>(pawn + ClassPrivate) != c.pawn_cls)
@@ -456,17 +459,24 @@ bool steer_dolly(const Engine &engine, const Controller &c, float look_pitch, fl
       (at<uint8_t>(boom + ArmFlags) & RotationLag) || at<int32_t>(boom + DollyMode) != -1 ||
       at<int32_t>(boom + DollyBlends) || at<uint8_t>(pawn + TPSMode) || at<uint8_t>(pawn + FishingMode) || slope)
     return false;
-  auto alpha = at<float>(boom + DollyAlpha);
-  auto pitch = std::remainder(at<float>(boom + ArmRotation), 360.0f);
+  auto alpha = at<float>(boom + DollyAlpha), arm = at<float>(boom + ArmRotation);
+  auto pitch = std::remainder(arm, 360.0f);
   if (!std::isfinite(alpha) || !std::isfinite(pitch))
     return false;
+  camera = pitch;
   // Read back each poll: a capped or reset alpha never winds up. One arm
-  // update runs between two polls, so pitch answers the previous write.
+  // update normally runs between two polls, so pitch answers the previous
+  // write; when none ran, the same gap is not added again.
+  if (previous.moved && alpha == previous.alpha && arm == previous.arm) {
+    last = previous;
+    return true;
+  }
+  auto next = std::clamp(alpha + DollyStep * (look_pitch - pitch), 0.0f, 1.0f);
   auto *bytes = reinterpret_cast<uint8_t *>(boom);
-  put(bytes, DollyAlpha, std::clamp(alpha + DollyStep * (look_pitch - pitch), 0.0f, 1.0f));
+  put(bytes, DollyAlpha, next);
   put(bytes, DollyBlend, uint64_t(0));
   put(bytes, DollyBlendTarget, -1.0f);
-  camera = pitch;
+  last = {next, arm, std::fabs(next - alpha) > MovedAlpha};
   return true;
 }
 
@@ -785,6 +795,7 @@ std::optional<Table> table;
 std::vector<float> payload(Capacity);
 std::array<uint32_t, MaxComponents> status{};
 Follow following;
+DollyWrite dolly_write;
 uint64_t minecraft_lock = 0; // eve-lock.txt's TIME while Minecraft holds a target.
 uint32_t process_id() {
 #ifdef _WIN32
@@ -868,9 +879,9 @@ uint32_t guarded_evades(uintptr_t world, bool locked) {
   }
 }
 // A boom freed after its pawn was checked faults before the write; contained.
-bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera) {
+bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last) {
   __try {
-    return steer_dolly(e, c, pitch, camera);
+    return steer_dolly(e, c, pitch, camera, last);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
@@ -893,8 +904,8 @@ uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   return turn_controller(e, c, pitch, yaw);
 }
-bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera) {
-  return steer_dolly(e, c, pitch, camera);
+bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last) {
+  return steer_dolly(e, c, pitch, camera, last);
 }
 uint32_t guarded(const Engine &e, const Component &c, float *out) {
   return read_component(e, c, out);
@@ -959,10 +970,12 @@ void on_gameplay_poll(std::string_view owner) {
   float pitch = 0, yaw = 0;
   if (rotated && !owner.empty() && owner == producer.run() && producer.look(wall, pitch, yaw)) {
     auto turn = follow(following, pitch, yaw, rotation[1]);
-    synced = guarded_dolly(engine, *table->controller, pitch, rotation[3]);
+    synced = guarded_dolly(engine, *table->controller, pitch, rotation[3], dolly_write);
     applied = turn.engaged && guarded_turn(engine, *table->controller, synced ? 0 : turn.pitch, turn.yaw);
-  } else
+  } else {
     following = {};
+    dolly_write = {};
+  }
   uint32_t offset = 0, count = 0;
   for (const auto &c : table->components) {
     status[count++] = guarded(engine, c, payload.data() + offset);

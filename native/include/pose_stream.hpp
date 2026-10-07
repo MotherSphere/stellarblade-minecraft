@@ -109,11 +109,20 @@ bool turn_controller(const Engine &, const Controller &, float pitch, float yaw)
 // views set the dolly and take pitch input as aim) and while the slope camera
 // does not set the alpha after the arm. False, with nothing written, otherwise:
 // pitch input then carries Minecraft's motion. The boom is a final class; its
-// constructor (0x2404d80) stores this table.
+// constructor (0x2404d80) stores this table. last keeps the previous write: a
+// write that moved the alpha always changes the arm's pitch at its next update,
+// so a poll that finds both unchanged (the arm has not ticked: Stellar Blade
+// paused or hitching) holds, true with nothing written, instead of adding the
+// same gap again; a refusal clears it.
 constexpr uintptr_t BoomVtableRva = 0x5ce42a0;
 // About half the gap per poll at ~150 degrees per unit alpha (the track gives 117-192).
 constexpr float DollyStep = 1.0f / 300;
-bool steer_dolly(const Engine &, const Controller &, float look_pitch, float &camera);
+struct DollyWrite {
+  float alpha = 0, arm = 0; // The alpha written and the arm's raw pitch it answered.
+  bool moved = false;       // The write moved the alpha by more than MovedAlpha.
+};
+constexpr float MovedAlpha = 1e-4f; // At least about 0.01 degree of arm pitch.
+bool steer_dolly(const Engine &, const Controller &, float look_pitch, float &camera, DollyWrite &last);
 
 // EVE's Beta and Burst gauges, kept by Stellar Blade only in its native player
 // actor (FSBActor, not a UObject). world is the pinned build's game world

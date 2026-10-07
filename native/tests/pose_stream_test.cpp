@@ -310,24 +310,37 @@ int main() {
     auto dolly = engine;
     dolly.boom_vtable = reinterpret_cast<uintptr_t>(boom_table);
     float camera = 9;
-    assert(!steer_dolly(dolly, c, 13, camera) && fake.alpha() == 0.5f && camera == 9 && "No boom on the pawn, nothing written");
+    DollyWrite written;
+    assert(!steer_dolly(dolly, c, 13, camera, written) && fake.alpha() == 0.5f && camera == 9 && "No boom on the pawn, nothing written");
     fake.attach();
-    assert(!steer_dolly(engine, c, 13, camera) && fake.alpha() == 0.5f && "Without the pinned virtual table, nothing written");
-    assert(steer_dolly(dolly, c, 13, camera) && std::fabs(fake.alpha() - (0.5f + 30 * DollyStep)) < 1e-6f && camera == -17 &&
+    assert(!steer_dolly(engine, c, 13, camera, written) && fake.alpha() == 0.5f && "Without the pinned virtual table, nothing written");
+    assert(steer_dolly(dolly, c, 13, camera, written) && std::fabs(fake.alpha() - (0.5f + 30 * DollyStep)) < 1e-6f && camera == -17 &&
            "The alpha moves by DollyStep per degree from the arm's pitch to Minecraft's");
     float blend[3];
     std::memcpy(blend, fake.boom.bytes + 0x3c0, sizeof blend);
     assert(blend[0] == 0 && blend[1] == 0 && blend[2] == -1 && "The game's own dolly blend is cancelled, as its pitch input does");
     fake.arm(0.95f, 343); // A pitch kept in 0..360.
-    assert(steer_dolly(dolly, c, 90, camera) && fake.alpha() == 1 && camera == -17 && "Alpha stays within 0..1");
+    assert(steer_dolly(dolly, c, 90, camera, written) && fake.alpha() == 1 && camera == -17 && "Alpha stays within 0..1");
+    fake.arm(0.05f, -17);
+    assert(steer_dolly(dolly, c, -90, camera, written) && fake.alpha() == 0 && "Down to 0 as well");
     fake.arm(0.5f, -17);
+    // Nothing written (alpha, blend) and nothing reported, and the previous write forgotten.
     auto refused = [&](uint8_t *object, size_t at, auto value, const char *why) {
       decltype(value) saved;
       std::memcpy(&saved, object + at, sizeof value);
       std::memcpy(object + at, &value, sizeof value);
-      bool wrote = steer_dolly(dolly, c, 13, camera);
+      float seeded[3] = {0.25f, 0.5f, 0.9f}, blend[3];
+      std::memcpy(fake.boom.bytes + 0x3c0, seeded, sizeof seeded);
+      uint32_t before, after;
+      std::memcpy(&before, fake.boom.bytes + 0x2f0, 4);
+      camera = 9;
+      DollyWrite previous{0.5f, -17, true};
+      bool wrote = steer_dolly(dolly, c, 13, camera, previous);
+      std::memcpy(&after, fake.boom.bytes + 0x2f0, 4);
+      std::memcpy(blend, fake.boom.bytes + 0x3c0, sizeof blend);
       std::memcpy(object + at, &saved, sizeof value);
-      assert(!wrote && fake.alpha() == 0.5f && why);
+      assert(!wrote && before == after && camera == 9 && !previous.moved &&
+             std::memcmp(blend, seeded, sizeof seeded) == 0 && why);
     };
     refused(fake.boom.bytes, 0x370, uint8_t(1), "Nor while the arm follows the controller (dolly blocked)");
     refused(fake.boom.bytes, 0x374, 0.1f, "Nor while the arm eases its rotation after a mode change");
@@ -341,26 +354,28 @@ int main() {
     refused(fake.boom.bytes, 0xb0, uint64_t(0x40), "Nor into another actor's boom");
     refused(fake.boom.bytes, 0, reinterpret_cast<uint64_t>(pawn_table), "Nor into another component class");
     refused(fake.boom.bytes, 0x2f0, std::nanf(""), "Nor from a non-finite alpha");
+    refused(fake.boom.bytes, 0x2f0, INFINITY, "Nor from an infinite alpha");
+    refused(fake.boom.bytes, 0x2c0, std::nanf(""), "Nor from a non-finite arm pitch");
     refused(fake.items.data() + 24 * 4, 8, int32_t(1 << 29), "Nor into a pending-kill boom");
     // The slope camera sets the alpha after the arm while it has a type, runs and its running time is past its
     // start (0x2028900).
     float times[3] = {0.5f, 0, 0.2f}; // CurrentCameraSlopeMoveRunningTime, RemainBlockCameraSlopeMove, CameraSlopeRunTimeFromStart.
     std::memcpy(fake.pawn.bytes + 0x1b64, times, sizeof times);
     fake.pawn.bytes[0x1b5c] = 3;
-    assert(steer_dolly(dolly, c, 13, camera) && "A slope camera that does not run leaves the dolly to Minecraft");
+    assert(steer_dolly(dolly, c, 13, camera, written) && "A slope camera that does not run leaves the dolly to Minecraft");
     fake.arm(0.5f, -17);
     refused(fake.pawn.bytes, 0x1b5d, uint8_t(1), "Nor while the slope camera sets the alpha");
     fake.pawn.bytes[0x1b5d] = 1;
     fake.pawn.bytes[0x1b5c] = 0;
-    assert(steer_dolly(dolly, c, 13, camera) && "Nor without a slope move type");
+    assert(steer_dolly(dolly, c, 13, camera, written) && "Nor without a slope move type");
     fake.pawn.bytes[0x1b5c] = 3;
     std::memcpy(fake.pawn.bytes + 0x1b64, &times[2], 4);
     fake.arm(0.5f, -17);
-    assert(steer_dolly(dolly, c, 13, camera) && "Nor at its start time");
+    assert(steer_dolly(dolly, c, 13, camera, written) && "Nor at its start time");
     std::memset(fake.pawn.bytes + 0x1b5c, 0, 0x14);
     fake.arm(0.5f, -17);
     c.pawn_cls = 0x1008;
-    assert(!steer_dolly(dolly, c, 13, camera) && fake.alpha() == 0.5f && "Nor through another pawn class");
+    assert(!steer_dolly(dolly, c, 13, camera, written) && fake.alpha() == 0.5f && "Nor through another pawn class");
     c.pawn_cls = 0x1000;
     // Against a stand-in arm whose pitch spans -89.9..57.5 over alpha 0..1, an 85 degree gap closes within half a
     // degree in eight polls, from one side.
@@ -368,13 +383,32 @@ int main() {
     float last = 180;
     for (int poll = 0; poll < 8; poll++) {
       fake.arm(fake.alpha(), -89.9f + 147.4f * fake.alpha());
-      assert(steer_dolly(dolly, c, 25, camera));
+      assert(steer_dolly(dolly, c, 25, camera, written));
       float gap = 25 - camera;
       assert(gap >= 0 && gap <= last && "The camera closes on Minecraft's pitch from one side");
       last = gap;
     }
     fake.arm(fake.alpha(), -89.9f + 147.4f * fake.alpha());
-    assert(steer_dolly(dolly, c, 25, camera) && std::fabs(25 - camera) < 0.5f);
+    assert(steer_dolly(dolly, c, 25, camera, written) && std::fabs(25 - camera) < 0.5f);
+    // A poll that finds the alpha it wrote and the arm's pitch unchanged since a write that moved the alpha (the arm
+    // has not ticked: Stellar Blade paused or hitching) holds; the next arm update resumes the loop. At a rail nothing
+    // moved, so the write goes on.
+    fake.arm(0.5f, -17);
+    assert(steer_dolly(dolly, c, 13, camera, written) && written.moved);
+    float seeded[3] = {0.25f, 0.5f, 0.9f}, blend_now[3];
+    std::memcpy(fake.boom.bytes + 0x3c0, seeded, sizeof seeded);
+    auto wrote = fake.alpha();
+    assert(steer_dolly(dolly, c, 13, camera, written) && fake.alpha() == wrote && camera == -17 && written.moved &&
+           std::memcmp(fake.boom.bytes + 0x3c0, seeded, sizeof seeded) == 0 && "No arm update since the write: held");
+    fake.arm(fake.alpha(), -10);
+    assert(steer_dolly(dolly, c, 13, camera, written) && std::fabs(fake.alpha() - (wrote + 23 * DollyStep)) < 1e-6f &&
+           "The next arm update resumes it");
+    fake.arm(1, 57);
+    assert(steer_dolly(dolly, c, 90, camera, written) && fake.alpha() == 1 && !written.moved);
+    std::memcpy(fake.boom.bytes + 0x3c0, seeded, sizeof seeded);
+    assert(steer_dolly(dolly, c, 90, camera, written));
+    std::memcpy(blend_now, fake.boom.bytes + 0x3c0, sizeof blend_now);
+    assert(blend_now[2] == -1 && "At a rail the write goes on");
     std::memset(fake.pawn.bytes + 0x5c0, 0, 8);
     fake.arm(0.5f, -17);
   }
@@ -651,12 +685,20 @@ int main() {
     };
     look(-25, -90, stellar_shared::wall_now(), 1);
     on_gameplay_poll(Run);
+    live.arm(live.alpha(), -16); // The arm's update after that write.
     look(-15, -90, stellar_shared::wall_now(), 1);
     on_gameplay_poll(Run);
-    assert(controller_status() == (RotationValid | LookApplied | PitchSynced) && camera_pitch() == -17 &&
-           std::fabs(live.alpha() - (0.5f - 6 * DollyStep)) < 1e-6f && !inputs.empty() &&
+    assert(controller_status() == (RotationValid | LookApplied | PitchSynced) && camera_pitch() == -16 &&
+           std::fabs(live.alpha() - (0.5f - 7 * DollyStep)) < 1e-6f && !inputs.empty() &&
            std::none_of(inputs.begin(), inputs.end(), [](auto &i) { return i.first == 'p'; }) &&
            "The dolly takes the pitch; yaw still goes through look input; the slot carries the arm's pitch");
+    auto steered = live.alpha();
+    look(-15, -90, stellar_shared::wall_now(), 1);
+    on_gameplay_poll(Run);
+    assert(controller_status() == (RotationValid | LookApplied | PitchSynced) && live.alpha() == steered &&
+           std::none_of(inputs.begin(), inputs.end(), [](auto &i) { return i.first == 'p'; }) &&
+           "Without an arm update since, the dolly holds and pitch input stays off");
+    live.arm(live.alpha(), -17);
     inputs.clear();
     live.pawn.bytes[0x1528] = 1; // TPS aim: Stellar Blade's view sets the dolly and pitch input turns the aim.
     look(-5, -90, stellar_shared::wall_now(), 1);
