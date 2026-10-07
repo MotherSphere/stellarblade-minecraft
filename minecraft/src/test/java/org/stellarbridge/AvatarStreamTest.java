@@ -172,6 +172,14 @@ public final class AvatarStreamTest {
         assert AvatarHud.tachy(actor) == null : "Tachy above its maximum";
         actor[22] = Float.NaN;
         assert AvatarHud.tachy(actor) == null : "Non-finite Tachy";
+        actor[22] = -1;
+        assert AvatarHud.tachy(actor) == null : "Negative Tachy";
+        actor[22] = 9000;
+        actor[23] = 200000;
+        assert AvatarHud.tachy(actor) == null : "An implausible maximum";
+        actor[23] = 18000;
+        actor[117] = Float.NaN;
+        assert AvatarHud.tachy(actor) == null : "A non-finite unlock is locked";
         // Gauge points Minecraft counts for Stellar Blade (the adapter applies her rates and caps).
         assert java.util.Arrays.equals(AvatarCombat.gains(false, false, false, false, false), new int[] {15, 0}) : "A sword hit";
         assert java.util.Arrays.equals(AvatarCombat.gains(false, false, true, false, false), new int[] {19, 0}) : "A critical hit";
@@ -182,16 +190,28 @@ public final class AvatarStreamTest {
         assert java.util.Arrays.equals(AvatarCombat.gains(false, false, false, false, true), new int[] {0, 0}) : "Nothing during a skill";
         assert AvatarCombat.killBurst(true, false, 300) == 200 && AvatarCombat.killBurst(false, true, 100) == 100
                 && AvatarCombat.killBurst(false, true, 20) == 30 && AvatarCombat.killBurst(false, false, 10) == 6 : "Kill ranks";
+        assert AvatarCombat.killBurst(false, true, 50) == 100 : "An elite from 50 maximum health";
         assert AvatarCombat.spent(new float[] {1000, 1000, 0, 1600, 1}, new float[] {600, 1000, 0, 1600, 1}) : "A Beta skill";
         assert !AvatarCombat.spent(new float[] {1000, 1000, 0, 1600, 1}, new float[] {800, 1000, 0, 1600, 1}) : "An Ex finisher's 200 is not a skill";
         assert AvatarCombat.spent(new float[] {0, 1000, 1600, 1600, 1}, new float[] {0, 1000, 1000, 1600, 1}) : "A Burst skill";
         assert !AvatarCombat.spent(new float[] {0, 1000, 1600, 1600, 1}, new float[] {0, 1000, 1400, 1600, 1});
         assert !AvatarCombat.spent(null, new float[] {0, 1000, 0, 1600, 1}) : "No gauges before";
+        assert AvatarCombat.spent(new float[] {1000, 1000, 0, 1600, 1}, new float[] {700, 1000, 0, 1600, 1}) : "A drop of 300 or more";
+        // The quiet window: a spent gauge opens it, across a frame without gauges; a smaller drop does not.
+        long t = System.nanoTime() + AvatarCombat.QUIET; // After the class loaded, in its clock's range.
+        assert !AvatarCombat.quiet(t);
+        AvatarCombat.watch(new float[] {1000, 1000, 0, 1600, 1}, t);
+        AvatarCombat.watch(null, t + 1);
+        AvatarCombat.watch(new float[] {600, 1000, 0, 1600, 1}, t + 2);
+        assert AvatarCombat.quiet(t + 3) && !AvatarCombat.quiet(t + 2 + AvatarCombat.QUIET) : "A spent gauge quiets strikes, across an unread frame";
+        AvatarCombat.watch(new float[] {400, 1000, 0, 1600, 1}, t + 3 * AvatarCombat.QUIET);
+        assert !AvatarCombat.quiet(t + 3 * AvatarCombat.QUIET + 1) : "An Ex finisher's 200 does not";
         // Stellar Blade's heals as Minecraft health: a u32 step of the adapter's count, the same share of the maximum.
         assert AvatarStats.heals(-1, 5) == 0 : "A first count is a baseline";
         assert AvatarStats.heals(5, 1205) == 1200 && AvatarStats.heals(0xFFFFFFF0L, 0x10) == 0x20 : "u32 wrap";
         assert AvatarStats.heals(0, 200000) == 0 : "A garbage step is not a heal";
-        assert AvatarStats.healthFor(1200, 2000, 20) == 12f;
+        assert AvatarStats.heals(0, 100000) == 100000 && AvatarStats.heals(0, 100001) == 0 : "The largest heal step";
+        assert AvatarStats.healthFor(1200, 2000, 20) == 12f && AvatarStats.healthFor(1, 0, 20) == 20f;
         // Each tick takes the reported count while EVE drives the player; a lapsed link leaves it waiting, unacknowledged.
         AvatarStats.reportHeals(1000);
         assert AvatarStats.due(true, true) == 0 : "A first count is a baseline";
@@ -326,6 +346,8 @@ public final class AvatarStreamTest {
                     // Its health and gains words beside the camera.
                     stream.feedback(0.5f, 7, 30, 200);
                     assert map.getFloat(280) == 0.5f && map.getInt(284) == 7 && map.getInt(312) == 30 && map.getInt(316) == 200;
+                    stream.feedback(0.5f, 7, -1, 200);
+                    assert map.getInt(312) == -1 && map.getInt(316) == 200 : "Wrapped totals keep their halves";
                     assert stream.poll(table, now, System.nanoTime()) == null : "Minecraft's words are not reserved bytes";
                     publish(map, 2, 2, 1, now, new int[] {7, 5}, payload());
                     // Bit 1: turned toward Minecraft's camera; bit 2: dolly set, with the camera's pitch at 52.
@@ -468,6 +490,8 @@ public final class AvatarStreamTest {
                     assert java.util.Arrays.equals(stream.report(), new long[] {1200, 2, 1, 17, 200}) && stream.healed() == 1200;
                     map.putInt(AvatarStream.HEALED_AT, -2);
                     assert stream.healed() == 0xFFFFFFFEL && stream.report()[0] == 0xFFFFFFFEL : "Unsigned counts";
+                    map.putInt(AvatarStream.MIRROR_AT, 7);
+                    assert stream.report()[1] == 0 : "An unknown mirror state reads off";
                     assert stream.actorStats() == null : "Unread actor stats";
                     for (int i = 0; i < AvatarStream.ACTOR_STATS; i++) map.putFloat(AvatarStream.ACTOR_AT + 4 * i, i / 2f);
                     RawFrameBus.INT.setRelease(map, AvatarStream.ACTOR_STATE, 1);

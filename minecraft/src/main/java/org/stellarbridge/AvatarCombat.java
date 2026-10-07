@@ -350,7 +350,7 @@ public final class AvatarCombat {
         boolean critical = stats.crits(player.getRandom().nextFloat());
         if (!target.damage(player.getDamageSources().playerAttack(player), amount * stats.strikes() * (critical ? stats.critMultiplier() : 1))) return;
         var living = (LivingEntity) target;
-        int[] gain = gains(charged, first, critical, shot, System.nanoTime() - quietUntil < 0);
+        int[] gain = gains(charged, first, critical, shot, quiet(System.nanoTime()));
         // Stellar Blade's AttackerEffectWhenDead goes to the attacker whatever the weapon, so shots kill for Burst too.
         if (living.isDead()) gain[1] += killBurst(target.getType().isIn(ConventionalEntityTypeTags.BOSSES), target instanceof Monster, living.getMaxHealth());
         points.addAndGet(0, gain[0]);
@@ -403,6 +403,8 @@ public final class AvatarCombat {
         if (spent(lastGauges, gauges)) quietUntil = nanos + QUIET;
         if (gauges != null) lastGauges = gauges;
     }
+    /** Any thread: whether a strike at nanos falls in the quiet window. */
+    static boolean quiet(long nanos) { return nanos - quietUntil < 0; }
 
     /** Any thread: the Beta and Burst base points Minecraft counted, cumulative and wrapping. */
     static int[] earned() { return new int[] {points.get(0), points.get(1)}; }
