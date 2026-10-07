@@ -170,6 +170,25 @@ struct EvadeStarts {
 // ponytail: one fixed margin for both polls' frame lag; below about 10 fps a window that ended on time may count as cut.
 constexpr uint64_t EvadeMarginMs = 200;
 void count_evades(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &);
+// Minecraft's lock-on for EVE's battle stance. Stellar Blade's actor update
+// (0x1a57de0) keeps her battle mode (byte +0xB58) while a hold applies (its
+// own lock target +0x630, enemies targeting her, a melee or battle-switching
+// skill, ActorState_BattleMode, the pin +0x2646), stamping +0x558 with the turn
+// clock at each such update (0x1a5832a); once the stamp is
+// BattleStanceCancelTime (3 s) old it ends battle mode and plays her sheathe
+// (0x1a582f0). Minecraft's lock never sets that target, so 3 s after an attack
+// she sheathed while locked. hold_battle stamps it like a held update, only
+// while she is in battle mode and only forward. The turn clock is the turn
+// manager at the global TurnClockRva (virtual table TurnClockVtableRva,
+// seconds since the game mode (re)started, 0x1c72138, as an f32 at +0xc,
+// advanced by the game-mode tick 0x1c71c3a). Besides that update only entering
+// battle (0x1a7d070), the TPS cancel (0x1a8c8d3/0x1a8c8f4, which only moves an
+// old stamp forward) and the actor reset (0x1a6a668) touch the stamp. Stopping is the undo: Stellar Blade
+// sheathes BattleStanceCancelTime after the last stamp, as after its own
+// unlock. world as for read_gauges; clock the global's value, vtable the
+// image's TurnClockVtableRva. True if it stamped.
+constexpr uintptr_t TurnClockRva = 0x7032560, TurnClockVtableRva = 0x5bf9120;
+bool hold_battle(uintptr_t world, uintptr_t clock, uintptr_t vtable);
 // eve-lock.txt (SBMC_LOCK 1): its TIME while it names a target, else 0.
 uint64_t parse_lock(std::string_view text);
 // Look input for one gameplay poll: Minecraft's camera motion since the last
@@ -227,10 +246,11 @@ public:
 // boom's virtual table (image + BoomVtableRva; 0 never sets the dolly). The
 // worker passes the request file, both component slots and Minecraft's lock
 // file; the verified gameplay XInput poll gives EVE the lock-on evades while
-// Minecraft locks and owner (the run whose input is forwarded) is set, counts
-// her evade starts, reads the controller, turns the game's camera toward
-// Minecraft's when owner is this stream's run, then reads the components and
-// publishes. None of them throws.
+// Minecraft locks and owner (the run whose input is forwarded) is set and keeps
+// her in the battle mode an attack started meanwhile, counts her evade starts,
+// reads the controller, turns the game's camera toward Minecraft's when owner
+// is this stream's run, then reads the components and publishes. None of them
+// throws.
 void initialize(uintptr_t objects, uintptr_t boom_vtable = 0);
 void poll_files(const std::wstring &directory, std::string_view request,
                 std::string_view slot0, std::string_view slot1, uint64_t wall,

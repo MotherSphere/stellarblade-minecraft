@@ -10,7 +10,8 @@ local Lock={}
 local FRESH_MS,LEASE,RETRY,REPORT,SPAWN_TRIES,ROUTINE_LINES=2500,0.6,0.25,1,3,200
 -- While locked, EVE's sword is drawn as Stellar Blade's lock-on draws it, checked every DRAW_WAIT seconds (its draw Show
 -- attaches the sword 0.337 s in). A draw that did not stick by the next check is retried with the attach event sent at
--- once, DRAWS tries in a row at most; release sheathes it if we drew.
+-- once, DRAWS tries in a row at most; release sheathes it if we drew. Stellar Blade owns the sword while in battle (after
+-- an attack); the native adapter keeps that battle mode while Minecraft locks, so it sheathes 3 s after the release.
 local DRAW_WAIT,DRAWS=1,5
 function Lock.parse(text)
     if type(text)~='string' or #text>256 then return nil end

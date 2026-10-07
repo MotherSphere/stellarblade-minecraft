@@ -672,6 +672,34 @@ int main() {
     assert(patch_evades(w, false) == 0 && "Records of a gone actor are dropped");
     put_i32(manager, 0x3c, 1);
     put_ptr(actor, 0x530, 0);
+    // Minecraft's lock: EVE's battle stance stamped with the turn clock while she is in battle mode.
+    std::vector<uint8_t> clock(0x78);
+    uintptr_t clock_table[1] = {};
+    auto turn = uintptr_t(clock.data()), turn_table = uintptr_t(clock_table);
+    auto tick = [&](float seconds) { std::memcpy(clock.data() + 0xc, &seconds, 4); };
+    auto stamp = [&]() { float v; std::memcpy(&v, actor.data() + 0x558, 4); return v; };
+    put_ptr(clock, 0, turn_table);
+    float stamped = 40;
+    std::memcpy(actor.data() + 0x558, &stamped, 4);
+    tick(42);
+    assert(!hold_battle(w, turn, turn_table) && stamp() == 40 && "Out of battle mode, left alone");
+    actor[0xb58] = 1;
+    assert(hold_battle(w, turn, turn_table) && stamp() == 42 && "In battle mode, stamped with the turn clock");
+    assert(!hold_battle(w, turn, turn_table) && stamp() == 42 && "The same time again: nothing written");
+    tick(41);
+    assert(!hold_battle(w, turn, turn_table) && stamp() == 42 && "Never backward");
+    tick(std::nanf(""));
+    assert(!hold_battle(w, turn, turn_table) && stamp() == 42 && "Nor from a non-finite clock");
+    tick(INFINITY);
+    assert(!hold_battle(w, turn, turn_table) && stamp() == 42 && "Nor from an infinite one");
+    tick(43);
+    assert(!hold_battle(w, turn, turn_table + 8) && !hold_battle(w, 0, turn_table) && stamp() == 42 &&
+           "Only the live turn manager's time");
+    put_i32(actor, 0x2600, 3);
+    assert(!hold_battle(w, turn, turn_table) && stamp() == 42 && "Not a dead player's");
+    put_i32(actor, 0x2600, 1);
+    assert(hold_battle(w, turn, turn_table) && stamp() == 43);
+    actor[0xb58] = 0;
     auto lock_file = [](const char *seq, const char *target, const char *end) {
       return "SBMC_LOCK 1\nSESSION " + Run + "\nSEQ " + seq + "\nTIME 1000\nTARGET " + target + "\nEND " + end + "\n";
     };

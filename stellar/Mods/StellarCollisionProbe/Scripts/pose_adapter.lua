@@ -555,8 +555,9 @@ function Adapter.new()
     end
     -- EVE's sword while Minecraft locks: Stellar Blade's lock-on enters battle, which plays her character draw Show and
     -- the sword's unfold Show (attach to the hand at 0.337 s, blade Opacity 0 to 1, FX, sound); ours plays the same pair,
-    -- and the stock pair back on release. Left to Stellar Blade while it is in battle or forces the sword folded or
-    -- hidden. instant: the draw Shows' own attach event, sent at once (the blade still unfolds through the Show).
+    -- and the stock pair back on release. Left to Stellar Blade while it is in battle (the native adapter keeps an
+    -- attack's battle mode while Minecraft locks) or forces the sword folded or hidden. instant: the draw Shows' own
+    -- attach event, sent at once (the blade still unfolds through the Show).
     local BASIC,WEAPON='/Game/Art/Show/CH_P_EVE_01/Basic/','/Game/Art/Show/Weapon/Eve/'
     local DRAW,UNFOLD=BASIC..'Eve_Drawing_Moving_LockOn.Eve_Drawing_Moving_LockOn',WEAPON..'Eve_UnFoldSword.Eve_UnFoldSword'
     local SHEATHE,FOLD=BASIC..'Eve_Swording_Moving.Eve_Swording_Moving',WEAPON..'Eve_FoldSword.Eve_FoldSword'
@@ -586,7 +587,7 @@ function Adapter.new()
     -- What Stellar Blade checks each frame and what its lock gives EVE, as one line.
     function engine.lock_status(proxy)
         local eve=character()
-        local function get(read) local ok,v=pcall(read); return ok and v or nil end
+        local function get(read) local ok,v=pcall(read); if ok then return v end end -- Keeps false (battle false).
         local p,r=value_of(eve:K2_GetActorLocation()),value_of(eve:K2_GetActorRotation())
         proxy=valid(proxy)
         local t=proxy and value_of(proxy:K2_GetActorLocation())

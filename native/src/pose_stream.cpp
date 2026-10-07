@@ -609,6 +609,17 @@ void count_evades(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) {
   }
 }
 
+bool hold_battle(uintptr_t world, uintptr_t clock, uintptr_t vtable) {
+  auto actor = player_actor(world);
+  if (!actor || at<uint8_t>(actor + 0xb58) != 1 || !clock || at<uintptr_t>(clock) != vtable)
+    return false;
+  auto now = at<float>(clock + 0xc);
+  if (!std::isfinite(now) || !(now > at<float>(actor + 0x558)))
+    return false;
+  put(reinterpret_cast<uint8_t *>(actor), 0x558, now);
+  return true;
+}
+
 uint64_t parse_lock(std::string_view text) {
   Lines lines(text, 256);
   std::string session;
@@ -922,6 +933,15 @@ void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e)
   } __except (EXCEPTION_EXECUTE_HANDLER) {
   }
 }
+// A player actor freed under the poll faults before the write at worst; contained.
+bool guarded_battle(uintptr_t world) {
+  static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  __try {
+    return hold_battle(world, at<uintptr_t>(image + TurnClockRva), image + TurnClockVtableRva);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
 // A boom freed after its pawn was checked faults before the write; contained.
 bool guarded_dolly(const Engine &e, const Controller &c, float pitch, float &camera, DollyWrite &last) {
   __try {
@@ -943,6 +963,7 @@ bool guarded_gauges(uintptr_t world, float *out) { return read_gauges(world, out
 uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
 uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
 void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) { count_evades(world, locked, wall, e); }
+bool guarded_battle(uintptr_t) { return false; } // Nor a turn clock.
 uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
   return read_effects(e, t, out);
 }
@@ -999,13 +1020,16 @@ void on_gameplay_poll(std::string_view owner) {
   if (!guard.owns_lock())
     return;
   auto wall = stellar_shared::wall_now();
-  // Minecraft's lock-on gives EVE Stellar Blade's lock-on evades while Minecraft drives her.
+  // Minecraft's lock-on gives EVE Stellar Blade's lock-on evades while Minecraft drives her,
+  // and keeps her battle stance as Stellar Blade's own lock-on does.
   bool locked = !owner.empty() && fresh(minecraft_lock, wall, LockLease);
   if (locked || !evade_patches.empty()) {
     auto changed = guarded_evades(game_world(), locked);
     if (locked)
       evade_starts.counts[6] = changed;
   }
+  if (locked)
+    guarded_battle(game_world());
   guarded_starts(game_world(), locked, wall, evade_starts);
   if (!table || !engine.objects || !producer.active(wall))
     return;
