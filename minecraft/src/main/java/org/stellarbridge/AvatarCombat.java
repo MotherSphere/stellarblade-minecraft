@@ -1,5 +1,6 @@
 package org.stellarbridge;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +16,9 @@ import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.entity.projectile.PersistentProjectileEntity;
+import net.minecraft.entity.projectile.ProjectileEntity;
+import net.minecraft.entity.projectile.TridentEntity;
 import net.minecraft.particle.ParticleTypes;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -30,27 +34,39 @@ import org.joml.Vector3d;
  * bridged player takes is judged at the moment of impact against her latest dodge and guard presses, so any melee
  * swing or projectile counts, however long its animation: a dodge just before the impact is perfect (no damage, and
  * Minecraft's world slows for 1.5 s, Stellar Blade's for the moment of the dodge), a later dodge still avoids it, a guard
- * pressed just before parries (no damage, a melee attacker staggers), a held guard lets a quarter through. While the
- * bridge session lasts but EVE cannot answer (a pause menu over a running world, no live link), nothing hurts her.
+ * pressed just before is a perfect parry (no damage; a melee attacker staggers, an arrow flies back at its shooter),
+ * a little earlier a parry (no damage), and a held guard lets a fifth through, all as in Stellar Blade; Minecraft's
+ * unblockable damage goes through any guard. While the bridge session lasts but EVE cannot answer (a pause menu over a
+ * running world, no live link), nothing hurts her.
  */
 public final class AvatarCombat {
     // Strike damage per Stellar Blade trail style (SWING: no effect data, the swing heuristic), doubled for a charged
     // attack (a HoldBurst effect within CHARGE_HOLD seconds); extra knockback on top of Minecraft's own.
     static final float LIGHT = 6, STRONG = 9, THRUST = 8, SWING = 6;
     static final double CHARGE_HOLD = 1.5, REHIT = 0.25, BLADE_RADIUS = 0.2, REACH = 5;
-    // Defense windows before the impact, in nanoseconds; a held guard's share of the damage.
-    static final long PERFECT_PARRY = 250_000_000L, PERFECT_DODGE = 300_000_000L, DODGE = 500_000_000L;
-    static final float GUARD_SHARE = 0.25f;
+    // Defense windows before the impact, in nanoseconds: Stellar Blade's just parry (0.15 s, SkillTable
+    // P_Eve_Sword_Normal_Guard2_1 JustActionTime) and parry (0.3 s, its Parry1 step) from the guard press, each plus
+    // 0.1 s for Minecraft's server tick and the client's interpolation behind the impact; then the dodges'.
+    static final long PERFECT_PARRY = 250_000_000L, PARRY = 400_000_000L, PERFECT_DODGE = 300_000_000L, DODGE = 500_000_000L;
+    // Stellar Blade's guard cooldown (CoolTime 0.4 s): a press sooner than that after the previous press does not count,
+    // so mashing the guard parries nothing, while a deliberate tap always does.
+    static final long GUARD_COOLDOWN = 400_000_000L;
+    // A held guard's share of the damage (Stellar Blade's SkillDamageWhenGuard deals 0.2 of an attack, SkillDamage 1),
+    // and the attack damage from which EVE takes it with her strong guarded-hit reaction.
+    static final float GUARD_SHARE = 0.2f, STRONG_HIT = 8;
     // A perfect dodge runs Minecraft's world at SLOW_RATE ticks per second for SLOW_NANOS of real time.
     static final float SLOW_RATE = 6;
     static final long SLOW_NANOS = 1_500_000_000L;
 
-    enum Defense { PERFECT_PARRY, PERFECT_DODGE, DODGE, GUARD, HIT }
+    enum Defense { PERFECT_PARRY, PARRY, PERFECT_DODGE, DODGE, GUARD, HIT }
 
     // Latest dodge and guard presses (System.nanoTime) and whether the guard is held: written by ControlBridge on the
     // render thread while EVE's keys drive Stellar Blade, read on the server thread at impact.
     private static volatile long dodged = Long.MIN_VALUE, guarded = Long.MIN_VALUE;
     private static volatile boolean guarding;
+    private static long guardPress = Long.MIN_VALUE; // Render thread: the latest guard press seen, counted or not.
+    // Server thread: perfectly parried projectiles to send back once Minecraft's own deflection has run this tick.
+    private static final List<Runnable> returning = new ArrayList<>();
     private static final AtomicIntegerArray counts = new AtomicIntegerArray(1 + Defense.values().length); // Strikes, then per Defense.
     private static boolean defending; // Server thread: inside a guarded hit's own damage call.
     // Server thread: the last judged attack's origin entity, the server tick then and its verdict.
@@ -62,17 +78,35 @@ public final class AvatarCombat {
 
     static void inputs(long dodgePressed, long guardPressed, boolean guardHeld) {
         dodged = dodgePressed;
-        guarded = guardPressed;
+        guarded = counted(guarded, guardPress, guardPressed);
+        guardPress = guardPressed;
         guarding = guardHeld;
+    }
+
+    /**
+     * The guard press that counts after last, given the previous press seen: a new press counts when it comes
+     * GUARD_COOLDOWN or more after the previous one (any first press too); released input (MIN_VALUE) clears it.
+     */
+    static long counted(long last, long previous, long pressed) {
+        if (pressed == Long.MIN_VALUE) return Long.MIN_VALUE;
+        if (pressed == previous) return last; // The same press again.
+        return previous == Long.MIN_VALUE || pressed - previous >= GUARD_COOLDOWN ? pressed : last;
     }
 
     /** The defense for an impact at now, from the latest presses (nanoseconds) and the held guard. */
     static Defense defense(long now, long dodgePressed, long guardPressed, boolean guardHeld) {
         long sinceGuard = now - guardPressed, sinceDodge = now - dodgePressed;
-        if (guardPressed != Long.MIN_VALUE && sinceGuard >= 0 && sinceGuard <= PERFECT_PARRY) return Defense.PERFECT_PARRY;
-        if (dodgePressed != Long.MIN_VALUE && sinceDodge >= 0 && sinceDodge <= PERFECT_DODGE) return Defense.PERFECT_DODGE;
-        if (dodgePressed != Long.MIN_VALUE && sinceDodge >= 0 && sinceDodge <= DODGE) return Defense.DODGE;
+        boolean guard = guardPressed != Long.MIN_VALUE && sinceGuard >= 0, dodge = dodgePressed != Long.MIN_VALUE && sinceDodge >= 0;
+        if (guard && sinceGuard <= PERFECT_PARRY) return Defense.PERFECT_PARRY;
+        if (dodge && sinceDodge <= PERFECT_DODGE) return Defense.PERFECT_DODGE;
+        if (dodge && sinceDodge <= DODGE) return Defense.DODGE;
+        if (guard && sinceGuard <= PARRY) return Defense.PARRY;
         return guardHeld ? Defense.GUARD : Defense.HIT;
+    }
+
+    /** The combat event Stellar Blade answers for a verdict: a guarded strong attack has its own reaction. */
+    static String event(Defense defense, float amount) {
+        return defense == Defense.GUARD && amount >= STRONG_HIT ? "guard_strong" : defense.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     /**
@@ -97,7 +131,10 @@ public final class AvatarCombat {
             case GUARD -> applied(player, source, amount * GUARD_SHARE);
             default -> false;
         };
-        Defense defense = defense(System.nanoTime(), dodged, guarded, guarding);
+        // Minecraft's unblockable damage (sonic boom, magic, a piercing arrow) goes through a guard as through a shield.
+        boolean unguardable = source.isIn(DamageTypeTags.BYPASSES_SHIELD)
+                || source.getSource() instanceof PersistentProjectileEntity arrow && arrow.getPierceLevel() > 0;
+        Defense defense = defense(System.nanoTime(), dodged, unguardable ? Long.MIN_VALUE : guarded, guarding && !unguardable);
         lastOrigin = origin.getId();
         lastJudged = now;
         lastDefense = defense;
@@ -113,15 +150,24 @@ public final class AvatarCombat {
         counts.incrementAndGet(1 + defense.ordinal());
         // Stellar Blade answers with its own time and effects; the action bar names the verdict.
         String name = defense.name().toLowerCase(java.util.Locale.ROOT);
-        if (defense != Defense.DODGE) StellarBridge.combatEvent(name, source.getPosition());
+        if (defense != Defense.DODGE) StellarBridge.combatEvent(event(defense, amount), source.getPosition());
         player.sendMessage(net.minecraft.text.Text.translatable("stellar_bridge.combat." + name), true);
         switch (defense) {
             case PERFECT_PARRY -> {
-                if (source.isDirect() && source.getAttacker() instanceof LivingEntity attacker) {
+                if (source.getSource() instanceof PersistentProjectileEntity arrow && !(arrow instanceof TridentEntity)
+                        && source.getAttacker() != null) {
+                    // A trident's hit marks it as dealt and it would pass through its thrower: it just bounces off.
+                    returnToSender(player, arrow, source.getAttacker());
+                } else if (source.isDirect() && source.getAttacker() instanceof LivingEntity attacker) {
+                    // Stellar Blade's just-parried enemies recoil and cannot act for 2 s (their BlockAction 2).
                     attacker.takeKnockback(1.0, player.getX() - attacker.getX(), player.getZ() - attacker.getZ());
                     attacker.addStatusEffect(new StatusEffectInstance(StatusEffects.SLOWNESS, 40, 4), player);
                 }
                 sound(player, SoundEvents.ITEM_SHIELD_BLOCK, 1.3f);
+                return false;
+            }
+            case PARRY -> { // A projectile bounces off, as Minecraft deflects any refused one.
+                sound(player, SoundEvents.ITEM_SHIELD_BLOCK, 1.1f);
                 return false;
             }
             case PERFECT_DODGE -> {
@@ -156,8 +202,29 @@ public final class AvatarCombat {
         slowUntil = System.nanoTime() + SLOW_NANOS;
     }
 
-    /** Server thread, each tick and when the bridge stops: Minecraft's tick rate back once the slow motion is over. */
+    /**
+     * Server thread: a perfectly parried projectile flies back at its shooter's eyes as the player's, at its own speed.
+     * Minecraft deflects the refused hit itself after the damage call, so the turn waits for the end of the tick; a
+     * projectile its hit destroyed (a fireball, a shulker bullet) is gone by then.
+     */
+    private static void returnToSender(ServerPlayerEntity player, ProjectileEntity projectile, Entity shooter) {
+        float speed = (float) Math.max(projectile.getVelocity().length(), 1);
+        returning.add(() -> {
+            if (projectile.isRemoved() || shooter.isRemoved() || shooter.getWorld() != projectile.getWorld()) return;
+            Vec3d to = shooter.getEyePos().subtract(projectile.getPos()); // ponytail: straight aim, drops short beyond ~25 blocks.
+            projectile.setOwner(player);
+            projectile.setVelocity(to.x, to.y, to.z, speed, 0);
+            projectile.velocityModified = true;
+        });
+    }
+
+    /**
+     * Server thread, each tick and when the bridge stops: parried projectiles sent back (dropped on stop), then
+     * Minecraft's tick rate back once the slow motion is over.
+     */
     static void restoreTime(boolean now) {
+        if (!now) returning.forEach(Runnable::run);
+        returning.clear();
         if (slowed != null && (now || System.nanoTime() - slowUntil >= 0)) {
             slowed.getTickManager().setTickRate(normalRate);
             slowed = null;
@@ -221,8 +288,8 @@ public final class AvatarCombat {
     }
 
     static String status() {
-        return String.format(" Combat: %d strikes; %d perfect parries, %d perfect dodges, %d dodges, %d guarded, %d hits taken.",
-                counts.get(0), counts.get(1), counts.get(2), counts.get(3), counts.get(4), counts.get(5));
+        return String.format(" Combat: %d strikes; %d perfect parries, %d parries, %d perfect dodges, %d dodges, %d guarded, %d hits taken.",
+                counts.get(0), counts.get(1), counts.get(2), counts.get(3), counts.get(4), counts.get(5), counts.get(6));
     }
 
     /** Render thread: EVE's displayed blade, swept against the client's entities each frame while it swings. */

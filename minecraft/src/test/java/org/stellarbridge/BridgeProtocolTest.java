@@ -51,6 +51,8 @@ public final class BridgeProtocolTest {
         // Combat events for Stellar Blade follow the shared fixture; bad events, yaws and sessions are refused.
         assert encodeCombat("a".repeat(32), 7, 1760000000000L, "hit", -135).equals(Files.readString(root.resolve("protocol/fixtures/combat-event.txt")));
         assert encodeCombat("a".repeat(32), 1, 0, "perfect_dodge", Double.NaN).contains("\nEVENT perfect_dodge none\n");
+        assert encodeCombat("a".repeat(32), 2, 0, "parry", 0).startsWith("SBMC_COMBAT 2\n")
+                && encodeCombat("a".repeat(32), 3, 0, "guard_strong", 0).contains("\nEVENT guard_strong 0.0\n");
         rejects(() -> encodeCombat("a".repeat(32), 1, 0, "dodge", 0));
         rejects(() -> encodeCombat("a".repeat(32), 1, 0, "hit", 181));
         rejects(() -> encodeCombat("A".repeat(32), 1, 0, "hit", 0));

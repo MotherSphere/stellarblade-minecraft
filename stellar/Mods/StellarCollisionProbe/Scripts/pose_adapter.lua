@@ -326,7 +326,8 @@ function Adapter.new()
             SNAP_TO_TARGET,true,true,NO_POOLING,true)),'nothing spawned')
     end
     -- Stellar Blade's own Shows on EVE. The perfect-dodge Show keeps its Effect keys as in the game (invulnerability while
-    -- it plays, Burst gauge, the just-evade counter flag); the hit and guarded-hit Shows have none, nor any SkillResult.
+    -- it plays, Burst gauge, the just-evade counter flag), the just-parry Show its movement block; a Show's SkillResult key
+    -- does nothing (its updater's virtuals are the base's no-ops), so no Show gives the Beta of a parry.
     local COMPONENT_SPACE=2 -- ERelativeTransformSpace::RTS_Component
     local function head(mesh) return value_of(value_of(mesh:GetSocketTransform(FName('Bip001-Head'),COMPONENT_SPACE)).Translation) end
     local function loaded(path)
@@ -362,20 +363,23 @@ function Adapter.new()
     -- A Show on EVE through PlaySingleShow (built as no hit: keys checking a hit level are dropped). held names a
     -- full-body SBShowAnimKey whose stop-at-move is lifted for this play: the game's skill blocks movement while such a
     -- Show plays, a lone Show does not, so held movement would cut it at once. EVE's animation slot copies the flag when
-    -- the key starts, a frame or two later; returns the description and the restore to call after that.
-    function engine.play_show(path,yaw,held)
+    -- the key starts, a frame or two later. gate names an SBShowAnimKey whose hit-level check is lifted: the build reads
+    -- it inside the call (0x24681bc), so without held it comes back at once. Returns the description and, while a lifted
+    -- key is still to be restored, the restore to call (again until it works).
+    function engine.play_show(path,yaw,held,gate)
         local eve=character()
         local at,side,relative=toward(eve,yaw or value_of(eve:K2_GetActorRotation()).Yaw)
         loaded(path)
-        local restore=function() end
-        if held then
-            local key=show_key(path,held,'SBShowAnimKey')
-            key.bStopAtMove=false
-            restore=function() if valid(key) then key.bStopAtMove=true end end -- The asset's value.
-        end
+        local keys={}
+        if held then keys[#keys+1]={show_key(path,held,'SBShowAnimKey'),'bStopAtMove'} end
+        if gate then keys[#keys+1]={show_key(path,gate,'SBShowAnimKey'),'bCheckHitLevel'} end
+        for _,key in ipairs(keys) do key[1][key[2]]=false end
+        local function restore() for _,key in ipairs(keys) do if valid(key[1]) then key[1][key[2]]=true end end end -- The assets' values.
         local ok,why=pcall(function() eve:PlaySingleShow(path,true,at) end)
         if not ok then restore(); error(why,0) end
-        return string.format('%s toward the %s (%.0f deg)%s',path:match('[^.]+$'),side,relative,held and ', stop-at-move lifted' or ''),restore
+        if not held and pcall(restore) then keys={} end
+        return string.format('%s toward the %s (%.0f deg)%s%s',path:match('[^.]+$'),side,relative,held and ', stop-at-move lifted' or '',
+            gate and ', hit-level check lifted' or ''),#keys>0 and restore or nil
     end
     -- The Niagara and Cascade effects active on EVE's body mesh, as labels.
     function engine.eve_effects() return (engine.effects({{handle=assert(valid(pawn().Mesh),'EVE has no mesh.')}})) end

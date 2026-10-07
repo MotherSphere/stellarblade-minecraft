@@ -18,6 +18,7 @@
   "key.stellar_bridge.lock_on": "EVE lock-on (R3; avatar: nearest mob)",
   "key.stellar_bridge.tachy": "EVE Tachy mode (L3 with R3)",
   "stellar_bridge.combat.perfect_parry": "Perfect parry",
+  "stellar_bridge.combat.parry": "Parried",
   "stellar_bridge.combat.perfect_dodge": "Perfect dodge",
   "stellar_bridge.combat.dodge": "Dodged",
   "stellar_bridge.combat.guard": "Guarded"

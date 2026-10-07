@@ -1,14 +1,17 @@
--- Minecraft's combat verdicts for EVE (eve-combat.txt, SBMC_COMBAT 1), answered by Stellar Blade itself:
+-- Minecraft's combat verdicts for EVE (eve-combat.txt, SBMC_COMBAT 2), answered by Stellar Blade itself:
 -- * a perfect dodge plays EVE's own perfect-dodge Show as the game does (its flip or spin, time scale, effects and
 --   sounds, and its Effect keys: invulnerability while it plays, Burst gauge, the just-evade counter); if no new evade
 --   effect is on EVE DODGE_CHECK seconds later, Lua slows Stellar Blade's world for the moment instead and plays the
 --   evade effects;
--- * a guard or a perfect parry plays her guarded-hit Show, a perfect parry also its parry effect;
+-- * a perfect parry plays what Stellar Blade plays on her at a just parry: her own result Show (its deflection, by
+--   direction, and movement block) and the attacker's (FX_Parry_Just: sparks, sound, a 0.15 s time scale of 0.25,
+--   post-process, camera shake), or the bare parry sparks if that one fails; a parry plays the parried-hit Show, a guard
+--   the guarded-hit Show for its strength with the key's hit-level check lifted for the call;
 -- * a landed hit makes her react toward the attack: three variants of her stock light-hit Show take turns until one
 --   animates her (a full-body or additive custom-animation alpha above zero REACTION_SAMPLE seconds later, from none
 --   before), which is then kept; a try while she was already animating or moving tells nothing and is not counted.
--- Every in-memory change (a reaction's lifted gate or held tag, the time dilation) is undone on time, retried every
--- frame until it is.
+-- Every in-memory change (a Show's lifted key, a reaction's lifted gate or held tag, the time dilation) is undone on
+-- time, retried every frame until it is.
 -- Game-thread only; call tick each native frame. Events count only for the entered link's session.
 local Combat={}
 local SLOW,SLOW_SECONDS=0.3,0.5
@@ -20,14 +23,18 @@ local VARIANTS,PROBES={'gate','library','tag'},12 -- Reactions tried before givi
 local SHOW='/Game/Art/Show/'
 local JUST_EVADE=SHOW..'CH_P_EVE_01/Skill/P_Eve_Sword_Normal_JustEvade1.P_Eve_Sword_Normal_JustEvade1'
 local MOVING=10 -- cm/s: EVE moving cancels a hit reaction.
-local GUARDED=SHOW..'Result/Result_Guard.Result_Guard'
+local JUST_PARRY=SHOW..'CH_P_EVE_01/Skill/P_Eve_Sword_Normal_Guard1_JustParry.P_Eve_Sword_Normal_Guard1_JustParry'
+local JUST_PARRY_FX=SHOW..'Result/Result_JustParry_FX.Result_JustParry_FX'
+local PARRIED=SHOW..'Result/Result_Parry_Back.Result_Parry_Back'
+local GUARDED={guard=SHOW..'Result/Result_Guard_Back.Result_Guard_Back',guard_strong=SHOW..'Result/Result_Guard_Back_Strong.Result_Guard_Back_Strong'}
+local GATE='SBShowAnimKey_0' -- The guarded-hit body key checks a hit level, which a lone Show does not have.
 local FX='/Game/Art/FX/Char/PC/Skill/'
 local EVADE_EFFECTS={FX..'Evade/NS_A_EvadeBody_01.NS_A_EvadeBody_01',FX..'Evade/NS_A_EvadeParticle_02.NS_A_EvadeParticle_02'}
 local PARRY_EFFECT=FX..'Parry/NS_JustParry_02.NS_JustParry_02'
-local EVENTS={perfect_dodge=true,perfect_parry=true,guard=true,hit=true}
+local EVENTS={perfect_dodge=true,perfect_parry=true,parry=true,guard=true,guard_strong=true,hit=true}
 function Combat.parse(text)
     if type(text)~='string' or #text>512 then return nil end
-    local session,seq,time,event,yaw,ending=text:match('^SBMC_COMBAT 1\nSESSION (%x+)\nSEQ (%d+)\nTIME (%d+)\nEVENT ([%a_]+) (%S+)\nEND (%d+)\n$')
+    local session,seq,time,event,yaw,ending=text:match('^SBMC_COMBAT 2\nSESSION (%x+)\nSEQ (%d+)\nTIME (%d+)\nEVENT ([%a_]+) (%S+)\nEND (%d+)\n$')
     if not session or #session~=32 or session:find('[^0-9a-f]') or seq~=ending or not EVENTS[event] then return nil end
     local angle
     if yaw~='none' then
@@ -42,8 +49,9 @@ function Combat.new(engine,directory,wall,real,log,link)
     local session,last=nil,0
     local slow_until,restore_failed
     local dodge -- A perfect-dodge Show whose effect is still to be checked.
-    local lifted -- {at=, restore=, failed=}: the perfect-dodge key's lifted stop-at-move, until restored.
-    local trace -- {at=, seq=}: a later animation sample of the last perfect dodge.
+    local lifted={} -- {id=, at=, restore=, failed=}: Show keys lifted for a play, until restored.
+    local warned -- An event file of another protocol version was reported.
+    local trace -- {at=, seq=, event=}: a later animation sample of the last Show that animates EVE.
     local reactions,last_reaction,pending,chosen=0,-math.huge,nil,nil
     local lines=0
     local function note(message)
@@ -63,9 +71,16 @@ function Combat.new(engine,directory,wall,real,log,link)
         end
         return table.concat(played,', ')
     end
-    local function show(path,yaw,held)
-        local ok,info,restore=pcall(engine.play_show,path,yaw,held)
-        return ok and 'show '..info or 'show failed: '..tostring(info),ok,ok and restore or nil
+    local function show(path,yaw,held,gate)
+        local ok,info,restore=pcall(engine.play_show,path,yaw,held,gate)
+        if ok and restore then
+            -- The same key lifted again before its restore: restore it after the newest play, not the first.
+            local id,entry=path..'|'..tostring(held)..'|'..tostring(gate)
+            for _,key in ipairs(lifted) do if key.id==id then entry=key end end
+            if entry then entry.at,entry.restore=real(),restore
+            else lifted[#lifted+1]={id=id,at=real(),restore=restore} end
+        end
+        return ok and 'show '..info or 'show failed: '..tostring(info),ok
     end
     local function state()
         local ok,line=pcall(engine.anim_state)
@@ -114,14 +129,17 @@ function Combat.new(engine,directory,wall,real,log,link)
                 note(string.format('hit %d %s: restore failed, retrying: %s',pending.seq,pending.method,tostring(why)))
             end
         end
-        -- Every frame until it works: the key is a shared asset object.
-        if lifted and real()>=lifted.at+DODGE_CHECK then
-            local ok,why=pcall(lifted.restore)
-            if ok then lifted=nil
-            elseif not lifted.failed then lifted.failed=true; note('perfect_dodge stop-at-move not restored yet, retrying: '..tostring(why)) end
+        -- Every frame until it works: a key is a shared asset object.
+        for i=#lifted,1,-1 do
+            local key=lifted[i]
+            if real()>=key.at+DODGE_CHECK then
+                local ok,why=pcall(key.restore)
+                if ok then table.remove(lifted,i)
+                elseif not key.failed then key.failed=true; note('lifted Show key not restored yet, retrying: '..tostring(why)) end
+            end
         end
         if trace and real()>=trace.at+DODGE_TRACE then
-            note(string.format('perfect_dodge %d +%.1fs: %s',trace.seq,DODGE_TRACE,state()))
+            note(string.format('%s %d +%.1fs: %s',trace.event,trace.seq,DODGE_TRACE,state()))
             trace=nil
         end
         if dodge and real()>=dodge.at+DODGE_CHECK then
@@ -132,24 +150,35 @@ function Combat.new(engine,directory,wall,real,log,link)
             dodge=nil
         end
         if not place then return end
-        local event=Combat.parse(read())
-        if not event or event.session~=place.session then return end
+        local text=read()
+        local event=Combat.parse(text)
+        if not event then
+            local version=type(text)=='string' and text:match('^SBMC_COMBAT (%d+)\n')
+            if version and version~='2' and not warned then
+                warned=true; note('unsupported event version '..version..'; install the matching JAR and Lua')
+            end
+            return
+        end
+        if event.session~=place.session then return end
         if event.session~=session then session,last=event.session,0 end
         if event.seq<=last then return end
         last=event.seq
         if math.abs(wall()*1000-event.time)>FRESH_MS then return end
         local answer=''
+        if event.event~='hit' then trace={at=real(),seq=event.seq,event=event.event} end -- A Show that animates EVE.
         if event.event=='perfect_dodge' then
             local before,was=evade_bodies(),state()
-            local info,played,restore=show(JUST_EVADE,event.yaw,'SBShowAnimKey_0')
+            local info,played=show(JUST_EVADE,event.yaw,'SBShowAnimKey_0')
             answer='; '..info..'; before: '..was
             dodge={at=real(),seq=event.seq,before=before,played=played}
-            if restore then lifted={at=real(),restore=restore} end
-            trace={at=real(),seq=event.seq}
         elseif event.event=='perfect_parry' then
-            answer='; '..show(GUARDED,event.yaw)..'; effects '..play({PARRY_EFFECT})
-        elseif event.event=='guard' then
-            answer='; '..show(GUARDED,event.yaw)
+            local mine=show(JUST_PARRY,event.yaw)
+            local fx,ok=show(JUST_PARRY_FX,event.yaw)
+            answer='; '..mine..'; '..fx..(ok and '' or '; effects '..play({PARRY_EFFECT}))
+        elseif event.event=='parry' then
+            answer='; '..show(PARRIED,event.yaw)
+        elseif GUARDED[event.event] then
+            answer='; '..show(GUARDED[event.event],event.yaw,nil,GATE)
         elseif event.event=='hit' and event.yaw and not pending and (chosen or reactions<PROBES) and real()-last_reaction>=REACTION_GAP then
             reactions=reactions+1
             last_reaction=real()

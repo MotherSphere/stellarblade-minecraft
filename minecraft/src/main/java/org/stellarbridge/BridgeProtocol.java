@@ -59,7 +59,7 @@ public final class BridgeProtocol {
             .append(' ').append(box.maxX).append(' ').append(box.maxY).append(' ').append(box.maxZ).append('\n');
     }
 
-    static final List<String> COMBAT_EVENTS = List.of("perfect_dodge", "perfect_parry", "guard", "hit");
+    static final List<String> COMBAT_EVENTS = List.of("perfect_dodge", "perfect_parry", "parry", "guard", "guard_strong", "hit");
 
     /** A combat event for Stellar Blade: the defense at an impact and the attacker's Unreal yaw in degrees (NaN: none). */
     public static String encodeCombat(String session, long seq, long time, String event, double yaw) {
@@ -67,7 +67,7 @@ public final class BridgeProtocol {
         require(seq > 0 && seq <= MAX_TIME && time >= 0 && time <= MAX_TIME, "Invalid sequence or timestamp");
         require(COMBAT_EVENTS.contains(event), "Invalid combat event");
         require(Double.isNaN(yaw) || yaw >= -180 && yaw <= 180, "Invalid yaw");
-        return "SBMC_COMBAT 1\nSESSION " + session + "\nSEQ " + seq + "\nTIME " + time + "\nEVENT " + event + " "
+        return "SBMC_COMBAT 2\nSESSION " + session + "\nSEQ " + seq + "\nTIME " + time + "\nEVENT " + event + " "
                 + (Double.isNaN(yaw) ? "none" : String.format(java.util.Locale.ROOT, "%.1f", yaw)) + "\nEND " + seq + "\n";
     }
 

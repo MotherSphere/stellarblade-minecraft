@@ -96,4 +96,35 @@ sword.GetClass=function() return object('SkeletalMeshComponent') end
 package.loaded.UEHelpers.GetPlayer=function() return nil end
 local effects=engine.effects({{handle=sword}})
 assert(#effects==1 and effects[1]=='NS_A_Weapon_Signal_Sword[NiagaraComponent]@Sword:FX_WeaponFX_Begin',effects[1])
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters and attached effects')
+-- Shows on EVE: a lifted hit-level check is restored right after the call (the build reads it there), a lifted
+-- stop-at-move only through the returned restore; a failed call restores both.
+local SHOW_PATH='/Game/Art/Show/Result/Result_Guard_Back.Result_Guard_Back'
+local key=object('SBShowAnimKey_0',{bCheckHitLevel=true,bStopAtMove=true})
+local seen,refuse
+local eve=object('EVE')
+function eve:IsA(class) return class.name=='SBCharacter' end
+function eve:K2_GetActorLocation() return {X=0,Y=0,Z=0} end
+function eve:K2_GetActorRotation() return {Pitch=0,Yaw=0,Roll=0} end
+function eve:PlaySingleShow(path,full,at)
+    seen={path=path,full=full,gate=key.bCheckHitLevel,stop=key.bStopAtMove,y=at.Y}
+    if refuse then error('refused') end
+    return true
+end
+package.loaded.UEHelpers.GetPlayerController=function() return object('Controller',{K2_GetPawn=function() return eve end}) end
+StaticFindObject=function(path)
+    if path=='/Script/SB.SBCharacter' then local c=object('Class'); c.name='SBCharacter'; return c end
+    if path==SHOW_PATH then return object('Result_Guard_Back') end
+    if path==SHOW_PATH..':SBShowAnimKey_0' then return key end
+    return nil
+end
+local info,restore=engine.play_show(SHOW_PATH,90,nil,'SBShowAnimKey_0')
+assert(seen.gate==false and seen.full==true and seen.y==300 and key.bCheckHitLevel==true and restore==nil,info)
+assert(info:find('toward the right (90 deg), hit-level check lifted',1,true),info)
+info,restore=engine.play_show(SHOW_PATH,nil,'SBShowAnimKey_0')
+assert(seen.stop==false and key.bStopAtMove==false and restore,info)
+restore()
+assert(key.bStopAtMove==true,'The stop-at-move comes back through the restore')
+refuse=true
+assert(not pcall(engine.play_show,SHOW_PATH,0,'SBShowAnimKey_0','SBShowAnimKey_0'))
+assert(key.bStopAtMove==true and key.bCheckHitLevel==true,'A refused play restores both keys')
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, attached effects and Show key lifts')

@@ -1,4 +1,4 @@
-SBMC_COMBAT 1
+SBMC_COMBAT 2
 SESSION aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 SEQ 7
 TIME 1760000000000

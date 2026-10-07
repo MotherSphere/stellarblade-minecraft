@@ -78,6 +78,36 @@ public final class AvatarStreamTest {
         assert AvatarCombat.defense(impact, impact - 200_000_000L, impact - 100_000_000L, true) == AvatarCombat.Defense.PERFECT_PARRY;
         assert AvatarCombat.defense(impact, Long.MIN_VALUE, Long.MIN_VALUE, false) == AvatarCombat.Defense.HIT;
         assert AvatarCombat.defense(impact, impact + 1, Long.MIN_VALUE, false) == AvatarCombat.Defense.HIT : "A press after the impact";
+        // Stellar Blade's parry tiers: a just parry, a parry up to its Parry1 step, then a held guard or nothing.
+        assert AvatarCombat.defense(impact, Long.MIN_VALUE, impact - 300_000_000L, false) == AvatarCombat.Defense.PARRY : "A tapped guard parries";
+        assert AvatarCombat.defense(impact, Long.MIN_VALUE, impact - 450_000_000L, true) == AvatarCombat.Defense.GUARD;
+        assert AvatarCombat.defense(impact, Long.MIN_VALUE, impact - 450_000_000L, false) == AvatarCombat.Defense.HIT;
+        assert AvatarCombat.defense(impact, impact - 400_000_000L, impact - 300_000_000L, true) == AvatarCombat.Defense.DODGE : "A dodge outranks a late parry";
+        assert AvatarCombat.event(AvatarCombat.Defense.GUARD, AvatarCombat.STRONG_HIT).equals("guard_strong")
+                && AvatarCombat.event(AvatarCombat.Defense.GUARD, 7.9f).equals("guard")
+                && AvatarCombat.event(AvatarCombat.Defense.PERFECT_PARRY, 20).equals("perfect_parry");
+        // The guard's cooldown: a press sooner than 0.4 s after the previous press does not count.
+        long first = impact - 1_000_000_000L;
+        assert AvatarCombat.counted(Long.MIN_VALUE, Long.MIN_VALUE, first) == first : "A first press counts";
+        assert AvatarCombat.counted(first, first, first) == first : "The same press again";
+        assert AvatarCombat.counted(first, first, first + 300_000_000L) == first : "Mashing the guard";
+        assert AvatarCombat.counted(first, first + 300_000_000L, first + 600_000_000L) == first : "Each press restarts the cooldown";
+        assert AvatarCombat.counted(first, first + 300_000_000L, first + 700_000_000L) == first + 700_000_000L;
+        assert AvatarCombat.counted(first, first, Long.MIN_VALUE) == Long.MIN_VALUE : "Released input";
+        // Against an attack each second: mashing every 0.2 s (guard held) parries none; a tap 0.1 s before each parries all.
+        long mashed = Long.MIN_VALUE, seen = Long.MIN_VALUE, tapped = Long.MIN_VALUE, tapSeen = Long.MIN_VALUE;
+        int mashParries = 0, tapParries = 0;
+        for (long t = 0; t < 10_000_000_000L; t += 50_000_000L) {
+            if (t % 200_000_000L == 0) { mashed = AvatarCombat.counted(mashed, seen, t); seen = t; }
+            if (t % 1_000_000_000L == 800_000_000L) { tapped = AvatarCombat.counted(tapped, tapSeen, t); tapSeen = t; }
+            if (t % 1_000_000_000L == 900_000_000L) {
+                var mash = AvatarCombat.defense(t, Long.MIN_VALUE, mashed, true);
+                var tap = AvatarCombat.defense(t, Long.MIN_VALUE, tapped, false);
+                if (mash == AvatarCombat.Defense.PERFECT_PARRY || mash == AvatarCombat.Defense.PARRY) mashParries++;
+                if (tap == AvatarCombat.Defense.PERFECT_PARRY) tapParries++;
+            }
+        }
+        assert mashParries == 0 && tapParries == 10 : "Mashing parries " + mashParries + ", taps " + tapParries;
         assert AvatarCombat.damage(AvatarTrail.Style.STRONG, true) == 2 * AvatarCombat.STRONG && AvatarCombat.damage(null, false) == AvatarCombat.SWING;
         var zombie = new net.minecraft.util.math.Box(-0.3, 0, -0.3, 0.3, 1.95, 0.3);
         assert !AvatarCombat.sweeps(zombie, new org.joml.Vector3d(-1, 1, -1), new org.joml.Vector3d(-1, 1, -2),
