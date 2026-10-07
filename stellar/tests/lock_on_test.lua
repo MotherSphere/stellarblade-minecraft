@@ -130,10 +130,10 @@ state.release_error='EVE busy'; publish('none'); armed.tick(); armed.tick()
 state.release_error=nil; armed.tick()
 assert(sheathes==1 and table.concat(logged,'\n'):find('Lock: sword: sheathing',1,true),'One sheathe across release retries')
 -- Soft clears and LockTrace: the held line counts follow's clears; a trace line comes on the first locked frame, a clear,
--- a change of the lock-rotation-disabling step count, a 3 degree yaw step and every 0.1 s while that count is up, on a
--- budget of its own.
+-- a change of the lock-rotation-disabling step count, running skill or idle turn, a 3 degree yaw step (across the wrap
+-- too) and every 0.1 s while that count is up, on a budget of its own.
 engine.lock_draw=function() return nil end
-local sample={facing=0,yaw=90,x=0,y=0,tx=100,ty=0,fwd=0,right=0,rotoff=0,soft=false,skill=false,turning=false,inf=0,inr=0}
+local sample={facing=0,yaw=90,x=0,y=0,tx=100,ty=0,fwd=0,right=0,rotoff=0,soft=false,skill=false,turning=true,inf=1,inr=0}
 function engine.lock_trace() local copy={}; for k,v in pairs(sample) do copy[k]=v end; return copy end
 local lines={}
 local traced=Lock.new(engine,directory,function() return wall end,function() return real end,function(line) lines[#lines+1]=line end,function() return place end)
@@ -142,7 +142,7 @@ local function step(dt) real=real+dt; publish('1.000 1.000 1.000'); traced.tick(
 publish('1.000 1.000 1.000',nil,wall*1000); traced.tick()
 assert(count('LockTrace:')==0 and count('Lock: near: ')==1,'Engaged this frame, not traced yet; one near line')
 assert(step(0.01)==1 and lines[#lines]:match('^LockTrace: t [%d.]+ facing 0.0 yaw 90.0 at 0 0 target 100 0 vel 0 0 rotoff 0 soft false'..
-    ' skill false turning false input 0 0$'),'The first locked frame: '..lines[#lines])
+    ' skill false turning true input 1 0$'),'The first locked frame: '..lines[#lines])
 assert(step(0.01)==1,'Nothing changed, nothing logged')
 sample.yaw=92
 assert(step(0.01)==1,'A 2 degree step is not logged')
@@ -158,7 +158,15 @@ state.cleared=true
 assert(step(0.01)==6 and lines[#lines]:find(' soft false (cleared) skill ',1,true),'A clear: '..lines[#lines])
 state.cleared=false
 assert(step(0.01)==6,'Settled')
-step(1)
+sample.skill=true
+assert(step(0.01)==7,'Her running skill starts')
+sample.turning=false
+assert(step(0.01)==8,'Her idle turn ends')
+sample.yaw=179
+assert(step(0.01)==9)
+sample.yaw=-179
+assert(step(0.01)==9,'2 degrees across the wrap are not logged')
+assert(step(1)==9,'No cadence while rotoff is 0')
 assert(lines[#lines]=='Lock: held, 0 relocks, 1 soft clears: status',lines[#lines])
 for i=1,2100 do sample.yaw=i%2==0 and 90 or 100; step(0.001) end
 assert(count('LockTrace:')==2000 and count('Lock: near: ')==1,'Trace lines stop at 2000, one near line per engage')
