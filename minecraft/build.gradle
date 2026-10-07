@@ -20,6 +20,11 @@ java {
 }
 
 tasks.withType(JavaCompile).configureEach { options.release = 21 }
+// Reproducible archives: a commit's JAR hash can be rebuilt and compared with an installed one.
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
 
 processResources {
     from('../THIRD-PARTY-NOTICES.md')
