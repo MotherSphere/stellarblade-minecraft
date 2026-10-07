@@ -131,4 +131,67 @@ local unseen=effect('NC3','NS_A_LensFlare_Drone',true,'FX_Lens')
 unseen.IsVisible=function() return false end
 sword.AttachChildren=tarray({unseen})
 assert(#engine.effects({{handle=sword}})==0,'An active effect Stellar Blade does not draw is not one')
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects and Show key lifts')
+-- Identities: EVE's components, then her drone's (the nearest of tribe Drone) as Drone.<name>, found at most every 5 s.
+local function at(x) return {X=x,Y=0,Z=0} end
+local meshClass=object('SBSkeletalMeshComponent'); meshClass.GetAddress=function() return 0x7f0000030000 end
+local function skin(name,mesh,leader,visible)
+    local c=object(name,{SkeletalMesh=object(mesh),MasterPoseComponent={Get=function() return leader end}})
+    c.GetAddress=function() return 0x7f0000040000+#name end
+    c.GetClass=function() return meshClass end
+    c.IsVisible=function() return visible end
+    return c
+end
+local eveBody=skin('CharacterMesh0','CH_P_EVE_52_TypeB',nil,true)
+local eve=object('EVE'); eve.K2_GetActorLocation=function() return at(0) end
+function eve:K2_GetComponentsByClass() return {eveBody,skin('Mesh_Face','CH_P_EVE_Face_Jali3',eveBody,true)} end
+local droneClass,otherClass=object('CH_Drone_BP_C'),object('CH_Drone_BP_Seq_C')
+local function drone(name,tribe,x,class)
+    local d=object(name,{Tribe=fname(tribe),bHidden=false}); d.GetClass=function() return class or droneClass end
+    d.K2_GetActorLocation=function() return wrap(at(x)) end
+    local body=skin('CharacterMesh0','CH_NPC_Drone',nil,false)
+    function d:K2_GetComponentsByClass() return tarray({body}) end
+    return d
+end
+local searches,drones=0,{drone('Far','Drone',900),drone('Spawned','None',10),drone('Near','Drone',200),drone('Sequence','Drone',5,otherClass)}
+FindAllOf=function(name) assert(name=='CH_Drone_BP_C'); searches=searches+1; return drones end
+package.loaded.UEHelpers.GetPlayer=function() return eve end
+StaticFindObject=function(path) -- The Show section above replaced it.
+    assert(path=='/Script/Engine.SkeletalMeshComponent'); local c=object('Class'); c.name='SkeletalMeshComponent'; return c
+end
+local fresh=require('pose_adapter').new()
+local ids,state=fresh.identities()
+assert(#ids==3 and ids[1].name=='CharacterMesh0' and not ids[1].drone and ids[2].leader=='CharacterMesh0','EVE first')
+assert(ids[3].name=='Drone.CharacterMesh0' and ids[3].drone and ids[3].mesh_name=='CH_NPC_Drone' and not ids[3].leader)
+assert(state:find('^Near actor shown, mesh invisible %(found in [%d.]+ ms%)$'),state)
+fresh.identities()
+assert(searches==1,'A valid drone is kept')
+-- A drone follower leads by its prefixed leader name.
+local led=drone('Led','Drone',50)
+local ledBody=skin('CharacterMesh0','CH_NPC_Drone',nil,true)
+function led:K2_GetComponentsByClass() return tarray({ledBody,skin('Gun','CH_NPC_Drone_Gun',ledBody,true)}) end
+local saved=drones
+drones={led}
+local leading=require('pose_adapter').new().identities()
+assert(leading[4].name=='Drone.Gun' and leading[4].leader=='Drone.CharacterMesh0','The follower names its prefixed leader')
+drones=saved
+-- The drone found goes: the next call looks again at once, not after the wait.
+local before=searches
+drones[3].IsValid=function() return false end
+fresh.identities()
+assert(searches==before+1,'A drone that went is looked for again at once')
+drones={}
+local clock,real_clock=100,os.clock
+os.clock=function() return clock end
+local alone=require('pose_adapter').new()
+before=searches
+local only,none=alone.identities()
+assert(#only==2 and none=='none' and searches==before+1)
+clock=104; alone.identities()
+assert(searches==before+1,'No drone: the next search waits')
+clock=105.5; alone.identities()
+assert(searches==before+2,'Then searches again after 5 s')
+os.clock=real_clock
+FindAllOf=function() error('FindAllOf unavailable') end
+local failing,why=require('pose_adapter').new().identities()
+assert(#failing==2 and why:find('unavailable: ',1,true),'A failing drone search leaves EVE streaming')
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts and the drone')

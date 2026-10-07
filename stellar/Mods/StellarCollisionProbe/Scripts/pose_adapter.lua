@@ -121,22 +121,59 @@ function Adapter.new()
     end
     function engine.world(component) return transform(component:K2_GetComponentToWorld()) end
     -- Pose stream: cheap identities every check, names only when the composition changes.
+    local function skeletal(actor,class,prefix,list)
+        each(actor:K2_GetComponentsByClass(class),function(_,component)
+            component=valid(component)
+            local mesh=component and valid(component.SkeletalMesh)
+            if not mesh then return end
+            local found,leader=pcall(function() return valid(value_of(component.MasterPoseComponent):Get()) end)
+            list[#list+1]={handle=component,name=prefix..text(component:GetFName()),object=component:GetAddress(),
+                class=valid(component:GetClass()):GetAddress(),mesh=mesh:GetAddress(),mesh_name=text(mesh:GetFName()),
+                leader=found and leader and prefix..text(leader:GetFName()) or nil,mesh_handle=mesh}
+        end)
+        return list
+    end
+    -- EVE's drone: its own Stellar Blade character (CH_Drone_BP_C, tribe Drone; CharacterMesh0 carries CH_NPC_Drone or
+    -- the equipped skin) that follows her, scans and turns into her gun. The nearest of its tribe, kept while valid and
+    -- looked for again at most every DRONE_RETRY seconds (FindAllOf walks every object), at once when the one found went.
+    local DRONE_RETRY=5
+    local drone,drone_search,drone_ms=nil,-math.huge,0
+    local function find_drone(pawn)
+        if valid(drone) then return drone end
+        if drone~=nil then drone_search=-math.huge end -- It went: another may already stand in.
+        drone=nil
+        if os.clock()-drone_search<DRONE_RETRY then return nil end
+        drone_search=os.clock()
+        local here,best=value_of(pawn:K2_GetActorLocation()),math.huge
+        for _,o in ipairs(FindAllOf('CH_Drone_BP_C') or {}) do
+            o=valid(o)
+            if o and text(valid(o:GetClass()):GetFName())=='CH_Drone_BP_C' and text(o.Tribe)=='Drone' then
+                local at=value_of(o:K2_GetActorLocation())
+                local d=(at.X-here.X)^2+(at.Y-here.Y)^2+(at.Z-here.Z)^2
+                if d<best then drone,best=o,d end
+            end
+        end
+        drone_ms=(os.clock()-drone_search)*1000
+        return drone
+    end
+    -- EVE's skeletal mesh components, then her drone's as 'Drone.<name>' (EVE's leader names stay unique), marked drone;
+    -- also a label of the drone's state for the log: its object and whether its actor or its mesh is hidden.
     function engine.identities()
         local pawn=valid(UE.GetPlayer())
         assert(pawn,'Load a playable save before streaming EVE.')
         local class=valid(StaticFindObject('/Script/Engine.SkeletalMeshComponent'))
         assert(class,'SkeletalMeshComponent is unavailable in this game build.')
-        local list={}
-        each(pawn:K2_GetComponentsByClass(class),function(_,component)
-            component=valid(component)
-            local mesh=component and valid(component.SkeletalMesh)
-            if not mesh then return end
-            local found,leader=pcall(function() return valid(value_of(component.MasterPoseComponent):Get()) end)
-            list[#list+1]={handle=component,name=text(component:GetFName()),object=component:GetAddress(),
-                class=valid(component:GetClass()):GetAddress(),mesh=mesh:GetAddress(),mesh_name=text(mesh:GetFName()),
-                leader=found and leader and text(leader:GetFName()) or nil,mesh_handle=mesh}
+        local list=skeletal(pawn,class,'',{})
+        local ok,found,state=pcall(function()
+            local d=find_drone(pawn)
+            if not d then return {},'none' end
+            local parts=skeletal(d,class,'Drone.',{})
+            local shown=parts[1] and parts[1].handle:IsVisible()
+            return parts,string.format('%s actor %s, mesh %s (found in %.1f ms)',text(d:GetFName()),d.bHidden and 'hidden' or 'shown',
+                parts[1] and (shown and 'visible' or 'invisible') or 'none',drone_ms)
         end)
-        return list
+        for _,c in ipairs(ok and found or {}) do c.drone=true; list[#list+1]=c end
+        return list,ok and state or 'unavailable: '..tostring(found)
     end
     -- The local player controller, the byte offset of its ControlRotation (Pitch, Yaw, Roll floats), its pawn
     -- and its look input scales.

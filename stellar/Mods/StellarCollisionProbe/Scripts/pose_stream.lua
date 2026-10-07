@@ -26,6 +26,7 @@ function Stream.new(engine,directory,clock,log,link)
     local effects,effect_lines='',0 -- Last logged active effects; at most 400 log lines per Lua lifetime.
     local layout,assets,asset_seen=nil,{},{} -- Effect reading layout; effect assets in first-seen order (at most 32).
     local combat_logged=false -- EVE's combat-named functions and properties, logged once per Lua lifetime (at most 300 lines).
+    local drone_state,drone_lines=nil,0 -- Last logged drone state; at most 200 log lines per Lua lifetime.
     local function remember(found)
         for _,a in ipairs(found or {}) do
             if #assets<32 and not asset_seen[a.object] and token(a.name) and math.type(a.object)=='integer' and a.object%8==0 then
@@ -102,12 +103,19 @@ function Stream.new(engine,directory,clock,log,link)
         end
         if request.run~=run then run,generation,signature=request.run,recover(request.run),nil end
         local list,skipped={},{}
-        for _,c in ipairs(engine.identities()) do
+        local identities,drone=engine.identities()
+        for _,c in ipairs(identities) do
             if not (token(c.name) and token(c.mesh_name) and (c.leader==nil or token(c.leader))) then
                 skipped[#skipped+1]=tostring(c.name)
+            elseif c.drone and #list>=16 then skipped[#skipped+1]=c.name..' (no room)' -- The drone follows EVE's own.
             else list[#list+1]=c end
         end
         assert(#list>0 and #list<=16,'EVE needs one to sixteen drawable skeletal mesh components.')
+        if drone and drone~=drone_state and drone_lines<200 then
+            drone_lines=drone_lines+1
+            drone_state=drone
+            log('EVE drone: '..drone)
+        end
         local place=link()
         local found,controller=pcall(engine.controller)
         if not found or not controller or not scale(controller.yaw_scale) or not scale(controller.pitch_scale) then controller=nil end
@@ -134,6 +142,14 @@ function Stream.new(engine,directory,clock,log,link)
         end
         if effects and engine.effects then
             local seen,active,found=pcall(engine.effects,list)
+            -- ponytail: the drone's effects are logged but take none of the 32 asset slots until they get sprite
+            -- recipes; then raise the cap rather than reorder.
+            local eve={}
+            for _,c in ipairs(list) do if not c.drone then eve[#eve+1]=c end end
+            if seen and #eve<#list then
+                local own,_,mine=pcall(engine.effects,eve)
+                found=own and mine or {}
+            end
             if seen then remember(found) end
             local now_effects=seen and table.concat(active,' ') or ('unavailable: '..tostring(active))
             if now_effects~=effects and effect_lines<400 then
@@ -166,17 +182,30 @@ function Stream.new(engine,directory,clock,log,link)
         for _,a in ipairs(assets) do parts[#parts+1]=a.name..':'..a.object end
         local next_signature=table.concat(parts,'|')
         if next_signature==signature then return true end
-        for _,c in ipairs(list) do
+        -- The drone never stops EVE's stream: a drone component the stream cannot carry, or past one slot of floats, is
+        -- left out (the drone's come last), with its parameters.
+        for i=#list,1,-1 do
+            local c=list[i]
             c.bones,c.morphs=engine.names(c)
-            for _,name in ipairs(c.bones) do assert(token(name),c.name..' has a bone name the stream cannot carry.') end
-            for _,name in ipairs(c.morphs) do assert(token(name),c.name..' has a morph name the stream cannot carry.') end
-            assert(#c.bones<=256 and #c.morphs<=1024,c.name..' exceeds the pose stream bounds.')
+            local carried=#c.bones<=256 and #c.morphs<=1024
+            for _,name in ipairs(c.bones) do carried=carried and token(name) end
+            for _,name in ipairs(c.morphs) do carried=carried and token(name) end
+            if c.drone and not carried then skipped[#skipped+1]=table.remove(list,i).name..' (not streamable)'
+            else
+                for _,name in ipairs(c.bones) do assert(token(name),c.name..' has a bone name the stream cannot carry.') end
+                for _,name in ipairs(c.morphs) do assert(token(name),c.name..' has a morph name the stream cannot carry.') end
+                assert(#c.bones<=256 and #c.morphs<=1024,c.name..' exceeds the pose stream bounds.')
+            end
         end
-        local floats=0
-        for _,c in ipairs(list) do floats=floats+10+10*#c.bones+#c.morphs end
-        for _,q in ipairs(parameters) do floats=floats+q.floats end
-        if layout then floats=floats+8*11 end
-        assert(floats<=16352,'EVE pose exceeds one stream slot.')
+        local function floats()
+            local total=layout and 8*11 or 0
+            for _,c in ipairs(list) do total=total+10+10*#c.bones+#c.morphs end
+            for _,q in ipairs(parameters) do if q.component<=#list then total=total+q.floats end end
+            return total
+        end
+        while floats()>16352 and list[#list].drone do skipped[#skipped+1]=table.remove(list).name..' (no room)' end
+        for i=#parameters,1,-1 do if parameters[i].component>#list then table.remove(parameters,i) end end
+        assert(floats()<=16352,'EVE pose exceeds one stream slot.')
         generation=generation+1
         local text=encode(list,place,controller,parameters)
         assert(#text<=65536,'EVE component table exceeds the stream bound.')

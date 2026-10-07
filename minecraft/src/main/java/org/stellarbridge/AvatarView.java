@@ -560,7 +560,7 @@ public final class AvatarView {
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
     }
 
-    /** The streamed meshes left out of the newest pose: hidden in Stellar Blade or without data. */
+    /** The streamed meshes left out of the newest pose: hidden in Stellar Blade (EVE's drone between appearances) or without data. */
     private static String hiddenStatus(Live current) {
         if (current.model == null || !current.posed) return "";
         StringBuilder names = new StringBuilder();

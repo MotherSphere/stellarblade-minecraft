@@ -311,6 +311,12 @@ public final class AvatarStreamTest {
                             && visible[0] && !visible[1] && !visible[2] : "No bones: the drone and its follower are left out, EVE is not";
                     assert AvatarStream.decode(withDrone, new AvatarStream.Sample(7, now, 1, new int[] {3, 0, 0}, doubled, null, false, Float.NaN, false), both, dronePose, visible)
                             && visible[0] && !visible[1] : "A destroyed drone";
+                    // A drone whose skeleton differs from the pack (another skin) is left out of the model; EVE still draws.
+                    var otherSkin = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed,
+                            new AvatarRecording.Component("Drone.CharacterMesh0", "CH_NPC_Drone", null, new String[] {"Root", "BN_OTHER"}, new String[0], 0)),
+                            java.util.List.of(), java.util.List.of(), false, 60);
+                    AvatarModel skinned = new AvatarModel(otherSkin.components(), Map.of("CH_P_EVE_52_TypeB", mesh, "CH_NPC_Drone", drone));
+                    assert skinned.parts.size() == 1 && skinned.skipped.get(0).startsWith("Drone.CharacterMesh0 (bones differ") : skinned.skipped;
                     // EVE's own parts are not optional: one without its bones still drops the pose.
                     var withWeapon = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed,
                             new AvatarRecording.Component("Weapon", "CH_NPC_Drone", null, new String[] {"Root", "BN_BODY"}, new String[0], 0)),

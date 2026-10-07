@@ -47,7 +47,12 @@ final class AvatarModel {
             }
             if (c.recorded()) {
                 String[] names = Arrays.stream(mesh.bones).map(AvatarMesh.Bone::name).toArray(String[]::new);
-                if (!Arrays.equals(names, c.bones())) throw new IllegalArgumentException(c.name() + ": recorded bones differ from " + mesh.name);
+                if (!Arrays.equals(names, c.bones())) {
+                    // The drone is optional: another skin's skeleton leaves it out; EVE's own parts must match.
+                    if (!c.name().startsWith(AvatarStream.OPTIONAL)) throw new IllegalArgumentException(c.name() + ": recorded bones differ from " + mesh.name);
+                    skipped.add(c.name() + " (bones differ from " + mesh.name + ")");
+                    continue;
+                }
                 parts.add(new Part(i, mesh, i, null, morphSources(mesh, c)));
                 continue;
             }

@@ -122,6 +122,40 @@ engine.parameters=function() error('GetComparisonIndex unavailable') end
 RUN=string.rep('9',32); request()
 local _,without_glow=reloaded.tick()
 assert(without_glow:find('material parameters unavailable: ',1,true) and read('eve-pose-components.1'):find('\nPARAMETERS 0\nEFFECTS none\nEND ',1,true),without_glow)
+-- EVE's drone streams after her components and gives way to them: past sixteen components or one slot of floats.
+engine.parameters=function() return {} end
+local drone_log={}
+local droned=Stream.new(engine,directory,function() return now end,function(line) drone_log[#drone_log+1]=line end,function() return place end)
+local eve={name='CharacterMesh0',object=0x7f0000001000,class=0x7f0000002000,mesh=0x7f0000003000,mesh_name='CH_P_EVE_52_TypeB'}
+local companion={name='Drone.CharacterMesh0',object=0x7f0000011000,class=0x7f0000012000,mesh=0x7f0000013000,mesh_name='CH_NPC_Drone',drone=true}
+local state='CH_Drone_BP_C_1 actor shown, mesh visible'
+engine.identities=function() return {eve,companion},state end
+RUN=string.rep('5',32); request()
+local _,with_drone=droned.tick()
+assert(with_drone:find('2 components',1,true) and read('eve-pose-components.1'):find(
+    '\nCOMPONENT 2 00007f0000011000 00007f0000012000 00007f0000013000 3 0 Drone.CharacterMesh0 CH_NPC_Drone -\n',1,true),with_drone)
+droned.tick(); state='CH_Drone_BP_C_1 actor hidden, mesh visible'; droned.tick()
+assert(#drone_log==2 and drone_log[1]=='EVE drone: CH_Drone_BP_C_1 actor shown, mesh visible'
+    and drone_log[2]=='EVE drone: CH_Drone_BP_C_1 actor hidden, mesh visible','The drone state is logged when it changes')
+local crowd={}
+for i=1,16 do crowd[i]={name='C'..i,object=0x7f0000100000+0x1000*i,class=0x7f0000002000,mesh=0x7f0000003000,mesh_name='M'} end
+crowd[17]=companion
+engine.identities=function() return crowd end
+local _,crowded=droned.tick()
+assert(crowded:find('16 components',1,true) and crowded:find('skipped Drone.CharacterMesh0 (no room)',1,true),crowded)
+local names=engine.names
+engine.names=function(c) if c.drone then local bones={} for i=1,300 do bones[i]='B'..i end return bones,{} end return names(c) end
+engine.identities=function() return {eve,companion} end
+local _,wide=droned.tick()
+assert(wide:find('1 components',1,true) and wide:find('skipped Drone.CharacterMesh0 (not streamable)',1,true),wide)
+local heavy={eve}
+for i=1,6 do heavy[#heavy+1]={name='Part'..i,object=0x7f0000100000+0x1000*i,class=0x7f0000002000,mesh=0x7f0000003000,mesh_name='M'} end
+heavy[#heavy+1]=companion
+engine.names=function(c) if c.drone or c.name:find('^Part') then local bones={} for i=1,250 do bones[i]='B'..i end return bones,{} end return names(c) end
+engine.identities=function() return heavy end
+local _,full=droned.tick()
+assert(full:find('7 components',1,true) and full:find('skipped Drone.CharacterMesh0 (no room)',1,true),full)
+engine.names=names
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
-print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log and effect layout')
+print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log, effect layout and the drone')
