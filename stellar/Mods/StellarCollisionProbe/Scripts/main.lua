@@ -140,6 +140,7 @@ local raw
 local pose_recorder
 local pose_stream
 local combat
+local lock
 local last_hd_frame
 local configured,config = pcall(require,'bridge_config')
 if configured then
@@ -168,6 +169,8 @@ if configured then
     pose_stream=require('pose_stream').new(require('pose_adapter').new(),config.directory,os.time,log,entered_link)
     -- Minecraft's combat verdicts at EVE's impacts; os.clock is wall time under the MSVC runtime.
     combat=require('combat_events').new(require('pose_adapter').new(),config.directory,os.time,os.clock,log,entered_link)
+    -- Minecraft's lock-on target: Stellar Blade's own lock-on on a hidden proxy, so EVE faces and strafes around it.
+    lock=require('lock_on').new(require('pose_adapter').new(),config.directory,os.time,os.clock,log,entered_link)
 end
 local function cancel_hd(message)
     hd_session.cancel(message)
@@ -334,6 +337,7 @@ local actions = {
         if visual then attempt('Texture',visual.clear) end
         if hd_session then attempt('HD capture',function() return hd_session.stop('F11 return requested') end) end
         if stream then attempt('Capture',function() return stream.stop('return requested') end) end
+        if lock then attempt('Lock-on',function() return lock.release('F11 return requested') end) end
         -- Each optional cleanup is independent of EVE's guarded return.
         local inspected,state=pcall(active.status)
         attempt('Return',active.restore,inspected and state=='idle')
@@ -457,6 +461,8 @@ if bridge then
             report_result('pose',pose_recorder.tick(frame))
             local fought,fight_error=pcall(combat.tick) -- Combat answers never cancel capture or input.
             if not fought then report_result('combat',false,'Combat events paused: '..tostring(fight_error)) end
+            local locked,lock_error=pcall(lock.tick) -- Nor does the lock-on.
+            if not locked then report_result('lock',false,'Lock-on paused: '..tostring(lock_error)) end
             pcall(report_cadence,frame) -- Optional diagnostics never cancel capture or input.
         end)
         hd_pending=false
@@ -467,4 +473,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 44; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 45; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

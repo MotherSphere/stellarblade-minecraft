@@ -55,6 +55,11 @@ public final class BridgeProtocolTest {
         rejects(() -> encodeCombat("a".repeat(32), 1, 0, "hit", 181));
         rejects(() -> encodeCombat("A".repeat(32), 1, 0, "hit", 0));
         rejects(() -> encodeCombat("a".repeat(32), 0, 0, "hit", 0));
+        // Lock-on targets for Stellar Blade follow the shared fixture; none releases; out-of-range targets are refused.
+        assert encodeLock("a".repeat(32), 3, 1760000000000L, new double[] {2.5, 1, -3.25}).equals(Files.readString(root.resolve("protocol/fixtures/lock.txt")));
+        assert encodeLock("a".repeat(32), 4, 0, null).contains("\nTARGET none\n");
+        rejects(() -> encodeLock("a".repeat(32), 1, 0, new double[] {5000, 0, 0}));
+        rejects(() -> encodeLock("a".repeat(32), 1, 0, new double[] {Double.NaN, 0, 0}));
         rejects(() -> encodeTerrain(terrain(Collections.nCopies(257,new Box(0,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(new Terrain("BAD",7,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
         rejects(() -> encodeTerrain(new Terrain(terrain.session(),0,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));

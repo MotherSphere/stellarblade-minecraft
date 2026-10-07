@@ -71,6 +71,20 @@ public final class BridgeProtocol {
                 + (Double.isNaN(yaw) ? "none" : String.format(java.util.Locale.ROOT, "%.1f", yaw)) + "\nEND " + seq + "\n";
     }
 
+    /**
+     * Minecraft's lock-on target for Stellar Blade: its centre relative to the bridge origin in blocks (Minecraft X, Y, Z),
+     * or null once released.
+     */
+    public static String encodeLock(String session, long seq, long time, double[] target) {
+        require(matches(SESSION, session), "Invalid session");
+        require(seq > 0 && seq <= MAX_TIME && time >= 0 && time <= MAX_TIME, "Invalid sequence or timestamp");
+        require(target == null || target.length == 3 && bounded(target[0], 4096) && bounded(target[1], 4096) && bounded(target[2], 4096),
+                "Invalid target");
+        return "SBMC_LOCK 1\nSESSION " + session + "\nSEQ " + seq + "\nTIME " + time + "\nTARGET "
+                + (target == null ? "none" : String.format(java.util.Locale.ROOT, "%.3f %.3f %.3f", target[0], target[1], target[2]))
+                + "\nEND " + seq + "\n";
+    }
+
     public static String encodeTerrain(Terrain terrain) {
         require(terrain != null && matches(SESSION,terrain.session), "Invalid session");
         require(terrain.seq > 0 && terrain.time >= 0 && terrain.time <= MAX_TIME, "Invalid sequence or timestamp");

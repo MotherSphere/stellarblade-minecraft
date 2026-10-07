@@ -457,6 +457,121 @@ function Adapter.new()
             get(function() return eve.MoveInputBlockCount end),get(function() return eve.LastMoveType end),
             get(function() return eve.LastMoveFowardInput end),get(function() return eve.LastMoveRightInput end))
     end
+    -- Minecraft's lock-on: a hidden, inert bare SBCharacter EVE's own lock-on aims at (ASBCharacter.bLockOn and
+    -- LockOnCharacter, which IsLockOn, her rotation and her AnimBP read). No game character is of the native class itself
+    -- (all are Blueprint subclasses), so a hidden one found later is a leftover of ours.
+    local PROXY_TRIBE={PC='SupplyNPC',TribeNoCheck='TribeNoCheck'} -- CharacterTribeTable: an enemy tribe of EVE's row.
+    local function sbcharacter() return (assert(valid(StaticFindObject('/Script/SB.SBCharacter')),'SBCharacter class unavailable')) end
+    local function aimed(eve,proxy)
+        local target=valid(eve.LockOnCharacter)
+        return target~=nil and proxy~=nil and target:GetAddress()==proxy:GetAddress()
+    end
+    function engine.lock_spawn(at)
+        local eve=character()
+        local tribe=assert(PROXY_TRIBE[text(eve.Tribe)],'no enemy tribe known for EVE tribe '..text(eve.Tribe))
+        -- 100 m above the target, out of everything's way; follow teleports it each frame.
+        local proxy=valid(eve:GetWorld():SpawnActor(sbcharacter(),{X=at.X,Y=at.Y,Z=at.Z+10000},{Pitch=0,Yaw=0,Roll=0}))
+        assert(proxy,'proxy not spawned')
+        proxy:SetActorTickEnabled(false) -- EVE's lock-on reads its root, tribe and flags, never its tick.
+        local move=valid(proxy.CharacterMovement)
+        if move then move:SetComponentTickEnabled(false) end
+        proxy:SetActorEnableCollision(false,false)
+        proxy:SetActorHiddenInGame(true)
+        proxy.Tribe=FName(tribe)
+        proxy.OverrideLockOnMaxDistance=1e5 -- cm: Minecraft owns the range (it releases beyond 28 blocks).
+        proxy.OverrideLockOnReleaseDistance=1e5
+        local controller=valid(proxy.Controller)
+        if controller then proxy:DetachFromControllerPendingDestroy() end
+        return proxy,string.format('proxy %s, tribe %s for EVE tribe %s, controller %s',proxy:GetFullName(),
+            text(proxy.Tribe),text(eve.Tribe),controller and controller:GetFullName() or 'none')
+    end
+    function engine.lock_camera(value)
+        local eve=character()
+        local previous=eve.bLockOnCameraEnable
+        eve.bLockOnCameraEnable=value
+        return previous
+    end
+    -- ASBCharacter's lock-on setter by its reflected fields, without its network packet or camera blend. Refused while
+    -- Stellar Blade disables lock-on or holds its own.
+    function engine.lock_engage(proxy,at)
+        local eve=character()
+        proxy=assert(valid(proxy),'proxy gone')
+        if eve.bDisableLockonTarget or eve.bDisableLockOnControl or eve:IsLockOn() and not aimed(eve,proxy) then return false end
+        proxy:K2_SetActorLocation(at,false,{},true)
+        proxy.UnavailableLockOn=0
+        eve.BackupTargetRelativeCameraBoomHeight=eve.TargetRelativeCameraBoomHeight -- Restored by Stellar Blade's release.
+        eve.BackupTargetRelativeCameraBoomLeftRight=eve.TargetRelativeCameraBoomLeftRight
+        eve.BackupTargetCamArmLength=eve.TargetCameraBoomLength
+        eve.RemainTurnMoveTime=0; eve.TurnMoveVelocity=0; eve.RemainTurnDuration=0; eve.RemainChangeIdleMoveTime=0
+        eve.HideTimeForLockOnCharacter=0
+        local here=value_of(eve:K2_GetActorLocation())
+        eve.CurrentLockOnDistance=math.sqrt((at.X-here.X)^2+(at.Y-here.Y)^2)
+        eve.LockOnCharacter=proxy
+        eve.bLockOn=true
+        return eve:IsLockOn()
+    end
+    function engine.lock_follow(proxy,at)
+        local eve=character()
+        proxy=assert(valid(proxy),'proxy gone')
+        proxy:K2_SetActorLocation(at,false,{},true)
+        eve.HideTimeForLockOnCharacter=0 -- Stellar Blade's off-screen release timer: Minecraft decides what is seen.
+        return eve:IsLockOn() and aimed(eve,proxy)
+    end
+    -- Stellar Blade's own release first (an unavailable target makes IsLockOn release: lock fields cleared, camera boom
+    -- restored from the backups); cleared directly if its bDisableLockOnControl blocks that; then camera flag and proxy.
+    function engine.lock_release(proxy,camera)
+        proxy=valid(proxy)
+        local eve,how=valid(UE.GetPlayer()),'EVE gone'
+        if eve and eve:IsA(sbcharacter()) then
+            how='not locked on the proxy'
+            if aimed(eve,proxy) then
+                proxy.UnavailableLockOn=1
+                eve:IsLockOn()
+                how='Stellar Blade release'
+                if aimed(eve,proxy) then
+                    eve.bLockOn=false
+                    pcall(function() eve.LockOnCharacter=nil end) -- bLockOn false already ends IsLockOn.
+                    eve.CurrentLockOnDistance=0
+                    how='direct release'
+                end
+            end
+            if camera~=nil then eve.bLockOnCameraEnable=camera end
+            how=string.format('%s; bLockOn %s, target %s, lock camera %s',how,tostring(eve.bLockOn),
+                valid(eve.LockOnCharacter) and 'set' or 'none',tostring(eve.bLockOnCameraEnable))
+        end
+        if proxy then proxy:K2_DestroyActor() end
+        return how
+    end
+    function engine.lock_sweep() -- Hidden bare SBCharacters: proxies a Lua reload left behind.
+        local count=0
+        for _,o in ipairs(FindAllOf('SBCharacter') or {}) do
+            o=valid(o)
+            if o and text(valid(o:GetClass()):GetFName())=='SBCharacter' and o.bHidden then
+                engine.lock_release(o,true) -- ponytail: true is DefaultGame.ini's value; read the CDO if a mod changes it.
+                count=count+1
+            end
+        end
+        return count
+    end
+    -- What Stellar Blade checks each frame and what its lock gives EVE, as one line.
+    function engine.lock_status(proxy)
+        local eve=character()
+        local function get(read) local ok,v=pcall(read); return ok and v or nil end
+        local p,r=value_of(eve:K2_GetActorLocation()),value_of(eve:K2_GetActorRotation())
+        proxy=valid(proxy)
+        local t=proxy and value_of(proxy:K2_GetActorLocation())
+        local bearing=t and math.deg(math.atan(t.Y-p.Y,t.X-p.X))
+        local function off(yaw) return yaw and bearing and string.format('%.0f',(yaw-bearing+540)%360-180) or 'n/a' end
+        local camera=get(function() return value_of(valid(UE.GetPlayerController()).PlayerCameraManager:GetCameraRotation()).Yaw end)
+        local v,yaw=value_of(eve:GetVelocity()),math.rad(r.Yaw)
+        return string.format('IsLockOn %s, anim IsLockOn %s; facing %s, camera %s deg off target; dist %s cm; vel fwd %.0f right %.0f; '..
+            'hide %.2f; mode %s freecam %s flying %s; target unavailable %s; disable control %s target %s',
+            tostring(eve:IsLockOn()),tostring(get(function() return valid(eve.Mesh):GetAnimInstance().IsLockOn end)),off(r.Yaw),off(camera),
+            t and string.format('%.0f',math.sqrt((t.X-p.X)^2+(t.Y-p.Y)^2)) or 'n/a',
+            v.X*math.cos(yaw)+v.Y*math.sin(yaw),-v.X*math.sin(yaw)+v.Y*math.cos(yaw),eve.HideTimeForLockOnCharacter,
+            tostring(get(function() return eve.CharacterMovement.MovementMode end)),tostring(eve.bFreeCamMode),tostring(eve.bFlyingAction),
+            tostring(proxy and proxy.UnavailableLockOn),tostring(eve.bDisableLockOnControl),tostring(eve.bDisableLockonTarget))
+    end
     -- Bone names in component-space order for components without a leader; morph names in MorphTargets order.
     function engine.names(entry)
         local bones,morphs={},{}

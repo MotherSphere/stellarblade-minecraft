@@ -8,22 +8,29 @@ import net.minecraft.util.math.Vec3d;
 /**
  * Stellar Blade's lock-on for Minecraft's entities, as Stellar Blade's own needs its own enemies: the lock-on key picks
  * the living entity nearest the crosshair within CONE of it, RANGE blocks and in sight, outlines it, and turns
- * Minecraft's camera toward it each frame. Stellar Blade's camera follows Minecraft's, so EVE runs and strikes toward
- * the target. Pressing the key again, losing the target (dead, gone, beyond KEEP blocks), losing the bridge link or
- * leaving EVE mode releases it. Render thread only.
+ * Minecraft's camera toward it each frame. Stellar Blade's camera follows Minecraft's, and its own lock-on holds EVE
+ * facing the target (her strafing locomotion): the target's centre goes to Lua every SEND nanoseconds while locked,
+ * none once released. Pressing the key again, losing the target (dead, gone, beyond KEEP blocks), losing the bridge
+ * link or leaving EVE mode releases it. Render thread only.
  */
 public final class AvatarLock {
     static final double RANGE = 20, KEEP = 28, CONE = Math.toRadians(40);
     static final double TURN = 12; // Per second: the camera closes this share of the gap, about 0.25 s to settle.
     static final float PITCH_DOWN = 8; // Degrees the camera looks below the target, as Stellar Blade frames it over EVE.
+    static final long SEND = 50_000_000L; // Heartbeat of the target sent to Stellar Blade, whose lease lasts 0.6 s.
     private static Entity target;
-    private static long lastNanos;
+    private static long lastNanos, lastSent;
 
     static void toggle() {
-        target = target != null ? null : pick();
-        lastNanos = 0;
+        if (target != null) release();
+        else target = pick();
+        lastNanos = lastSent = 0;
     }
-    static void release() { target = null; }
+    static void release() {
+        if (target == null) return;
+        target = null;
+        StellarBridge.lockTarget(null);
+    }
 
     /** True for the locked entity: Minecraft outlines it as it does glowing entities. */
     public static boolean outlines(Entity entity) { return entity != null && entity == target; }
@@ -56,7 +63,7 @@ public final class AvatarLock {
         var player = client.player;
         if (target == null) return;
         if (player == null || !target.isAlive() || target.isRemoved() || target.getWorld() != client.world || target.distanceTo(player) > KEEP) {
-            target = null;
+            release();
             return;
         }
         double seconds = lastNanos == 0 ? 0 : Math.min((nanos - lastNanos) / 1e9, 0.1);
@@ -64,7 +71,11 @@ public final class AvatarLock {
         // Where both are drawn this frame, not where the last tick left them: tick positions step 20 times a second.
         float delta = client.getRenderTickCounter().getTickDelta(true);
         Vec3d feet = AvatarView.cameraFeet(), eye = feet != null ? feet.add(0, player.getStandingEyeHeight(), 0) : player.getCameraPosVec(delta);
-        Vec3d toward = target.getLerpedPos(delta).add(0, target.getHeight() / 2, 0).subtract(eye);
+        Vec3d center = target.getLerpedPos(delta).add(0, target.getHeight() / 2, 0), toward = center.subtract(eye);
+        if (lastSent == 0 || nanos - lastSent >= SEND) {
+            lastSent = nanos;
+            StellarBridge.lockTarget(center);
+        }
         float[] wanted = angles(toward.x, toward.y, toward.z);
         double share = 1 - Math.exp(-TURN * seconds);
         double yaw = MathHelper.wrapDegrees(wanted[0] - player.getYaw()) * share;

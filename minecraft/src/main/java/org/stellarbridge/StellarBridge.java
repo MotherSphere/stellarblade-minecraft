@@ -246,6 +246,26 @@ public final class StellarBridge implements ClientModInitializer {
         }
     }
 
+    /**
+     * Render thread: the lock-on target's centre for Stellar Blade (eve-lock.txt), null once released; written on the
+     * server thread, which owns the session.
+     */
+    static void lockTarget(Vec3d center) {
+        var server = MinecraftClient.getInstance().getServer();
+        if (server == null) return;
+        long time = System.currentTimeMillis();
+        server.execute(() -> {
+            Session current = session;
+            if (current == null) return;
+            double[] relative = center == null ? null : new double[] {center.x - current.origin.x, center.y - current.origin.y, center.z - current.origin.z};
+            try {
+                current.files.write("eve-lock.txt", BridgeProtocol.encodeLock(current.id, ++current.lockSeq, time, relative));
+            } catch (IOException | IllegalArgumentException failure) {
+                LOG.warn("Lock-on not delivered to Stellar Blade: {}", failure.toString());
+            }
+        });
+    }
+
     /** EVE's blade struck an entity the client saw: Minecraft damages it as the bridged player's attack, on the server thread. */
     static void strike(int entityId, float amount, double knockback, boolean charged) {
         Control current = control;
@@ -292,7 +312,7 @@ public final class StellarBridge implements ClientModInitializer {
         List<BridgeProtocol.Box> boxes = List.of();
         int revision;
         int ticks;
-        long combatSeq;
+        long combatSeq, lockSeq;
 
         Session(IntegratedServer server, ServerPlayerEntity player, BridgeFiles files) {
             this.server = server;
