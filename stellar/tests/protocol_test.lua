@@ -32,6 +32,33 @@ for _, bad in ipairs({
     string.rep('x', 65537),
 }) do reject(bad) end
 reject(nil)
+reject(fixture:gsub('BOX 1 0 %-1 2 1%.5 0', 'BOX -4.5 -1 -4.5 4.5 0 4.5'))
+local old_format, why = Protocol.parse_terrain((fixture:gsub('SBMC 2', 'SBMC 1')))
+assert(old_format == nil and why:find('older Minecraft mod', 1, true), 'format 1 names the mismatched JAR')
+local function boxes(count)
+    local lines = {}
+    for i = 0, count - 1 do
+        local x, y, z = -16.4375 + i % 32, -3.9375 + (i // 1024) * 2, -16.4375 + (i // 32) % 32
+        lines[#lines + 1] = string.format('BOX %.4f %.4f %.4f %.4f %.4f %.4f\n', x, y, z, x + 0.875, y + 1.875, z + 0.875)
+    end
+    return (fixture:gsub('BOUNDS [^\n]*\nCOUNT 2\n.*END 7', 'BOUNDS -16.5 -4 -16.5 16.5 8 16.5\nCOUNT ' .. count
+        .. '\n' .. table.concat(lines):gsub('%%', '%%%%') .. 'END 7'))
+end
+local full = boxes(1024)
+assert(#full <= 65536 and #assert(Protocol.parse_terrain(full)).boxes == 1024, 'the whole box budget fits one packet')
+reject(boxes(1025))
+
+-- Heartbeats differ only in TIME and reuse the previous parse; anything else is parsed and validated again.
+local cache = {}
+local first = assert(Protocol.parse_terrain_cached(fixture, cache))
+local beat = assert(Protocol.parse_terrain_cached((fixture:gsub('TIME 1791110000', 'TIME 1791110003')), cache))
+assert(beat.time == 1791110003 and beat.boxes == first.boxes and beat.seq == 7, 'a heartbeat reuses the parsed geometry')
+assert(first.time == 1791110000, 'a heartbeat never mutates the earlier packet')
+for _, bad in ipairs({fixture:gsub('TIME 1791110000', 'TIME 9007199254740992'), fixture:gsub('1%.5', 'nan'),
+    fixture:gsub('TIME 1791110000', 'TIME 1') .. string.rep('x', 65537)}) do
+    assert(Protocol.parse_terrain_cached(bad, cache) == nil, 'a cached parse cannot accept what a full parse rejects')
+end
+assert(assert(Protocol.parse_terrain_cached((fixture:gsub('BOX 1 0', 'BOX 1.5 0')), cache)).boxes[2][1] == 1.5)
 
 assert(type(Protocol.parse_eve) == 'function', 'parse_eve must recover validated publication sequences')
 local eve_fixture = read('protocol/fixtures/eve.txt')

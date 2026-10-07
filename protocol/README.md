@@ -4,7 +4,7 @@ The shared directory is private to the local user (0700). Text snapshots are bou
 
 | Product | Producer | Reader | Contract |
 |---|---|---|---|
-| Terrain | Minecraft | Lua | `SBMC 1 TERRAIN`, fixed anchor, revision and merged boxes |
+| Terrain | Minecraft | Lua | `SBMC 2 TERRAIN`, fixed anchor, revision and at most 1024 distinct merged boxes |
 | EVE position | Lua | Minecraft | `SBMC 1 EVE`, session, state, acknowledged terrain revision and feet position |
 | Native terrain visuals | Minecraft | Lua | Independent visual revision and supported face/texture data |
 | Capture request | Minecraft | Lua/native | `SBMC_CAPTURE_SESSION 2`, RUN, SESSION, TIME, SIZE, STATE, END |

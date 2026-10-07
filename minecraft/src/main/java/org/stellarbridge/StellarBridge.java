@@ -33,12 +33,13 @@ import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.util.shape.VoxelShape;
+import net.minecraft.util.shape.VoxelShapes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class StellarBridge implements ClientModInitializer {
     private static final Logger LOG = LoggerFactory.getLogger("stellar_bridge");
-    static final BridgeProtocol.Box BOUNDS = new BridgeProtocol.Box(-4.5, -2, -4.5, 4.5, 4, 4.5);
+    static final BridgeProtocol.Box BOUNDS = new BridgeProtocol.Box(-16.5, -4, -16.5, 16.5, 8, 16.5);
     private static Session session; // Integrated server thread only.
     private static volatile Control control; // Immutable publication to client and packet threads.
     private static volatile PauseBinding pauseBinding; // Independent of EVE pose freshness; never exposes Session.
@@ -124,7 +125,8 @@ public final class StellarBridge implements ClientModInitializer {
         Session current = session;
         source.sendFeedback(() -> Text.literal(current == null ? "Stellar Bridge is inactive."
                 : "Stellar Bridge: revision " + current.revision + ", " + current.boxes.size()
-                    + " boxes, EVE position " + (control == null ? "waiting" : "active") + "."), false);
+                    + " boxes, slowest terrain publication " + current.slowestPublish / 1_000_000 + " ms, EVE position "
+                    + (control == null ? "waiting" : "active") + "."), false);
         return 1;
     }
 
@@ -334,6 +336,8 @@ public final class StellarBridge implements ClientModInitializer {
         final Vec3d origin;
         final PoseGate gate = new PoseGate(id, BOUNDS);
         List<BridgeProtocol.Box> boxes = List.of();
+        List<Box> parts = List.of();
+        long slowestPublish; // Nanoseconds of the slowest terrain publication (scan, merge, write) this session.
         int revision;
         int ticks;
         long combatSeq, lockSeq, mobSeq;
@@ -381,29 +385,51 @@ public final class StellarBridge implements ClientModInitializer {
         }
 
         void publish() throws IOException {
+            long started = System.nanoTime();
             // The patch must stay loaded without the player entity: a dead player leaves the world after a second. The
             // ticket lasts 5 ticks and is renewed every 4, so it lapses by itself once the session ends.
-            world.getChunkManager().addTicket(ChunkTicketType.POST_TELEPORT, new ChunkPos(BlockPos.ofFloored(origin)), 1, player.getId());
+            // Radius 2 keeps every chunk within two of the anchor's fully loaded, which covers the patch and its border.
+            world.getChunkManager().addTicket(ChunkTicketType.POST_TELEPORT, new ChunkPos(BlockPos.ofFloored(origin)), 2, player.getId());
             List<VoxelShape> shapes = new ArrayList<>();
+            List<Box> parts = new ArrayList<>();
             int x0 = MathHelper.floor(origin.x), y0 = MathHelper.floor(origin.y), z0 = MathHelper.floor(origin.z);
             // Include one neighboring block for collision shapes that protrude across the fixed patch boundary.
-            for (int x = x0 - 5; x <= x0 + 5; x++) {
-                for (int z = z0 - 5; z <= z0 + 5; z++) {
+            int reach = (int) BOUNDS.maxX() + 1, top = MathHelper.ceil(origin.y + BOUNDS.maxY());
+            ShapeContext context = ShapeContext.of(player);
+            for (int x = x0 - reach; x <= x0 + reach; x++) {
+                for (int z = z0 - reach; z <= z0 + reach; z++) {
                     if (!world.isChunkLoaded(x >> 4, z >> 4)) throw new IllegalArgumentException("All test-area chunks must remain loaded");
-                    for (int y = y0 - 3; y <= y0 + 4; y++) {
+                    for (int y = y0 + (int) BOUNDS.minY() - 1; y <= y0 + (int) BOUNDS.maxY(); y++) {
                         BlockPos position = new BlockPos(x, y, z);
                         if (world.isOutOfHeightLimit(position)) throw new IllegalArgumentException("The test area exceeds the world height limit");
-                        if (!world.getFluidState(position).isEmpty()) throw new IllegalArgumentException("Use a dry test area without fluids");
-                        VoxelShape shape = world.getBlockState(position).getCollisionShape(world, position, ShapeContext.of(player));
-                        if (!shape.isEmpty()) shapes.add(shape.offset(x - origin.x, y - origin.y, z - origin.z));
+                        VoxelShape shape = world.getBlockState(position).getCollisionShape(world, position, context);
+                        // Fluids are not simulated: EVE cannot enter them, a wall from the fluid up to the first solid
+                        // block above it (ice over a pond, a floor over cave water) or the patch's top.
+                        if (!world.getFluidState(position).isEmpty() && y - origin.y >= BOUNDS.minY()) {
+                            int column = x, row = z;
+                            int end = TerrainGeometry.fluidWallEnd(y, top, above -> {
+                                BlockPos at = new BlockPos(column, above, row);
+                                return world.getFluidState(at).isEmpty() && !world.getBlockState(at).getCollisionShape(world, at, context).isEmpty();
+                            });
+                            shape = VoxelShapes.cuboid(0, 0, 0, 1, Math.min(end - y, BOUNDS.maxY() - (y - origin.y)), 1);
+                        }
+                        if (shape.isEmpty()) continue;
+                        shape = shape.offset(x - origin.x, y - origin.y, z - origin.z);
+                        shapes.add(shape);
+                        parts.addAll(shape.getBoundingBoxes());
                     }
                 }
             }
-            List<BridgeProtocol.Box> next = TerrainGeometry.merge(shapes, BOUNDS);
+            // Merging is the costly step; heartbeats with unchanged block shapes reuse the last result.
+            List<BridgeProtocol.Box> next = parts.equals(this.parts) ? boxes
+                    : TerrainGeometry.merge(shapes, BOUNDS, origin.x, origin.y, origin.z);
+            this.parts = parts;
             int nextRevision = revision == 0 || !next.equals(boxes) ? Math.addExact(revision, 1) : revision;
             files.publish(BridgeProtocol.encodeTerrain(new BridgeProtocol.Terrain(id, nextRevision, now(),
                     world.getRegistryKey().getValue().toString(), origin.x, origin.y, origin.z, BOUNDS, next)));
-            if (nextRevision != revision) LOG.info("Terrain revision={} boxes={}", nextRevision, next.size());
+            long elapsed = System.nanoTime() - started;
+            slowestPublish = Math.max(slowestPublish, elapsed);
+            if (nextRevision != revision) LOG.info("Terrain revision={} boxes={} publish={} ms", nextRevision, next.size(), elapsed / 1_000_000);
             boxes = next;
             revision = nextRevision;
             NativeSceneExport.capture(server, world, player.getUuid(), new NativeScene.Binding(id, revision,

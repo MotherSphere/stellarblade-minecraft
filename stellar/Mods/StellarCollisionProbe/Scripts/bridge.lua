@@ -4,6 +4,7 @@ local Bridge={}
 function Bridge.new(terrain,directory,log,clock)
     clock=clock or os.time
     local current,sequence,last_message,alive_time,stopping=nil,0,nil,0,false
+    local parsed={}
     local api={status=terrain.status,shapes=terrain.shapes,set_visuals_visible=terrain.set_visuals_visible}
     function api.pose()
         if not current or stopping or not Protocol.fresh(alive_time,clock()) then return nil end
@@ -24,7 +25,7 @@ function Bridge.new(terrain,directory,log,clock)
         local f,err=io.open(directory..'/terrain.txt','rb')
         if not f then return nil,err end
         local text=f:read(65537); f:close()
-        return Protocol.parse_terrain(text or '')
+        return Protocol.parse_terrain_cached(text or '',parsed)
     end
     local function same_binding(packet)
         if packet.session~=current.session or packet.dimension~=current.dimension then return false end
@@ -111,7 +112,9 @@ function Bridge.new(terrain,directory,log,clock)
             end
             alive_time=packet.time
             local ok,message=terrain.update(packet)
-            if ok then current=packet; last_message=nil
+            if ok then
+                if packet.seq~=current.seq then report(message) else last_message=nil end
+                current=packet
             else
                 -- Keep the imported ack, but a validated heartbeat still proves the peer is alive.
                 report(message)

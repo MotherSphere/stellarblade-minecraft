@@ -10,6 +10,8 @@ public final class BridgeProtocol {
     private static final Pattern DIMENSION = Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+");
     private static final Pattern DECIMAL = Pattern.compile("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?");
     private static final Pattern UNSIGNED = Pattern.compile("[0-9]+");
+    /** Merged collision boxes in one terrain snapshot; a full packet must also fit in 64 KiB. */
+    static final int MAX_BOXES = 1024;
 
     public record Box(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {}
     public record Terrain(String session, int seq, long time, String dimension,
@@ -54,6 +56,10 @@ public final class BridgeProtocol {
             && bounded(box.maxX,32) && bounded(box.maxY,32) && bounded(box.maxZ,32)
             && box.minX < box.maxX && box.minY < box.maxY && box.minZ < box.maxZ, "Invalid box");
     }
+    private static Box fixed(Box box) {
+        return box == null ? null : new Box(fixed(box.minX), fixed(box.minY), fixed(box.minZ), fixed(box.maxX), fixed(box.maxY), fixed(box.maxZ));
+    }
+    private static double fixed(double value) { return Double.isFinite(value) ? Math.round(value * 1e4) / 1e4 : value; }
     private static void appendBox(StringBuilder text, String tag, Box box) {
         text.append(tag).append(' ').append(box.minX).append(' ').append(box.minY).append(' ').append(box.minZ)
             .append(' ').append(box.maxX).append(' ').append(box.maxY).append(' ').append(box.maxZ).append('\n');
@@ -114,14 +120,18 @@ public final class BridgeProtocol {
         require(bounded(terrain.originX,30000000) && bounded(terrain.originY,4096)
             && bounded(terrain.originZ,30000000), "Invalid origin");
         checkBox(terrain.bounds);
-        require(terrain.boxes != null && terrain.boxes.size() <= 256, "Invalid box count");
-        StringBuilder text = new StringBuilder("SBMC 1 TERRAIN\nSESSION ").append(terrain.session)
+        require(terrain.boxes != null && terrain.boxes.size() <= MAX_BOXES, "Invalid box count");
+        // Fixed precision (a ten-thousandth of a block): randomly offset shapes (bamboo, dripstone) keep the whole box
+        // budget inside one packet. A box that rounding collapses is refused.
+        List<Box> boxes = terrain.boxes.stream().map(BridgeProtocol::fixed).toList();
+        require(new java.util.HashSet<>(boxes).size() == boxes.size(), "Duplicate box");
+        StringBuilder text = new StringBuilder("SBMC 2 TERRAIN\nSESSION ").append(terrain.session)
             .append("\nSEQ ").append(terrain.seq).append("\nTIME ").append(terrain.time)
             .append("\nWORLD ").append(terrain.dimension).append(' ').append(terrain.originX)
             .append(' ').append(terrain.originY).append(' ').append(terrain.originZ).append('\n');
         appendBox(text,"BOUNDS",terrain.bounds);
         text.append("COUNT ").append(terrain.boxes.size()).append('\n');
-        for (Box box : terrain.boxes) {
+        for (Box box : boxes) {
             checkBox(box);
             require(box.minX >= terrain.bounds.minX && box.minY >= terrain.bounds.minY && box.minZ >= terrain.bounds.minZ
                 && box.maxX <= terrain.bounds.maxX && box.maxY <= terrain.bounds.maxY && box.maxZ <= terrain.bounds.maxZ,

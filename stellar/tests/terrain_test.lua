@@ -153,7 +153,7 @@ check('updates build replacement support before deleting the previous floor',fun
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b)
     b.events={}
-    assert(t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
+    assert(t.update(packet(2,{{-4.5,-1,-4.5,0.5,0,4.5},{0.5,-1,-4.5,4.5,0,4.5}})))
     assert(not b.live[old.id] and t.pose().ack==2)
     local old_destroy,new_spawn
     for i,event in ipairs(b.events) do
@@ -161,6 +161,32 @@ check('updates build replacement support before deleting the previous floor',fun
         if event[1]=='destroy' and event[2]==old.id then old_destroy=i end
     end
     assert(new_spawn and old_destroy and new_spawn<old_destroy)
+    assert(t.restore())
+end)
+
+check('updates rebuild only the boxes that changed',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet(1,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}}))); assert(t.enter())
+    local floor=imported(b); local count=b.count()
+    b.events={}
+    local ok,message=t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{-3,0,-3,-2,1,-2}}))
+    assert(ok and message:find('1 boxes added, 1 removed, 1 kept',1,true),message)
+    assert(#b.events==2 and b.events[1][1]=='spawn' and b.events[2][1]=='destroy','one spawn, then one removal')
+    assert(b.live[floor.id] and b.count()==count and t.pose().ack==2,'the unchanged floor keeps its actor')
+    assert(t.update(packet(3,{{-4.5,-1,-4.5,4.5,0,4.5},{-3,0,-3,-2,1,-2}})))
+    assert(#b.events==2 and t.pose().ack==3,'a revision without geometry changes touches no actor')
+    assert(t.restore())
+end)
+
+check('a deeper patch raises the lab so its floor stays clear of the start',function()
+    local b=backend(); local t=Terrain.new(b)
+    local p=packet(1,{{-16.5,-4,-16.5,16.5,-3,16.5}}); p.bounds={-16.5,-4,-16.5,16.5,8,16.5}
+    assert(t.create(p))
+    local floor
+    for _,spec in ipairs(t.shapes()) do if spec.role=='lab-floor' then floor=spec end end
+    assert(floor.center.Z+floor.extent.Z>=100+400 and floor.center.Z+floor.extent.Z<=100+403,'lab floor 4 m above the start')
+    assert(imported(b).spec.center.Z==900-350,'Minecraft y maps from the raised anchor')
+    assert(t.enter()); assert(b.position.Z==900+95)
     assert(t.restore())
 end)
 
@@ -181,7 +207,7 @@ end)
 check('failed update rolls back new actors while preserving the live patch',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
-    b.fail_configure=b.next_id+2
+    b.fail_configure=b.next_id+1
     assert(not t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
     assert(b.count()==count and b.live[old.id] and t.status()=='entered' and t.pose().ack==1)
     b.fail_configure=nil
@@ -192,7 +218,7 @@ check('failed update cleanup retains every actor and blocks further mutation',fu
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
     b.fail_configure=b.next_id+1; b.fail_destroy=b.next_id+1
-    assert(not t.update(packet(2)))
+    assert(not t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
     assert(b.count()==count+1 and b.live[old.id] and t.status()=='cleanup-required')
     assert(not t.enter() and not t.update(packet(3)))
     assert(t.pose().state=='idle')
@@ -203,7 +229,7 @@ check('old actor deletion failure retains the new supporting floor until return'
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
     b.fail_destroy=old.id
-    assert(not t.update(packet(2))); assert(b.count()==count+1)
+    assert(not t.update(packet(2,{{-4.5,-1.5,-4.5,4.5,0,4.5}}))); assert(b.count()==count+1)
     assert(t.status()=='cleanup-required' and t.pose().ack==1)
     b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0)
 end)

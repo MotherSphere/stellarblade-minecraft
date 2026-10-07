@@ -110,6 +110,7 @@ function engine.configure(handle, spec)
     assert(box:GetCollisionEnabled()==3, 'Collision mode was not accepted.')
     local shown, why = pcall(add_visual,actor:GetWorld(),spec,handle)
     if not shown then log('Optional cube visual unavailable: '..tostring(why)) end
+    if spec.role=='minecraft' then return end -- Up to a thousand per import; the terrain summary counts them.
     log(string.format('Spawned %s at %.1f %.1f %.1f, half-extents %.1f %.1f %.1f',
         spec.role,spec.center.X,spec.center.Y,spec.center.Z,spec.extent.X,spec.extent.Y,spec.extent.Z))
 end

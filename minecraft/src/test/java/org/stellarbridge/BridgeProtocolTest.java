@@ -43,7 +43,7 @@ public final class BridgeProtocolTest {
         rejects(() -> parseEve(null));
         Terrain terrain = terrain(List.of(new Box(-4.5,-1,-4.5,4.5,0,4.5), new Box(1,0,-1,2,1.5,0)));
         String encoded = encodeTerrain(terrain);
-        check(encoded.startsWith("SBMC 1 TERRAIN\n") && encoded.endsWith("END 7\n"), "Framing mismatch");
+        check(encoded.startsWith("SBMC 2 TERRAIN\n") && encoded.endsWith("END 7\n"), "Framing mismatch");
         check(encoded.contains("COUNT 2\n"), "Box count mismatch");
         rejects(() -> encodeTerrain(terrain(List.of(new Box(1,0,0,1,1,1)))));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(-5,0,0,1,1,1)))));
@@ -72,7 +72,26 @@ public final class BridgeProtocolTest {
         rejects(() -> encodeMobs("a".repeat(32), 1, 0, List.of(new Box(0, 0, 0, Double.NaN, 1, 1))));
         rejects(() -> encodeMobs("A".repeat(32), 1, 0, mobs));
         rejects(() -> encodeMobs("a".repeat(32), 0, 0, mobs));
-        rejects(() -> encodeTerrain(terrain(Collections.nCopies(257,new Box(0,0,0,1,1,1)))));
+        rejects(() -> encodeTerrain(terrain(List.of(new Box(0,0,0,1,1,1), new Box(0,0,0,1,1,1)))));
+        // The whole box budget fits one 64 KiB packet even with sixteenth-block coordinates on every side.
+        List<Box> many = new java.util.ArrayList<>();
+        for (int i = 0; i <= MAX_BOXES; i++) {
+            double x = -16.4375 + i % 32, y = -3.9375 + i / 1024 * 2, z = -16.4375 + i / 32 % 32;
+            many.add(new Box(x, y, z, x + 0.875, y + 1.875, z + 0.875));
+        }
+        Box large = new Box(-16.5, -4, -16.5, 16.5, 8, 16.5);
+        check(encodeTerrain(new Terrain(terrain.session(), 7, 1791110000, "minecraft:overworld", 0.5, 64, -0.5, large,
+            many.subList(0, MAX_BOXES))).contains("COUNT " + MAX_BOXES + "\n"), "The full box budget must fit one packet");
+        rejects(() -> encodeTerrain(new Terrain(terrain.session(), 7, 1791110000, "minecraft:overworld", 0.5, 64, -0.5, large, many)));
+        // Randomly offset shapes (bamboo) have long coordinates: a ten-thousandth of a block keeps the budget in one packet.
+        List<Box> offset = new java.util.ArrayList<>();
+        for (int i = 0; i < MAX_BOXES; i++) {
+            double x = -16.17708332836628 + i % 32, y = -3.9 + i / 1024 * 2, z = -16.27708332986396 + i / 32 % 32;
+            offset.add(new Box(x, y, z, x + 0.12500000000000003, y + 1.0000000000000002, z + 0.12500000000000003));
+        }
+        String bamboo = encodeTerrain(new Terrain(terrain.session(), 7, 1791110000, "minecraft:overworld", 0.5, 64, -0.5, large, offset));
+        check(bamboo.contains("BOX -16.1771 -3.9 -16.2771 -16.0521 -2.9 -16.1521\n"), "Coordinates at a ten-thousandth of a block");
+        rejects(() -> encodeTerrain(terrain(List.of(new Box(0, 0, 0, 0.00004, 1, 1))))); // Collapsed by rounding.
         rejects(() -> encodeTerrain(new Terrain("BAD",7,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
         rejects(() -> encodeTerrain(new Terrain(terrain.session(),0,1,"minecraft:overworld",0,0,0,terrain.bounds(),List.of())));
         rejects(() -> encodeTerrain(new Terrain(terrain.session(),7,1,"Minecraft:overworld",0,0,0,terrain.bounds(),List.of())));

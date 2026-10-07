@@ -92,7 +92,7 @@ GPU contention between the games is outside these counters; sample it externally
 
 ## Reverse terrain and texture probes
 
-The reverse renderer displays Minecraft faces inside Stellar Blade and leaves its surroundings visible. It supports air and full cubes of stone, dirt, grass without snow, white wool and bedrock within the fixed patch. Unsupported blocks stop visual publication. Textures come from the active Minecraft resource manager; no game assets are packaged here. It does not import mobs, distant chunks, arbitrary models or fluids.
+The reverse renderer displays Minecraft faces inside Stellar Blade and leaves its surroundings visible. It supports air and full cubes of stone, dirt, grass without snow, white wool and bedrock within the 9 × 6 × 9 blocks around the anchor. Unsupported blocks stop visual publication. Textures come from the active Minecraft resource manager; no game assets are packaged here. It does not import mobs, distant chunks, arbitrary models or fluids.
 
 After `/stellar start`, F5 and F8, toggle it with `sbmc visuals`. Disable it before capturing EVE into Minecraft. Visual revisions are independent of collision revisions; changing wool to stone can update appearance without changing collision. F11 removes owned visuals and performs the guarded return.
 

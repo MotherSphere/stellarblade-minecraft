@@ -24,7 +24,7 @@ local function write(text)
     local f=assert(io.open(path..'/terrain.txt','wb')); assert(f:write(text)); assert(f:close())
 end
 local function terrain(seq,time)
-    return string.format('SBMC 1 TERRAIN\nSESSION %s\nSEQ %d\nTIME %d\nWORLD minecraft:overworld 0.5 64 0.5\nBOUNDS -4.5 -2 -4.5 4.5 4 4.5\nCOUNT 1\nBOX -4.5 -1 -4.5 4.5 0 4.5\nEND %d\n',session,seq,time,seq)
+    return string.format('SBMC 2 TERRAIN\nSESSION %s\nSEQ %d\nTIME %d\nWORLD minecraft:overworld 0.5 64 0.5\nBOUNDS -4.5 -2 -4.5 4.5 4 4.5\nCOUNT 1\nBOX -4.5 -1 -4.5 4.5 0 4.5\nEND %d\n',session,seq,time,seq)
 end
 local function read(name)
     local f=io.open(path..'/'..name,'rb'); if not f then return nil end

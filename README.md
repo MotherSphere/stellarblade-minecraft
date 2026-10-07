@@ -11,14 +11,14 @@ The prototype supports a bounded terrain/collision link, keyboard/mouse forwardi
 First follow [setup and build instructions](docs/setup.md). Use a private creative or survival test world and a backed-up Stellar Blade save in a clear outdoor location. Avatar mode runs with Fast, Fancy or Fabulous graphics; Iris shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris.
 
 1. In Minecraft, stand on a full block and run `/stellar start`.
-2. In Stellar Blade, load EVE, press **F5** to import collision, then **F8** to enter the elevated lab. The lab must be clear of existing level geometry.
+2. In Stellar Blade, load EVE, press **F5** to import collision, then **F8** to enter the elevated lab. The lab must be clear of existing level geometry: about 34 m square, from 4 m to 18 m above EVE.
 3. Return to Minecraft and run **`/stellaravatar play`** (or `/stellarview play` for capture mode). Close chat and release held controls. Forwarding begins once EVE's streamed pose (in capture mode: a displayed image) is fresh and the native adapter acknowledges neutral input.
 4. Use **B** to switch between EVE controls and Minecraft build interactions. This binding is configurable in Minecraft's Controls menu.
 5. To stop, use **`/stellaravatar off`** (or `/stellarview off`), then **F11** in Stellar Blade to return EVE, then **`/stellar stop`** in Minecraft.
 
 Do not save, travel, load another save or reload Lua while EVE is in the lab. The bridge does not disable autosave. If returning fails, supporting collision stays in place so F11 can be retried.
 
-The patch is fixed around the starting anchor: **9 × 6 × 9 blocks**, at most 256 merged collision boxes, at 100 Unreal units per block. An active session keeps the private Minecraft world running through pause menus and focus changes. Stopping or disconnecting restores normal pause behavior. This is not a multiplayer integration.
+The patch is fixed around the starting anchor: **33 × 12 × 33 blocks** (4 below the starting floor, 8 above), at most 1024 merged collision boxes, at 100 Unreal units per block. Water and lava are walls from the fluid up to the patch's top: EVE cannot enter them. An active session keeps the private Minecraft world running through pause menus and focus changes. Stopping or disconnecting restores normal pause behavior. This is not a multiplayer integration.
 
 ## Controls
 

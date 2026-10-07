@@ -9,6 +9,9 @@ local function equal_box(a,b)
     for i=1,6 do if a[i]~=b[i] then return false end end
     return true
 end
+local function box_key(b)
+    return string.format('%.17g %.17g %.17g %.17g %.17g %.17g',b[1],b[2],b[3],b[4],b[5],b[6])
+end
 local function copy_packet(packet)
     local boxes={}
     for i,box in ipairs(packet.boxes) do boxes[i]=copy_box(box) end
@@ -65,11 +68,11 @@ function Terrain.new(engine,scale)
             assert(engine.valid(item.actor),'A terrain or guard actor is missing; return and clean up.')
         end)
     end
-    local function spawn_owned(group,spec)
+    local function spawn_owned(group,spec,key)
         spec.visuals_visible=visuals_visible
         local actor=engine.spawn(spec)
         assert(actor,'spawn returned no actor')
-        group[#group+1]={actor=actor,spec=spec}
+        group[#group+1]={actor=actor,spec=spec,key=key}
         engine.configure(actor,spec)
     end
     local function destroy_group(group)
@@ -128,24 +131,27 @@ function Terrain.new(engine,scale)
         assert(bounds[1]*scale < -origin.radius and bounds[4]*scale > origin.radius
             and bounds[3]*scale < -origin.radius and bounds[6]*scale > origin.radius
             and bounds[2]<0 and bounds[5]>0,'The Minecraft anchor must fit inside the guarded patch.')
-        local anchor={X=origin.position.X,Y=origin.position.Y,Z=origin.position.Z+600}
+        -- The lab floor stays 4 m above EVE's starting centre however deep the patch reaches.
+        local anchor={X=origin.position.X,Y=origin.position.Y,Z=origin.position.Z+400-bounds[2]*scale}
         assert(anchor.Z+bounds[2]*scale-50 > origin.position.Z+origin.half_height,
             'The bounded patch is too deep for the elevated lab; no actors created.')
         fixture={origin=origin,anchor=anchor,packet=copy_packet(packet),
             guards={},terrain={},pending={},entered=false,complete=false,
             entry={X=anchor.X,Y=anchor.Y,Z=anchor.Z+origin.half_height+5}}
+        local started=os.clock()
         local ok,err=pcall(function()
             for _,spec in ipairs(lab_guards(bounds,origin.half_height)) do
                 spawn_owned(fixture.guards,spec)
             end
-            for _,box in ipairs(packet.boxes) do spawn_owned(fixture.terrain,mapped(box,'minecraft')) end
+            for _,box in ipairs(packet.boxes) do spawn_owned(fixture.terrain,mapped(box,'minecraft'),box_key(box)) end
         end)
         if not ok then
             local cleaned,why=cleanup()
             error(tostring(err)..(cleaned and '; creation rolled back' or '; cleanup required: '..why))
         end
         fixture.complete=true
-        return 'Minecraft collision patch ready. Entry is separate; lab guards are additional geometry.'
+        return string.format('Minecraft collision patch ready: %d boxes in %.0f ms. Entry is separate; lab guards are additional geometry.',
+            #packet.boxes,(os.clock()-started)*1000)
     end)
 
     api.enter=protected(function()
@@ -179,20 +185,25 @@ function Terrain.new(engine,scale)
             return 'Terrain revision unchanged.'
         end
         valid_support()
-        local specs={}
+        local started=os.clock()
+        -- Only changed boxes are rebuilt: an actor whose exact box remains keeps its collision.
+        local removed,kept,added={},{},{}
+        for _,item in ipairs(fixture.terrain) do removed[item.key]=item end
         for _,box in ipairs(packet.boxes) do
-            local spec=mapped(box,'minecraft')
-            local unchanged=false
-            for _,old in ipairs(fixture.packet.boxes) do
-                if equal_box(box,old) then unchanged=true; break end
+            local key=box_key(box)
+            if removed[key] then
+                kept[#kept+1]=removed[key]
+                removed[key]=nil
+            else
+                local spec=mapped(box,'minecraft')
+                -- Existing contacts cannot make unrelated block edits fail.
+                assert(not overlaps(spec,now.position,now.radius,now.half_height),
+                    'Terrain update deferred: new geometry intersects EVE. Move away before retrying.')
+                added[#added+1]={spec=spec,key=key}
             end
-            -- Existing contacts cannot make unrelated block edits fail.
-            assert(unchanged or not overlaps(spec,now.position,now.radius,now.half_height),
-                'Terrain update deferred: new geometry intersects EVE. Move away before retrying.')
-            specs[#specs+1]=spec
         end
         local ok,err=pcall(function()
-            for _,spec in ipairs(specs) do spawn_owned(fixture.pending,spec) end
+            for _,new in ipairs(added) do spawn_owned(fixture.pending,new.spec,new.key) end
         end)
         if not ok then
             local remaining,why=destroy_group(fixture.pending)
@@ -202,13 +213,17 @@ function Terrain.new(engine,scale)
                 or '; previous terrain retained; cleanup required: '..why))
         end
         -- The new floor is fully configured before any old collision actor is removed.
-        local old_remaining,why=destroy_group(fixture.terrain)
-        fixture.terrain=fixture.pending
+        local old={}
+        for _,item in ipairs(fixture.terrain) do if removed[item.key] then old[#old+1]=item end end
+        local old_remaining,why=destroy_group(old)
+        for _,item in ipairs(fixture.pending) do kept[#kept+1]=item end
+        fixture.terrain=kept
         fixture.pending=old_remaining
         fixture.complete=#old_remaining==0
         assert(fixture.complete,'Replacement terrain retained; old actor cleanup required: '..why)
         fixture.packet=copy_packet(packet)
-        return 'Minecraft collision revision updated.'
+        return string.format('Minecraft collision revision %d: %d boxes added, %d removed, %d kept in %.0f ms.',
+            packet.seq,#added,#old,#kept-#added,(os.clock()-started)*1000)
     end)
 
     api.restore=protected(function()
