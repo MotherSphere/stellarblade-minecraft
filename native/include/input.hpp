@@ -443,6 +443,11 @@ public:
   std::string forwarding_run() const {
     return enabled_ && input_ ? input_->run : std::string();
   }
+  // The run Lua's control permit grants (active, within its lease), or empty. Unlike forwarding_run it stays while
+  // Minecraft suspends forwarded input (an open screen).
+  std::string permit_run(uint64_t now) const {
+    return permit_ && permit_->state == "active" && now < permit_deadline_ ? permit_->run : std::string();
+  }
   std::optional<Ack> receipt(uint64_t wall) const {
     if (!has_receipt_ || !input_)
       return {};

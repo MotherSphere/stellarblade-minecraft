@@ -25,6 +25,41 @@ static void add_yaw(void *, float value) { inputs.push_back({'y', value}); }
 static uintptr_t pawn_table[0x7a0 / 8 + 1];
 static uintptr_t boom_table[1]; // Stands in for USBSpringArmComponent's virtual table.
 
+// Stellar Blade's functions the wardrobe calls: item rows by alias (FName as 8 bytes), the player's GUID and bucket,
+// actor states, the combat test, and the equip and unequip calls they record.
+namespace sb {
+std::vector<std::pair<uint64_t, const uint8_t *>> rows;
+int32_t player = 77;
+uintptr_t bucket = 0;
+std::vector<int32_t> states;
+bool calm = true;
+struct Call {
+  char kind;
+  uintptr_t items;
+  int32_t player, slot;
+  uint32_t saved[4];
+  int32_t variant;
+};
+std::vector<Call> calls;
+const uint8_t *row(uintptr_t, uint64_t, const void *alias) {
+  uint64_t name;
+  std::memcpy(&name, alias, 8);
+  for (auto &r : rows)
+    if (r.first == name)
+      return r.second;
+  return nullptr;
+}
+bool has_state(uintptr_t, int32_t state) { return std::count(states.begin(), states.end(), state) > 0; }
+bool can_change(uintptr_t) { return calm; }
+int32_t player_guid() { return player; }
+uintptr_t find_bucket(uintptr_t, int32_t type, int32_t guid) { return type == 1 && guid == player ? bucket : 0; }
+void equip(uintptr_t items, int32_t guid, int32_t slot, const uint32_t *saved, int32_t variant) {
+  calls.push_back({'e', items, guid, slot, {saved[0], saved[1], saved[2], saved[3]}, variant});
+}
+void unequip(uintptr_t items, int32_t guid, int32_t slot) { calls.push_back({'u', items, guid, slot, {}, 0}); }
+const WardrobeCalls fakes{equip, unequip, row, has_state, can_change, player_guid, find_bucket};
+} // namespace sb
+
 // Fake engine memory with the pinned build's offsets: a GUObjectArray with one
 // chunk of FUObjectItems and skeletal mesh components that point into it.
 struct Fake {
@@ -1112,6 +1147,251 @@ int main() {
     assert(parse_lock("", Run) == 0);
   }
   {
+    // The wardrobe request: the shared fixture (Java writes the same), its three forms, and every refusal.
+    auto ask = [](std::string op, std::string slot, std::string item, std::string seq = "6", std::string end = "6",
+                  std::string time = "1760000000000") {
+      return "SBMC_WARDROBE_REQUEST 1\nSESSION " + std::string(32, 'a') + "\nSEQ " + seq + "\nTIME " + time + "\nOP " +
+             op + "\nSLOT " + slot + "\nITEM " + item + "\nEND " + end + "\n";
+    };
+    const std::string guid = "0000000100000002000000030000000a";
+    std::ifstream shared("protocol/fixtures/wardrobe-request.txt", std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(shared)), std::istreambuf_iterator<char>());
+    assert(text == ask("equip", "5", guid) && "The fixture is the equip form");
+    auto r = parse_wardrobe_request(text);
+    assert(r && r->session == std::string(32, 'a') && r->seq == 6 && r->time == 1760000000000ull &&
+           r->op == WardrobeOp::Equip && r->slot == 5 && r->item[0] == 1 && r->item[1] == 2 && r->item[2] == 3 &&
+           r->item[3] == 10 && "SavedGuid dwords in memory order");
+    auto list = parse_wardrobe_request(ask("list", "0", "-"));
+    assert(list && list->op == WardrobeOp::List && list->slot == 0 && !list->item[3]);
+    auto off = parse_wardrobe_request(ask("unequip", "11", "-"));
+    assert(off && off->op == WardrobeOp::Unequip && off->slot == 11);
+    assert(parse_wardrobe_request(ask("equip", "17", guid)) && parse_wardrobe_request(ask("equip", "1", guid)));
+    assert(!parse_wardrobe_request("SBMC_WARDROBE_REQUEST 2" + text.substr(23)) && "Another version");
+    assert(!parse_wardrobe_request(ask("equip", "5", "0000000100000002000000030000000A")) && "Uppercase GUID");
+    assert(!parse_wardrobe_request(ask("equip", "5", guid.substr(1))) && "Short GUID");
+    assert(!parse_wardrobe_request(ask("equip", "5", std::string(32, '0'))) && "A zero GUID names nothing");
+    assert(!parse_wardrobe_request(ask("equip", "5", "-")) && "Equip names its item");
+    assert(!parse_wardrobe_request(ask("equip", "18", guid)) && !parse_wardrobe_request(ask("equip", "0", guid)) &&
+           "Slots 1..17");
+    assert(!parse_wardrobe_request(ask("unequip", "11", guid)) && !parse_wardrobe_request(ask("unequip", "0", "-")) &&
+           "Unequip names a slot, no item");
+    assert(!parse_wardrobe_request(ask("list", "5", "-")) && !parse_wardrobe_request(ask("list", "0", guid)) &&
+           "List carries SLOT 0 and ITEM -");
+    assert(!parse_wardrobe_request(ask("wear", "5", guid)) && "Unknown OP");
+    assert(!parse_wardrobe_request(ask("equip", "5", guid, "6", "7")) && "SEQ repeated by END");
+    assert(!parse_wardrobe_request(ask("list", "0", "-", "0", "0")) && "SEQ from 1");
+    assert(parse_wardrobe_request(ask("list", "0", "-", "999999999999999", "999999999999999")) &&
+           !parse_wardrobe_request(ask("list", "0", "-", "1000000000000000", "1000000000000000")) && "15 digits");
+    assert(parse_wardrobe_request(ask("list", "0", "-", "6", "6", std::string(406, '0') + "1")) &&
+           !parse_wardrobe_request(ask("list", "0", "-", "6", "6", std::string(407, '0') + "1")) && "At most 512 bytes");
+    assert(!parse_wardrobe_request(text + "\n") && !parse_wardrobe_request(text.substr(0, text.size() - 1)) &&
+           "Exact lines, LF-terminated");
+    // Gate 1: the linked session, within 2.5 s of TIME, a newer SEQ of that session.
+    WardrobeGate gate;
+    auto at_seq = [&](uint64_t seq, uint64_t time) {
+      auto copy = *r;
+      copy.seq = seq;
+      copy.time = time;
+      return copy;
+    };
+    const auto linked = std::string(32, 'a');
+    const uint64_t wall = 1760000010000;
+    assert(!gate.take(at_seq(6, wall), std::string(32, 'b'), wall) && !gate.take(at_seq(6, wall), "none", wall) &&
+           "Only the linked session");
+    assert(!gate.take(at_seq(6, wall - WardrobeLease - 1), linked, wall) && !gate.take(at_seq(6, wall + 101), linked, wall) &&
+           "Fresh only");
+    assert(gate.take(at_seq(6, wall - WardrobeLease), linked, wall) && "Taken");
+    assert(!gate.take(at_seq(6, wall), linked, wall) && !gate.take(at_seq(5, wall), linked, wall) && "Once per SEQ");
+    assert(gate.take(at_seq(7, wall), linked, wall) && "A newer SEQ");
+    auto other = at_seq(1, wall);
+    other.session = std::string(32, 'b');
+    assert(gate.take(other, other.session, wall) && "A new link starts its own SEQ");
+    // Gate 5 and the categories' slots.
+    for (uint32_t slot = 0; slot <= 18; slot++) {
+      bool wardrobe = (slot >= 1 && slot <= 8) || slot == 10 || slot == 11 || slot == 17;
+      assert(wardrobe_slot_allowed(WardrobeOp::Equip, slot, true) == wardrobe && "Equip into an occupied wardrobe slot");
+      assert(wardrobe_slot_allowed(WardrobeOp::Equip, slot, false) == (slot == 10 || slot == 11) &&
+             "Into an empty one only the earring or face accessory");
+      assert(wardrobe_slot_allowed(WardrobeOp::Unequip, slot, true) == (slot == 10 || slot == 11) &&
+             "Never empty the suit, the hair, gear or exospines");
+      assert(!wardrobe_slot_allowed(WardrobeOp::List, slot, true));
+    }
+    const std::pair<uint32_t, std::vector<uint32_t>> fits[] = {
+        {2, {1, 2, 3, 4}}, {3, {6, 7}}, {4, {5}}, {21, {8}}, {22, {11}}, {23, {10}}, {28, {17}}, {5, {}}, {26, {}}};
+    for (auto &f : fits) {
+      assert(wardrobe_category(f.first) == !f.second.empty());
+      for (uint32_t slot = 0; slot <= 18; slot++)
+        assert(wardrobe_fits(f.first, slot) == (std::count(f.second.begin(), f.second.end(), slot) > 0));
+    }
+
+    // Stellar Blade's memory: the game world's actor manager (+0xc8) and item manager (+0xe8), the spawned player
+    // actor with its worn map at +0x3E8, the player's Inventory bucket with its owned map at +0x40.
+    std::vector<uint8_t> world(0x100), manager(0x100), actor(0x2700), items(0x10), bucket(0x100), tables(0x10);
+    uintptr_t actors[1] = {uintptr_t(actor.data())};
+    auto put_ptr = [](std::vector<uint8_t> &b, size_t at, uintptr_t v) { std::memcpy(b.data() + at, &v, 8); };
+    auto put_i32 = [](std::vector<uint8_t> &b, size_t at, int32_t v) { std::memcpy(b.data() + at, &v, 4); };
+    put_ptr(world, 0xc8, uintptr_t(manager.data()));
+    put_ptr(world, 0xe8, uintptr_t(items.data()));
+    put_ptr(manager, 0x28, uintptr_t(actors));
+    put_i32(manager, 0x30, 1);
+    put_i32(manager, 0x3c, 0);
+    put_i32(actor, 0x2600, 1);
+    // A TMap at owner + at: elements of stride bytes, next id at next; chains[b] the elements of bucket b in order;
+    // one bucket inline at +0x38, more on the heap at +0x40; HashSize at +0x48.
+    auto tmap = [&](std::vector<uint8_t> &owner, size_t at, std::vector<uint8_t> &elements, size_t stride, size_t next,
+                    std::vector<int32_t> &heap, const std::vector<std::vector<int32_t>> &chains) {
+      put_ptr(owner, at, uintptr_t(elements.data()));
+      put_i32(owner, at + 8, int32_t(elements.size() / stride));
+      heap.assign(chains.size(), -1);
+      for (size_t b = 0; b < chains.size(); b++) {
+        for (size_t k = 0; k < chains[b].size(); k++)
+          put_i32(elements, stride * chains[b][k] + next, k + 1 < chains[b].size() ? chains[b][k + 1] : -1);
+        heap[b] = chains[b].empty() ? -1 : chains[b][0];
+      }
+      put_i32(owner, at + 0x38, heap[0]);
+      put_ptr(owner, at + 0x40, chains.size() > 1 ? uintptr_t(heap.data()) : 0);
+      put_i32(owner, at + 0x48, int32_t(chains.size()));
+    };
+    // An item instance at value: SavedGuid {1, 2, 3, last}, ItemAlias, StatLevel, MatVarIndex.
+    auto instance = [&](std::vector<uint8_t> &b, size_t value, uint32_t last, uint64_t alias, uint32_t level,
+                        uint32_t variant) {
+      uint32_t g[4] = {1, 2, 3, last};
+      std::memcpy(b.data() + value, g, 16);
+      std::memcpy(b.data() + value + 0x20, &alias, 8);
+      std::memcpy(b.data() + value + 0x30, &level, 4);
+      std::memcpy(b.data() + value + 0x40, &variant, 4);
+    };
+    // Rows: ID at +0x10, Category at +0x70. Aliases 101/102 suits, 103 a hair, 104 a potion, 106 an exospine.
+    const uint64_t aliases[] = {101, 102, 103, 104, 106};
+    const uint32_t ids[] = {4000001, 4000002, 2100003, 5000004, 3000004};
+    const uint8_t categories[] = {4, 4, 21, 5, 3};
+    std::vector<std::vector<uint8_t>> row_bytes(5, std::vector<uint8_t>(0x1c0));
+    sb::rows.clear();
+    for (size_t k = 0; k < 5; k++) {
+      std::memcpy(row_bytes[k].data() + 0x10, &ids[k], 4);
+      row_bytes[k][0x70] = categories[k];
+      sb::rows.push_back({aliases[k], row_bytes[k].data()});
+    }
+    // Owned: A (suit, worn), B (suit), H (hair, colour 2, worn), a potion; chained in two buckets on the heap.
+    std::vector<uint8_t> owned(4 * 0x168);
+    std::vector<int32_t> owned_hash, worn_hash;
+    instance(owned, 0 * 0x168 + 0x10, 0xa, 101, 0, 0);
+    instance(owned, 1 * 0x168 + 0x10, 0x4, 102, 0, 0);
+    instance(owned, 2 * 0x168 + 0x10, 0xff, 103, 0, 2);
+    instance(owned, 3 * 0x168 + 0x10, 0x99, 104, 0, 0);
+    for (int k = 0; k < 4; k++)
+      std::memcpy(owned.data() + k * 0x168, owned.data() + k * 0x168 + 0x10, 16); // The key is the SavedGuid.
+    tmap(bucket, 0x40, owned, 0x168, 0x160, owned_hash, {{0, 1}, {2, 3}});
+    // Worn: slot 5 A, slot 8 H, slot 6 an exospine X (level 3) the bucket does not hold; one inline bucket.
+    std::vector<uint8_t> wearing(3 * 0x160);
+    put_i32(wearing, 0 * 0x160, 5);
+    put_i32(wearing, 1 * 0x160, 8);
+    put_i32(wearing, 2 * 0x160, 6);
+    instance(wearing, 0 * 0x160 + 8, 0xa, 101, 0, 0);
+    instance(wearing, 1 * 0x160 + 8, 0xff, 103, 0, 2);
+    instance(wearing, 2 * 0x160 + 8, 0xabcd, 106, 3, 0);
+    tmap(actor, 0x3e8, wearing, 0x160, 0x158, worn_hash, {{0, 1, 2}});
+    sb::bucket = uintptr_t(bucket.data());
+    auto w = uintptr_t(world.data()), t = uintptr_t(tables.data()), b = uintptr_t(bucket.data()),
+         a = uintptr_t(actor.data());
+
+    // The list: every wardrobe item of the bucket through both hash chains, the worn ones with their slot, then the
+    // worn exospine the bucket lacks. Encoded, it is the shared answer fixture.
+    static WardrobeItem listed[MaxWardrobeItems];
+    auto count = wardrobe_snapshot(b, a, t, sb::fakes, listed, MaxWardrobeItems);
+    assert(count == 4 && "The potion is no wardrobe item");
+    std::ifstream answer("protocol/fixtures/wardrobe.txt", std::ios::binary);
+    std::string expected((std::istreambuf_iterator<char>(answer)), std::istreambuf_iterator<char>());
+    assert(encode_wardrobe({std::string(32, 'a'), 6, 1760000000500, "equipped", listed, count}) == expected &&
+           "The shared answer fixture");
+    assert(wardrobe_snapshot(b, a, t, sb::fakes, listed, 2) == 2 && "At most room");
+    put_i32(wearing, 2 * 0x160 + 8 + 0x30, int32_t(MaxWardrobeLevel + 1));
+    assert(wardrobe_snapshot(b, a, t, sb::fakes, listed, MaxWardrobeItems) == 3 && "An unreadable level is skipped");
+    put_i32(wearing, 2 * 0x160 + 8 + 0x30, 3);
+    put_i32(owned, 2 * 0x168 + 0x10 + 0x40, int32_t(MaxWardrobeVariant + 1));
+    assert(wardrobe_snapshot(b, a, t, sb::fakes, listed, MaxWardrobeItems) == 3 && "Likewise a colour");
+    put_i32(owned, 2 * 0x168 + 0x10 + 0x40, 2);
+    put_i32(bucket, 0x48, 0); // An empty bucket: the worn items alone, each with its slot.
+    assert(wardrobe_snapshot(b, a, t, sb::fakes, listed, MaxWardrobeItems) == 3 && listed[0].slot == 5 &&
+           listed[0].guid[3] == 0xa && listed[1].slot == 8 && listed[1].variant == 2 && listed[2].slot == 6 &&
+           listed[2].level == 3 && "Worn items without the bucket");
+    put_i32(bucket, 0x48, 4);
+    put_ptr(bucket, 0x40 + 0x40, 0); // No heap hash: one inline bucket (A then B).
+    put_i32(bucket, 0x40 + 0x48, 1);
+    assert(wardrobe_snapshot(b, 0, t, sb::fakes, listed, MaxWardrobeItems) == 2 && listed[0].slot == 0 &&
+           listed[1].guid[3] == 4 && "Inline hash; without an actor nothing is worn");
+    put_ptr(bucket, 0x40 + 0x40, uintptr_t(owned_hash.data()));
+    put_i32(bucket, 0x40 + 0x48, 2);
+
+    // Gates 2 to 6, in the menu's order, then one call.
+    auto equip = [&](uint32_t slot, uint32_t last) {
+      auto q = *r;
+      q.slot = slot;
+      q.item[3] = last;
+      return q;
+    };
+    auto start = [&](const WardrobeRequest &q, bool permitted = true) {
+      auto result = wardrobe_start(w, t, sb::fakes, permitted, q);
+      return std::string(result ? result : "called");
+    };
+    sb::calls.clear();
+    assert(start(equip(5, 4), false) == "refused not-playing" && "Gate 2 first");
+    assert(wardrobe_start(0, t, sb::fakes, true, equip(5, 4)) == std::string("refused not-ready") &&
+           wardrobe_start(w, 0, sb::fakes, true, equip(5, 4)) == std::string("refused not-ready") &&
+           "Neither the world nor the table manager is created here");
+    put_i32(actor, 0x2600, 3);
+    assert(start(equip(5, 4)) == "refused not-ready" && "A player actor not spawned");
+    put_i32(actor, 0x2600, 1);
+    put_ptr(world, 0xe8, 0);
+    assert(start(equip(5, 4)) == "refused not-ready" && "No item manager");
+    put_ptr(world, 0xe8, uintptr_t(items.data()));
+    sb::player = 0;
+    assert(start(equip(5, 4)) == "refused not-ready" && "No player GUID");
+    sb::player = 77;
+    sb::bucket = 0;
+    assert(start(equip(5, 4)) == "refused not-ready" && "No Inventory bucket");
+    sb::bucket = b;
+    assert(start(*list) == "listed");
+    sb::states = {0x48, 0x5d, 0x5c};
+    sb::calm = false;
+    assert(start(equip(5, 4)) == "refused tachy" && start(*off) == "refused tachy" && "Tachy mode, as the menu");
+    sb::states = {0x5d};
+    assert(start(equip(5, 4)) == "refused fusion");
+    sb::states = {0x5c};
+    assert(start(equip(5, 4)) == "refused fusion" && "Both Fusion modes");
+    sb::states.clear();
+    assert(start(equip(5, 4)) == "refused combat");
+    sb::calm = true;
+    assert(start(*list) == "listed" && sb::calls.empty() && "Nothing called so far");
+    assert(start(equip(9, 4)) == "refused slot" && start(equip(1, 4)) == "refused slot" &&
+           "No ponytail slot, no empty gear slot");
+    auto drop5 = *off;
+    drop5.slot = 5;
+    assert(start(drop5) == "refused slot" && "The suit is never emptied");
+    assert(start(equip(8, 4)) == "refused not-owned" && "A suit is no hair");
+    assert(start(equip(5, 0x55)) == "refused not-owned" && "Not in the bucket");
+    assert(start(equip(5, 0x99)) == "refused not-owned" && "A potion fits no slot");
+    assert(start(equip(11, 4)) == "refused not-owned" && "The face accessory slot may be empty, but a suit does not fit");
+    assert(start(equip(5, 0xa)) == "unchanged" && start(*off) == "unchanged" && sb::calls.empty() &&
+           "Already worn, or already empty: nothing called");
+    assert(start(equip(5, 4)) == "called" && sb::calls.size() == 1 && sb::calls[0].kind == 'e' &&
+           sb::calls[0].items == uintptr_t(items.data()) && sb::calls[0].player == 77 && sb::calls[0].slot == 5 &&
+           sb::calls[0].saved[0] == 1 && sb::calls[0].saved[3] == 4 && sb::calls[0].variant == 0 &&
+           "The menu's equip, colour 0");
+    put_i32(owned, 3 * 0x168 + 0x10 + 0x20, 103); // The potion becomes a second hairstyle.
+    assert(start(equip(8, 0x99)) == "called" && sb::calls.back().slot == 8 && sb::calls.back().variant == 2 &&
+           "A hairstyle keeps the worn colour");
+    put_i32(wearing, 2 * 0x160, 11); // The exospine's entry now worn as a face accessory.
+    assert(start(*off) == "called" && sb::calls.back().kind == 'u' && sb::calls.back().slot == 11 &&
+           sb::calls.back().player == 77 && sb::calls.size() == 3 && "The menu's unequip");
+    // The worn map answers the wait.
+    assert(!wardrobe_done(w, equip(5, 4)) && wardrobe_done(w, equip(5, 0xa)) && !wardrobe_done(w, *off));
+    put_i32(wearing, 2 * 0x160, 12);
+    assert(wardrobe_done(w, *off) && "Slot 11 empty");
+    put_i32(actor, 0x2600, 3);
+    assert(!wardrobe_done(w, *off) && "No spawned actor, no answer yet");
+  }
+  {
     // Minecraft's lock: the lock evades' turn rows, found by ID in Stellar Blade's table registry, go 1 -> 0 and back.
     auto put_ptr = [](std::vector<uint8_t> &b, size_t at, uintptr_t v) { std::memcpy(b.data() + at, &v, 8); };
     auto put_i32 = [](std::vector<uint8_t> &b, size_t at, int32_t v) { std::memcpy(b.data() + at, &v, 4); };
@@ -1375,6 +1655,50 @@ int main() {
     assert(stellar_shared::load64(base, 216) == before + 1 && stellar_shared::plain<uint64_t>(third, 16) == 8);
     assert(stellar_shared::plain<uint32_t>(third, 64) == 7 && stellar_shared::plain<uint32_t>(third, 68) == 0);
 #endif
+    {
+      // The wardrobe end to end: the worker takes a request of the linked session, the gameplay poll answers it,
+      // the worker returns the answer once. On this host there is no game world: gate 3 refuses.
+      auto linked = slots;
+      linked.replace(linked.find("SESSION none"), 12, "SESSION " + std::string(32, 'c'));
+      auto ask = [](uint64_t seq, uint64_t time, std::string session = std::string(32, 'c')) {
+        return "SBMC_WARDROBE_REQUEST 1\nSESSION " + session + "\nSEQ " + std::to_string(seq) + "\nTIME " +
+               std::to_string(time) + "\nOP list\nSLOT 0\nITEM -\nEND " + std::to_string(seq) + "\n";
+      };
+      auto files = [&](const std::string &wardrobe, const std::string &table) {
+        return poll_files(directory.wstring(), request(now), table, "", now, "", wardrobe);
+      };
+      auto wall = stellar_shared::wall_now();
+      assert(files(ask(1, wall), linked).empty() && "Taken, not answered yet");
+      on_gameplay_poll(Run);
+      auto answer = files(ask(1, wall), linked);
+      assert(answer.rfind("SBMC_WARDROBE 1\nSESSION " + std::string(32, 'c') + "\nSEQ 1\nTIME ", 0) == 0 &&
+             answer.find("\nRESULT refused not-playing\nCOUNT 0\nEND 1\n") != std::string::npos &&
+             "Forwarded input is no permit");
+      on_gameplay_poll(Run, Run);
+      assert(files(ask(1, wall), linked).empty() && "One answer per SEQ");
+      files(ask(2, wall), linked);
+      on_gameplay_poll({}, std::string(32, '9'));
+      assert(files("", linked).find("\nRESULT refused not-playing\n") != std::string::npos && "Another run's permit");
+      files(ask(3, wall), linked);
+      on_gameplay_poll({}, Run);
+      assert(files("", linked).find("\nSEQ 3\n") != std::string::npos && files("", linked).empty() &&
+             "The answer is returned once");
+      files(ask(4, wall), linked);
+      on_gameplay_poll({}, Run);
+      assert(files("", linked).find("\nRESULT refused not-ready\nCOUNT 0\nEND 4\n") != std::string::npos &&
+             "The permit for this stream's run passes gate 2");
+      files(ask(5, wall, std::string(32, 'd')), linked);
+      files(ask(6, wall - 3000), linked);
+      files(ask(7, wall), slots);
+      on_gameplay_poll({}, Run);
+      assert(files("", linked).empty() && "Another session, a stale request or no link: ignored");
+      files(ask(8, wall), linked);
+      files(ask(9, wall), linked);
+      on_gameplay_poll({}, Run);
+      assert(files("", linked).find("\nSEQ 9\n") != std::string::npos && "A newer request replaces one not started");
+      on_gameplay_poll({}, Run);
+      assert(files("", linked).empty());
+    }
     // A stopped request releases the run (state 2), after which nothing is published.
     look(0, 0, 0, 0);
     auto published = stellar_shared::load64(base, 216);
@@ -1387,5 +1711,5 @@ int main() {
     assert(stellar_shared::load32(base, 196) == 2);
   }
   std::filesystem::remove_all(directory);
-  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, material parameters, effects, camera input, lock evade rows, mapping publication and release\n";
+  std::cout << "Pose stream tests passed: request/table grammar and bounds, live-object validation, double-buffered reads, material parameters, effects, camera input, lock evade rows, wardrobe grammar, gates and calls, mapping publication and release\n";
 }

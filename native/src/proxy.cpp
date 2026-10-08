@@ -174,8 +174,9 @@ bool read_directory(HMODULE self) {
     directory += L'\\';
   return true;
 }
-bool write_ack(const std::string &bytes) {
-  auto path = directory + L"eve-input-ack.txt", temp = path + L".tmp";
+// A complete file in the bridge directory: written beside it, then renamed over it.
+bool write_text(const wchar_t *name, const std::string &bytes) {
+  auto path = directory + name, temp = path + L".tmp";
   HANDLE f = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL, nullptr);
   if (f == INVALID_HANDLE_VALUE)
@@ -221,7 +222,7 @@ void worker() {
       auto key = stellar_input::encode_ack(*ack);
       if (key != published) {
         ack->time = stamp;
-        if (write_ack(stellar_input::encode_ack(*ack)))
+        if (write_text(L"eve-input-ack.txt", stellar_input::encode_ack(*ack)))
           published = std::move(key);
       }
     }
@@ -233,12 +234,15 @@ void worker() {
         read_file(directory + L"eve-stream.txt", 512).value_or("");
     stellar_raw::poll_raw_capture(capture_request, wall_ms());
     try {
-      stellar_pose::poll_files(
+      auto wardrobe = stellar_pose::poll_files(
           directory,
           read_file(directory + L"eve-pose-request.txt", 512).value_or(""),
           read_file(directory + L"eve-pose-components.0", 65536).value_or(""),
           read_file(directory + L"eve-pose-components.1", 65536).value_or(""),
-          wall_ms(), read_file(directory + L"eve-lock.txt", 256).value_or(""));
+          wall_ms(), read_file(directory + L"eve-lock.txt", 256).value_or(""),
+          read_file(directory + L"eve-wardrobe-request.txt", 512).value_or(""));
+      if (!wardrobe.empty())
+        write_text(L"eve-wardrobe.txt", wardrobe);
     } catch (...) {
       // The pose stream is optional and must never stop input forwarding.
     }
@@ -291,12 +295,13 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
   if (gameplay) {
     // Game thread, between frames: last frame's animation and physics are final.
     try {
-      std::string owner;
+      std::string owner, permitted;
       {
         std::lock_guard<std::mutex> lock(state_lock);
         owner = core.forwarding_run();
+        permitted = core.permit_run(GetTickCount64());
       }
-      stellar_pose::on_gameplay_poll(owner);
+      stellar_pose::on_gameplay_poll(owner, permitted);
     } catch (...) {
     }
   }

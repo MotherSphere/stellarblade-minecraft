@@ -909,6 +909,225 @@ uint64_t parse_lock(std::string_view text, std::string_view linked) {
   return target ? time : 0;
 }
 
+namespace {
+// A SavedGuid as 32 lowercase hex digits: its four dwords in memory order, eight digits each.
+bool parse_guid(std::string_view s, uint32_t guid[4]) {
+  uint64_t part = 0;
+  if (s.size() != 32)
+    return false;
+  for (int k = 0; k < 4; k++) {
+    if (!hex32(s.substr(8 * k, 8), part))
+      return false;
+    guid[k] = uint32_t(part);
+  }
+  return guid[0] | guid[1] | guid[2] | guid[3];
+}
+std::string guid_text(const uint32_t guid[4]) {
+  static const char digits[] = "0123456789abcdef";
+  std::string out;
+  for (int k = 0; k < 4; k++)
+    for (int shift = 28; shift >= 0; shift -= 4)
+      out += digits[(guid[k] >> shift) & 15];
+  return out;
+}
+// FSBItemInstance: SavedGuid +0x00, ItemAlias +0x20, StatLevel +0x30, MatVarIndex +0x40 (SB_structs.hpp:9962).
+constexpr size_t ItemAlias = 0x20, ItemLevel = 0x30, ItemVariant = 0x40;
+// FSBItemTableProperty: ID +0x10, Category (u8) +0x70 (SB_structs.hpp:24936, 24944).
+constexpr size_t RowId = 0x10, RowCategory = 0x70;
+// The bucket's TMap<FGuid, FSBItemInstance> at +0x40: 0x168-byte elements, the instance at +0x10, next id at +0x160
+// (0x1cc1490). The actor's TMap<int32 ESBEquipType, FSBItemInstance> at +0x3E8: 0x160-byte elements, the instance at
+// +8, next id at +0x158 (0x1a86f40). Both are TSets each_element walks.
+constexpr size_t BucketItems = 0x40, BucketStride = 0x168, BucketValue = 0x10, BucketNext = 0x160;
+constexpr size_t WornItems = 0x3e8, WornStride = 0x160, WornValue = 8, WornNext = 0x158;
+// ESBActorState: TachyMode 72 (0x48), Fusion2Mode 93 (0x5d), Fusion1Mode 92 (0x5c), in the order the menu's slot
+// entry (0x1dbd7e0) tests them before its combat test.
+constexpr int32_t TachyState = 0x48, Fusion2State = 0x5d, Fusion1State = 0x5c;
+constexpr int32_t InventoryBucket = 1, HairSlot = 8;
+bool same_guid(uintptr_t instance, const uint32_t guid[4]) {
+  return std::memcmp(reinterpret_cast<const void *>(instance), guid, 16) == 0;
+}
+// The instance worn in slot, or 0.
+uintptr_t worn(uintptr_t actor, uint32_t slot) {
+  uintptr_t found = 0;
+  each_element(actor + WornItems, WornStride, WornNext, [&](uintptr_t element) {
+    if (!found && at<uint32_t>(element) == slot)
+      found = element + WornValue;
+  });
+  return found;
+}
+// The bucket's instance with this SavedGuid, or 0.
+uintptr_t owned(uintptr_t bucket, const uint32_t guid[4]) {
+  uintptr_t found = 0;
+  each_element(bucket + BucketItems, BucketStride, BucketNext, [&](uintptr_t element) {
+    if (!found && same_guid(element + BucketValue, guid))
+      found = element + BucketValue;
+  });
+  return found;
+}
+} // namespace
+
+std::optional<WardrobeRequest> parse_wardrobe_request(std::string_view text) {
+  Lines lines(text, 512);
+  WardrobeRequest r;
+  std::string op, item;
+  uint64_t slot = 0;
+  if (!lines.literal("SBMC_WARDROBE_REQUEST 1") || !lines.text("SESSION", r.session) || !identity(r.session) ||
+      !lines.num("SEQ", r.seq) || !r.seq || r.seq > 999999999999999ull || !lines.num("TIME", r.time) ||
+      !lines.text("OP", op) || !lines.num("SLOT", slot) || !lines.text("ITEM", item) || !lines.end(r.seq))
+    return {};
+  r.slot = uint32_t(slot);
+  if (op == "list" && slot == 0 && item == "-")
+    r.op = WardrobeOp::List;
+  else if (op == "equip" && slot >= 1 && slot <= 17 && parse_guid(item, r.item))
+    r.op = WardrobeOp::Equip;
+  else if (op == "unequip" && slot >= 1 && slot <= 17 && item == "-")
+    r.op = WardrobeOp::Unequip;
+  else
+    return {};
+  return r;
+}
+
+bool WardrobeGate::take(const WardrobeRequest &r, std::string_view linked, uint64_t wall) {
+  if (r.session != linked || !fresh(r.time, wall, WardrobeLease) || (r.session == session && r.seq <= seq))
+    return false;
+  session = r.session;
+  seq = r.seq;
+  return true;
+}
+
+std::string encode_wardrobe(const WardrobeAnswer &a) {
+  std::string out = "SBMC_WARDROBE 1\nSESSION " + a.session + "\nSEQ " + std::to_string(a.seq) + "\nTIME " +
+                    std::to_string(a.time) + "\nRESULT " + std::string(a.result) + "\nCOUNT " +
+                    std::to_string(a.count) + "\n";
+  for (uint32_t i = 0; i < a.count; i++) {
+    const auto &item = a.items[i];
+    out += "ITEM " + std::to_string(item.id) + " " + std::to_string(item.category) + " " + guid_text(item.guid) +
+           " " + std::to_string(item.level) + " " + std::to_string(item.variant) + " " + std::to_string(item.slot) +
+           "\n";
+  }
+  return out + "END " + std::to_string(a.seq) + "\n";
+}
+
+bool wardrobe_category(uint32_t category) {
+  return category == 2 || category == 3 || category == 4 || category == 21 || category == 22 || category == 23 ||
+         category == 28;
+}
+bool wardrobe_fits(uint32_t category, uint32_t slot) {
+  switch (category) {
+  case 2: return slot >= 1 && slot <= 4;
+  case 3: return slot == 6 || slot == 7;
+  case 4: return slot == 5;
+  case 21: return slot == HairSlot;
+  case 22: return slot == 11;
+  case 23: return slot == 10;
+  case 28: return slot == 17;
+  default: return false;
+  }
+}
+bool wardrobe_slot_allowed(WardrobeOp op, uint32_t slot, bool occupied) {
+  bool accessory = slot == 10 || slot == 11;
+  if (op == WardrobeOp::Unequip)
+    return accessory;
+  bool wardrobe = (slot >= 1 && slot <= 8) || accessory || slot == 17;
+  return op == WardrobeOp::Equip && wardrobe && (occupied || accessory);
+}
+
+bool wardrobe_owner(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeOwner &o) {
+  o = {};
+  if (!world || !tables || !(o.actor = player_actor(world)) || !(o.items = at<uintptr_t>(world + 0xe8)))
+    return false;
+  o.player = sb.player_guid();
+  o.bucket = o.player ? sb.bucket(o.items, InventoryBucket, o.player) : 0;
+  return o.bucket != 0;
+}
+
+const char *wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
+                           const WardrobeRequest &r) {
+  if (!permitted)
+    return "refused not-playing";
+  WardrobeOwner o;
+  if (!wardrobe_owner(world, tables, sb, o))
+    return "refused not-ready";
+  if (r.op == WardrobeOp::List)
+    return "listed";
+  if (sb.has_state(o.actor, TachyState))
+    return "refused tachy";
+  if (sb.has_state(o.actor, Fusion2State) || sb.has_state(o.actor, Fusion1State))
+    return "refused fusion";
+  if (!sb.can_change(o.actor))
+    return "refused combat";
+  auto current = worn(o.actor, r.slot);
+  if (!wardrobe_slot_allowed(r.op, r.slot, current != 0))
+    return "refused slot";
+  if (r.op == WardrobeOp::Unequip) {
+    if (!current)
+      return "unchanged";
+    sb.unequip(o.items, o.player, int32_t(r.slot));
+    return nullptr;
+  }
+  auto item = owned(o.bucket, r.item);
+  auto row = item ? sb.row(tables, 0, reinterpret_cast<const void *>(item + ItemAlias)) : nullptr;
+  if (!row || !wardrobe_fits(at<uint8_t>(uintptr_t(row) + RowCategory), r.slot))
+    return "refused not-owned";
+  if (current && same_guid(current, r.item))
+    return "unchanged";
+  // The menu passes MatVarIndex 0; for the hair the salon passes the colour, so the worn one is kept.
+  auto variant = r.slot == HairSlot && current ? at<int32_t>(current + ItemVariant) : 0;
+  sb.equip(o.items, o.player, int32_t(r.slot), r.item, variant);
+  return nullptr;
+}
+
+bool wardrobe_done(uintptr_t world, const WardrobeRequest &r) {
+  auto actor = player_actor(world);
+  if (!actor)
+    return false;
+  auto current = worn(actor, r.slot);
+  return r.op == WardrobeOp::Equip ? current && same_guid(current, r.item) : !current;
+}
+
+uint32_t wardrobe_snapshot(uintptr_t bucket, uintptr_t actor, uintptr_t tables, const WardrobeCalls &sb,
+                           WardrobeItem *out, uint32_t room) {
+  uint32_t count = 0;
+  auto add = [&](uintptr_t instance, uint32_t slot) {
+    if (count >= room)
+      return;
+    auto row = sb.row(tables, 0, reinterpret_cast<const void *>(instance + ItemAlias));
+    auto category = row ? at<uint8_t>(uintptr_t(row) + RowCategory) : 0u;
+    auto level = at<uint32_t>(instance + ItemLevel), variant = at<uint32_t>(instance + ItemVariant);
+    if (!wardrobe_category(category) || level > MaxWardrobeLevel || variant > MaxWardrobeVariant)
+      return;
+    auto &item = out[count++];
+    item.id = at<uint32_t>(uintptr_t(row) + RowId);
+    item.category = category;
+    std::memcpy(item.guid, reinterpret_cast<const void *>(instance), 16);
+    item.level = level;
+    item.variant = variant;
+    item.slot = slot;
+  };
+  // The slot each worn item is in, from the actor's map (slots 1..17).
+  auto slot_of = [&](uintptr_t instance) {
+    uint32_t slot = 0;
+    if (actor)
+      each_element(actor + WornItems, WornStride, WornNext, [&](uintptr_t element) {
+        auto key = at<uint32_t>(element);
+        if (!slot && key >= 1 && key <= 17 && same_guid(element + WornValue, reinterpret_cast<const uint32_t *>(instance)))
+          slot = key;
+      });
+    return slot;
+  };
+  each_element(bucket + BucketItems, BucketStride, BucketNext,
+               [&](uintptr_t element) { add(element + BucketValue, slot_of(element + BucketValue)); });
+  if (actor)
+    each_element(actor + WornItems, WornStride, WornNext, [&](uintptr_t element) {
+      auto key = at<uint32_t>(element);
+      uint32_t guid[4];
+      std::memcpy(guid, reinterpret_cast<const void *>(element + WornValue), 16);
+      if (key >= 1 && key <= 17 && !owned(bucket, guid))
+        add(element + WornValue, key);
+    });
+  return count;
+}
+
 Turn follow(Follow &f, float look_pitch, float look_yaw, float yaw) {
   auto wrap = [](float degrees) { return std::remainder(degrees, 360.0f); };
   auto limit = [](float degrees) { return std::clamp(degrees, -MaxTurn, MaxTurn); };
@@ -1163,6 +1382,19 @@ int rows_locked = 0; // The lock state patch_lock_rows last completed a walk for
 constexpr uint32_t RowsFault = ~0u;
 Grants grants;
 HealthMirror mirror;
+// The wardrobe: the worker takes a request into pending; the gameplay poll starts it (waiting) and leaves the answer
+// for the worker to write.
+WardrobeGate wardrobe_gate;
+std::optional<WardrobeRequest> wardrobe_pending, wardrobe_waiting;
+uint64_t wardrobe_deadline = 0;
+std::string wardrobe_answer;
+std::array<WardrobeItem, MaxWardrobeItems> wardrobe_items;
+// The owned list, or none before gate 3 passes.
+uint32_t wardrobe_list(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeItem *out) {
+  WardrobeOwner o;
+  return wardrobe_owner(world, tables, sb, o) ? wardrobe_snapshot(o.bucket, o.actor, tables, sb, out, MaxWardrobeItems)
+                                              : 0;
+}
 uint32_t process_id() {
 #ifdef _WIN32
   return GetCurrentProcessId();
@@ -1288,6 +1520,50 @@ void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e)
   } __except (EXCEPTION_EXECUTE_HANDLER) {
   }
 }
+uintptr_t table_manager() {
+  static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  __try {
+    return at<uintptr_t>(image + TableManagerRva);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0;
+  }
+}
+WardrobeCalls wardrobe_calls() {
+  static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  WardrobeCalls sb;
+  sb.equip = reinterpret_cast<decltype(sb.equip)>(image + EquipOwnedItemRva);
+  sb.unequip = reinterpret_cast<decltype(sb.unequip)>(image + UnequipRva);
+  sb.row = reinterpret_cast<decltype(sb.row)>(image + ItemRowRva);
+  sb.has_state = reinterpret_cast<decltype(sb.has_state)>(image + HasActorStateRva);
+  sb.can_change = reinterpret_cast<decltype(sb.can_change)>(image + CanChangeEquipmentRva);
+  sb.player_guid = reinterpret_cast<decltype(sb.player_guid)>(image + PlayerGuidRva);
+  sb.bucket = reinterpret_cast<decltype(sb.bucket)>(image + ItemBucketRva);
+  return sb;
+}
+// A player actor, bucket or worn map freed under the reads faults at worst, before Stellar Blade's equip or unequip
+// is called (the calls come last); contained as not ready, no worn change, or an empty list.
+const char *guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
+                                   const WardrobeRequest &r) {
+  __try {
+    return wardrobe_start(world, tables, sb, permitted, r);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return "refused not-ready";
+  }
+}
+bool guarded_wardrobe_done(uintptr_t world, const WardrobeRequest &r) {
+  __try {
+    return wardrobe_done(world, r);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+uint32_t guarded_wardrobe_list(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeItem *out) {
+  __try {
+    return wardrobe_list(world, tables, sb, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0;
+  }
+}
 // A table freed under the walk faults at worst; contained, and retried at the next poll.
 uint32_t guarded_rows(bool locked) {
   static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
@@ -1332,7 +1608,17 @@ void guarded_grants(uintptr_t world, bool live, const Feedback *fed, Grants &g) 
 void guarded_mirror(uintptr_t world, float share, uint32_t acknowledged, bool fresh, uint64_t wall, HealthMirror &m) {
   mirror_health(world, share, acknowledged, fresh, wall, m);
 }
-uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one.
+uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one,
+uintptr_t table_manager() { return 0; } // a table manager
+WardrobeCalls wardrobe_calls() { return {}; } // and Stellar Blade's functions.
+const char *guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
+                                   const WardrobeRequest &r) {
+  return wardrobe_start(world, tables, sb, permitted, r);
+}
+bool guarded_wardrobe_done(uintptr_t world, const WardrobeRequest &r) { return wardrobe_done(world, r); }
+uint32_t guarded_wardrobe_list(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeItem *out) {
+  return wardrobe_list(world, tables, sb, out);
+}
 uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
 void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) { count_evades(world, locked, wall, e); }
 bool guarded_battle(uintptr_t) { return false; } // Nor a turn clock,
@@ -1360,6 +1646,34 @@ bool guarded(const Engine &e, const Parameter &q, float *out) {
   return read_parameter(e, q, out);
 }
 #endif
+// One wardrobe step per gameplay poll: answer the waiting request once the worn map shows it or WardrobeWait has
+// passed, else start the pending one (at most one call of Stellar Blade's equip or unequip).
+void wardrobe_step(bool permitted, uint64_t wall) {
+  if (!wardrobe_waiting && !wardrobe_pending)
+    return;
+  auto world = game_world(), tables = table_manager();
+  auto sb = wardrobe_calls();
+  const char *result;
+  if (wardrobe_waiting) {
+    bool done = guarded_wardrobe_done(world, *wardrobe_waiting);
+    if (!done && wall < wardrobe_deadline)
+      return;
+    result = !done ? "unchanged" : wardrobe_waiting->op == WardrobeOp::Equip ? "equipped" : "unequipped";
+  } else {
+    wardrobe_waiting = std::exchange(wardrobe_pending, std::nullopt);
+    result = guarded_wardrobe_start(world, tables, sb, permitted, *wardrobe_waiting);
+    if (!result) {
+      wardrobe_deadline = wall + WardrobeWait;
+      return;
+    }
+  }
+  // Refused before gate 3: Stellar Blade's memory is not read, and the list stays empty.
+  bool reached = std::strcmp(result, "refused not-playing") && std::strcmp(result, "refused not-ready");
+  auto count = reached ? guarded_wardrobe_list(world, tables, sb, wardrobe_items.data()) : 0;
+  wardrobe_answer = encode_wardrobe(
+      {wardrobe_waiting->session, wardrobe_waiting->seq, wall, result, wardrobe_items.data(), count});
+  wardrobe_waiting.reset();
+}
 } // namespace
 
 void initialize(uintptr_t objects, uintptr_t boom_vtable) {
@@ -1367,33 +1681,39 @@ void initialize(uintptr_t objects, uintptr_t boom_vtable) {
   engine.boom_vtable = boom_vtable;
 }
 
-void poll_files(const std::wstring &directory, std::string_view request_text,
-                std::string_view slot0, std::string_view slot1, uint64_t wall,
-                std::string_view lock_text) {
+std::string poll_files(const std::wstring &directory, std::string_view request_text,
+                       std::string_view slot0, std::string_view slot1, uint64_t wall,
+                       std::string_view lock_text, std::string_view wardrobe_text) {
   auto request = parse_request(request_text);
   bool wanted = request && request->active && fresh(request->time, wall);
   auto next = wanted ? select_components(slot0, slot1, request->run)
                      : std::optional<Table>{};
   // Only a lock of the session Lua links counts: another Minecraft session's file opens nothing.
   auto locked_at = next ? parse_lock(lock_text, next->session) : 0;
+  // Likewise a wardrobe request: one of another session, or without a link, is ignored (no answer).
+  auto asked = next ? parse_wardrobe_request(wardrobe_text) : std::nullopt;
   std::lock_guard<std::mutex> guard(lock);
   minecraft_lock = locked_at;
+  if (asked && wardrobe_gate.take(*asked, next->session, wall))
+    wardrobe_pending = std::move(asked); // A newer request replaces one not started yet.
+  auto answer = std::exchange(wardrobe_answer, std::string());
   if (!wanted) {
     producer.stop();
     table.reset();
-    return;
+    return answer;
   }
   if (!producer.open(directory, *request, process_id(), wall)) {
     table.reset();
-    return;
+    return answer;
   }
   if (!next)
     table.reset();
   else if (!table || table->generation != next->generation)
     table = std::move(next);
+  return answer;
 }
 
-void on_gameplay_poll(std::string_view owner) {
+void on_gameplay_poll(std::string_view owner, std::string_view permitted) {
   std::unique_lock<std::mutex> guard(lock, std::try_to_lock);
   if (!guard.owns_lock())
     return;
@@ -1424,6 +1744,8 @@ void on_gameplay_poll(std::string_view owner) {
   guarded_grants(game_world(), live, heard ? &fed : nullptr, grants);
   if (heard || mirror.active)
     guarded_mirror(game_world(), heard ? fed.share : 0, fed.acknowledged, heard, wall, mirror);
+  // The wardrobe needs Lua's permit for this stream's run, not forwarded input: an open Minecraft screen suspends that.
+  wardrobe_step(!permitted.empty() && permitted == producer.run(), wall);
   if (!table || !engine.objects || !producer.active(wall))
     return;
   auto started = micros();

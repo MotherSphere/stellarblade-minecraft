@@ -307,6 +307,85 @@ uint32_t patch_lock_rows(uintptr_t registry, uintptr_t objects, bool locked);
 // eve-lock.txt (SBMC_LOCK 1): its TIME while it names a target for session
 // (the link Lua's component table names), else 0.
 uint64_t parse_lock(std::string_view text, std::string_view session);
+
+// EVE's wardrobe. Minecraft asks for the owned list or an equip in eve-wardrobe-request.txt
+// (SBMC_WARDROBE_REQUEST 1); the worker takes it (WardrobeGate), the gameplay poll runs Stellar Blade's own menu
+// gates and calls (wardrobe_start), waits for the worn map (wardrobe_done) and lists what EVE owns
+// (wardrobe_snapshot); the worker writes the answer, eve-wardrobe.txt (SBMC_WARDROBE 1).
+enum class WardrobeOp { List, Equip, Unequip };
+struct WardrobeRequest {
+  std::string session;
+  uint64_t seq = 0, time = 0;
+  WardrobeOp op = WardrobeOp::List;
+  uint32_t slot = 0;      // ESBEquipType: 0 for list, else 1..17.
+  uint32_t item[4] = {};  // The item's SavedGuid (FGuid dwords in memory order); zeros unless equip.
+};
+std::optional<WardrobeRequest> parse_wardrobe_request(std::string_view);
+// Takes a request of the linked session (Lua's component table's) within WardrobeLease ms of its TIME, with a SEQ
+// above the last taken one of that session.
+constexpr uint64_t WardrobeLease = 2500;
+struct WardrobeGate {
+  std::string session;
+  uint64_t seq = 0;
+  bool take(const WardrobeRequest &, std::string_view linked, uint64_t wall);
+};
+// One owned or worn item: ItemTable row ID and Category (ESBItemCategory), SavedGuid, StatLevel, MatVarIndex and the
+// slot (ESBEquipType) it is worn in, or 0.
+struct WardrobeItem {
+  uint32_t id = 0, category = 0, guid[4] = {}, level = 0, variant = 0, slot = 0;
+};
+// Items listed: StatLevel within 0..9999 and MatVarIndex within 0..99 (others are skipped as unreadable), so an ITEM
+// line takes at most 62 bytes and MaxWardrobeItems of them fit the 64 KiB answer.
+constexpr uint32_t MaxWardrobeItems = 1024, MaxWardrobeLevel = 9999, MaxWardrobeVariant = 99;
+struct WardrobeAnswer {
+  std::string session;
+  uint64_t seq = 0, time = 0;
+  std::string_view result; // listed, equipped, unequipped, unchanged or "refused <reason>".
+  const WardrobeItem *items = nullptr;
+  uint32_t count = 0;
+};
+std::string encode_wardrobe(const WardrobeAnswer &);
+// ESBItemCategory of the wardrobe: Gear 2 (slots 1-4), ExoSpine 3 (6, 7), NanoSuit 4 (5), Hair 21 (8),
+// FaceAccessory 22 (11), EarRing 23 (10), Drone 28 (17). fits: an item of category may go into slot.
+bool wardrobe_category(uint32_t category);
+bool wardrobe_fits(uint32_t category, uint32_t slot);
+// Gate 5 (ponytail: slot locks are readable only inside Stellar Blade's menu; lift once the unlock stats are known):
+// equip only into a wardrobe slot that holds an item, or into the earring (10) or face accessory (11) slot; unequip
+// only those two, so the nano suit (5) and hair (8) are never emptied and no empty gear or exospine slot is filled.
+bool wardrobe_slot_allowed(WardrobeOp, uint32_t slot, bool occupied);
+// Stellar Blade's own functions the wardrobe calls (game thread only), at their RVAs in the pinned build.
+struct WardrobeCalls {
+  void (*equip)(uintptr_t items, int32_t player, int32_t slot, const uint32_t *saved, int32_t variant);
+  void (*unequip)(uintptr_t items, int32_t player, int32_t slot);
+  const uint8_t *(*row)(uintptr_t tables, uint64_t, const void *alias); // FSBItemTableProperty*, or null.
+  bool (*has_state)(uintptr_t actor, int32_t state);
+  bool (*can_change)(uintptr_t actor); // False in combat.
+  int32_t (*player_guid)();
+  uintptr_t (*bucket)(uintptr_t items, int32_t type, int32_t player);
+};
+constexpr uintptr_t EquipOwnedItemRva = 0x1cc1490, UnequipRva = 0x1cc18f0, ItemRowRva = 0x1a9a960,
+                    HasActorStateRva = 0x1a64b40, CanChangeEquipmentRva = 0x1a90c30, PlayerGuidRva = 0x1cc2590,
+                    ItemBucketRva = 0x1cc1110;
+// Gate 3: the spawned player actor, the item manager (world +0xE8), the player's GUID and Inventory bucket (type 1).
+// world and tables (the table manager at TableManagerRva) must be non-null first: Stellar Blade's getters behind
+// these calls allocate them when they are not.
+struct WardrobeOwner {
+  uintptr_t actor = 0, items = 0, bucket = 0;
+  int32_t player = 0;
+};
+bool wardrobe_owner(uintptr_t world, uintptr_t tables, const WardrobeCalls &, WardrobeOwner &);
+// Gates 2 to 6 for a taken request (permitted: Lua's permit is active for the stream's run), then at most one call
+// of Stellar Blade's equip or unequip. The RESULT token, or null once Stellar Blade was called: wait for wardrobe_done.
+const char *wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &, bool permitted,
+                           const WardrobeRequest &);
+// The player actor's worn map now holds the request's item in its slot (equip) or nothing there (unequip).
+bool wardrobe_done(uintptr_t world, const WardrobeRequest &);
+// Every Inventory bucket item of a wardrobe category, then each worn one missing from it, with the slot it is worn
+// in; at most room. bucket: the bucket's TMap<FGuid, FSBItemInstance> at +0x40; actor: its TMap<int32,
+// FSBItemInstance> at +0x3E8.
+uint32_t wardrobe_snapshot(uintptr_t bucket, uintptr_t actor, uintptr_t tables, const WardrobeCalls &,
+                           WardrobeItem *out, uint32_t room);
+constexpr uint64_t WardrobeWait = 1000; // At most this long for the worn map after a call.
 // Look input for one gameplay poll: Minecraft's camera motion since the last
 // poll, plus for yaw a share of the remaining gap to the controller's rotation,
 // so the game's camera follows like it follows a mouse. The controller's pitch
@@ -378,10 +457,14 @@ public:
 // health share into her HP (restored once the share stops, stream or not),
 // reads the controller, turns the game's camera toward Minecraft's when owner
 // is this stream's run, then reads the components and publishes. None of them
-// throws.
+// throws. The worker also passes Minecraft's wardrobe request and writes the
+// wardrobe answer poll_files returns (empty when none is ready; a failed write
+// loses it, and Minecraft reports no answer); the gameplay poll, after the
+// grants and the mirror, runs one wardrobe step, whose gate 2 needs permitted (the run Lua's
+// permit grants) to be this stream's run.
 void initialize(uintptr_t objects, uintptr_t boom_vtable = 0);
-void poll_files(const std::wstring &directory, std::string_view request,
-                std::string_view slot0, std::string_view slot1, uint64_t wall,
-                std::string_view lock = {});
-void on_gameplay_poll(std::string_view owner = {});
+std::string poll_files(const std::wstring &directory, std::string_view request,
+                       std::string_view slot0, std::string_view slot1, uint64_t wall,
+                       std::string_view lock = {}, std::string_view wardrobe = {});
+void on_gameplay_poll(std::string_view owner = {}, std::string_view permitted = {});
 } // namespace stellar_pose

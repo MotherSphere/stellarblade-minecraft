@@ -71,6 +71,14 @@ int main() {
          waiting.receipt(10000)->state == "ready");
   update(waiting, packet(1, 5, "neutral"), permit());
   assert(waiting.receipt(10000)->state == "blocked");
+  // The permit's run outlives forwarded input (the wardrobe's gate), until its lease or a stop.
+  assert(waiting.forwarding_run().empty() && waiting.permit_run(0) == run && waiting.permit_run(lease_ms - 1) == run &&
+         waiting.permit_run(lease_ms).empty());
+  auto stopped = permit(2);
+  stopped.replace(stopped.find("active"), 6, "stopped");
+  update(waiting, packet(1, 6, "neutral"), stopped);
+  assert(waiting.permit_run(0).empty() && "A stopped permit grants nothing");
+  assert(Core().permit_run(0).empty());
   Core c;
   arm(c);
   const std::string edges =
