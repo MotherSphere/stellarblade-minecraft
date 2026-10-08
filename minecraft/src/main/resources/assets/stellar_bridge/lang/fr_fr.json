@@ -57,6 +57,7 @@
   "stellar_bridge.wardrobe.result.failed": "Demande non envoyée",
   "stellar_bridge.wardrobe.refused.not-playing": "Jouez d'abord dans Stellar Blade : entrée faite, sans pause ni cinématique",
   "stellar_bridge.wardrobe.refused.not-ready": "EVE n'est pas encore prête dans Stellar Blade",
+  "stellar_bridge.wardrobe.refused.fault": "Échec de l'appel à Stellar Blade (étape %s, code %s)",
   "stellar_bridge.wardrobe.refused.tachy": "Indisponible en mode Tachy",
   "stellar_bridge.wardrobe.refused.fusion": "Indisponible en mode Fusion",
   "stellar_bridge.wardrobe.refused.combat": "Indisponible pendant un combat",

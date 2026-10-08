@@ -152,7 +152,7 @@ final class WardrobeScreen extends Screen {
         switch (answer.result()) {
             case "listed" -> { }
             case "unchanged" -> toast(Text.translatable("stellar_bridge.wardrobe.result.unchanged"), Text.translatable("stellar_bridge.wardrobe.result.unchanged.detail"));
-            case "refused" -> toast(Text.translatable("stellar_bridge.wardrobe.result.refused"), Text.translatable("stellar_bridge.wardrobe.refused." + answer.reason()));
+            case "refused" -> toast(Text.translatable("stellar_bridge.wardrobe.result.refused"), answer.reason().startsWith("fault-") ? Text.translatable("stellar_bridge.wardrobe.refused.fault", (Object[]) answer.reason().substring(6).split("-")) : Text.translatable("stellar_bridge.wardrobe.refused." + answer.reason()));
             default -> toast(Text.translatable("stellar_bridge.wardrobe.result." + answer.result()), name);
         }
         refresh();

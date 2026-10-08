@@ -149,6 +149,8 @@ public final class BridgeProtocol {
     static final List<String> WARDROBE_OPS = List.of("list", "equip", "unequip");
     static final List<String> WARDROBE_RESULTS = List.of("listed", "equipped", "unequipped", "unchanged");
     static final List<String> WARDROBE_REFUSALS = List.of("not-playing", "not-ready", "tachy", "fusion", "combat", "slot", "not-owned");
+    /** A structured exception the adapter contained: the step it ran, then the exception code. */
+    static final Pattern WARDROBE_FAULT = Pattern.compile("fault-(owner|tachy|fusion|combat|slot|item|equip|unequip|list|done)-[0-9a-f]{8}");
     static final int MAX_WARDROBE_ITEMS = 1024;
     /** ESBItemCategory of the wardrobe: Gear, ExoSpine, NanoSuit, Hair, FaceAccessory, EarRing, Drone. */
     static final List<Integer> WARDROBE_CATEGORIES = List.of(2, 3, 4, 21, 22, 23, 28);
@@ -186,7 +188,8 @@ public final class BridgeProtocol {
         long seq = unsigned(fields(lines[2], "SEQ", 2)[1], 1, 999999999999999L), time = unsigned(fields(lines[3], "TIME", 2)[1], 0, MAX_TIME);
         String[] result = lines[4].split(" ", -1);
         require(result[0].equals("RESULT") && (result.length == 2 && WARDROBE_RESULTS.contains(result[1])
-                || result.length == 3 && result[1].equals("refused") && WARDROBE_REFUSALS.contains(result[2])), "Invalid wardrobe result");
+                || result.length == 3 && result[1].equals("refused") && (WARDROBE_REFUSALS.contains(result[2]) || matches(WARDROBE_FAULT, result[2]))),
+                "Invalid wardrobe result");
         int count = (int) unsigned(fields(lines[5], "COUNT", 2)[1], 0, MAX_WARDROBE_ITEMS);
         require(lines.length == count + 8, "Wardrobe COUNT mismatch");
         List<WardrobeItem> items = new java.util.ArrayList<>(count);

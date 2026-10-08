@@ -345,6 +345,9 @@ struct WardrobeAnswer {
   uint32_t count = 0;
 };
 std::string encode_wardrobe(const WardrobeAnswer &);
+// "refused fault-<stage>-<code>": a structured exception, code as 8 lowercase hex digits, contained while stage ran
+// (a wardrobe_start stage, list for the owned list or done for the worn map reads while waiting).
+std::string wardrobe_fault(const char *stage, uint32_t code);
 // ESBItemCategory of the wardrobe: Gear 2 (slots 1-4), ExoSpine 3 (6, 7), NanoSuit 4 (5), Hair 21 (8),
 // FaceAccessory 22 (11), EarRing 23 (10), Drone 28 (17). fits: an item of category may go into slot.
 bool wardrobe_category(uint32_t category);
@@ -376,8 +379,10 @@ struct WardrobeOwner {
 bool wardrobe_owner(uintptr_t world, uintptr_t tables, const WardrobeCalls &, WardrobeOwner &);
 // Gates 2 to 6 for a taken request (permitted: Lua's permit is active for the stream's run), then at most one call
 // of Stellar Blade's equip or unequip. The RESULT token, or null once Stellar Blade was called: wait for wardrobe_done.
+// stage names each step as it starts (owner for gate 3, tachy, fusion, combat, slot, item, equip or unequip), so a
+// fault the caller contains names the step that raised it; volatile keeps every store ahead of its step.
 const char *wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &, bool permitted,
-                           const WardrobeRequest &);
+                           const WardrobeRequest &, const char *volatile &stage);
 // The player actor's worn map now holds the request's item in its slot (equip) or nothing there (unequip).
 bool wardrobe_done(uintptr_t world, const WardrobeRequest &);
 // Every Inventory bucket item of a wardrobe category, then each worn one missing from it, with the slot it is worn

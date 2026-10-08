@@ -41,7 +41,13 @@ struct Call {
   int32_t variant;
 };
 std::vector<Call> calls;
+char fail = 0; // The fake of this letter throws, as a call that faults would.
+void faults(char kind) {
+  if (fail == kind)
+    throw kind;
+}
 const uint8_t *row(uintptr_t, uint64_t, const void *alias) {
+  faults('r');
   uint64_t name;
   std::memcpy(&name, alias, 8);
   for (auto &r : rows)
@@ -49,14 +55,27 @@ const uint8_t *row(uintptr_t, uint64_t, const void *alias) {
       return r.second;
   return nullptr;
 }
-bool has_state(uintptr_t, int32_t state) { return std::count(states.begin(), states.end(), state) > 0; }
-bool can_change(uintptr_t) { return calm; }
-int32_t player_guid() { return player; }
+bool has_state(uintptr_t, int32_t state) {
+  faults('s');
+  return std::count(states.begin(), states.end(), state) > 0;
+}
+bool can_change(uintptr_t) {
+  faults('c');
+  return calm;
+}
+int32_t player_guid() {
+  faults('p');
+  return player;
+}
 uintptr_t find_bucket(uintptr_t, int32_t type, int32_t guid) { return type == 1 && guid == player ? bucket : 0; }
 void equip(uintptr_t items, int32_t guid, int32_t slot, const uint32_t *saved, int32_t variant) {
+  faults('e');
   calls.push_back({'e', items, guid, slot, {saved[0], saved[1], saved[2], saved[3]}, variant});
 }
-void unequip(uintptr_t items, int32_t guid, int32_t slot) { calls.push_back({'u', items, guid, slot, {}, 0}); }
+void unequip(uintptr_t items, int32_t guid, int32_t slot) {
+  faults('u');
+  calls.push_back({'u', items, guid, slot, {}, 0});
+}
 const WardrobeCalls fakes{equip, unequip, row, has_state, can_change, player_guid, find_bucket};
 } // namespace sb
 
@@ -1323,22 +1342,24 @@ int main() {
     put_ptr(bucket, 0x40 + 0x40, uintptr_t(owned_hash.data()));
     put_i32(bucket, 0x40 + 0x48, 2);
 
-    // Gates 2 to 6, in the menu's order, then one call.
+    // Gates 2 to 6, in the menu's order, then one call; stage names the step each answer came from.
     auto equip = [&](uint32_t slot, uint32_t last) {
       auto q = *r;
       q.slot = slot;
       q.item[3] = last;
       return q;
     };
+    const char *volatile stage = nullptr;
     auto start = [&](const WardrobeRequest &q, bool permitted = true) {
-      auto result = wardrobe_start(w, t, sb::fakes, permitted, q);
+      auto result = wardrobe_start(w, t, sb::fakes, permitted, q, stage);
       return std::string(result ? result : "called");
     };
+    auto stage_is = [&](const char *name) { return std::string(stage) == name; };
     sb::calls.clear();
-    assert(start(equip(5, 4), false) == "refused not-playing" && "Gate 2 first");
-    assert(wardrobe_start(0, t, sb::fakes, true, equip(5, 4)) == std::string("refused not-ready") &&
-           wardrobe_start(w, 0, sb::fakes, true, equip(5, 4)) == std::string("refused not-ready") &&
-           "Neither the world nor the table manager is created here");
+    assert(start(equip(5, 4), false) == "refused not-playing" && stage_is("owner") && "Gate 2 first");
+    assert(wardrobe_start(0, t, sb::fakes, true, equip(5, 4), stage) == std::string("refused not-ready") &&
+           wardrobe_start(w, 0, sb::fakes, true, equip(5, 4), stage) == std::string("refused not-ready") &&
+           stage_is("owner") && "Neither the world nor the table manager is created here");
     put_i32(actor, 0x2600, 3);
     assert(start(equip(5, 4)) == "refused not-ready" && "A player actor not spawned");
     put_i32(actor, 0x2600, 1);
@@ -1349,32 +1370,33 @@ int main() {
     assert(start(equip(5, 4)) == "refused not-ready" && "No player GUID");
     sb::player = 77;
     sb::bucket = 0;
-    assert(start(equip(5, 4)) == "refused not-ready" && "No Inventory bucket");
+    assert(start(equip(5, 4)) == "refused not-ready" && stage_is("owner") && "No Inventory bucket");
     sb::bucket = b;
-    assert(start(*list) == "listed");
+    assert(start(*list) == "listed" && stage_is("owner"));
     sb::states = {0x48, 0x5d, 0x5c};
     sb::calm = false;
-    assert(start(equip(5, 4)) == "refused tachy" && start(*off) == "refused tachy" && "Tachy mode, as the menu");
+    assert(start(equip(5, 4)) == "refused tachy" && start(*off) == "refused tachy" && stage_is("tachy") &&
+           "Tachy mode, as the menu");
     sb::states = {0x5d};
-    assert(start(equip(5, 4)) == "refused fusion");
+    assert(start(equip(5, 4)) == "refused fusion" && stage_is("fusion"));
     sb::states = {0x5c};
     assert(start(equip(5, 4)) == "refused fusion" && "Both Fusion modes");
     sb::states.clear();
-    assert(start(equip(5, 4)) == "refused combat");
+    assert(start(equip(5, 4)) == "refused combat" && stage_is("combat"));
     sb::calm = true;
     assert(start(*list) == "listed" && sb::calls.empty() && "Nothing called so far");
     assert(start(equip(9, 4)) == "refused slot" && start(equip(1, 4)) == "refused slot" &&
            "No ponytail slot, no empty gear slot");
     auto drop5 = *off;
     drop5.slot = 5;
-    assert(start(drop5) == "refused slot" && "The suit is never emptied");
-    assert(start(equip(8, 4)) == "refused not-owned" && "A suit is no hair");
+    assert(start(drop5) == "refused slot" && stage_is("slot") && "The suit is never emptied");
+    assert(start(equip(8, 4)) == "refused not-owned" && stage_is("item") && "A suit is no hair");
     assert(start(equip(5, 0x55)) == "refused not-owned" && "Not in the bucket");
     assert(start(equip(5, 0x99)) == "refused not-owned" && "A potion fits no slot");
     assert(start(equip(11, 4)) == "refused not-owned" && "The face accessory slot may be empty, but a suit does not fit");
-    assert(start(equip(5, 0xa)) == "unchanged" && start(*off) == "unchanged" && sb::calls.empty() &&
-           "Already worn, or already empty: nothing called");
-    assert(start(equip(5, 4)) == "called" && sb::calls.size() == 1 && sb::calls[0].kind == 'e' &&
+    assert(start(equip(5, 0xa)) == "unchanged" && stage_is("item") && start(*off) == "unchanged" && stage_is("slot") &&
+           sb::calls.empty() && "Already worn, or already empty: nothing called");
+    assert(start(equip(5, 4)) == "called" && stage_is("equip") && sb::calls.size() == 1 && sb::calls[0].kind == 'e' &&
            sb::calls[0].items == uintptr_t(items.data()) && sb::calls[0].player == 77 && sb::calls[0].slot == 5 &&
            sb::calls[0].saved[0] == 1 && sb::calls[0].saved[3] == 4 && sb::calls[0].variant == 0 &&
            "The menu's equip, colour 0");
@@ -1382,8 +1404,24 @@ int main() {
     assert(start(equip(8, 0x99)) == "called" && sb::calls.back().slot == 8 && sb::calls.back().variant == 2 &&
            "A hairstyle keeps the worn colour");
     put_i32(wearing, 2 * 0x160, 11); // The exospine's entry now worn as a face accessory.
-    assert(start(*off) == "called" && sb::calls.back().kind == 'u' && sb::calls.back().slot == 11 &&
+    assert(start(*off) == "called" && stage_is("unequip") && sb::calls.back().kind == 'u' && sb::calls.back().slot == 11 &&
            sb::calls.back().player == 77 && sb::calls.size() == 3 && "The menu's unequip");
+    // A call that faults (here, throws) leaves its own step in stage, which the adapter answers as fault-<stage>-<code>.
+    auto faulted = [&](char kind, const WardrobeRequest &q) {
+      sb::fail = kind;
+      try {
+        start(q);
+      } catch (char) {
+      }
+      sb::fail = 0;
+      return std::string(stage);
+    };
+    assert(faulted('p', equip(5, 4)) == "owner" && faulted('s', equip(5, 4)) == "tachy" &&
+           faulted('c', *off) == "combat" && faulted('r', equip(5, 4)) == "item" && faulted('e', equip(5, 4)) == "equip" &&
+           faulted('u', *off) == "unequip" && sb::calls.size() == 3 && "Each stage is set before its call");
+    assert(wardrobe_fault("equip", 0xc0000005) == "refused fault-equip-c0000005" &&
+           wardrobe_fault("list", 0x80000003) == "refused fault-list-80000003" &&
+           wardrobe_fault("done", 5) == "refused fault-done-00000005" && "8 lowercase hex digits");
     // The worn map answers the wait.
     assert(!wardrobe_done(w, equip(5, 4)) && wardrobe_done(w, equip(5, 0xa)) && !wardrobe_done(w, *off));
     put_i32(wearing, 2 * 0x160, 12);

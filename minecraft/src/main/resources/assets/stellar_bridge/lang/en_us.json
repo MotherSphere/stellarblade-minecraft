@@ -57,6 +57,7 @@
   "stellar_bridge.wardrobe.result.failed": "Request not sent",
   "stellar_bridge.wardrobe.refused.not-playing": "Play in Stellar Blade first: entered, not paused, no cutscene",
   "stellar_bridge.wardrobe.refused.not-ready": "EVE is not ready in Stellar Blade yet",
+  "stellar_bridge.wardrobe.refused.fault": "Stellar Blade's call failed (step %s, code %s)",
   "stellar_bridge.wardrobe.refused.tachy": "Not available in Tachy mode",
   "stellar_bridge.wardrobe.refused.fusion": "Not available in Fusion mode",
   "stellar_bridge.wardrobe.refused.combat": "Not available during combat",

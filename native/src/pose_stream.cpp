@@ -1007,6 +1007,10 @@ std::string encode_wardrobe(const WardrobeAnswer &a) {
   }
   return out + "END " + std::to_string(a.seq) + "\n";
 }
+std::string wardrobe_fault(const char *stage, uint32_t code) {
+  const uint32_t words[4] = {code}; // guid_text's first 8 digits.
+  return "refused fault-" + std::string(stage) + "-" + guid_text(words).substr(0, 8);
+}
 
 bool wardrobe_category(uint32_t category) {
   return category == 2 || category == 3 || category == 4 || category == 21 || category == 22 || category == 23 ||
@@ -1042,7 +1046,8 @@ bool wardrobe_owner(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, 
 }
 
 const char *wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
-                           const WardrobeRequest &r) {
+                           const WardrobeRequest &r, const char *volatile &stage) {
+  stage = "owner";
   if (!permitted)
     return "refused not-playing";
   WardrobeOwner o;
@@ -1050,21 +1055,27 @@ const char *wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCall
     return "refused not-ready";
   if (r.op == WardrobeOp::List)
     return "listed";
+  stage = "tachy";
   if (sb.has_state(o.actor, TachyState))
     return "refused tachy";
+  stage = "fusion";
   if (sb.has_state(o.actor, Fusion2State) || sb.has_state(o.actor, Fusion1State))
     return "refused fusion";
+  stage = "combat";
   if (!sb.can_change(o.actor))
     return "refused combat";
+  stage = "slot";
   auto current = worn(o.actor, r.slot);
   if (!wardrobe_slot_allowed(r.op, r.slot, current != 0))
     return "refused slot";
   if (r.op == WardrobeOp::Unequip) {
     if (!current)
       return "unchanged";
+    stage = "unequip";
     sb.unequip(o.items, o.player, int32_t(r.slot));
     return nullptr;
   }
+  stage = "item";
   auto item = owned(o.bucket, r.item);
   auto row = item ? sb.row(tables, 0, reinterpret_cast<const void *>(item + ItemAlias)) : nullptr;
   if (!row || !wardrobe_fits(at<uint8_t>(uintptr_t(row) + RowCategory), r.slot))
@@ -1073,6 +1084,7 @@ const char *wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCall
     return "unchanged";
   // The menu passes MatVarIndex 0; for the hair the salon passes the colour, so the worn one is kept.
   auto variant = r.slot == HairSlot && current ? at<int32_t>(current + ItemVariant) : 0;
+  stage = "equip";
   sb.equip(o.items, o.player, int32_t(r.slot), r.item, variant);
   return nullptr;
 }
@@ -1387,6 +1399,7 @@ HealthMirror mirror;
 WardrobeGate wardrobe_gate;
 std::optional<WardrobeRequest> wardrobe_pending, wardrobe_waiting;
 uint64_t wardrobe_deadline = 0;
+std::optional<uint32_t> wardrobe_done_fault; // The last fault code of the worn map reads while waiting.
 std::string wardrobe_answer;
 std::array<WardrobeItem, MaxWardrobeItems> wardrobe_items;
 // The owned list, or none before gate 3 passes.
@@ -1540,28 +1553,33 @@ WardrobeCalls wardrobe_calls() {
   sb.bucket = reinterpret_cast<decltype(sb.bucket)>(image + ItemBucketRva);
   return sb;
 }
-// A player actor, bucket or worn map freed under the reads faults at worst, before Stellar Blade's equip or unequip
-// is called (the calls come last); contained as not ready, no worn change, or an empty list.
-const char *guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
-                                   const WardrobeRequest &r) {
+// A player actor, bucket or worn map freed under the reads, or Stellar Blade's own calls, fault at worst; contained:
+// false with the exception code in fault (and, for the start, the step that raised it still in stage).
+bool guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
+                            const WardrobeRequest &r, const char *&result, const char *volatile &stage,
+                            uint32_t &fault) {
   __try {
-    return wardrobe_start(world, tables, sb, permitted, r);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return "refused not-ready";
-  }
-}
-bool guarded_wardrobe_done(uintptr_t world, const WardrobeRequest &r) {
-  __try {
-    return wardrobe_done(world, r);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    result = wardrobe_start(world, tables, sb, permitted, r, stage);
+    return true;
+  } __except (fault = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
 }
-uint32_t guarded_wardrobe_list(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeItem *out) {
+bool guarded_wardrobe_done(uintptr_t world, const WardrobeRequest &r, bool &done, uint32_t &fault) {
   __try {
-    return wardrobe_list(world, tables, sb, out);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return 0;
+    done = wardrobe_done(world, r);
+    return true;
+  } __except (fault = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+bool guarded_wardrobe_list(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeItem *out,
+                           uint32_t &count, uint32_t &fault) {
+  __try {
+    count = wardrobe_list(world, tables, sb, out);
+    return true;
+  } __except (fault = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+    return false;
   }
 }
 // A table freed under the walk faults at worst; contained, and retried at the next poll.
@@ -1611,13 +1629,19 @@ void guarded_mirror(uintptr_t world, float share, uint32_t acknowledged, bool fr
 uintptr_t game_world() { return 0; } // Only the pinned Windows executable has one,
 uintptr_t table_manager() { return 0; } // a table manager
 WardrobeCalls wardrobe_calls() { return {}; } // and Stellar Blade's functions.
-const char *guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
-                                   const WardrobeRequest &r) {
-  return wardrobe_start(world, tables, sb, permitted, r);
+bool guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
+                            const WardrobeRequest &r, const char *&result, const char *volatile &stage, uint32_t &) {
+  result = wardrobe_start(world, tables, sb, permitted, r, stage);
+  return true;
 }
-bool guarded_wardrobe_done(uintptr_t world, const WardrobeRequest &r) { return wardrobe_done(world, r); }
-uint32_t guarded_wardrobe_list(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeItem *out) {
-  return wardrobe_list(world, tables, sb, out);
+bool guarded_wardrobe_done(uintptr_t world, const WardrobeRequest &r, bool &done, uint32_t &) {
+  done = wardrobe_done(world, r);
+  return true;
+}
+bool guarded_wardrobe_list(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, WardrobeItem *out,
+                           uint32_t &count, uint32_t &) {
+  count = wardrobe_list(world, tables, sb, out);
+  return true;
 }
 uint32_t guarded_evades(uintptr_t world, bool locked) { return patch_evades(world, locked); }
 void guarded_starts(uintptr_t world, bool locked, uint64_t wall, EvadeStarts &e) { count_evades(world, locked, wall, e); }
@@ -1653,25 +1677,36 @@ void wardrobe_step(bool permitted, uint64_t wall) {
     return;
   auto world = game_world(), tables = table_manager();
   auto sb = wardrobe_calls();
-  const char *result;
+  const char *result = nullptr, *volatile stage = "owner";
+  uint32_t code = 0;
+  std::string fault; // "refused fault-<stage>-<code>" once a structured exception was contained.
   if (wardrobe_waiting) {
-    bool done = guarded_wardrobe_done(world, *wardrobe_waiting);
+    bool done = false;
+    if (!guarded_wardrobe_done(world, *wardrobe_waiting, done, code))
+      wardrobe_done_fault = code; // Not done; a wait that ends without the change answers this fault, not unchanged.
     if (!done && wall < wardrobe_deadline)
       return;
     result = !done ? "unchanged" : wardrobe_waiting->op == WardrobeOp::Equip ? "equipped" : "unequipped";
+    if (!done && wardrobe_done_fault)
+      fault = wardrobe_fault("done", *wardrobe_done_fault);
   } else {
     wardrobe_waiting = std::exchange(wardrobe_pending, std::nullopt);
-    result = guarded_wardrobe_start(world, tables, sb, permitted, *wardrobe_waiting);
-    if (!result) {
+    wardrobe_done_fault.reset();
+    if (!guarded_wardrobe_start(world, tables, sb, permitted, *wardrobe_waiting, result, stage, code))
+      fault = wardrobe_fault(stage, code);
+    else if (!result) {
       wardrobe_deadline = wall + WardrobeWait;
       return;
     }
   }
-  // Refused before gate 3: Stellar Blade's memory is not read, and the list stays empty.
-  bool reached = std::strcmp(result, "refused not-playing") && std::strcmp(result, "refused not-ready");
-  auto count = reached ? guarded_wardrobe_list(world, tables, sb, wardrobe_items.data()) : 0;
-  wardrobe_answer = encode_wardrobe(
-      {wardrobe_waiting->session, wardrobe_waiting->seq, wall, result, wardrobe_items.data(), count});
+  // Refused before gate 3, or a fault in the start (no result): Stellar Blade's memory is not read again, and the list
+  // stays empty.
+  bool reached = result && std::strcmp(result, "refused not-playing") && std::strcmp(result, "refused not-ready");
+  uint32_t count = 0;
+  if (reached && !guarded_wardrobe_list(world, tables, sb, wardrobe_items.data(), count, code) && fault.empty())
+    fault = wardrobe_fault("list", code);
+  wardrobe_answer = encode_wardrobe({wardrobe_waiting->session, wardrobe_waiting->seq, wall,
+                                     fault.empty() ? std::string_view(result) : fault, wardrobe_items.data(), count});
   wardrobe_waiting.reset();
 }
 } // namespace

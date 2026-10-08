@@ -125,6 +125,12 @@ public final class BridgeProtocolTest {
         check(listed.items().get(3).level() == 3 && listed.items().get(3).slot() == 6, "Exospine level and slot");
         WardrobeAnswer refused = parseWardrobe("SBMC_WARDROBE 1\nSESSION " + "b".repeat(32) + "\nSEQ 2\nTIME 0\nRESULT refused not-playing\nCOUNT 0\nEND 2\n");
         check(refused.result().equals("refused") && refused.reason().equals("not-playing") && refused.items().isEmpty(), "Refusal without items");
+        // A contained fault names its step and the exception code; the waiting step's fault keeps the list.
+        WardrobeAnswer fault = parseWardrobe("SBMC_WARDROBE 1\nSESSION " + "b".repeat(32) + "\nSEQ 3\nTIME 0\nRESULT refused fault-tachy-c0000005\nCOUNT 0\nEND 3\n");
+        check(fault.result().equals("refused") && fault.reason().equals("fault-tachy-c0000005") && fault.items().isEmpty(), "Fault in a call");
+        check(parseWardrobe(wardrobe.replace("RESULT equipped", "RESULT refused fault-done-80000003")).items().size() == 4, "Fault while waiting, with the list");
+        for (String stage : List.of("owner", "fusion", "combat", "slot", "item", "equip", "unequip", "list"))
+            check(parseWardrobe(wardrobe.replace("RESULT equipped", "RESULT refused fault-" + stage + "-0000abcd")).reason().equals("fault-" + stage + "-0000abcd"), "Fault stage " + stage);
         StringBuilder full = new StringBuilder("SBMC_WARDROBE 1\nSESSION " + "a".repeat(32) + "\nSEQ 999999999999999\nTIME 9007199254740991\nRESULT listed\nCOUNT 1024\n");
         for (int i = 0; i < 1024; i++) full.append("ITEM 4294967295 28 ").append(String.format("%032x", i + 1)).append(" 9999 99 17\n");
         String widest = full.append("END 999999999999999\n").toString();
@@ -132,7 +138,11 @@ public final class BridgeProtocolTest {
         for (String invalid : List.of(wardrobe.replace("SBMC_WARDROBE 1", "SBMC_WARDROBE 2"), wardrobe.replace("END 6", "END 7"),
                 wardrobe.replace("COUNT 4", "COUNT 5"), wardrobe.replace("COUNT 4", "COUNT 3"), wardrobe.replace("RESULT equipped", "RESULT maybe"),
                 wardrobe.replace("RESULT equipped", "RESULT refused"), wardrobe.replace("RESULT equipped", "RESULT refused lost"),
-                wardrobe.replace("RESULT equipped", "RESULT equipped now"),
+                wardrobe.replace("RESULT equipped", "RESULT equipped now"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-C0000005"),
+                wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c000005"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c00000050"),
+                wardrobe.replace("RESULT equipped", "RESULT refused fault-wear-c0000005"), wardrobe.replace("RESULT equipped", "RESULT refused fault-c0000005"),
+                wardrobe.replace("RESULT equipped", "RESULT refused fault-equip"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c0000005 x"),
+                wardrobe.replace("RESULT equipped", "RESULT equipped fault-equip-c0000005"), wardrobe.replace("RESULT equipped", "RESULT refused fault-Equip-c0000005"),
                 wardrobe.replace("RESULT equipped", "RESULT equipped combat"), wardrobe.replace("ITEM 4000001", "ITEM 4294967296"), wardrobe.replace(" 0 2 8\n", " 0 100 8\n"),
                 wardrobe.replace(" 3 0 6\n", " 10000 0 6\n"), wardrobe.replace(" 0 2 8\n", " 0 2 18\n"),
                 wardrobe.replace("000000ff", "000000FF"), wardrobe.replace("0000abcd 3", "0000abc 3"), wardrobe.replace("ITEM 4000002 4", "ITEM 4000002"),
