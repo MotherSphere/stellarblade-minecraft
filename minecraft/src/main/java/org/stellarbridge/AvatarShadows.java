@@ -110,7 +110,8 @@ final class AvatarShadows {
     /**
      * Writes the faces EVE's shadow can fall on as two triangles each (camera-relative position, normal, brightness per
      * vertex): block tops and the sides turned to the light, open in front, within the shadow map's footprint and down to
-     * FADE_END blocks below her bones' box (low, high: camera-relative). Returns the vertex count; stops when out is full.
+     * FADE_END blocks below her bones' box (low, high: camera-relative), with no full cube between them and her along the
+     * light (her shadow map holds only her). Returns the vertex count; stops when out is full.
      */
     // ponytail: only cubes, flat tops and sides turned to the light receive her shadow; a deferred decal from a depth
     // copy if stairs, fences or mobs must.
@@ -126,6 +127,7 @@ final class AvatarShadows {
         float marginX = 0.87f * (float) Math.sqrt(light.m00() * light.m00() + light.m10() * light.m10() + light.m20() * light.m20());
         float marginY = 0.87f * (float) Math.sqrt(light.m01() * light.m01() + light.m11() * light.m11() + light.m21() * light.m21());
         Vector3f clip = new Vector3f();
+        Vector3d center = new Vector3d(low).add(high).mul(0.5).add(cameraX, cameraY, cameraZ);
         int vertices = 0;
         for (int x = x0; x <= x1; x++)
             for (int z = z0; z <= z1; z++)
@@ -137,14 +139,15 @@ final class AvatarShadows {
                     if (top <= 0) continue;
                     float rx = (float) (x - cameraX), ry = (float) (y - cameraY), rz = (float) (z - cameraZ);
                     float b = top < 1 ? cells.brightness(x, y, z) : cells.top(x, y + 1, z) < 1 ? cells.brightness(x, y + 1, z) : 0;
-                    if (b > 0) vertices += face(out, rx, ry + top, rz, 0, 0, 1, 1, 0, 0, 0, 1, 0, b);
+                    if (b > 0 && !blocked(cells, x + 0.5, y + top + 0.01, z + 0.5, toward, center))
+                        vertices += face(out, rx, ry + top, rz, 0, 0, 1, 1, 0, 0, 0, 1, 0, b);
                     if (top < 1) continue;
                     // Sides of full cubes facing the light: east, west, south, north.
                     for (int side = 0; side < 4; side++) {
                         int dx = side == 0 ? 1 : side == 1 ? -1 : 0, dz = side == 2 ? 1 : side == 3 ? -1 : 0;
                         if (dx * toward.x + dz * toward.z <= 0.02f || cells.top(x + dx, y, z + dz) >= 1) continue;
                         float n = cells.brightness(x + dx, y, z + dz);
-                        if (n <= 0) continue;
+                        if (n <= 0 || blocked(cells, x + 0.5 + 0.51 * dx, y + 0.5, z + 0.5 + 0.51 * dz, toward, center)) continue;
                         vertices += switch (side) {
                             case 0 -> face(out, rx + 1, ry, rz, 0, 1, 0, 0, 0, 1, 1, 0, 0, n);
                             case 1 -> face(out, rx, ry, rz, 0, 0, 1, 0, 1, 0, -1, 0, 0, n);
@@ -154,6 +157,18 @@ final class AvatarShadows {
                     }
                 }
         return vertices;
+    }
+
+    /**
+     * Whether a full cube lies along the light from a point (world blocks) before the plane across the light through EVE's
+     * center: blocks past her cannot hide her shadow.
+     */
+    // ponytail: one ray per face center in half-block steps; per-vertex rays if half-blocked faces show.
+    private static boolean blocked(Cells cells, double x, double y, double z, Vector3f toward, Vector3d center) {
+        double left = (center.x - x) * toward.x + (center.y - y) * toward.y + (center.z - z) * toward.z;
+        for (; left > 0; left -= 0.5, x += toward.x * 0.5, y += toward.y * 0.5, z += toward.z * 0.5)
+            if (cells.top(floor(x), floor(y), floor(z)) >= 1) return true;
+        return false;
     }
 
     /** One unit face from an origin along u then v (u x v its normal, counter-clockwise from the front): six vertices. */

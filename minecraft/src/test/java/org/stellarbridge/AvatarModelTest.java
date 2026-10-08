@@ -206,6 +206,26 @@ public final class AvatarModelTest {
             @Override public float brightness(int x, int y, int z) { return 0; }
         };
         assert AvatarShadows.faces(dark, feet, head, west, light, 0, 0, 0, faces) == 0 : "No shadow in the dark";
+        // The sun in the east, walls at x = -5 and -2 two blocks high, a step at x = 1: her shadow reaches the near wall and
+        // climbs its east face, and stops there, as the wall blocks the light before it reaches her; the step past her blocks
+        // nothing.
+        AvatarShadows.Cells walled = new AvatarShadows.Cells() {
+            @Override public float top(int x, int y, int z) { return y < 0 || ((x == -5 || x == -2) && y < 2) || (x == 1 && y == 0) ? 1 : 0; }
+            @Override public float brightness(int x, int y, int z) { return top(x, y, z) >= 1 ? 0 : 1; }
+        };
+        Vector3f east = new Vector3f(1, 0.36f, 0).normalize();
+        AvatarShadows.fit(feet, head, east, light);
+        vertices = AvatarShadows.faces(walled, feet, head, east, light, 0, 0, 0, faces);
+        climbs = false;
+        boolean reaches = false;
+        for (int v = 0; v < vertices; v++) {
+            float x = faces.get(7 * v), y = faces.get(7 * v + 1), nx = faces.get(7 * v + 3), ny = faces.get(7 * v + 4);
+            climbs |= nx == 1 && x == -1;
+            reaches |= ny == 1 && y == 0 && x == -1;
+            assert ny != 1 || y != 0 || x > -3 || x < -5 : "Ground past the wall at x " + x;
+            assert nx != 1 || x != -4 || y != 0 : "The far wall's east face";
+        }
+        assert climbs && reaches : "The near wall's east face and the ground before it";
         System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cut-out mipmaps, weapon trails, shader-pack inputs, and sun and shadow math");
     }
 
