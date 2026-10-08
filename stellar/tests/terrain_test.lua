@@ -577,7 +577,7 @@ end)
 -- The remote lab site: the lab kilometres away, autosave off while entered, and a return that waits for the ground.
 local SITE={X=-750000,Y=-750000}
 check('at a lab site the anchor is the site and entry, pose and boxes stay relative to it',function()
-    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    local b=backend(); b.site=SITE; b.autosave_on=false; local t=Terrain.new(b,100,b.time)
     local ok,message=t.create(packet())
     assert(ok and message:find('Lab at the remote site -750000 -750000.',1,true) and b.pin==nil,message)
     local floor=imported(b).spec
@@ -587,7 +587,16 @@ check('at a lab site the anchor is the site and entry, pose and boxes stay relat
     assert(not b.autosave_on and b.pin==nil,'autosave off; nothing to pin where nothing streams')
     b.position={X=-750000+200,Y=-750000+300,Z=890}
     local p=t.pose(); assert(p.position.x==2 and p.position.y==1 and p.position.z==3)
-    assert(t.restore()); assert(b.position.X==10 and b.position.Y==20 and b.position.Z==100 and b.autosave_on)
+    assert(t.restore()); assert(b.position.X==10 and b.position.Y==20 and b.position.Z==100)
+    assert(b.autosave_on==false,'autosave back as it was, off here')
+end)
+
+check('a lab site entry is refused before EVE moves if autosave cannot be switched off',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); b.autosave=function() error('autosave refused') end
+    local ok,message=t.enter()
+    assert(not ok and message:find('autosave refused',1,true) and b.moves==0 and t.status()=='ready' and b.pin==nil,message)
+    assert(t.restore()); assert(b.moves==0 and b.count()==0)
 end)
 
 check('the return from a lab site waits for the ground, then moves, unpins and restores autosave',function()
@@ -699,6 +708,11 @@ check('a window move that would leave the world is deferred',function()
     local ok,message=t.update(moved(2,{{-12.5,-1,-4.5,-3.5,0,4.5}},{-12.5,-2,-4.5,-3.5,4,4.5}))
     assert(not ok and message:find('Window move deferred: the new window would leave the world.',1,true) and #b.events==0,message)
     assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))); assert(t.pose().ack==2)
+    assert(t.restore())
+    b=backend(); b.site={X=0,Y=-1039000}; t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.events={}
+    ok,message=t.update(moved(2,{{-4.5,-1,-12.5,4.5,0,-3.5}},{-4.5,-2,-12.5,4.5,4,-3.5}))
+    assert(not ok and message:find('the new window would leave the world.',1,true) and #b.events==0,message)
     assert(t.restore())
 end)
 print(string.format('%d terrain lifecycle tests passed; native physics requires in-game verification.',tests))

@@ -422,7 +422,7 @@ setmetatable(world,{__index=function(_,key)
     if key=='bEnableFixedStreamingLocation' then return streaming.enabled end
 end,__newindex=function(_,key,value)
     streaming.writes=streaming.writes+1
-    if key=='bEnableFixedStreamingLocation' then streaming.enabled=value
+    if key=='bEnableFixedStreamingLocation' then if not streaming.ignore_flag then streaming.enabled=value end
     elseif key=='FixedStreamingLocation' then
         if streaming.tables then streaming.location={X=value.X,Y=value.Y,Z=value.Z} end
     else error('unexpected world write '..key) end
@@ -440,6 +440,10 @@ streaming.location=setmetatable({},{__index=function() return 0 end,__newindex=f
 local pinned,why=pcall(terrain_engine.stream_at,{X=7,Y=8,Z=9})
 assert(not pinned and tostring(why):find('did not accept the streaming location',1,true),'a pin that never lands fails')
 streaming.location={X=0,Y=0,Z=0}; streaming.enabled=false
+streaming.ignore_flag=true
+pinned,why=pcall(terrain_engine.stream_at,{X=7,Y=8,Z=9})
+assert(not pinned and tostring(why):find('did not accept the streaming pin',1,true),'a flag that never lands fails')
+streaming.ignore_flag=nil
 paused=true; assert(terrain_engine.paused()==true)
 paused=false; assert(terrain_engine.paused()==false)
 local traced
@@ -453,6 +457,14 @@ terrain_engine.flush_streaming(); assert(flushed==world)
 controller.bUseAutoSave=true
 assert(terrain_engine.autosave(false)==true and controller.bUseAutoSave==false)
 assert(terrain_engine.autosave(true)==false and controller.bUseAutoSave==true)
+controller.bUseAutoSave=nil
+local switched
+switched,why=pcall(terrain_engine.autosave,false)
+assert(not switched and tostring(why):find('autosave switch unavailable',1,true),'no switch, no change')
+setmetatable(controller,{__index=function(_,key) if key=='bUseAutoSave' then return true end end,__newindex=function() end})
+switched,why=pcall(terrain_engine.autosave,false)
+assert(not switched and tostring(why):find('did not accept the autosave switch',1,true),'a switch that never lands fails')
+setmetatable(controller,nil); controller.bUseAutoSave=true
 local function tile(loaded) return {get=function() return {IsLevelLoaded=function() return loaded end} end} end
 rawset(world,'WorldComposition',{TilesStreaming={ForEach=function(_,each)
     for i,t in ipairs({tile(true),tile(false),tile(false)}) do each(i,t) end
@@ -462,4 +474,8 @@ keys.F6(); drain()
 local counted
 for _,message in ipairs(logs) do if message:find('World Composition tiles loaded: 1 of 3; streaming follows the camera',1,true) then counted=true end end
 assert(counted,'F6 counts the loaded World Composition tiles')
+streaming.enabled=true; streaming.location={X=-750000,Y=-750000,Z=0}
+keys.F6(); drain(); counted=false
+for _,message in ipairs(logs) do if message:find('World Composition tiles loaded: 1 of 3; streaming pinned at (-750000,-750000)',1,true) then counted=true end end
+assert(counted,'F6 says where streaming is pinned')
 print('PASS remote lab site engine: the site by level, the streaming pin and its fallback, ground, flush, autosave, the F6 tile count')
