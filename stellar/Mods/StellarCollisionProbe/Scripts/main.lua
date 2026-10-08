@@ -83,22 +83,27 @@ local function cube_mesh()
     end
     if valid(cube) then return cube end
 end
--- Visuals are optional. Collision always belongs to the TriggerBox, never this mesh.
+-- Visuals are optional. Collision always belongs to the TriggerBox, never this mesh. A reused handle keeps its visual.
 local function add_visual(world, spec, handle)
-    local mesh = cube_mesh()
-    if not mesh then return end
-    local class = StaticFindObject('/Script/Engine.StaticMeshActor')
-    if not valid(class) then return end
-    local visual = world:SpawnActor(class,spec.center,{Pitch=0,Yaw=0,Roll=0})
-    if not valid(visual) then return end
-    -- Keep ownership even if optional setup fails.
-    handle.visual = visual
-    local component = visual.StaticMeshComponent
-    assert(valid(component), 'Optional visual has no StaticMeshComponent.')
-    component:SetMobility(2)
-    component:SetCollisionEnabled(0)
-    visual:SetActorEnableCollision(false,false)
-    assert(component:SetStaticMesh(mesh), 'Optional cube visual could not be set.')
+    local visual = handle.visual
+    if not valid(visual) then
+        local mesh = cube_mesh()
+        if not mesh then return end
+        local class = StaticFindObject('/Script/Engine.StaticMeshActor')
+        if not valid(class) then return end
+        visual = world:SpawnActor(class,spec.center,{Pitch=0,Yaw=0,Roll=0})
+        if not valid(visual) then return end
+        -- Keep ownership even if optional setup fails.
+        handle.visual = visual
+        local component = visual.StaticMeshComponent
+        assert(valid(component), 'Optional visual has no StaticMeshComponent.')
+        component:SetMobility(2)
+        component:SetCollisionEnabled(0)
+        visual:SetActorEnableCollision(false,false)
+        assert(component:SetStaticMesh(mesh), 'Optional cube visual could not be set.')
+    else
+        visual:K2_SetActorLocation(spec.center,false,{},true)
+    end
     visual:SetActorScale3D({X=spec.extent.X/50,Y=spec.extent.Y/50,Z=spec.extent.Z/50})
     visual:SetActorHiddenInGame(spec.visuals_visible==false)
 end
@@ -108,9 +113,14 @@ function engine.spawn(spec)
     assert(valid(class), 'TriggerBox class unavailable in this game build.')
     local actor = world:SpawnActor(class,spec.center,{Pitch=0,Yaw=0,Roll=0})
     assert(valid(actor), 'TriggerBox could not be spawned.')
+    if spec.role~='minecraft' then -- Up to a thousand boxes per import; the terrain summary counts them.
+        log(string.format('Spawned %s at %.1f %.1f %.1f, half-extents %.1f %.1f %.1f',
+            spec.role,spec.center.X,spec.center.Y,spec.center.Z,spec.extent.X,spec.extent.Y,spec.extent.Z))
+    end
     -- Register ownership in the lifecycle before any fallible component setup.
     return {actor=actor}
 end
+-- A new or parked handle (engine.park): sized and placed before its collision is enabled.
 function engine.configure(handle, spec)
     local actor = handle.actor
     local box = actor.CollisionComponent
@@ -118,6 +128,7 @@ function engine.configure(handle, spec)
     box:SetMobility(2)
     box:SetGenerateOverlapEvents(false)
     box:SetBoxExtent(spec.extent,true)
+    assert(actor:K2_SetActorLocation(spec.center,false,{},true), 'A terrain actor could not be placed.')
     box:SetCollisionObjectType(1) -- WorldDynamic: EVE's capsule blocks on it, as the in-game avatar sessions showed.
     box:SetCollisionResponseToAllChannels(2) -- Block
     box:SetCollisionEnabled(3) -- QueryAndPhysics
@@ -126,9 +137,17 @@ function engine.configure(handle, spec)
     assert(box:GetCollisionEnabled()==3, 'Collision mode was not accepted.')
     local shown, why = pcall(add_visual,actor:GetWorld(),spec,handle)
     if not shown then log('Optional cube visual unavailable: '..tostring(why)) end
-    if spec.role=='minecraft' then return end -- Up to a thousand per import; the terrain summary counts them.
-    log(string.format('Spawned %s at %.1f %.1f %.1f, half-extents %.1f %.1f %.1f',
-        spec.role,spec.center.X,spec.center.Y,spec.center.Z,spec.extent.X,spec.extent.Y,spec.extent.Z))
+end
+-- Retires a handle for reuse: collision off first, then hidden and moved 100 m up.
+function engine.park(handle)
+    local actor = handle.actor
+    local box = actor.CollisionComponent
+    box:SetCollisionEnabled(0)
+    actor:SetActorEnableCollision(false,false)
+    assert(box:GetCollisionEnabled()==0, 'A parked terrain actor kept its collision.')
+    if valid(handle.visual) then handle.visual:SetActorHiddenInGame(true) end
+    local at = actor:K2_GetActorLocation()
+    assert(actor:K2_SetActorLocation({X=at.X,Y=at.Y,Z=at.Z+10000},false,{},true), 'A terrain actor could not be parked.')
 end
 function engine.destroy(handle)
     if valid(handle.visual) then handle.visual:K2_DestroyActor() end
@@ -541,7 +560,7 @@ if bridge then
             local read_ok,packet=pcall(hd_session.read)
             if not read_ok then cancel_hd('capture request read failed') end
             report_result('hd',hd_session.tick(read_ok and packet or {}))
-            -- A terrain revision imports a few boxes per frame (window moves are large); the bridge logs how it ends.
+            -- A terrain revision places boxes within a per-frame budget (window moves are large); the bridge logs how it ends.
             local imported,import_error=pcall(bridge.step)
             if not imported then report_result('terrain',false,'Terrain import paused: '..tostring(import_error)) end
             report_result('input',update_control_permit())
@@ -562,4 +581,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 51; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 52; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

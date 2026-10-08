@@ -39,7 +39,7 @@ function Terrain.mapped(box,a,scale,role)
             Z=(box[5]-box[2])*scale/2}}
 end
 
--- Seconds of spawning per native frame while a revision imports (at least one box per frame).
+-- Seconds of placing boxes per native frame while a revision imports (at least one box per frame).
 local FRAME_BUDGET=0.004
 
 -- clock: seconds for the frame budget and timings (os.clock, wall time under the MSVC runtime).
@@ -47,8 +47,10 @@ function Terrain.new(engine,scale,clock)
     scale=scale or 100
     clock=clock or os.clock
     assert(type(scale)=='number' and scale>0 and scale<math.huge,'Scale must be finite and positive.')
-    -- fixture.terrain holds every box actor: the applied revision's and those spawned so far for fixture.import, the
+    -- fixture.terrain holds every box actor: the applied revision's and those placed so far for fixture.import, the
     -- newest revision being imported; fixture.guards hold EVE in the applied window, fixture.fresh in the imported one.
+    -- fixture.pool holds parked actors (engine.park: no collision, hidden) that boxes and guards reuse before spawning,
+    -- so a window move alternates two guard sets and recycles the boxes it retires.
     local fixture
     local visuals_visible=true
     local api={}
@@ -75,35 +77,48 @@ function Terrain.new(engine,scale,clock)
             assert(engine.valid(item.actor),'A terrain or guard actor is missing; return and clean up.')
         end)
     end
+    -- An import's summary: its slowest single actor operation and how many actors it reused or spawned.
+    local function timed(started,count)
+        local import=fixture.import
+        if not import then return end
+        import.slowest=math.max(import.slowest,clock()-started)
+        if count then import[count]=import[count]+1 end
+    end
+    -- Callers check that spec stays clear of EVE: a parked actor takes collision only once configured in place.
     local function spawn_owned(group,spec,key)
         spec.visuals_visible=visuals_visible
-        local actor=engine.spawn(spec)
+        local started=clock()
+        local parked=table.remove(fixture.pool)
+        local actor=parked and parked.actor or engine.spawn(spec)
         assert(actor,'spawn returned no actor')
         group[#group+1]={actor=actor,spec=spec,key=key}
         engine.configure(actor,spec)
+        timed(started,parked and 'reused' or 'spawned')
     end
-    local function destroy_group(group)
+    -- Destroys a group's actors, or parks them in the pool; what fails stays in the returned group.
+    local function release(group,park)
         local remaining,errors={},{}
         for i=#group,1,-1 do
-            local item=group[i]
-            local ok,err=pcall(engine.destroy,item.actor)
+            local item,started=group[i],clock()
+            local ok,err=pcall(park and engine.park or engine.destroy,item.actor)
+            timed(started)
             if not ok then
                 remaining[#remaining+1]=item
                 errors[#errors+1]=tostring(err)
-            end
+            elseif park then fixture.pool[#fixture.pool+1]={actor=item.actor} end
         end
         return remaining,table.concat(errors,'; ')
     end
     local function cleanup()
         local errors={}
-        for _,key in ipairs({'terrain','fresh','guards'}) do
-            local remaining,err=destroy_group(fixture[key])
+        for _,key in ipairs({'pool','terrain','fresh','guards'}) do
+            local remaining,err=release(fixture[key])
             fixture[key]=remaining
             if err~='' then errors[#errors+1]=err end
         end
         fixture.complete=false
         fixture.import=nil
-        if #fixture.guards+#fixture.terrain+#fixture.fresh==0 then fixture=nil end
+        if #fixture.guards+#fixture.terrain+#fixture.fresh+#fixture.pool==0 then fixture=nil end
         return #errors==0,table.concat(errors,'; ')
     end
     local function mapped(box,role) return Terrain.mapped(box,fixture.anchor,scale,role) end
@@ -130,7 +145,7 @@ function Terrain.new(engine,scale,clock)
             and packet.origin.z==old.origin.z,
             'Minecraft session, dimension or anchor changed; return before linking again.')
     end
-    -- An import that cannot finish: destroys what it spawned (boxes outside the applied revision, the new window's
+    -- An import that cannot finish: destroys what it placed (boxes outside the applied revision, the new window's
     -- guards) and keeps the applied terrain and guards.
     local function abandon(err)
         local applied,kept,spawned={},{},{}
@@ -138,15 +153,15 @@ function Terrain.new(engine,scale,clock)
         for _,item in ipairs(fixture.terrain) do
             if applied[item.key] then kept[#kept+1]=item else spawned[#spawned+1]=item end
         end
-        local remaining,why=destroy_group(spawned)
-        local guards,guard_why=destroy_group(fixture.fresh)
+        local remaining,why=release(spawned)
+        local guards,guard_why=release(fixture.fresh)
         for _,item in ipairs(remaining) do kept[#kept+1]=item end
         fixture.terrain,fixture.fresh,fixture.import=kept,guards,nil
         fixture.complete=#remaining+#guards==0
         error(tostring(err)..(fixture.complete and '; previous terrain retained'
             or '; previous terrain retained; cleanup required: '..why..guard_why),0)
     end
-    -- Spawns the importing revision's boxes for one frame budget; once all exist, removes the boxes it no longer has
+    -- Places the importing revision's boxes for one frame budget; once all exist, parks the boxes it no longer has
     -- and, after a window move, the old window's guards. A message when it ends or waits, else nil.
     local function step()
         local import=fixture.import
@@ -173,13 +188,13 @@ function Terrain.new(engine,scale,clock)
         for _,item in ipairs(fixture.terrain) do
             if import.wanted[item.key] then kept[#kept+1]=item else old[#old+1]=item end
         end
-        local remaining,why=destroy_group(old)
+        local remaining,why=release(old,true)
         for _,item in ipairs(remaining) do kept[#kept+1]=item end
         fixture.terrain=kept
         local moved,guard_why=#fixture.fresh>0,''
         if moved then
             local guards
-            guards,guard_why=destroy_group(fixture.guards)
+            guards,guard_why=release(fixture.guards,true)
             for _,item in ipairs(fixture.fresh) do guards[#guards+1]=item end
             fixture.guards,fixture.fresh=guards,{}
         end
@@ -187,9 +202,9 @@ function Terrain.new(engine,scale,clock)
         fixture.complete=#remaining==0 and guard_why==''
         assert(fixture.complete,'Replacement terrain retained; old actor cleanup required: '..why..guard_why)
         fixture.packet=import.packet
-        return string.format('Minecraft collision revision %d: %d boxes added, %d removed, %d kept in %.0f ms over %d frames%s.',
+        return string.format('Minecraft collision revision %d: %d boxes added, %d removed, %d kept in %.0f ms over %d frames; reused %d, spawned %d, slowest op %.1f ms%s.',
             import.packet.seq,#import.queue,#old,#kept-#import.queue,(clock()-import.started)*1000,import.frames,
-            moved and '; window moved' or '')
+            import.reused,import.spawned,import.slowest*1000,moved and '; window moved' or '')
     end
 
     api.create=protected(function(packet)
@@ -206,7 +221,7 @@ function Terrain.new(engine,scale,clock)
         assert(anchor.Z+bounds[2]*scale-50 > origin.position.Z+origin.half_height,
             'The bounded patch is too deep for the elevated lab; no actors created.')
         fixture={origin=origin,anchor=anchor,packet=copy_packet(packet),
-            guards={},fresh={},terrain={},entered=false,complete=false,
+            guards={},fresh={},terrain={},pool={},entered=false,complete=false,
             entry={X=anchor.X,Y=anchor.Y,Z=anchor.Z+origin.half_height+5}}
         local started=os.clock()
         local ok,err=pcall(function()
@@ -275,7 +290,7 @@ function Terrain.new(engine,scale,clock)
                 assert(not overlaps(spec,now.position,now.radius,now.half_height),'Window move deferred: a new guard intersects EVE.')
             end
         end
-        -- Only changed boxes are rebuilt: an actor whose exact box remains, applied or already spawned for an earlier
+        -- Only changed boxes are rebuilt: an actor whose exact box remains, applied or already placed for an earlier
         -- import, keeps its collision.
         local present,queue,wanted={},{},{}
         for _,item in ipairs(fixture.terrain) do present[item.key]=true end
@@ -292,11 +307,12 @@ function Terrain.new(engine,scale,clock)
         end
         if not guarded and #fixture.fresh>0 then
             -- A superseded window's guards; the applied window's guards still hold EVE.
-            local remaining,why=destroy_group(fixture.fresh)
+            local remaining,why=release(fixture.fresh,true)
             fixture.fresh=remaining
             if #remaining>0 then fixture.complete=false; error('Superseded window guards remain; cleanup required: '..why,0) end
         end
-        fixture.import={packet=copy_packet(packet),queue=queue,wanted=wanted,next=1,started=clock(),frames=0}
+        fixture.import={packet=copy_packet(packet),queue=queue,wanted=wanted,next=1,started=clock(),frames=0,
+            reused=0,spawned=0,slowest=0}
         local ok,err=pcall(function()
             for _,spec in ipairs(guards) do spawn_owned(fixture.fresh,spec) end
         end)

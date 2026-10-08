@@ -8,7 +8,7 @@ local function check(name, run)
 end
 local function backend()
     local b = {live={},next_id=0,pawn_id=1,world_id=2,
-        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0}
+        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0,spawns=0}
     function b.time() return b.clock end
     function b.snapshot()
         return {pawn_id=b.pawn_id,world_id=b.world_id,
@@ -21,12 +21,21 @@ local function backend()
         if b.fail_spawn==b.next_id then error('spawn failed') end
         local a={id=b.next_id,spec=spec}
         b.live[a.id]=a
+        b.spawns=b.spawns+1
         b.events[#b.events+1]={'spawn',a.id}
         return a
     end
+    -- A new or parked actor takes its spec's place, size and collision; b.inside counts any made solid around EVE.
     function b.configure(a,spec)
+        b.events[#b.events+1]={'configure',a.id}
         if b.fail_configure==a.id then error('configure failed') end
-        a.visible=spec.visuals_visible~=false
+        if Terrain.overlaps(spec,b.position,35,90) then b.inside=(b.inside or 0)+1 end
+        a.spec,a.solid,a.visible=spec,true,spec.visuals_visible~=false
+    end
+    function b.park(a)
+        if b.fail_park==a.id then error('park failed') end
+        a.solid,a.visible=false,false
+        b.events[#b.events+1]={'park',a.id}
     end
     function b.set_visual_visible(a,visible)
         if b.fail_visibility==a.id then error('visibility failed') end
@@ -151,19 +160,19 @@ check('partial entry and failed return retain support until a successful return'
     assert(t.restore()); assert(b.position.Z==100 and b.count()==0)
 end)
 
-check('updates build replacement support before deleting the previous floor',function()
+check('updates build replacement support before retiring the previous floor',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b)
     b.events={}
     assert(t.update(packet(2,{{-4.5,-1,-4.5,0.5,0,4.5},{0.5,-1,-4.5,4.5,0,4.5}})))
-    assert(not b.live[old.id] and t.pose().ack==2)
-    local old_destroy,new_spawn
+    assert(not old.solid and not old.visible and t.pose().ack==2,'the old floor is parked without collision')
+    local old_park,new_spawn
     for i,event in ipairs(b.events) do
-        if event[1]=='spawn' then new_spawn=i end
-        if event[1]=='destroy' and event[2]==old.id then old_destroy=i end
+        if event[1]=='configure' then new_spawn=i end
+        if event[1]=='park' and event[2]==old.id then old_park=i end
     end
-    assert(new_spawn and old_destroy and new_spawn<old_destroy)
-    assert(t.restore())
+    assert(new_spawn and old_park and new_spawn<old_park)
+    assert(t.restore()); assert(b.count()==0,'return destroys the parked floor too')
 end)
 
 check('updates rebuild only the boxes that changed',function()
@@ -173,10 +182,10 @@ check('updates rebuild only the boxes that changed',function()
     b.events={}
     local ok,message=t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{-3,0,-3,-2,1,-2}}))
     assert(ok and message:find('1 boxes added, 1 removed, 1 kept',1,true),message)
-    assert(#b.events==2 and b.events[1][1]=='spawn' and b.events[2][1]=='destroy','one spawn, then one removal')
-    assert(b.live[floor.id] and b.count()==count and t.pose().ack==2,'the unchanged floor keeps its actor')
+    assert(#b.events==3 and b.events[1][1]=='spawn' and b.events[3][1]=='park','one spawn, then one removal')
+    assert(b.live[floor.id] and b.count()==count+1 and t.pose().ack==2,'the unchanged floor keeps its actor')
     assert(t.update(packet(3,{{-4.5,-1,-4.5,4.5,0,4.5},{-3,0,-3,-2,1,-2}})))
-    assert(#b.events==2 and t.pose().ack==3,'a revision without geometry changes touches no actor')
+    assert(#b.events==3 and t.pose().ack==3,'a revision without geometry changes touches no actor')
     assert(t.restore())
 end)
 
@@ -239,13 +248,14 @@ check('failed update cleanup retains every actor and blocks further mutation',fu
     b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0 and b.position.Z==100)
 end)
 
-check('old actor deletion failure retains the new supporting floor until return',function()
+check('old actor parking failure retains the new supporting floor until return',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
-    b.fail_destroy=old.id
+    b.fail_park=old.id
     assert(not t.update(packet(2,{{-4.5,-1.5,-4.5,4.5,0,4.5}}))); assert(b.count()==count+1)
-    assert(t.status()=='cleanup-required' and t.pose().ack==1)
-    b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0)
+    assert(t.status()=='cleanup-required' and t.pose().ack==1 and old.solid)
+    assert(not t.update(packet(3)),'nothing reuses or moves an actor before the return')
+    assert(t.restore()); assert(b.count()==0)
 end)
 
 check('context and anchor changes cannot move EVE or mutate existing terrain',function()
@@ -284,7 +294,7 @@ local function roles(t,role)
     for _,spec in ipairs(t.shapes()) do if spec.role==role then found[#found+1]=spec end end
     return found
 end
-check('a window move spawns the new guards and terrain before removing the old ones',function()
+check('a window move places the new guards and terrain before parking the old ones',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter())
     local old={}
@@ -292,13 +302,12 @@ check('a window move spawns the new guards and terrain before removing the old o
     b.events={}
     local ok,message=t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5}))
     assert(ok and message:find('1 boxes added, 1 removed, 0 kept',1,true) and message:find('window moved',1,true),message)
-    local first_destroy,spawns
+    local first_park
     for i,event in ipairs(b.events) do
-        if event[1]=='destroy' then first_destroy=first_destroy or i else assert(not first_destroy,'a spawn after a removal') end
+        if event[1]=='park' then first_park=first_park or i else assert(not first_park,'a placement after a removal') end
     end
-    spawns=first_destroy-1
-    assert(spawns==7 and #b.events==14,'six guards and the new floor, then the old floor and the six old guards')
-    for id in pairs(old) do assert(not b.live[id],'every old actor is gone') end
+    assert(b.spawns==14 and first_park==15 and #b.events==21,'six guards and the new floor, then the old floor and the six old guards')
+    for id in pairs(old) do assert(not b.live[id].solid and not b.live[id].visible,'every old actor is parked') end
     assert(t.pose().ack==2 and t.status()=='entered')
     local walls=roles(t,'lab-wall')
     assert(#walls==4 and #roles(t,'lab-floor')==1 and #roles(t,'lab-ceiling')==1)
@@ -347,8 +356,8 @@ check('a failed guard spawn rolls the window move back',function()
     assert(#roles(t,'lab-wall')==4,'only the applied window keeps its guards')
     b.fail_configure=nil
     assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5})))
-    assert(t.pose().ack==2 and b.count()==count)
-    assert(t.restore())
+    assert(t.pose().ack==2 and b.count()==2*count,'the new window in use, the old one parked')
+    assert(t.restore()); assert(b.count()==0)
 end)
 
 -- Ten small boxes away from EVE (the floor stays): b.spawn_cost 1.5 ms imports three per 4 ms frame.
@@ -370,7 +379,8 @@ check('a large revision imports a few boxes per frame and keeps the applied revi
     ok,message=t.step(); assert(ok and message==nil and b.count()==count+6 and t.pose().ack==1)
     assert(t.step())
     ok,message=t.step()
-    assert(ok and message:find('revision 2: 10 boxes added, 0 removed, 1 kept',1,true) and message:find('over 4 frames',1,true),message)
+    assert(ok and message:find('revision 2: 10 boxes added, 0 removed, 1 kept',1,true)
+        and message:find('over 4 frames; reused 0, spawned 10, slowest op 1.5 ms',1,true),message)
     assert(t.pose().ack==2 and b.count()==count+10)
     ok,message=t.step(); assert(ok and message==nil,'nothing left to import')
     assert(t.restore()); assert(b.count()==0)
@@ -392,9 +402,9 @@ check('a newer revision during an import keeps what is already spawned',function
         if message then done=message; break end
     end
     assert(done and done:find('revision 3: 8 boxes added, 1 removed, 3 kept',1,true),done)
-    local destroyed=0
-    for _,event in ipairs(b.events) do if event[1]=='destroy' then destroyed=destroyed+1 end end
-    assert(destroyed==1 and t.pose().ack==3 and b.count()==6+#boxes,'only the dropped box goes, once')
+    local parked=0
+    for _,event in ipairs(b.events) do if event[1]=='park' then parked=parked+1 end end
+    assert(parked==1 and t.pose().ack==3 and b.count()==6+#boxes+1,'only the dropped box goes, once')
     assert(t.restore())
 end)
 
@@ -421,14 +431,85 @@ check('a window moved back during its import drops the new guards at once',funct
     local boxes=scattered(); boxes[1]={-2.5,-1,-4.5,6.5,0,4.5}
     assert(t.update(moved(2,boxes,{-2.5,-2,-4.5,6.5,4,4.5})))
     assert(#roles(t,'lab-wall')==8 and t.pose().ack==1,'both windows are guarded while the move imports')
-    assert(t.update(packet(3,scattered())))
-    assert(#roles(t,'lab-wall')==4,'the applied window keeps only its own guards')
-    local done
-    for _=1,5 do
-        local ok,message=t.step(); assert(ok)
-        if message then done=message; break end
-    end
-    assert(done and not done:find('window moved',1,true) and t.pose().ack==3,done)
+    local ok,done=t.update(packet(3,scattered()))
+    assert(ok and #roles(t,'lab-wall')==4,'the applied window keeps only its own guards')
+    -- The dropped guards are parked and placed again as boxes at no spawn cost, so the rest fits this frame.
+    assert(done:find('revision 3: 8 boxes added',1,true) and done:find('reused 6, spawned 2',1,true)
+        and not done:find('window moved',1,true) and t.pose().ack==3,done)
     assert(t.restore()); assert(b.count()==0)
+end)
+
+-- The pool: the first window move spawns the second guard set; later moves place parked actors instead.
+local EAST={-2.5,-2,-4.5,6.5,4,4.5}
+local function solid(b)
+    local ids={}
+    for id,a in pairs(b.live) do if a.solid then ids[id]=true end end
+    return ids
+end
+-- Exactly the terrain's shapes have a solid actor; parked actors have none.
+local function consistent(b,t)
+    local shapes,n={},0
+    for _,spec in ipairs(t.shapes()) do shapes[spec]=true end
+    for _,a in pairs(b.live) do if a.solid then n=n+1; assert(shapes[a.spec],'a solid actor outside the terrain') end end
+    assert(n==#t.shapes(),'a terrain shape without its actor')
+end
+check('after one window move, moves alternate the two guard sets and reuse retired boxes without spawning',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    local home=solid(b)
+    local ok,message=t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))
+    assert(ok and message:find('reused 0, spawned 7',1,true),message)
+    local east=solid(b); consistent(b,t)
+    b.spawn_cost=0.0015; b.events={} -- Spawning would take frames; placing parked actors does not.
+    ok,message=t.update(packet(3))
+    assert(ok and message:find('1 boxes added, 1 removed, 0 kept',1,true) and message:find('over 1 frames; reused 7, spawned 0',1,true)
+        and message:find('window moved',1,true),message)
+    local kinds={}
+    for i,event in ipairs(b.events) do kinds[i]=event[1] end
+    assert(table.concat(kinds,' ')==string.rep('configure ',7)..string.rep('park ',6)..'park',
+        'the guards, then the box, from the pool; then the old window parked')
+    local now=solid(b); consistent(b,t)
+    for id in pairs(home) do assert(now[id],'the first guard set and floor hold EVE again') end
+    for id in pairs(east) do assert(not now[id] and not b.live[id].visible,'the second set is parked and hidden') end
+    assert(t.set_visuals_visible(true))
+    for id in pairs(east) do assert(not b.live[id].visible,'parked visuals stay hidden') end
+    ok,message=t.update(moved(4,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))
+    assert(ok and message:find('reused 7, spawned 0',1,true),message)
+    now=solid(b); consistent(b,t)
+    for id in pairs(east) do assert(now[id],'the second set is back') end
+    assert(b.spawns==14 and b.count()==14 and b.inside==nil)
+    b.events={}
+    assert(t.restore()); assert(b.count()==0 and #b.events==14,'return destroys both guard sets, the terrain and the pool once each')
+end)
+
+check('a parked actor is placed only where a new one could be, never around EVE',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.events={}
+    local ok,message=t.update(moved(3,{{-2.5,-1,-4.5,6.5,0,4.5},{-1,0,-1,1,1,1}},EAST))
+    assert(not ok and message:find('new geometry intersects EVE',1,true),message)
+    b.position.X=b.position.X-1000 -- She stepped out of both windows.
+    ok,message=t.update(packet(3))
+    assert(not ok and message:find('EVE is outside the new window',1,true),message)
+    assert(#b.events==0 and b.inside==nil and t.pose().ack==2,'a deferred revision touches no parked actor')
+    consistent(b,t); assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a parked actor that fails its setup rolls the move back like a new one',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    local applied=solid(b)
+    b.fail_configure=1 -- The first parked actor placed again: the first guard set's floor.
+    local ok,message=t.update(packet(3))
+    assert(not ok and message:find('previous terrain retained',1,true),message)
+    assert(not b.live[1] and t.status()=='entered' and t.pose().ack==2,'the failed actor is destroyed, the applied window kept')
+    local now=solid(b); consistent(b,t)
+    for id in pairs(applied) do assert(now[id]) end
+    b.fail_configure=nil
+    ok,message=t.update(packet(3))
+    assert(ok and message:find('reused 6, spawned 1',1,true) and t.pose().ack==3,message)
+    consistent(b,t); assert(t.restore()); assert(b.count()==0)
 end)
 print(string.format('%d terrain lifecycle tests passed; native physics requires in-game verification.',tests))

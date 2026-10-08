@@ -361,7 +361,7 @@ assert(logs[#logs]:find('STOP: HUD slots paused: ',1,true) and logs[#logs]:find(
 loop(); drain(); assert(hud_ticks==ticks+3,'The bridge timer keeps running after a HUD failure')
 assert(hud_args.link==stream_link,'The HUD slots follow the entered link')
 print('PASS HUD slot wiring: bridge-timer reads after session requests, nonfatal failures, the entered link')
--- The terrain's cube visuals: the cube StaticFindObject never finds is loaded once and kept.
+-- The terrain's actors: the cube StaticFindObject never finds is loaded once and kept; a parked box is placed again.
 local function fake_actor()
     local actor={IsValid=function()return true end,hidden=false}
     local component={IsValid=function()return true end,IsA=function()return true end}
@@ -374,6 +374,8 @@ local function fake_actor()
     actor.CollisionComponent,actor.StaticMeshComponent=component,component
     function actor:GetWorld() return world end
     function actor:SetActorEnableCollision(enabled) self.collision=enabled end
+    function actor:K2_SetActorLocation(at) self.at=at; return true end
+    function actor:K2_GetActorLocation() return self.at end
     function actor:SetActorScale3D() end
     function actor:SetActorHiddenInGame(hidden) self.hidden=hidden end
     return actor
@@ -391,6 +393,14 @@ local box={role='minecraft',center={X=1,Y=2,Z=3},extent={X=50,Y=50,Z=50}}
 local function spawn(spec) local handle=terrain_engine.spawn(spec); terrain_engine.configure(handle,spec); return handle end
 local handles={spawn(box),spawn(box),spawn(box)}
 assert(loads==1 and handles[3].visual.StaticMeshComponent.mesh==mesh,'One load serves every box')
+local parked=handles[1]
+terrain_engine.park(parked)
+assert(parked.actor.CollisionComponent.mode==0 and parked.actor.collision==false and parked.visual.hidden
+    and parked.actor.at.Z==3+10000,'Parking takes collision away, hides the visual and lifts the box')
+local visual=parked.visual
+terrain_engine.configure(parked,{role='minecraft',center={X=7,Y=8,Z=9},extent={X=50,Y=50,Z=100},visuals_visible=true})
+assert(parked.visual==visual and visual.at.Z==9 and not visual.hidden and parked.actor.at.Z==9
+    and parked.actor.CollisionComponent.mode==3 and parked.actor.collision==true and loads==1,'A reused box keeps its visual')
 mesh.valid=false; spawn(box)
 assert(loads==2,'A cube the engine deleted is loaded once more')
 local function unavailable()
@@ -400,4 +410,4 @@ local function unavailable()
 end
 mesh.valid=false; load_error=true; spawn(box); spawn(box)
 assert(loads==3 and unavailable()==1,'A failed load is reported once and not retried')
-print('PASS terrain cube visuals: loaded once and kept, reloaded once if deleted, a failed load reported once')
+print('PASS terrain actors: the cube loaded once and kept (once more if deleted, a failed load reported once), parked boxes placed again with their visuals')
