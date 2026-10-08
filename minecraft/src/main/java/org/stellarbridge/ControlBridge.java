@@ -124,6 +124,13 @@ public final class ControlBridge {
         }
     }
     static boolean build() { return build; }
+    /** Whether EVE's aim key is held: Stellar Blade shows its bullet slots while aiming. */
+    static boolean aiming() { return held[AIM]; }
+    /** The bound key of EVE's heal or item key for the HUD's hints when its name is one character (A on AZERTY), else null. */
+    static String keyHint(boolean heal) {
+        String key = eve[heal ? 4 : 5].getBoundKeyLocalizedText().getString();
+        return key.length() == 1 ? key : null;
+    }
     static void gain(double value) {
         if (!Double.isFinite(value) || value < 1 || value > 32767) throw new IllegalArgumentException("Look gain must be between 1 and 32767");
         gain = value;

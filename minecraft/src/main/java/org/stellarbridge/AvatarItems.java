@@ -2,18 +2,14 @@ package org.stellarbridge;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.regex.Pattern;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
 import net.minecraft.component.type.PotionContentsComponent;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
@@ -29,20 +25,22 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.math.Box;
-import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.slf4j.LoggerFactory;
 
 /**
  * Stellar Blade's HUD item slots and item uses, from Lua's HUD file (eve-hud.0/.1, SBMC_HUD 1). The render thread reads
- * it each client tick while EVE replaces the player, draws the heal and util slots, the drone's ammo and the dash
- * cooldown right of the hotbar, and hands each new use of a combat consumable to the server thread, which applies its
- * effect around the player and advances Smart Mines each tick. Stellar Blade decides every use; Minecraft converts it.
+ * it each client tick while EVE replaces the player, keeps it for AvatarHud's heal, util, ammo and dash slots, and
+ * hands each new use of a combat consumable to the server thread, which applies its effect around the player and
+ * advances Smart Mines each tick. Stellar Blade decides every use; Minecraft converts it.
  */
 final class AvatarItems {
     record Slot(String kind, int count, int max, float cooldown, boolean usable) { }
-    /** One publication: heal, util and ammoAlias null and dash NaN for none; uses of shock, pulse, mine, sonic since Lua loaded. */
-    record Hud(String session, long seq, long time, Slot heal, Slot util, String ammoAlias, int ammo, float ammoCooldown,
+    /**
+     * One publication: heal, util and ammoAlias null and dash NaN for none; uses of shock, pulse, mine, sonic since Lua
+     * loaded. The ammo's and the dash's values are ready shares (1 = ready), the util slot's cooldown a remaining share.
+     */
+    record Hud(String session, long seq, long time, Slot heal, Slot util, String ammoAlias, int ammo, float ammoReady,
                float dash, int[] uses) { }
     static final long FRESH_MS = 2500; // Lua's wall clock has whole seconds.
     static final int SHOCK = 0, PULSE = 1, MINE = 2, SONIC = 3;
@@ -60,11 +58,10 @@ final class AvatarItems {
             + "DASH (?:none|" + SHARE + ")\n"
             + "USES " + USE + " " + USE + " " + USE + " " + USE + "\nEND (\\d{1,18})\n");
 
-    private static BridgeFiles files; // Render thread, from here to icons.
+    private static BridgeFiles files; // Render thread, from here to state.
     private static Hud latest; // The link's newest fresh publication while EVE replaces the player.
     private static int[] seen; // Its uses as last read, for that session.
     private static String session, state = "missing";
-    private static final Map<String, ItemStack> icons = new HashMap<>();
     private static final AtomicIntegerArray converted = new AtomicIntegerArray(USES.length); // Server thread writes.
     private static final List<Mine> mines = new ArrayList<>(); // Server thread, as logged.
     private static int logged;
@@ -119,7 +116,6 @@ final class AvatarItems {
 
     static void initialize() {
         ClientTickEvents.END_CLIENT_TICK.register(AvatarItems::read);
-        HudRenderCallback.EVENT.register((context, tick) -> draw(context));
         ServerTickEvents.END_SERVER_TICK.register(AvatarItems::tick);
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> mines.clear()); // No tick drops them after the last one; they hold its world.
     }
@@ -153,32 +149,11 @@ final class AvatarItems {
             }
     }
 
-    private static void draw(DrawContext context) {
-        Hud hud = latest;
-        var client = MinecraftClient.getInstance();
-        if (hud == null || client.options.hudHidden || !AvatarView.replaces(client.player)) return;
-        int x = context.getScaledWindowWidth() / 2 + 91 + 8, y = context.getScaledWindowHeight() - 20;
-        Slot heal = hud.heal(), util = hud.util();
-        if (heal != null) x = slot(context, x, y, heal.kind(), heal.count() + (heal.max() > 0 ? "/" + heal.max() : ""), 0, heal.usable());
-        if (util != null) x = slot(context, x, y, util.kind(), Integer.toString(util.count()), util.cooldown(), util.usable());
-        if (hud.ammoAlias() != null) x = slot(context, x, y, hud.ammoAlias(), Integer.toString(hud.ammo()), hud.ammoCooldown(), true);
-        if (!Float.isNaN(hud.dash())) slot(context, x, y, "dash", null, hud.dash(), true);
-    }
+    /** Render thread: the newest fresh publication while EVE replaces the player, or null. */
+    static Hud latest() { return latest; }
 
-    /** One slot: a vanilla item standing in for Stellar Blade's icon, vanilla's cooldown sweep, dimmed when not usable. */
-    private static int slot(DrawContext context, int x, int y, String icon, String count, float cooldown, boolean usable) {
-        ItemStack stack = icons.computeIfAbsent(icon, AvatarItems::icon);
-        context.drawItem(stack, x, y);
-        context.getMatrices().push();
-        context.getMatrices().translate(0, 0, 200); // Over the item, where vanilla draws its own cooldown.
-        if (cooldown > 0) context.fill(x, y + MathHelper.floor(16 * (1 - cooldown)), x + 16, y + 16, 0x7FFFFFFF);
-        if (!usable) context.fill(x, y, x + 16, y + 16, 0x80000000);
-        context.getMatrices().pop();
-        context.drawItemInSlot(MinecraftClient.getInstance().textRenderer, stack, x, y, count);
-        return x + 22;
-    }
-
-    private static ItemStack icon(String name) {
+    /** A vanilla item standing in for Stellar Blade's icon of an item kind or bullet alias. */
+    static ItemStack icon(String name) {
         return switch (name) {
             case "tumbler" -> PotionContentsComponent.createStack(Items.POTION, Potions.HEALING);
             case "potion" -> PotionContentsComponent.createStack(Items.SPLASH_POTION, Potions.HEALING);

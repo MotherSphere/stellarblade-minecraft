@@ -127,7 +127,7 @@ public final class AvatarView {
         return Path.of(System.getProperty("stellarbridge.directory",
                 Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
     }
-    private static Path packDirectory() {
+    static Path packDirectory() {
         return Path.of(System.getProperty("stellarbridge.avatar",
                 Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "avatar").toString()));
     }
@@ -535,12 +535,12 @@ public final class AvatarView {
         return current == null ? null : current.rotation;
     }
 
-    /** Draws Stellar Blade's health bar and gauges in place of the hearts while EVE replaces the player; false otherwise. */
+    /** Draws Stellar Blade's HUD in place of the hearts while EVE replaces the player; false otherwise. Vanilla's x, y and lines go unused. */
     public static boolean drawsHud(net.minecraft.client.gui.DrawContext context, Entity player, int x, int y, int lines, float maxHealth,
                                    int health, int shown, int absorption, boolean blinking) {
         Live current = live;
         if (!replaces(player)) return false;
-        AvatarHud.render(context, x, y, lines, maxHealth, health, shown, absorption, blinking, current.stream.gauges(), current.stream.actorStats());
+        AvatarHud.render(context, maxHealth, health, shown, absorption, blinking, current.stream.gauges(), current.stream.actorStats());
         return true;
     }
 
@@ -570,7 +570,7 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + AvatarItems.status()
+                + AvatarItems.status() + AvatarHud.status()
                 + hiddenStatus(current) + AvatarCombat.status() + current.gun.status(current.stream.shots())
                 + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
                 + AvatarStats.status(current.stats) + reportStatus(current.stream.report())

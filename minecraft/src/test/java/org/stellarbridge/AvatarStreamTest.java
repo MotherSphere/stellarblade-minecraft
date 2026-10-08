@@ -157,15 +157,15 @@ public final class AvatarStreamTest {
                 new net.minecraft.util.math.Box(5.495, 64, 3, 6, 66, 4)));
         assert walls.size() == 1 && walls.get(0).maxX() == 4.5 : "Clipped to the patch; a sliver past its edge is dropped";
         // Stellar Blade's HUD: a bar's lit columns, a gauge's cubes and quarters.
-        assert AvatarHud.lit(20, 20) == 27 && AvatarHud.lit(1, 20) == 2 && AvatarHud.lit(0, 20) == 0 && AvatarHud.lit(5, 0) == 0;
+        assert AvatarHud.lit(20, 20, 27) == 27 && AvatarHud.lit(1, 20, 27) == 2 && AvatarHud.lit(0, 20, 27) == 0 && AvatarHud.lit(5, 0, 27) == 0;
         assert java.util.Arrays.equals(AvatarHud.cubes(450, 1000, 16), new int[] {5, 2, 1}) : "Two cubes, then a quarter of the third";
         assert java.util.Arrays.equals(AvatarHud.cubes(130, 1600, 20), new int[] {8, 0, 2}) : "A perfect dodge's 130 Burst";
         assert java.util.Arrays.equals(AvatarHud.cubes(1000, 1000, 16), new int[] {5, 5, 0}) && AvatarHud.cubes(0, 5000, 20)[0] == 20;
-        // The Tachy row: from the actor stats once Stellar Blade unlocked it, only for sane values.
+        // The Tachy ring: from the actor stats once Stellar Blade unlocked it, only for sane values.
         float[] actor = new float[AvatarStream.ACTOR_STATS];
         actor[22] = 9000;
         actor[23] = 18000;
-        assert AvatarHud.tachy(null) == null && AvatarHud.tachy(actor) == null : "Locked Tachy has no row";
+        assert AvatarHud.tachy(null) == null && AvatarHud.tachy(actor) == null : "Locked Tachy has no ring";
         actor[117] = 1;
         assert java.util.Arrays.equals(AvatarHud.tachy(actor), new float[] {9000, 18000});
         actor[22] = 18001;
@@ -180,6 +180,31 @@ public final class AvatarStreamTest {
         actor[23] = 18000;
         actor[117] = Float.NaN;
         assert AvatarHud.tachy(actor) == null : "A non-finite unlock is locked";
+        // The panel's scale (screen pixels per panel pixel) and HP columns, the chat's bottom, the HP length, the shield row.
+        assert java.util.Arrays.equals(AvatarHud.layout(960, 2, 77, 109), new int[] {2, 77}) : "Full size where there is room";
+        assert java.util.Arrays.equals(AvatarHud.layout(480, 4, 77, 109), new int[] {2, 56}) : "Half size at 1080p's auto scale, HP shortened";
+        assert java.util.Arrays.equals(AvatarHud.layout(640, 3, 77, 109), new int[] {3, 45}) && java.util.Arrays.equals(AvatarHud.layout(427, 6, 77, 109), new int[] {3, 38});
+        assert java.util.Arrays.equals(AvatarHud.layout(480, 4, 77, 177), new int[] {2, 56}) : "Never below half the GUI scale";
+        assert java.util.Arrays.equals(AvatarHud.layout(320, 4, 77, 109), new int[] {2, 10}) : "At least 10 HP columns";
+        assert AvatarHud.hpColumns(2000) == 23 && AvatarHud.hpColumns(4000) == 47 && AvatarHud.hpColumns(6500) == 77 && AvatarHud.hpColumns(1e6f) == 77;
+        assert AvatarHud.chatBottom(2, 2) == 70 && AvatarHud.chatBottom(2, 4) == 40 && AvatarHud.chatBottom(3, 5) == 44;
+        actor[7] = 500;
+        actor[8] = 500;
+        actor[11] = 2;
+        assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {2, 2, 1}) : "EVE's base shield: two full blocks of 250";
+        actor[7] = 300;
+        assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {2, 2, 0.2f}) : "The second block a fifth full";
+        actor[7] = 0;
+        assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {2, 0, 0}) : "Broken";
+        actor[11] = 7;
+        assert AvatarHud.shield(actor)[0] == 5 : "At most five blocks";
+        actor[11] = Float.NaN;
+        assert AvatarHud.shield(null) == null && AvatarHud.shield(actor) == null : "Unread or non-finite";
+        actor[11] = 2;
+        actor[7] = 501;
+        assert AvatarHud.shield(actor) == null : "Shield above its maximum";
+        // Rings sweep clockwise from 12 o'clock (y down).
+        assert AvatarHud.arc(0.5f, -9, 0.01f) && AvatarHud.arc(0, 9, 0.6f) && !AvatarHud.arc(0, 9, 0.4f) && !AvatarHud.arc(-9, 0, 0.7f);
         // Gauge points Minecraft counts for Stellar Blade (the adapter applies her rates and caps).
         assert java.util.Arrays.equals(AvatarCombat.gains(false, false, false, false, false), new int[] {15, 0}) : "A sword hit";
         assert java.util.Arrays.equals(AvatarCombat.gains(false, false, true, false, false), new int[] {19, 0}) : "A critical hit";
@@ -542,7 +567,7 @@ public final class AvatarStreamTest {
         } finally {
             try (var files = Files.walk(directory)) { files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
         }
-        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation, combat, gauge gains, heals and the Tachy row");
+        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation, combat, gauge gains, heals and the HUD panel");
     }
 
     /** Why a fresh stream (its run named by status) refuses one native slot with this controller status and camera pitch. */

@@ -122,9 +122,15 @@ public final class ControlHooksTest {
         ClassNode entity = read("net/minecraft/entity/Entity");
         assert hasMethod(entity, "move", "(Lnet/minecraft/entity/MovementType;Lnet/minecraft/util/math/Vec3d;)V") && hasMethod(entity, "setOnGround", "(Z)V");
         assert calls(read("org/stellarbridge/StellarBridge"), "tick", "org/stellarbridge/AvatarCombat", "shove", "(Lnet/minecraft/server/network/ServerPlayerEntity;)V") == 1;
-        // Stellar Blade's HUD replaces the pinned health bar.
-        assert hasMethod(read("net/minecraft/client/gui/hud/InGameHud"), "renderHealthBar",
-                "(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/entity/player/PlayerEntity;IIIIFIIIZ)V");
+        // Stellar Blade's HUD replaces the pinned health bar, moves the armor row down into it and lifts the chat: the
+        // chat's 40 in its render and both click tests, not getWidth's.
+        ClassNode hud = read("net/minecraft/client/gui/hud/InGameHud"), chat = read("net/minecraft/client/gui/hud/ChatHud");
+        assert hasMethod(hud, "renderHealthBar", "(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/entity/player/PlayerEntity;IIIIFIIIZ)V");
+        assert calls(hud, "renderStatusBars", "net/minecraft/client/gui/hud/InGameHud", "renderArmor",
+                "(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/entity/player/PlayerEntity;IIII)V") == 1;
+        assert constants(chat, "render", 40) == 1 && constants(chat, "mouseClicked", 40.0) == 1 && constants(chat, "toChatLineY", 40.0) == 1;
+        assert chat.methods.stream().filter(method -> method.name.equals("render") || method.name.equals("mouseClicked")
+                || method.name.equals("toChatLineY")).count() == 3 : "One method of each name";
         // Lock-on: the pinned outline query the locked target answers, and the camera angles toward it.
         assert hasMethod(read("net/minecraft/client/MinecraftClient"), "hasOutline", "(Lnet/minecraft/entity/Entity;)Z");
         float[] south = AvatarLock.angles(0, 0, 1), westUp = AvatarLock.angles(-1, 1, 0);
@@ -163,6 +169,13 @@ public final class ControlHooksTest {
         int count = 0;
         for (var method : node.methods) if (method.name.equals(methodName)) for (var instruction : method.instructions)
             if (instruction instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name) && call.desc.equals(descriptor)) count++;
+        return count;
+    }
+    private static int constants(ClassNode node, String methodName, Object value) {
+        int count = 0;
+        for (var method : node.methods) if (method.name.equals(methodName)) for (var instruction : method.instructions)
+            if (instruction instanceof org.objectweb.asm.tree.IntInsnNode push && value.equals(push.operand)
+                    || instruction instanceof org.objectweb.asm.tree.LdcInsnNode ldc && value.equals(ldc.cst)) count++;
         return count;
     }
     private static ClassNode read(String name) throws Exception {
