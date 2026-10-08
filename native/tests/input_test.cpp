@@ -214,7 +214,7 @@ int main() {
   assert(redirect_call(call, at, site, callee, site + 5 - 0x80000000));
   assert(!redirect_call(call << 16, at, at + 4, at + 9 + 0xb21, 0x13fff0000) &&
          "displacement past the word");
-  assert(!redirect_call(call, at + 1, site, callee, 0x13fff0000) &&
+  assert(!redirect_call(call, at + 1, site + 1, callee + 1, 0x13fff0000) &&
          "unaligned word");
   std::string oversized_edges;
   for (int id = 1; id <= 33; ++id)

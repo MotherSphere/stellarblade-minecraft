@@ -145,6 +145,10 @@ public final class ControlHooksTest {
         held[ControlBridge.WALK] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x40000 : "The EVE walk key is the adapter's walk bit";
         assert java.util.Arrays.stream(ControlBridge.SENT).anyMatch(bit -> bit == 0x40000) : "The walk bit is sent";
+        boolean sendsSent = false;
+        for (var method : read("org/stellarbridge/ControlBridge").methods) if (method.name.equals("apply"))
+            for (var instruction : method.instructions) sendsSent |= instruction instanceof FieldInsnNode field && field.name.equals("SENT");
+        assert sendsSent : "apply() sends every bit of SENT";
         assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 0}) : "Walk alone does not move";
         held[0] = true;
         assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 32767}) : "Walking forward is a full stick";
