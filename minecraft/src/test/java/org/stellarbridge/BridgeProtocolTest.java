@@ -129,6 +129,8 @@ public final class BridgeProtocolTest {
         WardrobeAnswer fault = parseWardrobe("SBMC_WARDROBE 1\nSESSION " + "b".repeat(32) + "\nSEQ 3\nTIME 0\nRESULT refused fault-tachy-c0000005\nCOUNT 0\nEND 3\n");
         check(fault.result().equals("refused") && fault.reason().equals("fault-tachy-c0000005") && fault.items().isEmpty(), "Fault in a call");
         check(parseWardrobe(wardrobe.replace("RESULT equipped", "RESULT refused fault-done-80000003")).items().size() == 4, "Fault while waiting, with the list");
+        check(parseWardrobe(wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c0000005-01cc1501-ffffffff")).reason()
+                .equals("fault-equip-c0000005-01cc1501-ffffffff"), "Fault with its instruction RVA and data address");
         for (String stage : List.of("owner", "fusion", "combat", "slot", "item", "equip", "unequip", "list"))
             check(parseWardrobe(wardrobe.replace("RESULT equipped", "RESULT refused fault-" + stage + "-0000abcd")).reason().equals("fault-" + stage + "-0000abcd"), "Fault stage " + stage);
         StringBuilder full = new StringBuilder("SBMC_WARDROBE 1\nSESSION " + "a".repeat(32) + "\nSEQ 999999999999999\nTIME 9007199254740991\nRESULT listed\nCOUNT 1024\n");
@@ -141,7 +143,8 @@ public final class BridgeProtocolTest {
                 wardrobe.replace("RESULT equipped", "RESULT equipped now"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-C0000005"),
                 wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c000005"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c00000050"),
                 wardrobe.replace("RESULT equipped", "RESULT refused fault-wear-c0000005"), wardrobe.replace("RESULT equipped", "RESULT refused fault-c0000005"),
-                wardrobe.replace("RESULT equipped", "RESULT refused fault-equip"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c0000005 x"),
+                wardrobe.replace("RESULT equipped", "RESULT refused fault-equip"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c0000005 x"), wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c0000005-01cc1501"),
+                wardrobe.replace("RESULT equipped", "RESULT refused fault-equip-c0000005-01cc1501-FFFFFFFF"),
                 wardrobe.replace("RESULT equipped", "RESULT equipped fault-equip-c0000005"), wardrobe.replace("RESULT equipped", "RESULT refused fault-Equip-c0000005"),
                 wardrobe.replace("RESULT equipped", "RESULT equipped combat"), wardrobe.replace("ITEM 4000001", "ITEM 4294967296"), wardrobe.replace(" 0 2 8\n", " 0 100 8\n"),
                 wardrobe.replace(" 3 0 6\n", " 10000 0 6\n"), wardrobe.replace(" 0 2 8\n", " 0 2 18\n"),

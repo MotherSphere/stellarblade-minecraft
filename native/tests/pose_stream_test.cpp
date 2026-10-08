@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <new>
 #include <iostream>
 #include <vector>
 
@@ -69,6 +70,7 @@ int32_t player_guid() {
 }
 uintptr_t find_bucket(uintptr_t, int32_t type, int32_t guid) { return type == 1 && guid == player ? bucket : 0; }
 void equip(uintptr_t items, int32_t guid, int32_t slot, const uint32_t *saved, int32_t variant) {
+  assert(uintptr_t(saved) % 16 == 0 && "EquipOwnedItem MOVAPS-loads the GUID");
   faults('e');
   calls.push_back({'e', items, guid, slot, {saved[0], saved[1], saved[2], saved[3]}, variant});
 }
@@ -1400,6 +1402,18 @@ int main() {
            sb::calls[0].items == uintptr_t(items.data()) && sb::calls[0].player == 77 && sb::calls[0].slot == 5 &&
            sb::calls[0].saved[0] == 1 && sb::calls[0].saved[3] == 4 && sb::calls[0].variant == 0 &&
            "The menu's equip, colour 0");
+    // The adapter's request sits in a global whose item is at 8 mod 16 (the shipped DLL's 0x5d968): the call still gets
+    // an aligned copy, as Stellar Blade's own callers pass.
+    alignas(16) unsigned char room[sizeof(WardrobeRequest) + 8];
+    auto *placed = new (room) WardrobeRequest(equip(5, 4));
+    if (uintptr_t(placed->item) % 16 != 8) {
+      placed->~WardrobeRequest();
+      placed = new (room + 8) WardrobeRequest(equip(5, 4));
+    }
+    assert(uintptr_t(placed->item) % 16 == 8 && start(*placed) == "called" && sb::calls.back().saved[0] == 1 &&
+           sb::calls.back().saved[3] == 4 && "A misaligned request");
+    placed->~WardrobeRequest();
+    sb::calls.pop_back();
     put_i32(owned, 3 * 0x168 + 0x10 + 0x20, 103); // The potion becomes a second hairstyle.
     assert(start(equip(8, 0x99)) == "called" && sb::calls.back().slot == 8 && sb::calls.back().variant == 2 &&
            "A hairstyle keeps the worn colour");
@@ -1422,6 +1436,9 @@ int main() {
     assert(wardrobe_fault("equip", 0xc0000005) == "refused fault-equip-c0000005" &&
            wardrobe_fault("list", 0x80000003) == "refused fault-list-80000003" &&
            wardrobe_fault("done", 5) == "refused fault-done-00000005" && "8 lowercase hex digits");
+    const uint32_t where[2] = {0x1cc1501, 0xffffffff};
+    assert(wardrobe_fault("equip", 0xc0000005, where) == "refused fault-equip-c0000005-01cc1501-ffffffff" &&
+           "A start fault adds the instruction's RVA and the data address");
     // The worn map answers the wait.
     assert(!wardrobe_done(w, equip(5, 4)) && wardrobe_done(w, equip(5, 0xa)) && !wardrobe_done(w, *off));
     put_i32(wearing, 2 * 0x160, 12);

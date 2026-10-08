@@ -346,8 +346,9 @@ struct WardrobeAnswer {
 };
 std::string encode_wardrobe(const WardrobeAnswer &);
 // "refused fault-<stage>-<code>": a structured exception, code as 8 lowercase hex digits, contained while stage ran
-// (a wardrobe_start stage, list for the owned list or done for the worn map reads while waiting).
-std::string wardrobe_fault(const char *stage, uint32_t code);
+// (a wardrobe_start stage, list for the owned list or done for the worn map reads while waiting); with where, a start
+// fault also gives the faulting instruction's RVA and the access violation's data address: -<rva>-<data>.
+std::string wardrobe_fault(const char *stage, uint32_t code, const uint32_t *where = nullptr);
 // ESBItemCategory of the wardrobe: Gear 2 (slots 1-4), ExoSpine 3 (6, 7), NanoSuit 4 (5), Hair 21 (8),
 // FaceAccessory 22 (11), EarRing 23 (10), Drone 28 (17). fits: an item of category may go into slot.
 bool wardrobe_category(uint32_t category);

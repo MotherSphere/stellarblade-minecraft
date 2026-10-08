@@ -1007,9 +1007,13 @@ std::string encode_wardrobe(const WardrobeAnswer &a) {
   }
   return out + "END " + std::to_string(a.seq) + "\n";
 }
-std::string wardrobe_fault(const char *stage, uint32_t code) {
-  const uint32_t words[4] = {code}; // guid_text's first 8 digits.
-  return "refused fault-" + std::string(stage) + "-" + guid_text(words).substr(0, 8);
+std::string wardrobe_fault(const char *stage, uint32_t code, const uint32_t *where) {
+  auto hex = [](uint32_t value) {
+    const uint32_t words[4] = {value}; // guid_text's first 8 digits.
+    return guid_text(words).substr(0, 8);
+  };
+  auto out = "refused fault-" + std::string(stage) + "-" + hex(code);
+  return where ? out + "-" + hex(where[0]) + "-" + hex(where[1]) : out;
 }
 
 bool wardrobe_category(uint32_t category) {
@@ -1085,7 +1089,10 @@ const char *wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCall
   // The menu passes MatVarIndex 0; for the hair the salon passes the colour, so the worn one is kept.
   auto variant = r.slot == HairSlot && current ? at<int32_t>(current + ItemVariant) : 0;
   stage = "equip";
-  sb.equip(o.items, o.player, int32_t(r.slot), r.item, variant);
+  // EquipOwnedItem loads the GUID with MOVAPS (0x141cc1501): 16-byte aligned, as its callers' [RSP+0x30] copy.
+  alignas(16) uint32_t saved[4];
+  std::memcpy(saved, r.item, sizeof saved);
+  sb.equip(o.items, o.player, int32_t(r.slot), saved, variant);
   return nullptr;
 }
 
@@ -1553,15 +1560,25 @@ WardrobeCalls wardrobe_calls() {
   sb.bucket = reinterpret_cast<decltype(sb.bucket)>(image + ItemBucketRva);
   return sb;
 }
+// The code, the faulting instruction's RVA in Stellar Blade's image (an address outside it wraps) and, for an access
+// violation, the data address (Wine reports a misaligned SSE load as ffffffff), each low 32 bits.
+int wardrobe_filter(EXCEPTION_POINTERS *e, uint32_t &code, uint32_t (&where)[2]) {
+  static const auto image = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+  auto &x = *e->ExceptionRecord;
+  code = x.ExceptionCode;
+  where[0] = uint32_t(reinterpret_cast<uintptr_t>(x.ExceptionAddress) - image);
+  where[1] = x.NumberParameters > 1 ? uint32_t(x.ExceptionInformation[1]) : 0;
+  return EXCEPTION_EXECUTE_HANDLER;
+}
 // A player actor, bucket or worn map freed under the reads, or Stellar Blade's own calls, fault at worst; contained:
-// false with the exception code in fault (and, for the start, the step that raised it still in stage).
+// false with the exception code in fault (and, for the start, the step that raised it still in stage, and where).
 bool guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
                             const WardrobeRequest &r, const char *&result, const char *volatile &stage,
-                            uint32_t &fault) {
+                            uint32_t &fault, uint32_t (&where)[2]) {
   __try {
     result = wardrobe_start(world, tables, sb, permitted, r, stage);
     return true;
-  } __except (fault = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+  } __except (wardrobe_filter(GetExceptionInformation(), fault, where)) {
     return false;
   }
 }
@@ -1630,7 +1647,8 @@ uintptr_t game_world() { return 0; } // Only the pinned Windows executable has o
 uintptr_t table_manager() { return 0; } // a table manager
 WardrobeCalls wardrobe_calls() { return {}; } // and Stellar Blade's functions.
 bool guarded_wardrobe_start(uintptr_t world, uintptr_t tables, const WardrobeCalls &sb, bool permitted,
-                            const WardrobeRequest &r, const char *&result, const char *volatile &stage, uint32_t &) {
+                            const WardrobeRequest &r, const char *&result, const char *volatile &stage, uint32_t &,
+                            uint32_t (&)[2]) {
   result = wardrobe_start(world, tables, sb, permitted, r, stage);
   return true;
 }
@@ -1678,8 +1696,8 @@ void wardrobe_step(bool permitted, uint64_t wall) {
   auto world = game_world(), tables = table_manager();
   auto sb = wardrobe_calls();
   const char *result = nullptr, *volatile stage = "owner";
-  uint32_t code = 0;
-  std::string fault; // "refused fault-<stage>-<code>" once a structured exception was contained.
+  uint32_t code = 0, where[2] = {};
+  std::string fault; // "refused fault-<stage>-<code>[-<rva>-<data>]" once a structured exception was contained.
   if (wardrobe_waiting) {
     bool done = false;
     if (!guarded_wardrobe_done(world, *wardrobe_waiting, done, code))
@@ -1692,8 +1710,8 @@ void wardrobe_step(bool permitted, uint64_t wall) {
   } else {
     wardrobe_waiting = std::exchange(wardrobe_pending, std::nullopt);
     wardrobe_done_fault.reset();
-    if (!guarded_wardrobe_start(world, tables, sb, permitted, *wardrobe_waiting, result, stage, code))
-      fault = wardrobe_fault(stage, code);
+    if (!guarded_wardrobe_start(world, tables, sb, permitted, *wardrobe_waiting, result, stage, code, where))
+      fault = wardrobe_fault(stage, code, where);
     else if (!result) {
       wardrobe_deadline = wall + WardrobeWait;
       return;

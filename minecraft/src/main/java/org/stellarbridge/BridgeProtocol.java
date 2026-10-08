@@ -149,8 +149,8 @@ public final class BridgeProtocol {
     static final List<String> WARDROBE_OPS = List.of("list", "equip", "unequip");
     static final List<String> WARDROBE_RESULTS = List.of("listed", "equipped", "unequipped", "unchanged");
     static final List<String> WARDROBE_REFUSALS = List.of("not-playing", "not-ready", "tachy", "fusion", "combat", "slot", "not-owned");
-    /** A structured exception the adapter contained: the step it ran, then the exception code. */
-    static final Pattern WARDROBE_FAULT = Pattern.compile("fault-(owner|tachy|fusion|combat|slot|item|equip|unequip|list|done)-[0-9a-f]{8}");
+    /** A structured exception the adapter contained: the step it ran, the exception code, then for a start fault the instruction's RVA and the data address. */
+    static final Pattern WARDROBE_FAULT = Pattern.compile("fault-(owner|tachy|fusion|combat|slot|item|equip|unequip|list|done)-[0-9a-f]{8}(-[0-9a-f]{8}-[0-9a-f]{8})?");
     static final int MAX_WARDROBE_ITEMS = 1024;
     /** ESBItemCategory of the wardrobe: Gear, ExoSpine, NanoSuit, Hair, FaceAccessory, EarRing, Drone. */
     static final List<Integer> WARDROBE_CATEGORIES = List.of(2, 3, 4, 21, 22, 23, 28);
