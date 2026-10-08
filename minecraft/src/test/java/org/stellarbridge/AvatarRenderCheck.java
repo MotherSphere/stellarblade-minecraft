@@ -22,7 +22,7 @@ import org.lwjgl.stb.STBImageWrite;
  * Offline GPU check of a private avatar pack and pose recording: renders EVE with the mod's renderer
  * in a hidden GL 3.2 core context and writes a contact sheet. Not part of the suites (needs a GPU and private files).
  * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees[,target] [glow | hurt | fx=A+B]
- * [sun=elevation,azimuth]]: the camera (default 3.2 blocks from her front, looking at 0.9 blocks, or at target) orbits by degrees
+ * [sun=elevation,azimuth] [tile=WxH]]: the camera (default 3.2 blocks from her front, looking at 0.9 blocks, or at target) orbits by degrees
  * around her feet; glow streams an orange sword-edge glow as a special attack would; hurt draws her red hurt flash; fx plays those effect assets for 0.2 s before each frame, at the blade
  * tip for NS_A_ParTrail ones and at the hilt otherwise. A last argument entity draws her as under a shader pack, through
  * Minecraft's own cut-out entity and eyes programs (read from the client jar), with a sword glow. sun (degrees, azimuth from
@@ -32,6 +32,7 @@ import org.lwjgl.stb.STBImageWrite;
  * Stellar Blade's cloth as the adapter streams it (little-endian floats: ComponentRelativeTransform, then the simulation-space
  * particles), prints how far the drawn vertices lie from that cloth (CPU copy of the vertex shader) and, at the first time,
  * the per-frame CPU cost of the cloth path; bones with it draws her bones instead and prints their distance from the cloth.
+ * tile=WxH sets each tile's pixels, as the wardrobe's preview rectangle, whose camera this is (AvatarView.studio).
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
@@ -39,7 +40,10 @@ public final class AvatarRenderCheck {
         String[] times = args[3].split(",");
         double[] camera = args.length > 4 ? java.util.Arrays.stream(args[4].split(",")).mapToDouble(Double::parseDouble).toArray()
                 : new double[] {3.2, 0.9, 0};
-        int tileWidth = 600, tileHeight = 900, width = tileWidth * times.length;
+        // tile=WxH: the tile's size in pixels (the wardrobe's preview rectangle, to check its framing); 600 x 900 by default.
+        int[] tile = java.util.Arrays.stream(args).filter(a -> a.startsWith("tile=")).findFirst()
+                .map(a -> java.util.Arrays.stream(a.substring(5).split("x")).mapToInt(Integer::parseInt).toArray()).orElse(new int[] {600, 900});
+        int tileWidth = tile[0], tileHeight = tile[1], width = tileWidth * times.length;
         if (!GLFW.glfwInit()) throw new IllegalStateException("GLFW unavailable");
         GLFW.glfwWindowHint(GLFW.GLFW_VISIBLE, GLFW.GLFW_FALSE);
         GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -137,12 +141,9 @@ public final class AvatarRenderCheck {
             for (int i = 0; i < times.length; i++) {
                 recording.sample(Double.parseDouble(times[i]), pose);
                 float[] root = pose.world()[model.parts.get(0).component()];
-                // EVE's feet at the Minecraft origin; the camera faces her front (body component +X) from 3.2 blocks.
-                Matrix4d body = AvatarMesh.transform(root, 0, new Matrix4d());
-                Vector3d forward = AvatarModel.UNREAL_TO_MINECRAFT.transformDirection(body.transformDirection(new Vector3d(1, 0, 0))).setComponent(1, 0).normalize();
-                forward.rotateY(Math.toRadians(camera[2]));
-                Vector3d eye = new Vector3d(forward).mul(camera[0]).add(0, camera[1] + 0.1, 0), target = new Vector3d(0, camera.length > 3 ? camera[3] : camera[1], 0);
-                Matrix4d placement = new Matrix4d().translation(-eye.x, -eye.y, -eye.z).mul(AvatarModel.UNREAL_TO_MINECRAFT).translate(-root[4], -root[5], -root[6]);
+                // EVE's feet at the Minecraft origin; the camera faces her front (body component +X), as the wardrobe's preview.
+                Vector3d eye = new Vector3d(), target = new Vector3d(0, camera.length > 3 ? camera[3] : camera[1], 0);
+                Matrix4d placement = AvatarView.studio(root, camera[0], camera[1], camera[2], eye);
                 // The trail's last 0.3 s, sampled as Minecraft frames would.
                 double now = Double.parseDouble(times[i]);
                 for (double t = Math.max(0, now - 0.3); t < now; t += 1 / 120.0) {

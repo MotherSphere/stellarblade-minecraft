@@ -146,6 +146,61 @@ public final class BridgeProtocol {
         return new RequestAck(session, seq, action, result, lines[5].substring(8));
     }
 
+    static final List<String> WARDROBE_OPS = List.of("list", "equip", "unequip");
+    static final List<String> WARDROBE_RESULTS = List.of("listed", "equipped", "unequipped", "unchanged");
+    static final List<String> WARDROBE_REFUSALS = List.of("not-playing", "not-ready", "tachy", "fusion", "combat", "slot", "not-owned");
+    static final int MAX_WARDROBE_ITEMS = 1024;
+    /** ESBItemCategory of the wardrobe: Gear, ExoSpine, NanoSuit, Hair, FaceAccessory, EarRing, Drone. */
+    static final List<Integer> WARDROBE_CATEGORIES = List.of(2, 3, 4, 21, 22, 23, 28);
+    private static final Pattern GUID = Pattern.compile("[0-9a-f]{32}");
+    /** One owned item: ItemTable ID, ESBItemCategory, SavedGuid (32 hex), StatLevel, MatVarIndex and the slot it is worn in, or 0. */
+    public record WardrobeItem(long id, int category, String guid, int level, int variant, int slot) {}
+    /** The adapter's answer: RESULT's first word, the refusal reason or null, and the owned list (empty for an early refusal). */
+    public record WardrobeAnswer(String session, long seq, long time, String result, String reason, List<WardrobeItem> items) {}
+
+    /**
+     * A wardrobe request for the native adapter: list (slot 0, no item), equip (slot 1-17 and a SavedGuid, not all zero) or
+     * unequip (slot 1-17, no item); the adapter takes each SEQ once.
+     */
+    public static String encodeWardrobeRequest(String session, long seq, long time, String op, int slot, String item) {
+        require(matches(SESSION, session), "Invalid session");
+        require(seq > 0 && seq <= 999999999999999L && time >= 0 && time <= MAX_TIME, "Invalid sequence or timestamp");
+        boolean guid = matches(GUID, item) && !item.equals("0".repeat(32));
+        require(op.equals("list") ? slot == 0 && item == null : slot >= 1 && slot <= 17 && (op.equals("equip") ? guid
+                : op.equals("unequip") && item == null), "Invalid wardrobe operation");
+        return "SBMC_WARDROBE_REQUEST 1\nSESSION " + session + "\nSEQ " + seq + "\nTIME " + time + "\nOP " + op + "\nSLOT " + slot
+                + "\nITEM " + (item == null ? "-" : item) + "\nEND " + seq + "\n";
+    }
+
+    /** The adapter's eve-wardrobe.txt (SBMC_WARDROBE 1); another version, a bad footer or a COUNT mismatch is refused. */
+    public static WardrobeAnswer parseWardrobe(String text) {
+        require(text != null && text.length() <= 65536 && text.endsWith("\n"), "Invalid packet size or ending");
+        for (int i = 0; i < text.length(); i++) {
+            char value = text.charAt(i);
+            require(value == '\n' || value >= 32 && value <= 126, "Packet must contain printable ASCII and LF");
+        }
+        String[] lines = text.split("\n", -1);
+        require(lines.length >= 8 && lines[0].equals("SBMC_WARDROBE 1") && lines[lines.length - 1].isEmpty(), "Invalid wardrobe framing");
+        String session = fields(lines[1], "SESSION", 2)[1];
+        require(matches(SESSION, session), "Invalid session");
+        long seq = unsigned(fields(lines[2], "SEQ", 2)[1], 1, 999999999999999L), time = unsigned(fields(lines[3], "TIME", 2)[1], 0, MAX_TIME);
+        String[] result = lines[4].split(" ", -1);
+        require(result[0].equals("RESULT") && (result.length == 2 && WARDROBE_RESULTS.contains(result[1])
+                || result.length == 3 && result[1].equals("refused") && WARDROBE_REFUSALS.contains(result[2])), "Invalid wardrobe result");
+        int count = (int) unsigned(fields(lines[5], "COUNT", 2)[1], 0, MAX_WARDROBE_ITEMS);
+        require(lines.length == count + 8, "Wardrobe COUNT mismatch");
+        List<WardrobeItem> items = new java.util.ArrayList<>(count);
+        for (int k = 0; k < count; k++) {
+            String[] item = fields(lines[6 + k], "ITEM", 7);
+            int category = (int) unsigned(item[2], 0, 28);
+            require(WARDROBE_CATEGORIES.contains(category) && matches(GUID, item[3]), "Invalid wardrobe item");
+            items.add(new WardrobeItem(unsigned(item[1], 0, 0xFFFFFFFFL), category, item[3],
+                    (int) unsigned(item[4], 0, 9999), (int) unsigned(item[5], 0, 99), (int) unsigned(item[6], 0, 17)));
+        }
+        require(unsigned(fields(lines[6 + count], "END", 2)[1], 1, 999999999999999L) == seq, "Footer sequence mismatch");
+        return new WardrobeAnswer(session, seq, time, result.length == 2 ? result[1] : "refused", result.length == 3 ? result[2] : null, List.copyOf(items));
+    }
+
     public static String encodeTerrain(Terrain terrain) {
         require(terrain != null && matches(SESSION,terrain.session), "Invalid session");
         require(terrain.seq > 0 && terrain.time >= 0 && terrain.time <= MAX_TIME, "Invalid sequence or timestamp");

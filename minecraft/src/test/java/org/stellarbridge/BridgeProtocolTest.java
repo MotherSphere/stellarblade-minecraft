@@ -98,6 +98,48 @@ public final class BridgeProtocolTest {
                 ack.replace("\n", "\r\n"), ack.stripTrailing(), ack + "\n", ack.replace("SEQ 4", "SEQ 0").replace("END 4", "END 0")))
             rejects(() -> parseRequestAck(invalid));
         rejects(() -> parseRequestAck(null));
+
+        // Wardrobe: the request the native adapter parses and its answer, both shared fixtures.
+        String guid = "0000000100000002000000030000000a";
+        check(encodeWardrobeRequest("a".repeat(32), 6, 1760000000000L, "equip", 5, guid)
+                .equals(Files.readString(root.resolve("protocol/fixtures/wardrobe-request.txt"))), "Wardrobe request fixture");
+        check(encodeWardrobeRequest("a".repeat(32), 1, 0, "list", 0, null).contains("\nOP list\nSLOT 0\nITEM -\nEND 1\n"), "List request");
+        check(encodeWardrobeRequest("a".repeat(32), 999999999999999L, 0, "unequip", 17, null).contains("\nSLOT 17\nITEM -\n"), "Unequip request");
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "list", 5, null));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "list", 0, guid));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "equip", 5, null));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "equip", 18, guid));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "equip", 0, guid));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "equip", 5, "0".repeat(32)));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "equip", 5, guid.toUpperCase()));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "unequip", 10, guid));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1, 0, "drop", 10, null));
+        rejects(() -> encodeWardrobeRequest("a".repeat(32), 1000000000000000L, 0, "list", 0, null)); // 16 digits.
+        rejects(() -> encodeWardrobeRequest("A".repeat(32), 1, 0, "list", 0, null));
+        String wardrobe = Files.readString(root.resolve("protocol/fixtures/wardrobe.txt"));
+        WardrobeAnswer listed = parseWardrobe(wardrobe);
+        check(listed.session().equals("a".repeat(32)) && listed.seq() == 6 && listed.time() == 1760000000500L
+                && listed.result().equals("equipped") && listed.reason() == null && listed.items().size() == 4, "Wardrobe fixture");
+        check(listed.items().get(0).equals(new WardrobeItem(4000001, 4, guid, 0, 0, 5)), "Worn suit");
+        check(listed.items().get(2).equals(new WardrobeItem(2100003, 21, "000000010000000200000003000000ff", 0, 2, 8)), "Hair with its colour");
+        check(listed.items().get(3).level() == 3 && listed.items().get(3).slot() == 6, "Exospine level and slot");
+        WardrobeAnswer refused = parseWardrobe("SBMC_WARDROBE 1\nSESSION " + "b".repeat(32) + "\nSEQ 2\nTIME 0\nRESULT refused not-playing\nCOUNT 0\nEND 2\n");
+        check(refused.result().equals("refused") && refused.reason().equals("not-playing") && refused.items().isEmpty(), "Refusal without items");
+        StringBuilder full = new StringBuilder("SBMC_WARDROBE 1\nSESSION " + "a".repeat(32) + "\nSEQ 999999999999999\nTIME 9007199254740991\nRESULT listed\nCOUNT 1024\n");
+        for (int i = 0; i < 1024; i++) full.append("ITEM 4294967295 28 ").append(String.format("%032x", i + 1)).append(" 9999 99 17\n");
+        String widest = full.append("END 999999999999999\n").toString();
+        check(widest.length() <= 65536 && parseWardrobe(widest).items().size() == 1024, "1024 widest lines fit 64 KiB");
+        for (String invalid : List.of(wardrobe.replace("SBMC_WARDROBE 1", "SBMC_WARDROBE 2"), wardrobe.replace("END 6", "END 7"),
+                wardrobe.replace("COUNT 4", "COUNT 5"), wardrobe.replace("COUNT 4", "COUNT 3"), wardrobe.replace("RESULT equipped", "RESULT maybe"),
+                wardrobe.replace("RESULT equipped", "RESULT refused"), wardrobe.replace("RESULT equipped", "RESULT refused lost"),
+                wardrobe.replace("RESULT equipped", "RESULT equipped now"), wardrobe.replace(" 0 2 8\n", " 0 100 8\n"),
+                wardrobe.replace(" 3 0 6\n", " 10000 0 6\n"), wardrobe.replace(" 0 2 8\n", " 0 2 18\n"),
+                wardrobe.replace("000000ff", "000000FF"), wardrobe.replace("0000abcd 3", "0000abc 3"), wardrobe.replace("ITEM 4000002 4", "ITEM 4000002"),
+                wardrobe.replace("SESSION a", "SESSION A"), wardrobe.replace("\n", "\r\n"), wardrobe.stripTrailing(), wardrobe + "\n",
+                wardrobe.replace("SEQ 6", "SEQ 0").replace("END 6", "END 0"), wardrobe.replace("ITEM 4000001", "ITEM -1"), wardrobe.replace("ITEM 4000002 4 ", "ITEM 4000002 5 "),
+                "SBMC_WARDROBE 1\nSESSION " + "a".repeat(32) + "\nSEQ 1\nTIME 0\nRESULT listed\nCOUNT 1025\nEND 1\n", "x".repeat(65537)))
+            rejects(() -> parseWardrobe(invalid));
+        rejects(() -> parseWardrobe(null));
         rejects(() -> encodeTerrain(terrain(List.of(new Box(0,0,0,1,1,1), new Box(0,0,0,1,1,1)))));
         // The whole box budget fits one 64 KiB packet even with sixteenth-block coordinates on every side.
         List<Box> many = new java.util.ArrayList<>();
@@ -143,6 +185,6 @@ public final class BridgeProtocolTest {
             Files.writeString(exchange.resolve("terrain-bamboo-java.txt"), bamboo);
             if (Files.exists(exchange.resolve("eve-lua.txt"))) verifyEve(parseEve(Files.readString(exchange.resolve("eve-lua.txt"))));
         }
-        System.out.println("PASS protocol Java: valid EVE, malformed snapshots, terrain validation, mob walls, session requests, freshness");
+        System.out.println("PASS protocol Java: valid EVE, malformed snapshots, terrain validation, mob walls, session requests, wardrobe, freshness");
     }
 }

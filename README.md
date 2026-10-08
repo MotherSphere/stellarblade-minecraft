@@ -75,6 +75,15 @@ With `/stellaravatar play` at the bridged position, EVE fights any living entity
 
 A hit makes EVE react in Stellar Blade (experimental: three ways of playing her stock light-hit reaction, or her strong-hit reaction from 8 damage before her reductions, take turns until one animates her, which is then kept for both; with the additive `tag` way the strong reaction looks like the light one; moving cancels it, and a try while she moves or already animates is not counted). Judgement uses the presses, not Stellar Blade's own state. A mod that applies damage before its attack animation shows can only be dodged before the damage.
 
+## EVE's equipment
+
+In avatar mode, Minecraft's pause menu (Escape) has an **EVE's equipment** row under "Back to Game". It opens a screen laid out like Stellar Blade's equipment menu: the exospine, gear and look slots (nano suit, glasses, earrings, drone, hairstyle), the items EVE owns for the selected slot, and her live 3D preview, which turns by dragging. Clicking an item asks Stellar Blade to equip it; clicking the worn earrings or glasses removes them. Stellar Blade does the change itself, with its own menu's rules (not in Tachy or Fusion mode, not in combat), keeps it in its own save and swaps the mesh, which Minecraft then draws. Limits for now:
+
+- Only slots that hold an item can change, plus the earrings and glasses, which can also be emptied; the suit and hair are never emptied, and empty gear or exospine slots are not offered. An item worn in another slot is not moved.
+- EVE's look needs the item's meshes in the private avatar pack. The pack holds what EVE owned when it was built (from Stellar Blade's save at the first install, then from the adapter's last list); an item bought since then, or a suit with more than 256 bones (about twenty), shows a warning, and the world draws EVE without that part until the pack is rebuilt or the bone limit lifted. Hair keeps its default colour in Minecraft.
+- Outfit mods that replace Stellar Blade's own assets work once the pack is rebuilt with both games closed; Minecraft warns when the game files or mods changed since the pack was built. Outfits added by mod frameworks with their own menus (CNS, ATOOL) are not supported.
+- The preview under an Iris shader pack is not validated yet ([diagnostics](docs/diagnostics.md#avatar-view-experimental)).
+
 ## Repository layout
 
 | Path | Contents |

@@ -302,14 +302,14 @@ public final class AvatarHud {
         else context.drawItem(stacks.computeIfAbsent(kind, AvatarItems::icon), x, y);
     }
 
-    private static void blit(DrawContext context, Identifier id, int x, int y, int size) {
+    static void blit(DrawContext context, Identifier id, int x, int y, int size) {
         RenderSystem.enableBlend(); // GUI fills and text turn blending off after them.
         RenderSystem.defaultBlendFunc();
         context.drawTexture(id, x, y, size, size, 0, 0, size, size, size, size);
     }
 
     /** The avatar pack's hud.NAME.png, loaded once with linear filtering, or null when absent or unreadable. */
-    private static Identifier texture(String name) {
+    static Identifier texture(String name) {
         if (textures.containsKey(name)) return textures.get(name);
         Identifier id = null;
         Path file = AvatarView.packDirectory().resolve("hud." + name + ".png");

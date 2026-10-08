@@ -1,0 +1,99 @@
+package org.stellarbridge;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
+
+public final class WardrobeTest {
+    public static void main(String[] args) throws Exception {
+        // The pack's catalog, as pack.py writes it.
+        String catalog = "SBAVWARDROBE 1\n"
+                + "2000068\t4\tBS_08\t3\tNanoSuit_Icon_08\t230\tCH_P_EVE_08,CH_P_EVE_08_NH\tCombinaison d'été\tUne <Bold>description</>\n"
+                + "103010\t2\tGear_BetaGaugeAdditiveRate_Common\t1\t-\t0\t-\tEngrenage\t\n"
+                + "END 2\n";
+        Map<Long, Wardrobe.Item> items = Wardrobe.catalog(catalog);
+        assert items != null && items.size() == 2 : "The catalog parses";
+        assert items.get(2000068L).equals(new Wardrobe.Item(2000068, 4, "BS_08", 3, "NanoSuit_Icon_08", 230,
+                List.of("CH_P_EVE_08", "CH_P_EVE_08_NH"), "Combinaison d'été", "Une <Bold>description</>")) : items.get(2000068L);
+        assert items.get(103010L).icon() == null && items.get(103010L).meshes().isEmpty() && items.get(103010L).description().isEmpty() : "- is none";
+        assert Wardrobe.catalog("SBAVWARDROBE 1\nEND 0\n").isEmpty() : "An empty catalog";
+        for (String bad : new String[] {catalog.replace("SBAVWARDROBE 1", "SBAVWARDROBE 2"), catalog.replace("END 2", "END 3"),
+                catalog.replace("\tUne <Bold>description</>", ""), catalog.replace("2000068\t4", "x2000068\t4"), catalog.replace("\tCombinaison d'été", "\t"),
+                catalog.replace("CH_P_EVE_08,CH_P_EVE_08_NH", "CH_P_EVE_08,"), catalog.replace("103010", "2000068"), catalog.replace("\t230\t", "\t-1\t"),
+                catalog.substring(0, catalog.length() - 1), catalog.replace("END 2\n", ""), null})
+            assert Wardrobe.catalog(bad) == null : "Refused: " + bad;
+
+        // The adapter's slot rule, mirrored so the screen offers only what it would take.
+        assert Wardrobe.equippable(5, true) && !Wardrobe.equippable(1, false) && !Wardrobe.equippable(6, false) : "Occupied slots only";
+        assert Wardrobe.equippable(10, false) && Wardrobe.equippable(11, false) && Wardrobe.removable(10) && !Wardrobe.removable(5) && !Wardrobe.removable(8);
+        assert Wardrobe.SLOTS.stream().mapToInt(Wardrobe.Slot::type).sorted().boxed().toList().equals(List.of(1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 17));
+
+        // The layout over the GUI sizes of 1080p at scale 2 and 3, 1440p and 4:3 at auto scale: {row, list x, list width,
+        // preview x0, x1, y1}; the slot column fits above the footer, nothing overlaps and the preview keeps some room.
+        int[][] sizes = {{960, 540, 32, 84, 220, 312, 952, 506}, {640, 360, 22, 64, 213, 285, 632, 326},
+                {427, 240, 22, 64, 142, 214, 419, 206}, {320, 240, 22, 64, 140, 212, 312, 206}};
+        for (int[] s : sizes) {
+            Wardrobe.Layout l = Wardrobe.layout(s[0], s[1]);
+            assert l.row() == s[2] && l.listX() == s[3] && l.listWidth() == s[4] && l.previewX0() == s[5] && l.previewX1() == s[6]
+                    && l.previewY1() == s[7] && l.top() == 20 && l.bottom() == s[1] - 14 : s[0] + "x" + s[1] + ": " + l;
+            int last = 0;
+            for (int i = 0; i < Wardrobe.SLOTS.size(); i++) {
+                int[] at = l.slot(i);
+                String group = Wardrobe.SLOTS.get(i).group();
+                assert at[0] >= Wardrobe.MARGIN && at[0] + l.row() <= l.listX() - Wardrobe.MARGIN && at[1] >= l.heading(group) + 10 : s[0] + ": slot " + i;
+                for (int k = 0; k < i; k++) {
+                    int[] other = l.slot(k);
+                    assert Math.abs(other[0] - at[0]) >= l.cell() || Math.abs(other[1] - at[1]) >= l.cell() : s[0] + ": slots " + k + " and " + i + " overlap";
+                }
+                last = Math.max(last, at[1] + l.row());
+            }
+            assert last <= l.bottom() : s[0] + "x" + s[1] + ": the slot column ends at " + last;
+            assert l.listX() + l.listWidth() + Wardrobe.MARGIN == l.previewX0() && l.previewX1() - l.previewX0() >= 100
+                    && l.previewY1() - l.top() >= 180 : s[0] + "x" + s[1] + ": preview " + l;
+        }
+        Wardrobe.Layout big = Wardrobe.layout(960, 540);
+        assert big.slot(0)[1] == 30 && big.slot(2)[1] == 30 + 34 + 10 && big.slot(6)[1] == 30 + 34 + 10 + 68 + 10 && big.slot(10)[1] == big.slot(6)[1] + 68
+                && big.slot(1)[0] == 8 + 34 : "Exospine, Gear and Look rows under their headings";
+
+        // The pack's manifest and the stale-pack check against a Paks folder.
+        String manifest = "SBAVPACK 1\nPAKS /games/SB/Content/Paks\nSOURCE pakchunk0-WindowsNoEditor.pak 100 200\nSOURCE ~mods/My Mod_P.utoc 5 6\n"
+                + "MESH CH_P_EVE_08.sbav SB/Content/Art/CH_P_EVE_08 pakchunk0-WindowsNoEditor\nEND\n";
+        Wardrobe.Manifest parsed = Wardrobe.manifest(manifest);
+        assert parsed.paks().equals(Path.of("/games/SB/Content/Paks"))
+                && parsed.sources().equals(Map.of("pakchunk0-WindowsNoEditor.pak", "100 200", "~mods/My Mod_P.utoc", "5 6")) : parsed;
+        for (String bad : new String[] {manifest.replace("SBAVPACK 1", "SBAVPACK 2"), manifest.replace("END\n", ""), manifest.replace("PAKS /games", "PATH /games"),
+                manifest.replace(" 5 6", " 5"), manifest.replace("MESH", "BLOB"), manifest.replace("~mods/My Mod_P.utoc", "pakchunk0-WindowsNoEditor.pak"),
+                "SBAVPACK 1\nPAKS \nEND\n", null})
+            assert Wardrobe.manifest(bad) == null : "Refused: " + bad;
+        assert Wardrobe.differences(Map.of("a.pak", "1 2", "b.utoc", "3 4", "c.ucas", "5 6"), Map.of("a.pak", "1 2", "b.utoc", "3 5", "d.pak", "7 8"))
+                .equals(List.of("~b.utoc", "-c.ucas", "+d.pak")) : "Changed, removed, added";
+
+        Path root = Files.createTempDirectory("wardrobe-test"), paks = root.resolve("Paks"), pack = root.resolve("avatar");
+        try {
+            Files.createDirectories(paks.resolve("~mods/My Mod"));
+            Files.createDirectories(pack);
+            Files.writeString(paks.resolve("pakchunk0-WindowsNoEditor.pak"), "base");
+            Files.writeString(paks.resolve("~mods/My Mod/My Mod_P.utoc"), "mod");
+            Files.writeString(paks.resolve("readme.txt"), "not a container");
+            assert Wardrobe.stalePack(pack) == null : "No manifest: a pack from before mod tracking";
+            Map<String, String> found = Wardrobe.sources(paks);
+            assert found.keySet().equals(java.util.Set.of("pakchunk0-WindowsNoEditor.pak", "~mods/My Mod/My Mod_P.utoc")) : found;
+            StringBuilder written = new StringBuilder("SBAVPACK 1\nPAKS " + paks + "\n");
+            found.forEach((path, stamp) -> written.append("SOURCE ").append(path).append(' ').append(stamp).append('\n'));
+            Files.writeString(pack.resolve("pack.txt"), written.append("END\n"));
+            assert Wardrobe.stalePack(pack) == null : "The game files the pack was built from";
+            Files.writeString(paks.resolve("~mods/Other_P.ucas"), "added");
+            Files.writeString(paks.resolve("~mods/My Mod/My Mod_P.utoc"), "updated");
+            String stale = Wardrobe.stalePack(pack);
+            assert stale != null && stale.contains("(~~mods/My Mod/My Mod_P.utoc, +~mods/Other_P.ucas)") && stale.contains("rebuild the pack") : stale;
+            Files.writeString(pack.resolve("pack.txt"), "SBAVPACK 2\n");
+            assert Wardrobe.stalePack(pack).contains("unreadable") : "Another manifest version is not trusted";
+            Files.writeString(pack.resolve("pack.txt"), "SBAVPACK 1\nPAKS " + root.resolve("unmounted") + "\nEND\n");
+            assert Wardrobe.stalePack(pack) == null : "No Paks folder to compare (its drive is not mounted)";
+        } finally {
+            try (var walk = Files.walk(root)) { walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete()); }
+        }
+        System.out.println("PASS wardrobe: pack catalog, slot rule, layout over four GUI sizes, pack manifest and stale-pack check");
+    }
+}

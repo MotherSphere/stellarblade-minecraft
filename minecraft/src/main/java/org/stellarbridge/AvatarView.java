@@ -19,6 +19,8 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.render.DiffuseLighting;
 import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.LightmapTextureManager;
 import net.minecraft.client.render.WorldRenderer;
@@ -126,6 +128,7 @@ public final class AvatarView {
         ClientTickEvents.END_CLIENT_TICK.register(client -> tick());
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(AvatarView::off));
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> { off(); reap(); });
+        WardrobeScreen.initialize();
     }
 
     static Path bridgeDirectory() {
@@ -200,6 +203,12 @@ public final class AvatarView {
             String run = UUID.randomUUID().toString().replace("-", "");
             live = new Live(new AvatarStream(bridgeDirectory(), run, System.currentTimeMillis()), source.getClient().world,
                     packDirectory(), ahead(player));
+            // The pack against the game files it was built from (mods included): a warning only, EVE is drawn either way.
+            String stale = Wardrobe.stalePack(live.pack);
+            if (stale != null) {
+                LoggerFactory.getLogger("stellar_bridge").warn("{}", stale);
+                source.sendFeedback(Text.literal(stale));
+            }
             source.sendFeedback(Text.literal("EVE live avatar requested: Stellar Blade must run with EVE loaded and the matching adapter."
                     + " After /stellar start, F5 and F8 she stands where the bridge places EVE; otherwise two blocks ahead."
                     + " /stellaravatar status shows the stream; /stellaravatar off stops it."));
@@ -381,6 +390,62 @@ public final class AvatarView {
             stopLive(failure.getMessage());
             LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
         }
+    }
+
+    /**
+     * The studio camera of AvatarRenderCheck and the wardrobe's preview: EVE's feet (root) at the origin, the eye distance
+     * blocks in front of her body (its +X) turned by degrees around her and height + 0.1 up, looking at height. Fills
+     * eye; returns the placement of her pose relative to the eye.
+     */
+    static Matrix4d studio(float[] root, double distance, double height, double degrees, Vector3d eye) {
+        Matrix4d body = AvatarMesh.transform(root, 0, new Matrix4d());
+        Vector3d forward = AvatarModel.UNREAL_TO_MINECRAFT.transformDirection(body.transformDirection(new Vector3d(1, 0, 0))).setComponent(1, 0).normalize();
+        eye.set(forward.rotateY(Math.toRadians(degrees))).mul(distance).add(0, height + 0.1, 0);
+        return new Matrix4d().translation(-eye.x, -eye.y, -eye.z).mul(AvatarModel.UNREAL_TO_MINECRAFT).translate(-root[4], -root[5], -root[6]);
+    }
+
+    private static final float[] PREVIEW_FOG = {0, 0, 0, 1}, PREVIEW_SKY = {0.81f, 0.87f, 1}; // Stellar Blade's studio light, CEDDFF.
+
+    /**
+     * EVE's live pose drawn into a GUI rectangle with the studio camera (40 degrees), over what the GUI drew so far, lit as
+     * at full block light with no sun; false without a posed live avatar. Her trail and effect sprites stay in the world
+     * pass. Under /stellaravatar shading entity she goes through Minecraft's entity programs: the fallback should a shader
+     * pack hide her own programs' output in the GUI.
+     */
+    static boolean drawPreview(DrawContext context, int x0, int y0, int x1, int y1, double distance, double height, double degrees) {
+        Live current = live;
+        if (current == null || current.model == null || !current.posed || x1 <= x0 || y1 <= y0) return false;
+        Vector3d eye = new Vector3d();
+        Matrix4d placement = studio(current.pose.world()[current.model.parts.get(0).component()], distance, height, degrees, eye);
+        // The world pass computes its own palettes again before it draws: sharing them is safe.
+        current.model.palettes(current.pose, placement, current.renderer.palettes, true);
+        var client = MinecraftClient.getInstance();
+        var window = client.getWindow();
+        double scale = window.getScaleFactor();
+        int px = (int) (x0 * scale), py = window.getFramebufferHeight() - (int) (y1 * scale), pw = (int) ((x1 - x0) * scale), ph = (int) ((y1 - y0) * scale);
+        Matrix4f view = new Matrix4f().lookAt(0, 0, 0, (float) -eye.x, (float) (height - eye.y), (float) -eye.z, 0, 1, 0);
+        Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(40), (float) pw / ph, 0.05f, 100);
+        context.draw(); // What the GUI drew so far lands beneath her.
+        int[] viewport = new int[4];
+        GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport);
+        context.enableScissor(x0, y0, x1, y1);
+        try {
+            RenderSystem.clear(GL11.GL_DEPTH_BUFFER_BIT, MinecraftClient.IS_SYSTEM_MAC); // Scissored: her rectangle only.
+            GlStateManager._viewport(px, py, pw, ph);
+            current.renderer.hurt(false); // The world pass sets it again each frame.
+            int lightmap = lightmap(client.gameRenderer.getLightmapTextureManager());
+            if (ShaderPacks.forced) {
+                DiffuseLighting.enableForLevel(); // Her normals are world-aligned, as in the world pass.
+                current.renderer.drawEntity(view, projection, lightmap, overlay(), 15, 15, GameRenderer.getRenderTypeEntityCutoutNoNullProgram(),
+                        GameRenderer.getRenderTypeEntityTranslucentProgram(), null, 2); // ponytail: no glow pass; the sword's edge stays dark.
+                DiffuseLighting.enableGuiDepthLighting();
+            } else current.renderer.draw(new Matrix4f(projection).mul(view), lightmap, 15, 15, 1000, 2000, PREVIEW_FOG, PREVIEW_SKY,
+                    AvatarShadows.NONE, false);
+        } finally {
+            GlStateManager._viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            context.disableScissor();
+        }
+        return true;
     }
 
     /** The terrain link's mapping, camera-relative: Minecraft origin + (X, Z, Y) / scale relative to the lab anchor. */

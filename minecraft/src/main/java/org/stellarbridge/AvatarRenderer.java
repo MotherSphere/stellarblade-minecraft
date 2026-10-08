@@ -213,6 +213,15 @@ final class AvatarRenderer implements AutoCloseable {
      */
     void draw(Matrix4f projectionView, int lightmap, int blockLight, int skyLight, float start, float end, float[] fog, float[] sky,
               AvatarShadows.Light key) {
+        draw(projectionView, lightmap, blockLight, skyLight, start, end, fog, sky, key, true);
+    }
+
+    /**
+     * As draw, the trail and the effect sprites only with effects: their positions are the world pass's camera-relative
+     * samples, so another view (the wardrobe's preview) leaves them out.
+     */
+    void draw(Matrix4f projectionView, int lightmap, int blockLight, int skyLight, float start, float end, float[] fog, float[] sky,
+              AvatarShadows.Light key, boolean effects) {
         restoring(() -> {
             GlStateManager._activeTexture(GL13.GL_TEXTURE7);
             GlStateManager._bindTexture(shadowTexture);
@@ -272,8 +281,8 @@ final class AvatarRenderer implements AutoCloseable {
                     }
                 }
             }
-            if (trail != null) trail.draw(projectionView, start, end, fog);
-            if (sprites != null) sprites.draw(projectionView, start, end, fog);
+            if (effects && trail != null) trail.draw(projectionView, start, end, fog);
+            if (effects && sprites != null) sprites.draw(projectionView, start, end, fog);
         });
     }
 
@@ -404,8 +413,9 @@ final class AvatarRenderer implements AutoCloseable {
         drawEntity(view, projection, lightmap, overlay, 0, 15, shadow, null, null, 1);
     }
 
-    private void drawEntity(Matrix4f view, Matrix4f projection, int lightmap, int overlay, int blockLight, int skyLight,
-                            ShaderProgram cutout, ShaderProgram translucent, ShaderProgram eyes, int passes) {
+    /** The first passes of drawEntity (1: opaque and cut-out, 2: overlays too, 3: glows); without eyes no trail or sprites. */
+    void drawEntity(Matrix4f view, Matrix4f projection, int lightmap, int overlay, int blockLight, int skyLight,
+                    ShaderProgram cutout, ShaderProgram translucent, ShaderProgram eyes, int passes) {
         restoring(() -> {
             uploadMorphs();
             skin();

@@ -81,6 +81,8 @@ final class BridgeFiles {
         Files.deleteIfExists(checked("eve-mobs.txt"));
         Files.deleteIfExists(checked("eve-request.txt"));
         Files.deleteIfExists(checked("eve-request-ack.txt"));
+        // The adapter's eve-wardrobe.txt stays: it is the last owned list, which the pack install reads.
+        Files.deleteIfExists(checked("eve-wardrobe-request.txt"));
     }
 
     Path checked(String filename) throws IOException {

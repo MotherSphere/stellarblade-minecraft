@@ -93,6 +93,8 @@ A slot that already holds the item (`equip`) or nothing (`unequip`) is answered 
 
 The adapter answers each request it took by replacing [`eve-wardrobe.txt`](fixtures/wardrobe.txt) (at most 64 KiB): SESSION and SEQ of the request, TIME in Unix milliseconds, `RESULT listed`, `equipped`, `unequipped`, `unchanged` or `refused <reason>`, `COUNT n` (0 to 1024) and n lines `ITEM id category guid level variant slot`: the `ItemTable` row ID and `ESBItemCategory`, the `SavedGuid` (as in the request), `StatLevel` (0 to 9999), `MatVarIndex` (0 to 99) and the slot the item is worn in, or 0. The lines list every Inventory bucket item of the seven wardrobe categories, then each worn one the bucket lacks, read when the answer is made; a refusal before the bucket was found lists nothing. The adapter keeps the file after a session ends: it is the last owned list. Another version, a bad footer or a COUNT that does not match makes the answer unreadable.
 
+Minecraft writes the request from its wardrobe screen, which opens only while EVE replaces the player, with the session of its entered link and one SEQ counter for the whole Minecraft run, and waits for the answer of that SESSION and SEQ for 5 seconds; it also refuses an `ITEM` line outside the seven wardrobe categories. `/stellar stop` deletes the request and keeps the answer.
+
 ## Text publication and legacy captures
 
 Java publishes text with atomic replacement. Lua uses alternating slots where Windows cannot rename over an existing destination. Control permits retire the old slot under a unique owned name before publishing; cleanup failure retains ownership for retry. A missing/stale permit neutralizes input.
