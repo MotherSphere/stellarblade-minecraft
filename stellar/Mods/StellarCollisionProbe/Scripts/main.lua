@@ -66,11 +66,27 @@ function engine.control_context()
 end
 function engine.valid(handle) return valid(handle.actor) end
 
+-- The diagnostic cube, kept once found: StaticFindObject never finds it in this build, even loaded and in use, so each
+-- visual repeated the failed find and a LoadAsset (an asset-registry lookup and a synchronous load), about 20 ms, a
+-- whole frame per box. UE4SS invalidates the kept object if the engine deletes it, which brings one more load.
+local CUBE = '/Engine/BasicShapes/Cube.Cube'
+local cube, cube_missing
+local function cube_mesh()
+    if not valid(cube) and not cube_missing then
+        cube = StaticFindObject(CUBE)
+        if not valid(cube) then
+            local ok, loaded = pcall(LoadAsset, CUBE)
+            cube = ok and loaded or nil
+        end
+        cube_missing = not valid(cube)
+        if cube_missing then log('Optional cube visuals unavailable until Lua reloads: '..CUBE..' could not be loaded.') end
+    end
+    if valid(cube) then return cube end
+end
 -- Visuals are optional. Collision always belongs to the TriggerBox, never this mesh.
 local function add_visual(world, spec, handle)
-    local mesh = StaticFindObject('/Engine/BasicShapes/Cube.Cube')
-    if not valid(mesh) then mesh = LoadAsset('/Engine/BasicShapes/Cube.Cube') end
-    if not valid(mesh) then return end
+    local mesh = cube_mesh()
+    if not mesh then return end
     local class = StaticFindObject('/Script/Engine.StaticMeshActor')
     if not valid(class) then return end
     local visual = world:SpawnActor(class,spec.center,{Pitch=0,Yaw=0,Roll=0})

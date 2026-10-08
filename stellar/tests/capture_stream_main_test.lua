@@ -65,6 +65,7 @@ function gameplay:GetRealTimeSeconds(...) assert(select('#',...)==1 and (...)==w
 function system:GetConsoleVariableIntValue(name)assert(name=='t.IdleWhenNotForeground');return 0 end
 function system:GetConsoleVariableFloatValue(name)assert(name=='t.MaxFPS');return 60 end
 StaticFindObject=function(path)
+    if path=='/Script/Engine.TriggerBox' or path=='/Script/Engine.StaticMeshActor' then return {IsValid=function()return true end} end
     if timing_available then
         if path=='/Script/Engine.Default__KismetSystemLibrary' then return system end
         if path=='/Script/Engine.Default__GameplayStatics' then return gameplay end
@@ -79,7 +80,8 @@ function diagnostic.create() ordinary_creates=ordinary_creates+1; return true,'d
 function diagnostic.restore() probe_returns=probe_returns+1; if return_error then error('return threw') end; return false,'No fixture is active' end
 package.loaded.probe={new=function()return diagnostic end}
 package.loaded.bridge_config={scale=100,directory='/unused'}
-package.loaded.terrain={new=function()return {} end}
+local terrain_engine
+package.loaded.terrain={new=function(engine) terrain_engine=engine; return {} end}
 package.loaded.bridge={new=function()return bridge end}
 package.loaded.capture={new=function(_,directory,logger) assert(directory=='/unused' and type(logger)=='function'); return capture end}
 package.loaded.capture_adapter={new=function()return {} end}
@@ -359,3 +361,43 @@ assert(logs[#logs]:find('STOP: HUD slots paused: ',1,true) and logs[#logs]:find(
 loop(); drain(); assert(hud_ticks==ticks+3,'The bridge timer keeps running after a HUD failure')
 assert(hud_args.link==stream_link,'The HUD slots follow the entered link')
 print('PASS HUD slot wiring: bridge-timer reads after session requests, nonfatal failures, the entered link')
+-- The terrain's cube visuals: the cube StaticFindObject never finds is loaded once and kept.
+local function fake_actor()
+    local actor={IsValid=function()return true end,hidden=false}
+    local component={IsValid=function()return true end,IsA=function()return true end}
+    for _,name in ipairs({'SetMobility','SetGenerateOverlapEvents','SetBoxExtent','SetCollisionObjectType','SetCollisionResponseToAllChannels'}) do
+        component[name]=function() end
+    end
+    function component:SetCollisionEnabled(mode) self.mode=mode end
+    function component:GetCollisionEnabled() return self.mode end
+    function component:SetStaticMesh(mesh) self.mesh=mesh; return true end
+    actor.CollisionComponent,actor.StaticMeshComponent=component,component
+    function actor:GetWorld() return world end
+    function actor:SetActorEnableCollision(enabled) self.collision=enabled end
+    function actor:SetActorScale3D() end
+    function actor:SetActorHiddenInGame(hidden) self.hidden=hidden end
+    return actor
+end
+function world:SpawnActor(_,at) local actor=fake_actor(); actor.at=at; return actor end
+local loads,load_error,mesh=0,false,nil
+LoadAsset=function(path)
+    assert(path=='/Engine/BasicShapes/Cube.Cube' and not (mesh and mesh.valid),'A kept cube is never loaded again')
+    loads=loads+1
+    if load_error then error('asset registry unavailable') end
+    mesh={valid=true,IsValid=function(self) return self.valid end}
+    return mesh,true,true
+end
+local box={role='minecraft',center={X=1,Y=2,Z=3},extent={X=50,Y=50,Z=50}}
+local function spawn(spec) local handle=terrain_engine.spawn(spec); terrain_engine.configure(handle,spec); return handle end
+local handles={spawn(box),spawn(box),spawn(box)}
+assert(loads==1 and handles[3].visual.StaticMeshComponent.mesh==mesh,'One load serves every box')
+mesh.valid=false; spawn(box)
+assert(loads==2,'A cube the engine deleted is loaded once more')
+local function unavailable()
+    local count=0
+    for _,message in ipairs(logs) do if message:find('Optional cube visuals unavailable',1,true) then count=count+1 end end
+    return count
+end
+mesh.valid=false; load_error=true; spawn(box); spawn(box)
+assert(loads==3 and unavailable()==1,'A failed load is reported once and not retried')
+print('PASS terrain cube visuals: loaded once and kept, reloaded once if deleted, a failed load reported once')
