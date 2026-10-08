@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -168,10 +167,7 @@ final class WardrobeScreen extends Screen {
         for (SlotButton button : slots) button.setTooltip(Tooltip.of(button.describe()));
         Wardrobe.Slot slot = Wardrobe.SLOTS.get(selected);
         boolean occupied = owned.stream().anyMatch(i -> i.slot() == slot.type());
-        List<Row> entries = owned.stream().filter(i -> i.category() == slot.category())
-                .sorted(Comparator.comparing((BridgeProtocol.WardrobeItem i) -> i.slot() != slot.type()).thenComparingLong(BridgeProtocol.WardrobeItem::id))
-                .map(i -> new Row(i, slot, occupied)).toList();
-        list.set(entries);
+        list.set(Wardrobe.entries(owned, slot).stream().map(i -> new Row(i, slot, occupied)).toList());
     }
 
     private Wardrobe.Item row(long id) { return catalog == null ? null : catalog.get(id); }
@@ -298,6 +294,7 @@ final class WardrobeScreen extends Screen {
         @Override
         public void onClick(double mouseX, double mouseY) {
             selected = index;
+            list.setScrollAmount(0); // A slot's list opens at its top, the item worn there first.
             refresh();
         }
         @Override
@@ -316,11 +313,15 @@ final class WardrobeScreen extends Screen {
             super(MinecraftClient.getInstance(), layout.listWidth(), layout.bottom() - layout.top(), layout.top(), layout.row());
             setX(layout.listX());
         }
-        /** New rows keep the selected and focused item: replaceEntries drops the selection, and a click's choose() rebuilds the rows before the list focuses the clicked one. */
+        /**
+         * New rows keep the selected and focused item: replaceEntries drops the selection, and a click's choose() rebuilds the rows before the list focuses the clicked one.
+         * It keeps the scroll unclamped too: a shorter list (the exospines, glasses or earrings after a scrolled suit list) drew every row above its top.
+         */
         void set(List<Row> entries) {
             Row was = getSelectedOrNull();
             Element focus = getFocused();
             replaceEntries(entries);
+            refreshScroll();
             if (was != null) setSelected(current(was));
             if (focus instanceof Row) setFocused(focus);
         }

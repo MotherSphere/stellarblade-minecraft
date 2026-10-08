@@ -30,6 +30,24 @@ public final class WardrobeTest {
                 && !Wardrobe.removable(17) && !Wardrobe.removable(1) && !Wardrobe.removable(6) : "Only earrings and glasses come off";
         assert Wardrobe.SLOTS.stream().mapToInt(Wardrobe.Slot::type).sorted().boxed().toList().equals(List.of(1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 17));
 
+        // What each slot lists: every category the answer may carry has a slot, and with two items of each slot's category,
+        // one worn there, in any order, each slot lists its category's items, the one worn there first, then by ID.
+        assert Wardrobe.SLOTS.stream().map(Wardrobe.Slot::category).collect(java.util.stream.Collectors.toSet())
+                .equals(java.util.Set.copyOf(BridgeProtocol.WARDROBE_CATEGORIES)) : "A slot for each wardrobe category";
+        List<BridgeProtocol.WardrobeItem> owned = new java.util.ArrayList<>();
+        for (Wardrobe.Slot slot : Wardrobe.SLOTS) {
+            owned.add(new BridgeProtocol.WardrobeItem(1000 + slot.type(), slot.category(), "%032x".formatted(slot.type()), 1, 0, slot.type()));
+            owned.add(new BridgeProtocol.WardrobeItem(slot.type(), slot.category(), "%032x".formatted(100 + slot.type()), 1, 0, 0));
+        }
+        java.util.Collections.shuffle(owned, new java.util.Random(1));
+        for (Wardrobe.Slot slot : Wardrobe.SLOTS) {
+            List<BridgeProtocol.WardrobeItem> rows = Wardrobe.entries(owned, slot);
+            assert rows.size() == 2 * Wardrobe.SLOTS.stream().filter(s -> s.category() == slot.category()).count()
+                    && rows.stream().allMatch(i -> i.category() == slot.category()) && rows.get(0).slot() == slot.type()
+                    && rows.subList(1, rows.size()).stream().mapToLong(BridgeProtocol.WardrobeItem::id).sorted().boxed().toList()
+                    .equals(rows.subList(1, rows.size()).stream().map(BridgeProtocol.WardrobeItem::id).toList()) : slot + ": " + rows;
+        }
+
         // The layout over the GUI sizes of 1080p at scale 2 and 3, 1440p and 4:3 at auto scale: {row, list x, list width,
         // preview x0, x1, y1}; the slot column fits above the footer, nothing overlaps and the preview keeps some room.
         int[][] sizes = {{960, 540, 32, 84, 220, 312, 952, 506}, {640, 360, 22, 64, 213, 285, 632, 326},
@@ -96,6 +114,6 @@ public final class WardrobeTest {
         } finally {
             try (var walk = Files.walk(root)) { walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete()); }
         }
-        System.out.println("PASS wardrobe: pack catalog, slot rule, layout over four GUI sizes, pack manifest and stale-pack check");
+        System.out.println("PASS wardrobe: pack catalog, slot rule, slot lists, layout over four GUI sizes, pack manifest and stale-pack check");
     }
 }

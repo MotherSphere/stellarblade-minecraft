@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -44,6 +45,12 @@ final class Wardrobe {
      */
     static boolean equippable(int slot, boolean occupied) { return occupied || removable(slot); }
     static boolean removable(int slot) { return slot == 10 || slot == 11; }
+
+    /** The owned items a slot lists: those of its category, the one worn in it first, then by ID. */
+    static List<BridgeProtocol.WardrobeItem> entries(List<BridgeProtocol.WardrobeItem> owned, Slot slot) {
+        return owned.stream().filter(i -> i.category() == slot.category())
+                .sorted(Comparator.comparing((BridgeProtocol.WardrobeItem i) -> i.slot() != slot.type()).thenComparingLong(BridgeProtocol.WardrobeItem::id)).toList();
+    }
 
     /** One catalog row: ID, category, alias, rarity, icon (null: none), largest bone count, meshes, name, description. */
     record Item(long id, int category, String alias, int rarity, String icon, int maxBones, List<String> meshes, String name, String description) {}
