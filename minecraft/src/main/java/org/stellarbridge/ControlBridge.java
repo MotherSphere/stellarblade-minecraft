@@ -124,8 +124,8 @@ public final class ControlBridge {
         }
     }
     static boolean build() { return build; }
-    /** Whether EVE's aim key is held: Stellar Blade shows its bullet slots while aiming. */
-    static boolean aiming() { return held[AIM]; }
+    /** Whether EVE's aim key aims her drone (EVE mode, forwarding active): Stellar Blade shows its bullet slots then. */
+    static boolean aiming() { return held[AIM] && !build && state != null && state.active(); }
     /** The bound key of EVE's heal or item key for the HUD's hints when its name is one character (A on AZERTY), else null. */
     static String keyHint(boolean heal) {
         String key = eve[heal ? 4 : 5].getBoundKeyLocalizedText().getString();
