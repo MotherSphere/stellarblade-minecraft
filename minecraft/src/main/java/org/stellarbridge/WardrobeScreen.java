@@ -12,6 +12,7 @@ import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.Element;
 import net.minecraft.client.gui.screen.GameMenuScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.narration.NarrationMessageBuilder;
@@ -76,7 +77,7 @@ final class WardrobeScreen extends Screen {
                     && t.getKey().equals("menu.returnToGame")).findFirst().orElse(null);
             if (back == null) return; // Another mod rebuilt the menu: no row rather than a misplaced one.
             for (ClickableWidget b : buttons) if (b.getY() > back.getY()) b.setY(b.getY() + 24);
-            buttons.add(ButtonWidget.builder(Text.translatable("stellar_bridge.wardrobe"), b -> client.setScreen(new WardrobeScreen(screen)))
+            buttons.add(buttons.indexOf(back) + 1, ButtonWidget.builder(Text.translatable("stellar_bridge.wardrobe"), b -> client.setScreen(new WardrobeScreen(screen)))
                     .dimensions(back.getX(), back.getY() + 24, back.getWidth(), 20).build());
         });
     }
@@ -209,7 +210,8 @@ final class WardrobeScreen extends Screen {
         super.render(context, mouseX, mouseY, delta);
         Wardrobe.Slot slot = Wardrobe.SLOTS.get(selected);
         context.drawText(textRenderer, title, Wardrobe.MARGIN, 6, 0xFFFFFFFF, true);
-        context.drawText(textRenderer, slotName(selected), layout.listX(), 6, TITLE, true);
+        int nameX = Math.max(layout.listX(), Wardrobe.MARGIN + textRenderer.getWidth(title) + Wardrobe.MARGIN); // The French title is wider than the slot column.
+        context.drawText(textRenderer, slotName(selected), nameX, 6, TITLE, true);
         for (String group : Wardrobe.GROUPS)
             context.drawText(textRenderer, Text.translatable("stellar_bridge.wardrobe.group." + group), Wardrobe.MARGIN, layout.heading(group) + 1, HEADING, false);
         Text hints = Text.translatable("stellar_bridge.wardrobe.hints");
@@ -299,6 +301,13 @@ final class WardrobeScreen extends Screen {
             refresh();
         }
         @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            // ClickableWidget answers only the mouse; Tab focuses a slot, Enter or Space selects it.
+            if (!active || !visible || keyCode != GLFW.GLFW_KEY_ENTER && keyCode != GLFW.GLFW_KEY_KP_ENTER && keyCode != GLFW.GLFW_KEY_SPACE) return false;
+            onClick(0, 0);
+            return true;
+        }
+        @Override
         protected void appendClickableNarrations(NarrationMessageBuilder builder) { appendDefaultNarrations(builder); }
     }
 
@@ -307,7 +316,20 @@ final class WardrobeScreen extends Screen {
             super(MinecraftClient.getInstance(), layout.listWidth(), layout.bottom() - layout.top(), layout.top(), layout.row());
             setX(layout.listX());
         }
-        void set(List<Row> entries) { replaceEntries(entries); }
+        /** New rows keep the selected and focused item: replaceEntries drops the selection, and a click's choose() rebuilds the rows before the list focuses the clicked one. */
+        void set(List<Row> entries) {
+            Row was = getSelectedOrNull();
+            Element focus = getFocused();
+            replaceEntries(entries);
+            if (was != null) setSelected(current(was));
+            if (focus instanceof Row) setFocused(focus);
+        }
+        /** This item's row among the current ones, null when the slot changed. */
+        Row current(Row row) {
+            return children().contains(row) ? row : children().stream().filter(r -> r.item.guid().equals(row.item.guid())).findFirst().orElse(null);
+        }
+        @Override
+        public void setFocused(Element focused) { super.setFocused(focused instanceof Row row ? current(row) : focused); }
         Row hovered() { return getHoveredEntry(); }
         @Override public int getRowLeft() { return getX() + 2; }
         @Override public int getRowWidth() { return width - 10; }
