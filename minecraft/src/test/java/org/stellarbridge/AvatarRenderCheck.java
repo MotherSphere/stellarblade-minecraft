@@ -21,8 +21,8 @@ import org.lwjgl.stb.STBImageWrite;
 /**
  * Offline GPU check of a private avatar pack and pose recording: renders EVE with the mod's renderer
  * in a hidden GL 3.2 core context and writes a contact sheet. Not part of the suites (needs a GPU and private files).
- * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees[,target] [glow | hurt | fx=A+B]]
- * [sun=elevation,azimuth]: the camera (default 3.2 blocks from her front, looking at 0.9 blocks, or at target) orbits by degrees
+ * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees[,target] [glow | hurt | fx=A+B]
+ * [sun=elevation,azimuth]]: the camera (default 3.2 blocks from her front, looking at 0.9 blocks, or at target) orbits by degrees
  * around her feet; glow streams an orange sword-edge glow as a special attack would; hurt draws her red hurt flash; fx plays those effect assets for 0.2 s before each frame, at the blade
  * tip for NS_A_ParTrail ones and at the hilt otherwise. A last argument entity draws her as under a shader pack, through
  * Minecraft's own cut-out entity and eyes programs (read from the client jar), with a sword glow. sun (degrees, azimuth from
