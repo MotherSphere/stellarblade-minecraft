@@ -344,23 +344,24 @@ local function widget(name,fields,path) local o=object(name,fields); o.GetFullNa
 local function typed(name,class,fields) local o=object(name,fields); o.GetClass=function() return object(class) end; return o end
 local function thumb(resource) return object('Image_Item_Thumb',{Brush=wrap({ResourceObject=resource})}) end
 local function general(resource) return object('WB_MainHUD_ItemSlotGeneral',{Image_Item_Thumb=thumb(resource)}) end
-local function material(class,textures)
+local function material(class,textures) -- textures: {{parameter, texture}, ...} in array order.
     local values={}
-    for name,texture in pairs(textures) do values[#values+1]={ParameterInfo={Name=fname(name)},ParameterValue=typed(texture,'Texture2D')} end
+    for _,t in ipairs(textures) do values[#values+1]={ParameterInfo={Name=fname(t[1])},ParameterValue=typed(t[2],'Texture2D')} end
     return typed(class..'_0',class,{TextureParameterValues=tarray(values)})
 end
 -- The heal slot shows the Tumbler's cup, which has no thumbnail; the util slot's general child draws the Camera.
 local healSlot=widget('WB_MainHUD_HealItem',{ItemCount=3,RecoveryPotionMaxCount=5,CoolTimePercent=0,UseActive=true,
     Image_Item_Thumb=thumb(nil),WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{}))})
 local utilSlot=widget('WB_MainHUD_UtilItem',{ItemCount=wrap(2),CoolTimePercent=0.4,Image_Item_Thumb=thumb(nil),
-    WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{Mask_Texture='Mask',Icon_Texture='Icon_Camera'}))})
+    WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{{'Mask_Texture','Mask'},{'Icon_Texture','Icon_Camera'},{'Noise_Texture','Noise'}}))})
 setmetatable(utilSlot,{__index=function(_,key) if key=='UseActive' then error('no such property') end end})
-local lowerSlot=widget('WB_MainHUD_Lower1Item',{ItemCount=0,WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceConstant',{Icon_Texture='OrganicCork'}))})
+local lowerSlot=widget('WB_MainHUD_Lower1Item',{ItemCount=0,WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceConstant',{{'Icon_Texture','OrganicCork'}}))})
 local dashSlot=widget('WB_Dash_Slot',{CoolTimeProgress=0.25})
 local bulletSlots={widget('Slot0',{ItemAlias=fname('Bullet_Scatter'),ItemCount=8,CooltimePercent=0}),
     widget('Slot1',{ItemAlias=wrap(fname('Bullet_Normal')),ItemCount=120,CooltimePercent=0.5})}
 local instances={WB_MainHUD_ItemSlot_C={widget('WB_MainHUD_HealItem',{ItemCount=5},TEMPLATE),widget('WB_MainHUD_HealItem_Old',{}),healSlot,utilSlot},
-    WB_MainHUD_Dash_Slot_C={widget('WB_MainHUD_Dash_Slot',{CoolTimeProgress=1},TEMPLATE),dashSlot},WB_Tps_Bullet2_Slot_C={}}
+    WB_MainHUD_Dash_Slot_C={widget('WB_MainHUD_Dash_Slot',{CoolTimeProgress=1},TEMPLATE),dashSlot},
+    WB_Tps_Bullet2_Slot_C={widget('Slot_Center1',{ItemCount=-1,CooltimePercent=1},'/Game/Art/UI/Widget/TPS/WB_TPs_Bullet2.WB_TPs_Bullet2_C:WidgetTree.')}}
 local walks={}
 FindAllOf=function(class) walks[class]=(walks[class] or 0)+1; return instances[class] end
 local shooter=object('EVE',{CurrentBulletItemAlias=fname('Bullet_Normal')})
@@ -387,7 +388,7 @@ instances.WB_MainHUD_ItemSlot_C[#instances.WB_MainHUD_ItemSlot_C+1]=lowerSlot
 clock=190; hud=widgets.hud()
 assert(hud.search.missing=='bullets' and hud.search.retry==2 and hud.lower.count==0 and hud.found_util==false,'A search that finds one waits 2 s again')
 assert(hud.lower.thumb==nil,'Another material\'s Icon_Texture is no item')
-instances.WB_Tps_Bullet2_Slot_C=bulletSlots
+table.move(bulletSlots,1,#bulletSlots,2,instances.WB_Tps_Bullet2_Slot_C)
 clock=192; hud=widgets.hud()
 assert(hud.search.missing=='none' and hud.search.retry==nil and walks.WB_MainHUD_ItemSlot_C==7,'Everything found, the item slots not walked again')
 assert(hud.ammo.count==120 and hud.ammo.cooldown==0.5,'The selected bullet\'s slot gives the ammo')
@@ -399,7 +400,7 @@ hud=widgets.hud()
 assert(hud.search and hud.search.missing=='util' and hud.search.retry==2 and hud.util==nil and hud.found_util==false,'A widget that went is searched for at once')
 assert(walks.WB_MainHUD_ItemSlot_C==8 and walks.WB_MainHUD_Dash_Slot_C==1 and walks.WB_Tps_Bullet2_Slot_C==8,'Only its class is walked')
 instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot,widget('WB_MainHUD_UtilItem',{ItemCount=0,Image_Item_Thumb=thumb(typed('Grenade','Texture2D')),
-    WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{Icon_Texture='TrapGrenade'}))})}
+    WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{{'Icon_Texture','TrapGrenade'}}))})}
 clock=195; hud=widgets.hud()
 assert(hud.found_util==true and hud.util.count==0 and hud.util.thumb=='Grenade','A new util widget is flagged; a thumbnail texture comes first')
 clock=196; assert(widgets.hud().found_util==false,'Only in the call that found it')
