@@ -280,6 +280,7 @@ local combat
 local lock
 local mobs
 local hud
+local world_render
 local last_hd_frame
 local configured,config = pcall(require,'bridge_config')
 if configured then
@@ -297,6 +298,7 @@ if configured then
         return active==bridge and bridge.pose() or nil
     end,config.directory,config.scale,function()
         return not stream.busy() and not scene.enabled() and scene.status()=='idle' and visual.status()=='idle'
+            and world_render.restore() -- Minecraft's /stellarview livehd: SB draws its world before the first frame.
     end,nil,raw)
     control_permit=require('control_permit').new(config.directory)
     pose_recorder=require('pose_probe').new(require('pose_adapter').new(),config.directory,os.clock,log)
@@ -314,6 +316,8 @@ if configured then
     mobs=require('mobs').new(engine,config.directory,os.time,os.clock,log,entered_link)
     -- Stellar Blade's HUD item slots and item uses, for Minecraft's HUD and its item effects.
     hud=require('hud_items').new(require('pose_adapter').new(),config.directory,os.time,log,entered_link)
+    -- Stellar Blade's 3D world drawing, off while only the avatar stream needs EVE; every capture restores it first.
+    world_render=require('world_render').new(log)
 end
 local function cancel_hd(message)
     hd_session.cancel(message)
@@ -346,6 +350,7 @@ end
 local function status()
     local pawn,world = player()
     local s = engine.snapshot()
+    if world_render then log('Render: '..world_render.status()) end
     log(string.format('state=%s pawn=%s world=%s pos=(%.2f,%.2f,%.2f) capsule=(radius %.2f,half-height %.2f)',
         active.status(),pawn:GetFullName(),world:GetFullName(),s.position.X,s.position.Y,s.position.Z,s.radius,s.half_height))
     -- How much of its world Stellar Blade keeps loaded: about 1 tile (the sky) at the remote lab site.
@@ -376,6 +381,7 @@ local function require_still()
     assert(not hd_session.busy(),'Continuous capture still owns its output.')
     assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before requesting a still.')
     assert(not stream.active(),'Stop native live capture before requesting a still.')
+    assert(world_render.restore())
 end
 local function paired_still(profile)
     require_still()
@@ -407,6 +413,7 @@ local actions = {
         assert(active==bridge,'Import and enter the Minecraft collision link first.')
         local stopped,why=stream.stop('native scene rendering requested')
         if not stopped then return false,why end
+        assert(world_render.restore())
         return scene.toggle()
     end,
     texture=function()
@@ -418,6 +425,7 @@ local actions = {
         assert(stream,'Install with --bridge-dir to enable native live capture.')
         assert(not hd_session.busy(),'Continuous capture still owns its output.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
+        assert(world_render.restore())
         return stream.start()
     end,
     liveoff=function()
@@ -431,6 +439,7 @@ local actions = {
         if stream.active() then return stream.stop() end
         assert(not hd_session.busy(),'Continuous capture still owns its output.')
         assert(not scene.enabled() and scene.status()=='idle','Disable and clean up native scene visuals before starting live capture.')
+        assert(world_render.restore())
         return stream.start()
     end,
     frame=function() return paired_still() end,
@@ -572,11 +581,14 @@ if bridge then
                 report_result('scene',scene.tick(scene_packet))
                 if not scene.enabled() then report_result('capture',stream.tick())
                 elseif stream.active() then report_result('capture',stream.stop('native scene rendering is active')) end
+                world_render.tick(streamed and pose_stream.binding()~=nil and not hd_session.busy() and not stream.active()
+                    and not scene.enabled(),pose_stream.components())
             else
                 control_permit.stop()
                 report_result('hd',hd_session.stop('bridge tick failed'))
                 report_result('scene',scene.clear('bridge tick failed'))
                 report_result('capture',stream.stop('bridge tick failed: '..tostring(update_error)))
+                world_render.restore()
             end
             local asked,ask_error=pcall(requests.tick) -- After the bridge's own tick; never cancels capture or input.
             if not asked then report_result('request',false,'Session requests paused: '..tostring(ask_error)) end
@@ -585,6 +597,7 @@ if bridge then
         end)
         pending=false
         if not ok then
+            world_render.restore()
             stream.cancel('game-thread callback failed')
             cancel_hd('terrain game-thread callback failed')
             log('Bridge/capture callback failed: '..tostring(why))

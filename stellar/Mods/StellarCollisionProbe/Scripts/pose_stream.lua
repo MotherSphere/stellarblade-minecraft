@@ -22,7 +22,7 @@ function Stream.parse_request(text)
 end
 function Stream.new(engine,directory,clock,log,link)
     local api={}
-    local run,generation,signature,published,binding
+    local run,generation,signature,published,binding,streamed
     local effects,effect_lines='',0 -- Last logged active effects; at most 400 log lines per Lua lifetime.
     local layout,assets,asset_seen=nil,{},{} -- Effect reading layout; effect assets in first-seen order (at most 32).
     local combat_logged=false -- EVE's combat-named functions and properties, logged once per Lua lifetime (at most 300 lines).
@@ -111,6 +111,7 @@ function Stream.new(engine,directory,clock,log,link)
             else list[#list+1]=c end
         end
         assert(#list>0 and #list<=16,'EVE needs one to sixteen drawable skeletal mesh components.')
+        streamed=list
         if drone and drone~=drone_state and drone_lines<200 then
             drone_lines=drone_lines+1
             drone_state=drone
@@ -220,6 +221,8 @@ function Stream.new(engine,directory,clock,log,link)
     end
     function api.generation() return published end
     function api.binding() return binding end
+    -- The last check's meshes ({handle=, object=, ...}, EVE's then her drone's), for world_render.lua's pose guard.
+    function api.components() return streamed or {} end
     return api
 end
 return Stream

@@ -85,8 +85,10 @@ package.loaded.terrain={new=function(engine) terrain_engine=engine; return {} en
 package.loaded.bridge={new=function()return bridge end}
 package.loaded.capture={new=function(_,directory,logger) assert(directory=='/unused' and type(logger)=='function'); return capture end}
 package.loaded.capture_adapter={new=function()return {} end}
+local hd_allowed
 package.loaded.capture_session={new=function(received,pose,directory,scale,allowed)
     assert(received==capture and directory=='/unused' and scale==100)
+    hd_allowed=allowed
     return {active=function()return hd_active end,busy=function()return hd_active or hd_pending end,
         binding=function() return hd_active and {run=string.rep('c',32),session=string.rep('a',32)} or nil end,
         read=function()return {} end,
@@ -107,6 +109,7 @@ local visual={}
 function visual.toggle() visual_toggles=visual_toggles+1; return true,'texture toggled' end
 function visual.clear() visual_clears=visual_clears+1; if visual_error then error('visual cleanup threw') end; return true,'texture removed' end
 function visual.tick() visual_ticks=visual_ticks+1; return true end
+function visual.status() return 'idle' end
 package.loaded.visual_probe={new=function(_,directory) assert(directory=='/unused'); return visual end}
 package.loaded.visual_probe_adapter={new=function()return {} end}
 local scene_enabled,scene_clears,scene_error=false,0,false
@@ -121,12 +124,24 @@ package.loaded.pose_probe={new=function(engine,directory,clock,logger)
     return {start=function() pose_starts=pose_starts+1; return true,'pose recording' end,
         tick=function(frame) pose_frames[#pose_frames+1]=frame; return true end}
 end}
-local stream_ticks,stream_link,stream_error,stream_binding=0,nil,false,nil
+local stream_ticks,stream_link,stream_error,stream_binding,stream_components=0,nil,false,nil,{}
 package.loaded.pose_stream={new=function(engine,directory,clock,logger,link)
     assert(type(engine)=='table' and directory=='/unused' and clock==os.time and type(logger)=='function' and type(link)=='function')
     stream_link=link
     return {tick=function() stream_ticks=stream_ticks+1; if stream_error then error('identities failed') end; return true end,
-        binding=function() return stream_binding end}
+        binding=function() return stream_binding end,components=function() return stream_components end}
+end}
+-- Stellar Blade's world drawing: each bridge-timer verdict, and restores that can be made to fail.
+local renders,render_restores,render_fails={},0,false
+package.loaded.world_render={new=function(logger)
+    assert(type(logger)=='function')
+    return {tick=function(active,components) renders[#renders+1]={active=active,components=components} end,
+        restore=function()
+            render_restores=render_restores+1
+            if render_fails then return false,'viewport gone' end
+            return true
+        end,
+        status=function() return 'SB world drawing off (pose ticking kept on 2 meshes)' end}
 end}
 local request_args,request_ticks,request_error=nil,0,false
 package.loaded.requests={new=function(directory,wall,logger,linked,offered,run)
@@ -479,3 +494,48 @@ keys.F6(); drain(); counted=false
 for _,message in ipairs(logs) do if message:find('World Composition tiles loaded: 1 of 3; streaming pinned at (-750000,-750000)',1,true) then counted=true end end
 assert(counted,'F6 says where streaming is pinned')
 print('PASS remote lab site engine: the site by level, the streaming pin and its fallback, ground, flush, autosave, the F6 tile count')
+-- Stellar Blade's world drawing: the bridge timer cuts it only while the avatar stream is bound and nothing captures,
+-- restores it otherwise and on its failure paths, and every capture or native scene start restores it first.
+command('mirror'); command('enter')
+stream_binding={run=string.rep('d',32),session=string.rep('a',32)}; stream_components={{handle={},object=8}}
+local function verdict()
+    local before=#renders; loop(); drain()
+    assert(#renders==before+1,'One verdict per bridge tick'); return renders[#renders].active
+end
+verdict(); assert(renders[#renders].active==true and renders[#renders].components==stream_components,
+    'A bound stream without capture cuts SB drawing, guarding the streamed meshes')
+stream_binding=nil; assert(verdict()==false,'No binding, no cut')
+stream_binding={run=string.rep('d',32),session=string.rep('a',32)}
+hd_pending=true; assert(verdict()==false,'Continuous HD output keeps SB drawing'); hd_pending=false
+stream_error=true; assert(verdict()==false,'A failed stream check keeps SB drawing'); stream_error=false
+command('live'); assert(verdict()==false,'Live capture keeps SB drawing'); keys.F1(); drain()
+keys['Shift+F8'](); drain(); assert(scene_enabled and verdict()==false,'Native visuals keep SB drawing'); command('visuals')
+local restores,verdicts=render_restores,#renders
+tick_error=true; loop(); drain(); tick_error=false
+assert(render_restores==restores+1 and #renders==verdicts,'A failed bridge tick restores SB drawing and never cuts it')
+command('live'); restores=render_restores
+tick_error=true; report_error=true; loop(); pcall(drain); tick_error=false; report_error=false
+assert(render_restores==restores+1,'A failed bridge callback restores SB drawing even when its failure branch did not finish')
+loop(); drain()
+local before=#logs; keys.F6(); drain()
+local reported=false
+for index=before+1,#logs do reported=reported or logs[index]:find('Render: SB world drawing off (pose ticking kept on 2 meshes)',1,true)~=nil end
+assert(reported,'F6 reports the world drawing state')
+-- Each start path restores first: a failed restore refuses the capture or scene, a successful one lets it start.
+local function starts(name,action,started)
+    local count=render_restores; render_fails=true; action(); render_fails=false
+    assert(render_restores==count+1 and not started() and logs[#logs]:find('viewport gone',1,true),name..' refused without SB drawing')
+    action(); assert(render_restores==count+2 and started(),name..' starts after the restore')
+end
+local count=frames; starts('F4',function() keys.F4(); drain() end,function() return frames==count+1 end)
+count=stills; starts('F2',function() keys.F2(); drain() end,function() return stills==count+1 end)
+starts('F1',function() keys.F1(); drain() end,function() return logs[#logs]:find('Native live capture enabled',1,true)~=nil end)
+keys.F1(); drain()
+starts('sbmc live',function() command('live') end,function() return logs[#logs]:find('Native live capture enabled',1,true)~=nil end)
+command('liveoff')
+starts('Shift+F8',function() keys['Shift+F8'](); drain() end,function() return scene_enabled end)
+command('visuals')
+render_fails=true; assert(not hd_allowed(),'A failed restore refuses Minecraft /stellarview livehd'); render_fails=false
+restores=render_restores; assert(hd_allowed()==true and render_restores==restores+1,'livehd starts after the restore')
+keys.F11(); drain(); stream_binding=nil
+print('PASS world drawing wiring: bound-stream cut, capture and scene exclusions, failure restores, F6, restore before every start')

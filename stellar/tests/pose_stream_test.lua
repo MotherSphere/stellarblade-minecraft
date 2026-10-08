@@ -32,6 +32,7 @@ local fixture=assert(io.open('protocol/fixtures/pose-components.txt','rb')); loc
 assert(read('eve-pose-components.1')==expected,'The published table matches the shared fixture byte for byte')
 local ok2,quiet=stream.tick()
 assert(ok2 and quiet==nil and names_calls==2,'An unchanged composition is not described again')
+assert(#stream.components()==2 and stream.components()[2].object==0x7f0000001800,'The streamed meshes, for the pose guard')
 -- Entering the link changes the placement: a new generation in the other slot.
 place={session=string.rep('b',32),anchor={X=1.5,Y=-2,Z=3},scale=100}
 assert(select(2,stream.tick()):find('generation 2',1,true))
@@ -40,6 +41,7 @@ assert(read('eve-pose-components.0'):find('SESSION '..string.rep('b',32)..'\nANC
 components[2]={name='Mesh Face',object=0x7f0000001800,class=0x7f0000002000,mesh=0x7f0000004000,mesh_name='X',leader='CharacterMesh0'}
 local _,changed=stream.tick()
 assert(changed:find('generation 3: 1 components',1,true) and changed:find('skipped Mesh Face',1,true),changed)
+assert(#stream.components()==1,'The pose guard follows the new composition')
 -- A Lua reload continues after the published generation of the same run.
 local reloaded=Stream.new(engine,directory,function() return now end,print,function() return place end)
 assert(select(2,reloaded.tick()):find('generation 4',1,true))
