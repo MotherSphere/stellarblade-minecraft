@@ -300,6 +300,19 @@ public final class AvatarModelTest {
         pose.cloth()[1] = null;
         model.palettes(pose, placement, palettes, false);
         assert model.cloth[1] == null && !java.util.Arrays.equals(rigid, palettes[1].array()) : "Bones again";
+        // Two cloth triangles at right angles share vertex 0, one twice the other's size: its normal is their area-weighted sum.
+        ByteBuffer pair = ByteBuffer.allocate(512).order(ByteOrder.LITTLE_ENDIAN);
+        pair.put("SBAVMESH".getBytes(StandardCharsets.US_ASCII)).putInt(2).putInt(1);
+        name(pair, "Root"); pair.putInt(-1); for (float v : IDENTITY) pair.putFloat(v);
+        pair.putInt(4);
+        for (int v = 0; v < 4; v++) vertex(pair, 0, 0, 0, 0);
+        pair.putInt(6).putInt(0).putInt(1).putInt(2).putInt(0).putInt(3).putInt(1);
+        pair.putInt(1); name(pair, "Hair"); pair.putInt(0).putInt(2);
+        pair.putInt(0);
+        FloatBuffer paired = FloatBuffer.allocate(24);
+        AvatarMesh.parse("Pair", pair.flip()).cloth(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2}, new float[12], paired);
+        Vector3d shared = new Vector3d(paired.get(3), paired.get(4), paired.get(5) + 1); // Plus the reference normal +Z.
+        assert shared.distance(new Vector3d(0, -2, -1).normalize()) < 1e-6 : "Area-weighted normal " + shared;
     }
 
     /** Applies bone row matrices (GLSL mat3x4 layout) to an Unreal reference-space point. */

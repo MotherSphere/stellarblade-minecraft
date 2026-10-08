@@ -254,10 +254,8 @@ public final class AvatarView {
                 if (table != null && table.generation() == sample.generation()) install(current, table);
             } else if (sample != null && current.model != null) {
                 int slot = (current.newest + 1) % Live.RING;
-                if (AvatarStream.decode(current.table, sample, current.model, current.ring[slot], current.spare)) {
-                    // A cloth frozen while her head moves falls back to bones.
+                if (AvatarStream.decode(current.table, sample, current.model, current.ring[slot], current.spare, current.cloth)) {
                     int clothed = current.table.cloth();
-                    if (!current.cloth.accept(current.table, sample)) current.ring[slot].cloth()[clothed] = null;
                     if (clothed >= 0 && current.ring[slot].cloth()[clothed] != null) current.clothPoses++;
                     AvatarStream.steady(current.drawn, current.spare, current.shown);
                     boolean[] newest = current.spare;

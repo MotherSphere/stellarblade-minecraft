@@ -639,6 +639,8 @@ final class AvatarRenderer implements AutoCloseable {
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previous);
     }
 
+    /** A part's morph delta buffer (0 before its first morphs or cloth), for the render check's read-back. */
+    int morphBufferName(int part) { return morphBuffers[part]; }
     /** Drawn sections versus all sections, for status messages. */
     int[] sectionCounts() {
         int drawn = 0, total = 0;

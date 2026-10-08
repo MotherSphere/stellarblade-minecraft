@@ -336,9 +336,10 @@ final class AvatarStream implements AutoCloseable {
      * Decodes a sample of the table's generation into a component-space pose and, per component, whether Stellar Blade
      * draws it with its data in this sample (shown). False when one of EVE's own parts lacks its data or its leader's
      * bones, as before; only the drone's parts (OPTIONAL) are then left out of the drawing instead. A part Stellar Blade
-     * hides is left out either way. The table's cloth component gets the sample's cloth in component space, or null.
+     * hides is left out either way. The table's cloth component gets the sample's cloth in component space, or null, also
+     * while the watch finds it frozen.
      */
-    static boolean decode(Table table, Sample sample, AvatarModel model, AvatarRecording.Pose target, boolean[] shown) {
+    static boolean decode(Table table, Sample sample, AvatarModel model, AvatarRecording.Pose target, boolean[] shown, ClothWatch watch) {
         int offset = 0;
         boolean[] ready = new boolean[table.components.size()];
         for (int i = 0; i < table.components.size(); i++) {
@@ -363,7 +364,7 @@ final class AvatarStream implements AutoCloseable {
             float[] cloth = null;
             for (var part : model.parts)
                 if (part.component() == table.cloth) cloth = cloth(sample.cloth, part.mesh().vertexCount, target.cloth()[table.cloth]);
-            target.cloth()[table.cloth] = cloth;
+            target.cloth()[table.cloth] = watch.accept(table, sample) ? cloth : null; // A cloth frozen while her head moves: bones.
         }
         return true;
     }
@@ -410,8 +411,8 @@ final class AvatarStream implements AutoCloseable {
             boolean same = particles != null && java.util.Arrays.equals(sample.cloth, 10, sample.cloth.length, particles, 10, particles.length);
             if (particles == null || particles.length != sample.cloth.length) particles = new float[sample.cloth.length];
             System.arraycopy(sample.cloth, 0, particles, 0, particles.length);
-            run = same && moved ? run + 1 : 0;
-            if (run > 0) stale++;
+            run = !same ? 0 : moved ? run + 1 : run; // A still head proves nothing: a frozen cloth stays dropped.
+            if (same && moved) stale++;
             return run < STALE;
         }
 

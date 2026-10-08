@@ -433,8 +433,26 @@ public final class AvatarRenderCheck {
         double changing = cpu(() -> { pose.cloth()[component] = (flip[0] = !flip[0]) ? moved : cloth; draw.run(); });
         pose.cloth()[component] = cloth;
         double still = cpu(draw);
+        // The deltas uploaded are those clothError checks, and a fallback to bones replaces them with the morphs (zeros).
+        uploaded(renderer, model, part, "the cloth");
+        pose.cloth()[component] = null;
+        draw.run();
+        uploaded(renderer, model, part, "the cloth dropped");
+        pose.cloth()[component] = cloth;
+        draw.run();
+        uploaded(renderer, model, part, "the cloth back");
         System.out.printf("cloth CPU ms per frame (median of 200): pose blend %.3f, deltas and normals %.3f, draw with a new cloth %.3f, with the same %.3f%n",
                 blend, recompute, changing, still);
+    }
+    /** Throws unless the part's uploaded morph deltas are bit for bit those offsets() derives. */
+    static void uploaded(AvatarRenderer renderer, AvatarModel model, int part, String state) {
+        java.nio.FloatBuffer want = offsets(model, part), got = BufferUtils.createFloatBuffer(want.limit());
+        int previous = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, renderer.morphBufferName(part));
+        GL15.glGetBufferSubData(GL15.GL_ARRAY_BUFFER, 0, got);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previous);
+        for (int k = 0; k < want.limit(); k++)
+            if (got.get(k) != want.get(k)) throw new IllegalStateException("Uploaded deltas differ from the checked ones with " + state + " at float " + k);
     }
     /** Median wall milliseconds of a CPU step over 200 runs, after 30 to warm up. */
     static double cpu(Runnable step) {

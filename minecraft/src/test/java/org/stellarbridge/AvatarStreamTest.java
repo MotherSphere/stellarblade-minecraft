@@ -363,6 +363,12 @@ public final class AvatarStreamTest {
         assert mid.world()[0][4] == 0 : "Older than every sample shows the oldest";
         AvatarView.interpolate(ring, times, 0, 1, 50, mid);
         assert mid.world()[0][4] == 32 : "A single sample is shown as is";
+        ring[0].cloth()[0] = new float[] {1, 2, 3};
+        AvatarView.interpolate(ring, times, 0, 1, 50, mid);
+        assert java.util.Arrays.equals(mid.cloth()[0], ring[0].cloth()[0]) && mid.cloth()[0] != ring[0].cloth()[0] : "With its cloth, copied";
+        ring[0].cloth()[0] = null;
+        AvatarView.interpolate(ring, times, 0, 1, 50, mid);
+        assert mid.cloth()[0] == null : "And without";
 
         Path directory = Files.createTempDirectory("stellar-pose-");
         try {
@@ -421,12 +427,12 @@ public final class AvatarStreamTest {
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, 0, 0, 1, 1, 1}, 0, values, 10, 10);
                     System.arraycopy(new float[] {root90, 0, 0, root90, 0, -100, 0, 1, 1, 1}, 0, values, 20, 10);
                     boolean[] shown = new boolean[1];
-                    assert AvatarStream.decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false, Float.NaN, false, 0), model, pose, shown)
+                    assert decode(twoBones, new AvatarStream.Sample(2, now, 1, new int[] {3}, values, null, false, Float.NaN, false, 0), model, pose, shown)
                             && shown[0];
                     FloatBuffer[] palettes = {FloatBuffer.allocate(24)};
                     model.palettes(pose, new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT), palettes, true);
                     AvatarModelTest.assertPoint(palettes[0], 1, 0, 0, 100, 1, 3, 1);
-                    assert !AvatarStream.decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false, Float.NaN, false, 0), model, pose, shown)
+                    assert !decode(twoBones, new AvatarStream.Sample(3, now, 1, new int[] {1}, values, null, false, Float.NaN, false, 0), model, pose, shown)
                             : "The root without bones is incomplete";
                     // EVE's drone after her: without data or hidden in Stellar Blade it is only left out; a follower needs its leader's bones.
                     AvatarMesh drone = AvatarMesh.parse("CH_NPC_Drone", AvatarModelTest.mesh("BN_BODY", b -> { }));
@@ -441,13 +447,13 @@ public final class AvatarStreamTest {
                     System.arraycopy(values, 0, doubled, 30, 30);
                     System.arraycopy(values, 0, doubled, 60, 10);
                     boolean[] visible = new boolean[3];
-                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(4, now, 1, new int[] {3, 3, 1}, doubled, null, false, Float.NaN, false, 0), both, dronePose, visible)
+                    assert decode(withDrone, new AvatarStream.Sample(4, now, 1, new int[] {3, 3, 1}, doubled, null, false, Float.NaN, false, 0), both, dronePose, visible)
                             && visible[0] && visible[1] && visible[2];
-                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(5, now, 1, new int[] {3, 3 | AvatarStream.HIDDEN, 1}, doubled, null, false, Float.NaN, false, 0),
+                    assert decode(withDrone, new AvatarStream.Sample(5, now, 1, new int[] {3, 3 | AvatarStream.HIDDEN, 1}, doubled, null, false, Float.NaN, false, 0),
                             both, dronePose, visible) && visible[0] && !visible[1] && visible[2] && dronePose.world()[1][4] == 100 : "Hidden: its floats still arrive";
-                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(6, now, 1, new int[] {3, 1, 1}, doubled, null, false, Float.NaN, false, 0), both, dronePose, visible)
+                    assert decode(withDrone, new AvatarStream.Sample(6, now, 1, new int[] {3, 1, 1}, doubled, null, false, Float.NaN, false, 0), both, dronePose, visible)
                             && visible[0] && !visible[1] && !visible[2] : "No bones: the drone and its follower are left out, EVE is not";
-                    assert AvatarStream.decode(withDrone, new AvatarStream.Sample(7, now, 1, new int[] {3, 0, 0}, doubled, null, false, Float.NaN, false, 0), both, dronePose, visible)
+                    assert decode(withDrone, new AvatarStream.Sample(7, now, 1, new int[] {3, 0, 0}, doubled, null, false, Float.NaN, false, 0), both, dronePose, visible)
                             && visible[0] && !visible[1] : "A destroyed drone";
                     // A drone whose skeleton differs from the pack (another skin) is left out of the model; EVE still draws.
                     var otherSkin = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(renamed,
@@ -460,7 +466,7 @@ public final class AvatarStreamTest {
                             new AvatarRecording.Component("Weapon", "CH_NPC_Drone", null, new String[] {"Root", "BN_BODY"}, new String[0], 0)),
                             java.util.List.of(), java.util.List.of(), false, 60);
                     AvatarModel armed = new AvatarModel(withWeapon.components(), Map.of("CH_P_EVE_52_TypeB", mesh, "CH_NPC_Drone", drone));
-                    assert !AvatarStream.decode(withWeapon, new AvatarStream.Sample(8, now, 1, new int[] {3, 1}, java.util.Arrays.copyOf(doubled, 60), null, false, Float.NaN, false, 0),
+                    assert !decode(withWeapon, new AvatarStream.Sample(8, now, 1, new int[] {3, 1}, java.util.Arrays.copyOf(doubled, 60), null, false, Float.NaN, false, 0),
                             armed, AvatarStream.emptyPose(withWeapon), new boolean[2]) : "A sword without bones drops the pose";
                     // Her drone's shots leave its bullet socket while a drone part is drawn, else her right hand.
                     var shooting = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(
@@ -471,7 +477,7 @@ public final class AvatarStreamTest {
                             "CH_P_EVE_52_TypeB", AvatarMesh.parse("CH_P_EVE_52_TypeB", AvatarModelTest.mesh(AvatarCombat.HAND, b -> { })),
                             "CH_NPC_Drone", AvatarMesh.parse("CH_NPC_Drone", AvatarModelTest.mesh(AvatarCombat.DRONE_MUZZLE, b -> { }))));
                     var shooterPose = AvatarStream.emptyPose(shooting);
-                    assert AvatarStream.decode(shooting, new AvatarStream.Sample(9, now, 1, new int[] {3, 3}, java.util.Arrays.copyOf(doubled, 60), null, false, Float.NaN, false, 0),
+                    assert decode(shooting, new AvatarStream.Sample(9, now, 1, new int[] {3, 3}, java.util.Arrays.copyOf(doubled, 60), null, false, Float.NaN, false, 0),
                             shooter, shooterPose, new boolean[2]);
                     var placement = new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT);
                     shooter.palettes(shooterPose, placement, new FloatBuffer[] {FloatBuffer.allocate(24), FloatBuffer.allocate(24)}, true);
@@ -688,23 +694,23 @@ public final class AvatarStreamTest {
         for (int at : new int[] {0, 10, 20, 30}) values[at + 3] = values[at + 7] = values[at + 8] = values[at + 9] = 1;
         java.util.function.Function<float[], AvatarStream.Sample> worn2 = cloth -> new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, values.clone(),
                 null, false, Float.NaN, false, 0, cloth);
-        assert AvatarStream.decode(hair, worn2.apply(floats.clone()), model, pose, new boolean[2]) && pose.cloth()[0] == null;
+        assert decode(hair, worn2.apply(floats.clone()), model, pose, new boolean[2]) && pose.cloth()[0] == null;
         float[] decoded = pose.cloth()[1];
         float[] want = {1, 2, 13, -9, 2, 3};
         for (int k = 0; k < 6; k++) assert Math.abs(decoded[k] - want[k]) < 1e-5 : java.util.Arrays.toString(decoded);
-        AvatarStream.decode(hair, worn2.apply(floats.clone()), model, pose, new boolean[2]);
+        decode(hair, worn2.apply(floats.clone()), model, pose, new boolean[2]);
         assert pose.cloth()[1] == decoded : "The array is reused";
-        assert AvatarStream.decode(hair, worn2.apply(java.util.Arrays.copyOf(floats, 19)), model, pose, new boolean[2]) && pose.cloth()[1] == null
+        assert decode(hair, worn2.apply(java.util.Arrays.copyOf(floats, 19)), model, pose, new boolean[2]) && pose.cloth()[1] == null
                 : "Another particle count than the mesh's vertices: bones";
         float[] skewed = floats.clone();
         skewed[3] = 0.9f;
-        assert AvatarStream.decode(hair, worn2.apply(skewed), model, pose, new boolean[2]) && pose.cloth()[1] == null : "No rotation";
+        assert decode(hair, worn2.apply(skewed), model, pose, new boolean[2]) && pose.cloth()[1] == null : "No rotation";
         skewed = floats.clone();
         skewed[8] = 0;
-        assert AvatarStream.decode(hair, worn2.apply(skewed), model, pose, new boolean[2]) && pose.cloth()[1] == null : "A flat scale";
-        assert AvatarStream.decode(hair, worn2.apply(null), model, pose, new boolean[2]) && pose.cloth()[1] == null : "No cloth";
+        assert decode(hair, worn2.apply(skewed), model, pose, new boolean[2]) && pose.cloth()[1] == null : "A flat scale";
+        assert decode(hair, worn2.apply(null), model, pose, new boolean[2]) && pose.cloth()[1] == null : "No cloth";
         var bare = new AvatarModel(hair.components(), Map.of("Body", body));
-        assert AvatarStream.decode(hair, worn2.apply(floats.clone()), bare, pose, new boolean[2]) && pose.cloth()[1] == null : "No ponytail mesh";
+        assert decode(hair, worn2.apply(floats.clone()), bare, pose, new boolean[2]) && pose.cloth()[1] == null : "No ponytail mesh";
 
         // The watch: the same particles while her head (the leader's Bip001-Head at 20) moves are stale; STALE in a row drop
         // the cloth until it moves again. A still head or moving particles are live.
@@ -718,13 +724,23 @@ public final class AvatarStreamTest {
         assert watch.accept(hair, at.apply(0f, 0f)) && watch.stale == 0;
         for (int k = 1; k < AvatarStream.ClothWatch.STALE; k++) assert watch.accept(hair, at.apply((float) k, 0f)) : "Stale " + k + " times: kept";
         assert !watch.accept(hair, at.apply(99f, 0f)) && watch.stale == AvatarStream.ClothWatch.STALE : "Frozen while the head moves: bones";
-        assert !watch.accept(hair, at.apply(100f, 0f)) && watch.accept(hair, at.apply(101f, 1f)) : "Until the particles move";
+        assert !watch.accept(hair, at.apply(100f, 0f)) && !watch.accept(hair, at.apply(100f, 0f)) && !watch.accept(hair, at.apply(100f, 0f))
+                : "A still head (a pause, a hit-stop) keeps a frozen cloth on bones";
+        assert watch.accept(hair, at.apply(101f, 1f)) : "Until the particles move";
+        var decoding = new AvatarStream.ClothWatch();
+        for (int k = 0; k < AvatarStream.ClothWatch.STALE; k++)
+            assert AvatarStream.decode(hair, at.apply((float) k, 0f), model, pose, new boolean[2], decoding) && pose.cloth()[1] != null;
+        assert AvatarStream.decode(hair, at.apply(99f, 0f), model, pose, new boolean[2], decoding) && pose.cloth()[1] == null : "Decoded frozen: bones";
         assert watch.accept(hair, at.apply(101f, 1f)) && watch.accept(hair, at.apply(101f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 1
                 : "A still head with still particles is not stale";
         assert watch.accept(hair, at.apply(102f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "Counted";
         var moving = values.clone();
         assert watch.accept(hair, new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, moving, null, false, Float.NaN, false, 0, null))
                 && watch.accept(hair, at.apply(103f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "A sample without cloth restarts the watch";
+    }
+    /** Decodes with a fresh cloth watch: one sample is never frozen. */
+    private static boolean decode(AvatarStream.Table table, AvatarStream.Sample sample, AvatarModel model, AvatarRecording.Pose target, boolean[] shown) {
+        return AvatarStream.decode(table, sample, model, target, shown, new AvatarStream.ClothWatch());
     }
     private static AvatarStream.Table table(String fixture) { return AvatarStream.parse(fixture); }
     private static int clothRuns; // Each cloth slot's stream has its own run.
