@@ -362,9 +362,13 @@ final class AvatarStream implements AutoCloseable {
         }
         if (table.cloth >= 0) {
             float[] cloth = null;
+            int vertices = -1;
             for (var part : model.parts)
-                if (part.component() == table.cloth) cloth = cloth(sample.cloth, part.mesh().vertexCount, target.cloth()[table.cloth]);
-            target.cloth()[table.cloth] = watch.accept(table, sample) ? cloth : null; // A cloth frozen while her head moves: bones.
+                if (part.component() == table.cloth) {
+                    vertices = part.mesh().vertexCount;
+                    cloth = cloth(sample.cloth, vertices, target.cloth()[table.cloth]);
+                }
+            target.cloth()[table.cloth] = watch.accept(table, sample, vertices, cloth) ? cloth : null; // Frozen while her head moves: bones.
         }
         return true;
     }
@@ -394,27 +398,131 @@ final class AvatarStream implements AutoCloseable {
      * sample, bit for bit, while her head moved (the cloth leader's Bip001-Head in component space, or the cloth
      * component's world transform without one): Stellar Blade's cloth tick stopped. After STALE stale samples in a row the
      * cloth is taken as frozen and the pose falls back to bones until it moves again.
+     * One watch per stream run also tells why the ponytail switches between cloth and bones: it logs each switch of the
+     * decoded pose (the first LINES switches and jumps), counts them by reason, and measures every STRIDE-th particle in
+     * component space between consecutive cloth samples, so a jump after unchanged particles (a stopped cloth reset when
+     * it resumes) differs from a jump while they moved (a live cloth reset or teleported).
      */
     static final class ClothWatch {
         static final int STALE = 6; // About 0.1 s at 60 Hz; a solver frame without iterations is a single sample.
+        static final int STRIDE = 64, LINES = 120; // 271 of the long ponytail's 17309 particles; log lines per stream run.
+        static final float JUMP = 30; // Component-space cm; a tail tip moves about 6.5 cm per 60 Hz frame in a fast spin.
+        static final int FROZEN = 0, ABSENT = 1, MISMATCHED = 2, INVALID = 3, REBUILT = 4; // Why the pose takes bones.
         long stale; // Stale cloth samples so far.
-        private float[] particles;
+        long compared, changed, headMoved; // Cloth samples after a cloth sample; those whose particles changed, head moved.
+        final long[] runs = new long[4]; // Stale runs ended by moving particles: 1, 2-5, 6-29, 30+ samples.
+        long longest; // The longest of them.
+        final long[] drops = new long[5], bones = new long[4]; // Switches to bones by reason; samples on bones by reason.
+        long jumpsStill, jumpsMoving; // Jumps after unchanged particles, and while they changed.
+        float largestStill, largestMoving;
+        java.util.function.Consumer<String> log = line -> org.slf4j.LoggerFactory.getLogger("stellar_bridge").info("{}", line);
+        private float[] particles, subset;
         private final float[] head = new float[10];
-        private int run;
+        private int run, still, lines; // still: unchanged cloth samples in a row, her head moving or not.
+        private boolean drawing, comparable, consecutive; // comparable: subset holds an earlier cloth; consecutive: the last sample's.
+        private long publication, changedAt, bonesAt, bonesSamples = -1; // -1: no cloth drawn yet.
 
-        /** After decode: false when the sample's cloth is to be dropped as frozen. */
-        boolean accept(Table table, Sample sample) {
-            if (table.cloth < 0 || sample.cloth == null) { particles = null; run = 0; return true; }
-            int at = headAt(table);
-            boolean moved = !java.util.Arrays.equals(sample.payload, at, at + 10, head, 0, 10);
-            System.arraycopy(sample.payload, at, head, 0, 10);
-            boolean same = particles != null && java.util.Arrays.equals(sample.cloth, 10, sample.cloth.length, particles, 10, particles.length);
-            if (particles == null || particles.length != sample.cloth.length) particles = new float[sample.cloth.length];
-            System.arraycopy(sample.cloth, 0, particles, 0, particles.length);
-            run = !same ? 0 : moved ? run + 1 : run; // A still head proves nothing: a frozen cloth stays dropped.
-            if (same && moved) stale++;
-            return run < STALE;
+        /**
+         * After decode, with the cloth part's vertex count (-1: none in the model) and the decoded cloth or null: whether
+         * the pose draws it (false when absent, mismatched, invalid or frozen).
+         */
+        boolean accept(Table table, Sample sample, int vertices, float[] cloth) {
+            int stillBefore = still;
+            long unchanged = sample.publication - changedAt; // Milliseconds since the particles last changed.
+            boolean same = false;
+            if (table.cloth < 0 || sample.cloth == null) { particles = null; run = still = 0; }
+            else {
+                int at = headAt(table);
+                boolean moved = !java.util.Arrays.equals(sample.payload, at, at + 10, head, 0, 10);
+                System.arraycopy(sample.payload, at, head, 0, 10);
+                same = particles != null && java.util.Arrays.equals(sample.cloth, 10, sample.cloth.length, particles, 10, particles.length);
+                if (particles != null) {
+                    compared++;
+                    if (!same) changed++;
+                    if (moved) headMoved++;
+                    if (!same && run > 0) {
+                        runs[run == 1 ? 0 : run < 6 ? 1 : run < 30 ? 2 : 3]++;
+                        longest = Math.max(longest, run);
+                    }
+                }
+                if (!same) changedAt = sample.publication;
+                if (particles == null || particles.length != sample.cloth.length) particles = new float[sample.cloth.length];
+                System.arraycopy(sample.cloth, 0, particles, 0, particles.length);
+                run = !same ? 0 : moved ? run + 1 : run; // A still head proves nothing: a frozen cloth stays dropped.
+                still = same ? still + 1 : 0;
+                if (same && moved) stale++;
+            }
+            float jump = -1; // The largest move of the measured particles since the last decoded cloth; -1 without one.
+            if (cloth != null) {
+                int n = 3 * ((cloth.length / 3 + STRIDE - 1) / STRIDE);
+                if (subset == null || subset.length != n) { subset = new float[n]; comparable = false; }
+                double max = 0;
+                for (int i = 0, k = 0; k < n; i += 3 * STRIDE, k += 3) {
+                    double x = cloth[i] - subset[k], y = cloth[i + 1] - subset[k + 1], z = cloth[i + 2] - subset[k + 2];
+                    max = Math.max(max, x * x + y * y + z * z);
+                    System.arraycopy(cloth, i, subset, k, 3);
+                }
+                if (comparable) jump = (float) Math.sqrt(max);
+                comparable = true;
+            }
+            if (consecutive && cloth != null && !same && jump > JUMP) {
+                if (stillBefore > 0) { jumpsStill++; largestStill = Math.max(largestStill, jump); }
+                else { jumpsMoving++; largestMoving = Math.max(largestMoving, jump); }
+                if (logging()) note(stillBefore > 0 ? String.format("Cloth: jump of %.1f cm at sample %d after %d unchanged samples (%d ms)",
+                        jump, sample.counter, stillBefore, unchanged) : String.format("Cloth: jump of %.1f cm at sample %d while the particles moved",
+                        jump, sample.counter));
+            }
+            consecutive = cloth != null;
+            int reason = sample.cloth == null ? ABSENT : vertices < 0 || sample.cloth.length != 10 + 3 * vertices ? MISMATCHED
+                    : cloth == null ? INVALID : run >= STALE ? FROZEN : -1;
+            if (reason >= 0) bones[reason]++;
+            if (drawing && reason >= 0) {
+                drops[reason]++;
+                bonesAt = sample.publication;
+                bonesSamples = 0;
+                if (logging()) note(String.format("Cloth: bones from sample %d, %s", sample.counter, switch (reason) {
+                    case ABSENT -> String.format("absent (no cloth in the sample; component status 0x%x)", sample.status[table.cloth]);
+                    case MISMATCHED -> vertices < 0 ? "mismatched (no ponytail mesh in the pack)" : String.format(
+                            "mismatched (%d particles, the ponytail mesh has %d vertices)", (sample.cloth.length - 10) / 3, vertices);
+                    case INVALID -> "invalid (its transform has no unit rotation or a non-positive scale)";
+                    default -> String.format("frozen (particles unchanged for %d ms over %d samples while her head moved)",
+                            sample.publication - changedAt, run);
+                }));
+            } else if (!drawing && reason < 0 && logging())
+                note(bonesSamples < 0 ? "Cloth: Stellar Blade's cloth drawn from sample " + sample.counter : String.format(
+                        "Cloth: Stellar Blade's cloth back at sample %d after %d samples (%d ms) on bones; its measured particles moved %s",
+                        sample.counter, bonesSamples, sample.publication - bonesAt, jump < 0 ? "an unknown distance" : String.format("%.1f cm", jump)));
+            if (reason >= 0 && bonesSamples >= 0) bonesSamples++;
+            drawing = reason < 0;
+            publication = sample.publication;
+            return drawing;
         }
+
+        /** A model rebuild: the comparison starts over; a cloth drawn until then counts as a switch to bones. */
+        void rebuild(long generation) {
+            if (drawing) {
+                drops[REBUILT]++;
+                bonesAt = publication;
+                bonesSamples = 0;
+                if (logging()) note("Cloth: bones at the model rebuild for generation " + generation);
+            }
+            drawing = consecutive = false;
+            particles = null;
+            run = still = 0;
+        }
+
+        /** The counters, for /stellaravatar status. */
+        String status() {
+            return String.format(" Bones instead: %d frozen (%d samples), %d absent (%d), %d mismatched (%d), %d invalid (%d), %d at a model"
+                    + " rebuild. Particles changed in %.0f%% of cloth samples, her head in %.0f%%. Stale runs ended by moving particles: %d of 1,"
+                    + " %d of 2-5, %d of 6-29, %d of 30+; longest %d. Jumps over %.0f cm: %d after unchanged particles (largest %.1f cm), %d while"
+                    + " they moved (largest %.1f cm).", drops[FROZEN], bones[FROZEN], drops[ABSENT], bones[ABSENT], drops[MISMATCHED],
+                    bones[MISMATCHED], drops[INVALID], bones[INVALID], drops[REBUILT], share(changed), share(headMoved), runs[0], runs[1],
+                    runs[2], runs[3], longest, JUMP, jumpsStill, largestStill, jumpsMoving, largestMoving);
+        }
+        private double share(long count) { return compared == 0 ? 0 : 100.0 * count / compared; }
+        private boolean logging() { return lines <= LINES; }
+        private void note(String line) { log.accept(lines++ < LINES ? line : "Cloth: further cloth switches and jumps not logged."); }
 
         /** Payload index of the head transform the cloth hangs from. */
         private static int headAt(Table table) {

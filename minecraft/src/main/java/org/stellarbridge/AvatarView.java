@@ -85,7 +85,7 @@ public final class AvatarView {
         final AvatarCombat.Blade blade = new AvatarCombat.Blade();
         final AvatarCombat.Gun gun = new AvatarCombat.Gun();
         long effectSamples; // Samples with at least one active effect.
-        AvatarStream.ClothWatch cloth = new AvatarStream.ClothWatch(); // Whether Stellar Blade's cloth moves.
+        final AvatarStream.ClothWatch cloth = new AvatarStream.ClothWatch(); // Whether Stellar Blade's cloth moves, for the whole run.
         long clothPoses; // Poses drawing Stellar Blade's cloth.
         double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
         double pitchSum, pitchMax; // Pitch gap in degrees between Minecraft's camera and the camera pitch of synced poses.
@@ -497,7 +497,7 @@ public final class AvatarView {
         current.newest = -1;
         current.count = 0;
         current.posed = false;
-        current.cloth = new AvatarStream.ClothWatch();
+        current.cloth.rebuild(table.generation());
         int n = table.components().size();
         current.shown = new boolean[n];
         current.spare = new boolean[n];
@@ -716,13 +716,16 @@ public final class AvatarView {
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
     }
 
-    /** How many poses drew Stellar Blade's ponytail cloth, and its stale samples (particles unchanged while her head moved). */
+    /**
+     * How many poses drew Stellar Blade's ponytail cloth, its stale samples (particles unchanged while her head moved), then
+     * why the pose took bones instead, the cloth's update cadence, its stale runs and its jumps.
+     */
     private static String clothStatus(Live current) {
         if (current.table == null || current.table.cloth() < 0) return " Cloth: none in the component table.";
         float[] shown = current.pose == null ? null : current.pose.cloth()[current.table.cloth()];
         return String.format(" Cloth: %d of %d poses used Stellar Blade's ponytail cloth%s; %d stale samples (particles unchanged while her"
                 + " head moved).", current.clothPoses, current.poses, shown == null ? ", bones now" : " (" + shown.length / 3 + " particles)",
-                current.cloth.stale);
+                current.cloth.stale) + current.cloth.status();
     }
 
     private static String reportStatus(long[] report) {

@@ -714,33 +714,126 @@ public final class AvatarStreamTest {
 
         // The watch: the same particles while her head (the leader's Bip001-Head at 20) moves are stale; STALE in a row drop
         // the cloth until it moves again. A still head or moving particles are live.
-        var watch = new AvatarStream.ClothWatch();
+        var watch = quiet(new AvatarStream.ClothWatch());
         java.util.function.BiFunction<Float, Float, AvatarStream.Sample> at = (head, particle) -> {
             float[] p = values.clone(), c = floats.clone();
             p[24] = head;
             c[10] = particle;
             return new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, p, null, false, Float.NaN, false, 0, c);
         };
-        assert watch.accept(hair, at.apply(0f, 0f)) && watch.stale == 0;
-        for (int k = 1; k < AvatarStream.ClothWatch.STALE; k++) assert watch.accept(hair, at.apply((float) k, 0f)) : "Stale " + k + " times: kept";
-        assert !watch.accept(hair, at.apply(99f, 0f)) && watch.stale == AvatarStream.ClothWatch.STALE : "Frozen while the head moves: bones";
-        assert !watch.accept(hair, at.apply(100f, 0f)) && !watch.accept(hair, at.apply(100f, 0f)) && !watch.accept(hair, at.apply(100f, 0f))
+        assert accept(watch, hair, at.apply(0f, 0f)) && watch.stale == 0;
+        for (int k = 1; k < AvatarStream.ClothWatch.STALE; k++) assert accept(watch, hair, at.apply((float) k, 0f)) : "Stale " + k + " times: kept";
+        assert !accept(watch, hair, at.apply(99f, 0f)) && watch.stale == AvatarStream.ClothWatch.STALE : "Frozen while the head moves: bones";
+        assert !accept(watch, hair, at.apply(100f, 0f)) && !accept(watch, hair, at.apply(100f, 0f)) && !accept(watch, hair, at.apply(100f, 0f))
                 : "A still head (a pause, a hit-stop) keeps a frozen cloth on bones";
-        assert watch.accept(hair, at.apply(101f, 1f)) : "Until the particles move";
-        var decoding = new AvatarStream.ClothWatch();
+        assert accept(watch, hair, at.apply(101f, 1f)) : "Until the particles move";
+        var decoding = quiet(new AvatarStream.ClothWatch());
         for (int k = 0; k < AvatarStream.ClothWatch.STALE; k++)
             assert AvatarStream.decode(hair, at.apply((float) k, 0f), model, pose, new boolean[2], decoding) && pose.cloth()[1] != null;
         assert AvatarStream.decode(hair, at.apply(99f, 0f), model, pose, new boolean[2], decoding) && pose.cloth()[1] == null : "Decoded frozen: bones";
-        assert watch.accept(hair, at.apply(101f, 1f)) && watch.accept(hair, at.apply(101f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 1
+        assert accept(watch, hair, at.apply(101f, 1f)) && accept(watch, hair, at.apply(101f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 1
                 : "A still head with still particles is not stale";
-        assert watch.accept(hair, at.apply(102f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "Counted";
+        assert accept(watch, hair, at.apply(102f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "Counted";
         var moving = values.clone();
-        assert watch.accept(hair, new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, moving, null, false, Float.NaN, false, 0, null))
-                && watch.accept(hair, at.apply(103f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "A sample without cloth restarts the watch";
+        assert !accept(watch, hair, new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, moving, null, false, Float.NaN, false, 0, null))
+                && accept(watch, hair, at.apply(103f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "A sample without cloth restarts the watch";
+        clothDiagnostics(hair, bare, values, floats);
+    }
+    /**
+     * The watch's diagnostics: Stellar Blade's cloth cadence, stale runs ended by moving particles, each switch to bones by
+     * reason with its log line and the way back, jumps after unchanged particles against jumps while they moved, a model
+     * rebuild, the status and the log budget.
+     */
+    private static void clothDiagnostics(AvatarStream.Table hair, AvatarModel bare, float[] values, float[] floats) {
+        var watch = new AvatarStream.ClothWatch();
+        var lines = new java.util.ArrayList<String>();
+        watch.log = lines::add;
+        long t = 1000;
+        float head = 0, x = 0;
+        assert accept(watch, hair, worn(values, floats, t, head, x)) && lines.equals(java.util.List.of("Cloth: Stellar Blade's cloth drawn from sample 1000"));
+        // Stale runs of 1, 2, 5, 6, 29 and 30 samples, each ended by a 1 cm move: the last three froze the cloth for a while.
+        for (int length : new int[] {1, 2, 5, 6, 29, 30}) {
+            for (int k = 0; k < length; k++) accept(watch, hair, worn(values, floats, t += 16, ++head, x));
+            assert accept(watch, hair, worn(values, floats, t += 16, ++head, ++x)) : "Moving particles end a run of " + length;
+        }
+        assert java.util.Arrays.equals(watch.runs, new long[] {1, 2, 2, 1}) && watch.longest == 30 : java.util.Arrays.toString(watch.runs);
+        assert watch.stale == 73 && watch.compared == 79 && watch.changed == 6 && watch.headMoved == 79;
+        assert watch.drops[AvatarStream.ClothWatch.FROZEN] == 3 && watch.bones[AvatarStream.ClothWatch.FROZEN] == 1 + 24 + 25
+                : "From the sixth stale sample of each run until the particles move";
+        assert lines.size() == 7 && lines.get(1).endsWith(", frozen (particles unchanged for 96 ms over 6 samples while her head moved)")
+                && lines.get(2).endsWith(" after 1 samples (16 ms) on bones; its measured particles moved " + String.format("%.1f cm", 1f))
+                && lines.get(4).endsWith(" after 24 samples (384 ms) on bones; its measured particles moved " + String.format("%.1f cm", 1f)) : lines;
+        assert accept(watch, hair, worn(values, floats, t += 16, head, ++x)) && watch.compared == 80 && watch.headMoved == 79 && watch.stale == 73
+                : "Her head still, the cloth moving";
+        assert watch.status().contains(" Bones instead: 3 frozen (50 samples), 0 absent (0),")
+                && watch.status().contains(" Particles changed in 9% of cloth samples, her head in 99%. Stale runs ended by moving particles:"
+                + " 1 of 1, 2 of 2-5, 2 of 6-29, 1 of 30+; longest 30.") : watch.status();
+        // Jumps between consecutive cloth samples: moves over 30 cm while the particles moved, or after unchanged ones.
+        lines.clear();
+        accept(watch, hair, worn(values, floats, t += 16, ++head, x += 40));
+        accept(watch, hair, worn(values, floats, t += 16, ++head, x += 29));
+        accept(watch, hair, worn(values, floats, t += 16, ++head, x += 31));
+        assert watch.jumpsMoving == 2 && Math.abs(watch.largestMoving - 40) < 1e-3 && watch.jumpsStill == 0 && lines.size() == 2
+                && lines.get(0).endsWith(" while the particles moved") : lines;
+        accept(watch, hair, worn(values, floats, t += 16, ++head, x));
+        accept(watch, hair, worn(values, floats, t += 16, ++head, x += 50));
+        assert watch.jumpsStill == 1 && Math.abs(watch.largestStill - 50) < 1e-3 && lines.get(2).endsWith(" after 1 unchanged samples (32 ms)") : lines;
+        accept(watch, hair, worn(values, floats, t += 16, head, x));
+        accept(watch, hair, worn(values, floats, t += 16, ++head, x += 45));
+        assert watch.jumpsStill == 2 && watch.jumpsMoving == 2 && Math.abs(watch.largestStill - 50) < 1e-3 : "Unchanged with her head still counts too";
+        // Each reason for bones, and back: absent, mismatched, invalid, no ponytail mesh, a model rebuild.
+        lines.clear();
+        assert !accept(watch, hair, new AvatarStream.Sample(t += 16, t, 1, new int[] {3, 1}, values.clone(), null, false, Float.NaN, false, 0, null));
+        assert accept(watch, hair, worn(values, floats, t += 16, ++head, x += 60)) && watch.jumpsMoving == 2 : "Across a gap: no jump";
+        assert lines.get(0).equals("Cloth: bones from sample " + (t - 16) + ", absent (no cloth in the sample; component status 0x1)")
+                && lines.get(1).endsWith(" after 1 samples (16 ms) on bones; its measured particles moved " + String.format("%.1f cm", 60f)) : lines;
+        assert !accept(watch, hair, worn(values, java.util.Arrays.copyOf(floats, 19), t += 16, ++head, x)) && accept(watch, hair, worn(values, floats, t += 16, ++head, ++x));
+        float[] skewed = floats.clone();
+        skewed[3] = 0.9f;
+        assert !accept(watch, hair, worn(values, skewed, t += 16, ++head, x)) && accept(watch, hair, worn(values, floats, t += 16, ++head, ++x));
+        var pose = AvatarStream.emptyPose(hair);
+        assert AvatarStream.decode(hair, worn(values, floats, t += 16, ++head, ++x), bare, pose, new boolean[2], watch) && pose.cloth()[1] == null;
+        assert accept(watch, hair, worn(values, floats, t += 16, ++head, ++x));
+        assert lines.get(2).endsWith(", mismatched (3 particles, the ponytail mesh has 2 vertices)")
+                && lines.get(4).endsWith(", invalid (its transform has no unit rotation or a non-positive scale)")
+                && lines.get(6).endsWith(", mismatched (no ponytail mesh in the pack)") && lines.size() == 8 : lines;
+        watch.rebuild(7);
+        watch.rebuild(8);
+        assert accept(watch, hair, worn(values, floats, t += 16, ++head, x)) && watch.drops[AvatarStream.ClothWatch.REBUILT] == 1;
+        assert lines.get(8).equals("Cloth: bones at the model rebuild for generation 7") && lines.size() == 10
+                && lines.get(9).endsWith(" after 0 samples (16 ms) on bones; its measured particles moved " + String.format("%.1f cm", 0f)) : lines;
+        assert watch.status().contains(" 1 absent (1), 2 mismatched (2), 1 invalid (1), 1 at a model rebuild.") && watch.status().contains(String.format(
+                " Jumps over 30 cm: 2 after unchanged particles (largest %.1f cm), 2 while they moved (largest %.1f cm).", 50f, 40f)) : watch.status();
+        // At most LINES switch and jump lines per stream run, then one notice; the counters go on.
+        var flapping = new AvatarStream.ClothWatch();
+        var flapped = new java.util.ArrayList<String>();
+        flapping.log = flapped::add;
+        for (int k = 0; k < AvatarStream.ClothWatch.LINES; k++) {
+            accept(flapping, hair, worn(values, floats, 2 * k, k, 0));
+            accept(flapping, hair, new AvatarStream.Sample(2 * k + 1, 2 * k + 1, 1, new int[] {3, 1}, values.clone(), null, false, Float.NaN, false, 0, null));
+        }
+        assert flapped.size() == AvatarStream.ClothWatch.LINES + 1 && flapped.getLast().equals("Cloth: further cloth switches and jumps not logged.")
+                && flapped.get(AvatarStream.ClothWatch.LINES - 1).startsWith("Cloth: bones from sample ")
+                && flapping.drops[AvatarStream.ClothWatch.ABSENT] == AvatarStream.ClothWatch.LINES : flapped.getLast();
+    }
+    private static AvatarStream.ClothWatch quiet(AvatarStream.ClothWatch watch) {
+        watch.log = line -> { };
+        return watch;
+    }
+    /** The watch on a sample for the test's two-vertex ponytail. */
+    private static boolean accept(AvatarStream.ClothWatch watch, AvatarStream.Table table, AvatarStream.Sample sample) {
+        return watch.accept(table, sample, 2, AvatarStream.cloth(sample.cloth(), 2, null));
+    }
+    /** A cloth sample published at ms (its counter too) with her head's x (the leader's Bip001-Head) and particle 0's x. */
+    private static AvatarStream.Sample worn(float[] values, float[] floats, long ms, float head, float particle) {
+        float[] p = values.clone(), c = floats.clone();
+        p[24] = head;
+        c[10] = particle;
+        return new AvatarStream.Sample(ms, ms, 1, new int[] {3, 1}, p, null, false, Float.NaN, false, 0, c);
     }
     /** Decodes with a fresh cloth watch: one sample is never frozen. */
     private static boolean decode(AvatarStream.Table table, AvatarStream.Sample sample, AvatarModel model, AvatarRecording.Pose target, boolean[] shown) {
-        return AvatarStream.decode(table, sample, model, target, shown, new AvatarStream.ClothWatch());
+        return AvatarStream.decode(table, sample, model, target, shown, quiet(new AvatarStream.ClothWatch()));
     }
     private static AvatarStream.Table table(String fixture) { return AvatarStream.parse(fixture); }
     private static int clothRuns; // Each cloth slot's stream has its own run.
