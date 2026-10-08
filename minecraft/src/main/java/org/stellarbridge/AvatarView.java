@@ -338,11 +338,7 @@ public final class AvatarView {
             var link = StellarBridge.renderingContext();
             Matrix4d placement;
             if (current.anchored && link != null) {
-                // The terrain link's mapping: Minecraft origin + (X, Z, Y) / scale relative to the lab anchor.
-                double[] anchor = current.table.anchor();
-                var origin = link.origin();
-                placement = new Matrix4d().translation(origin.x() - camera.x, origin.y() - camera.y, origin.z() - camera.z)
-                        .mul(AvatarModel.unrealToMinecraft(anchor[3])).translate(-anchor[0], -anchor[1], -anchor[2]);
+                placement = anchored(current, link, camera);
                 // In first person the camera is inside EVE's head, as Minecraft hides its own player there; her shots leave her eyes.
                 if (MinecraftClient.getInstance().options.getPerspective().isFirstPerson()) {
                     current.gun.update(current.stream.shots(), true, () -> null);
@@ -374,6 +370,36 @@ public final class AvatarView {
             if (bridged) current.blade.update(current.renderer, current.effects, nanos / 1e9);
             current.gun.update(current.stream.shots(), bridged,
                     () -> AvatarCombat.muzzle(current.model, current.table.components(), current.drawn, current.pose, placement, camera));
+        } catch (RuntimeException failure) {
+            stopLive(failure.getMessage());
+            LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
+        }
+    }
+
+    /** The terrain link's mapping, camera-relative: Minecraft origin + (X, Z, Y) / scale relative to the lab anchor. */
+    private static Matrix4d anchored(Live current, StellarBridge.RenderingContext link, Vec3d camera) {
+        double[] anchor = current.table.anchor();
+        var origin = link.origin();
+        return new Matrix4d().translation(origin.x() - camera.x, origin.y() - camera.y, origin.z() - camera.z)
+                .mul(AvatarModel.unrealToMinecraft(anchor[3])).translate(-anchor[0], -anchor[1], -anchor[2]);
+    }
+
+    /** Whether EVE replaces the player in the shader pack's shadow pass now running. */
+    public static boolean castsShadow() { return ShaderPacks.shadowPass(); }
+
+    /** In Iris's shadow pass, pose being its shadow view: EVE's opaque and cut-out sections into the pack's shadow map. */
+    public static void drawShadow(Matrix4f pose) {
+        Live current = live;
+        var link = StellarBridge.renderingContext();
+        if (current == null || current.model == null || !current.posed || link == null) return;
+        try {
+            var client = MinecraftClient.getInstance();
+            current.model.palettes(current.pose, anchored(current, link, client.gameRenderer.getCamera().getPos()),
+                    current.renderer.palettes, true);
+            // ponytail: palettes and skinning run again in the main pass; computing them once at WorldRenderEvents.START,
+            // which precedes Iris's shadow pass, would save that if it ever shows in profiles.
+            current.renderer.drawShadow(new Matrix4f(RenderSystem.getModelViewMatrix()).mul(pose), RenderSystem.getProjectionMatrix(),
+                    lightmap(client.gameRenderer.getLightmapTextureManager()), overlay(), GameRenderer.getRenderTypeEntityCutoutNoNullProgram());
         } catch (RuntimeException failure) {
             stopLive(failure.getMessage());
             LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);

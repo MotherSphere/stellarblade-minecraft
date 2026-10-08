@@ -236,6 +236,19 @@ final class AvatarRenderer implements AutoCloseable {
     private static boolean missingWarned; // A missing entity program was logged once.
     void drawEntity(Matrix4f view, Matrix4f projection, int lightmap, int overlay, int blockLight, int skyLight,
                     ShaderProgram cutout, ShaderProgram translucent, ShaderProgram eyes) {
+        drawEntity(view, projection, lightmap, overlay, blockLight, skyLight, cutout, translucent, eyes, 3);
+    }
+
+    /**
+     * Into a shader pack's shadow map, during Iris's shadow pass: only the opaque and cut-out sections, through the program
+     * Iris maps the cut-out entity program to there. Overlays, glows, the trail and the sprites cast nothing.
+     */
+    void drawShadow(Matrix4f view, Matrix4f projection, int lightmap, int overlay, ShaderProgram shadow) {
+        drawEntity(view, projection, lightmap, overlay, 0, 15, shadow, null, null, 1);
+    }
+
+    private void drawEntity(Matrix4f view, Matrix4f projection, int lightmap, int overlay, int blockLight, int skyLight,
+                            ShaderProgram cutout, ShaderProgram translucent, ShaderProgram eyes, int passes) {
         restoring(() -> {
             uploadMorphs();
             skin();
@@ -248,7 +261,7 @@ final class AvatarRenderer implements AutoCloseable {
             // Passes: opaque and cut-out sections; overlays blended over them as our own path blends them (premultiplied);
             // glows added as Minecraft adds glowing eyes.
             String[] names = {"cut-out entity", "translucent entity", "eyes"};
-            for (int pass = 0; pass < 3; pass++) {
+            for (int pass = 0; pass < passes; pass++) {
                 ShaderProgram shader = pass == 0 ? cutout : pass == 1 ? translucent : eyes;
                 if (shader == null) {
                     if (!missingWarned) org.slf4j.LoggerFactory.getLogger("stellar_bridge").warn("EVE avatar: Minecraft's {} program is unavailable; part of her is not drawn", names[pass]);

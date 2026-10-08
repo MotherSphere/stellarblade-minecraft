@@ -29,7 +29,7 @@ final class ShaderPacks {
     static final float[] NO_OVERLAY = {0, 10, 0, 1};
     private static final Set<String> logged = new HashSet<>(); // Programs (name:id) whose inputs were logged since the last switch.
     private static Object api;
-    private static Method inUse;
+    private static Method inUse, shadowPass;
     private static boolean failed, last;
     /** /stellaravatar shading entity: Minecraft's entity programs even without a pack. */
     static boolean forced;
@@ -68,12 +68,23 @@ final class ShaderPacks {
                 Class<?> type = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
                 api = type.getMethod("getInstance").invoke(null);
                 inUse = type.getMethod("isShaderPackInUse");
+                shadowPass = type.getMethod("isRenderingShadowPass");
             }
             return (Boolean) inUse.invoke(api);
         } catch (ReflectiveOperationException | LinkageError | RuntimeException failure) {
             failed = true;
             LoggerFactory.getLogger("stellar_bridge").warn("Iris API unreadable; EVE uses Minecraft's entity programs", failure);
             return true;
+        }
+    }
+
+    /** Whether Iris is drawing its pack's shadow map now; false without Iris or when its API cannot be read. */
+    static boolean shadowPass() {
+        if (!FabricLoader.getInstance().isModLoaded("iris") || !inUse() || failed) return false; // inUse() also reads the API.
+        try {
+            return (Boolean) shadowPass.invoke(api);
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            return false;
         }
     }
 
