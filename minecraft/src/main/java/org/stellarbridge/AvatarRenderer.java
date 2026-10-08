@@ -115,7 +115,7 @@ final class AvatarRenderer implements AutoCloseable {
         program = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES);
         boolean complete = false;
         try {
-            GL31.glUniformBlockBinding(program, GL31.glGetUniformBlockIndex(program, "Palette"), PALETTE);
+            bindPalette(program);
             viewProjection = GL20.glGetUniformLocation(program, "ViewProjection");
             lightUv = GL20.glGetUniformLocation(program, "LightUv");
             fogStart = GL20.glGetUniformLocation(program, "FogStart");
@@ -129,7 +129,7 @@ final class AvatarRenderer implements AutoCloseable {
             hairShading = GL20.glGetUniformLocation(program, "Hair");
             cutoff = GL20.glGetUniformLocation(program, "AlphaCutoff");
             skinning = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES, SKINNED);
-            GL31.glUniformBlockBinding(skinning, GL31.glGetUniformBlockIndex(skinning, "Palette"), PALETTE);
+            bindPalette(skinning);
             paletteBuffer = GL15.glGenBuffers();
             GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, paletteBuffer);
             GL15.glBufferData(GL31.GL_UNIFORM_BUFFER, PALETTE_BYTES, GL15.GL_DYNAMIC_DRAW); // The block's full size, whatever the part.
@@ -509,6 +509,14 @@ final class AvatarRenderer implements AutoCloseable {
             GL15.glBindBuffer(GL30.GL_TRANSFORM_FEEDBACK_BUFFER, generic0);
             GlStateManager._glUseProgram(program0);
         }
+    }
+
+    /** Binds a linked program's Palette block at PALETTE, refusing a block that does not hold AvatarMesh.MAX_BONES bones. */
+    private static void bindPalette(int program) throws IOException {
+        int block = GL31.glGetUniformBlockIndex(program, "Palette");
+        int bytes = GL31.glGetActiveUniformBlocki(program, block, GL31.GL_UNIFORM_BLOCK_DATA_SIZE);
+        if (bytes != PALETTE_BYTES) throw new IOException("avatar.vsh's Palette block is " + bytes + " bytes, not " + PALETTE_BYTES);
+        GL31.glUniformBlockBinding(program, block, PALETTE);
     }
 
     /**

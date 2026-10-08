@@ -351,6 +351,12 @@ public final class AvatarModelTest {
             AvatarMesh.parse("Wider", chain(AvatarMesh.MAX_BONES + 1, skinned));
             throw new AssertionError("A mesh past MAX_BONES bones was accepted");
         } catch (IllegalArgumentException expected) { }
+        try (var in = AvatarRenderer.class.getResourceAsStream("/assets/stellar_bridge/shaders/avatar/avatar.vsh")) {
+            assert new String(in.readAllBytes(), StandardCharsets.US_ASCII).contains("mat3x4 Bones[" + AvatarMesh.MAX_BONES + "];")
+                    : "avatar.vsh's Palette holds MAX_BONES bones";
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
         assert AvatarRenderer.paletteRefusal(65536, 14, 84) == null : "An RTX 5080's limits";
         String refusal = AvatarRenderer.paletteRefusal(16384, 12, 36); // GL 3.2's minimum block size.
         assert refusal != null && refusal.contains("24576 bytes") && AvatarRenderer.paletteRefusal(65536, 14, 15) != null;
