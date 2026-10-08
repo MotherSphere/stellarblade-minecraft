@@ -186,6 +186,9 @@ public final class AvatarStreamTest {
         assert java.util.Arrays.equals(AvatarHud.layout(640, 3, 77, 109), new int[] {3, 45}) && java.util.Arrays.equals(AvatarHud.layout(427, 6, 77, 109), new int[] {3, 38});
         assert java.util.Arrays.equals(AvatarHud.layout(480, 4, 77, 177), new int[] {2, 56}) : "Never below half the GUI scale";
         assert java.util.Arrays.equals(AvatarHud.layout(320, 4, 77, 109), new int[] {2, 10}) : "At least 10 HP columns";
+        assert AvatarHud.widest(14, 9, 2) == 109 && AvatarHud.widest(0, 0, 0) == 68 : "The user's maxima; HP's 23 columns";
+        assert AvatarHud.widest(14, 0, 3) == 141 && java.util.Arrays.equals(AvatarHud.layout(640, 3, 77, 141), new int[] {2, 77})
+                : "The gold absorption block past three shield blocks keeps the panel off the offhand slot";
         assert AvatarHud.hpColumns(2000) == 23 && AvatarHud.hpColumns(4000) == 47 && AvatarHud.hpColumns(6500) == 77 && AvatarHud.hpColumns(1e6f) == 77;
         assert AvatarHud.chatBottom(2, 2) == 70 && AvatarHud.chatBottom(2, 4) == 40 && AvatarHud.chatBottom(3, 5) == 44;
         actor[7] = 500;

@@ -92,6 +92,15 @@ public final class AvatarHud {
     }
 
     /**
+     * The widest row past x = 60 (panel pixels) for the cube and shield block counts, at least 23 HP columns. The shield
+     * row keeps room for the gold absorption block, which comes and goes in play; from the maxima, which change only with
+     * upgrades, the scale does not flicker.
+     */
+    static int widest(int betaCubes, int burstCubes, int blocks) {
+        return Math.max(Math.max(8 * Math.max(betaCubes, burstCubes) - 3, 36 * blocks + 33), 68);
+    }
+
+    /**
      * Stellar Blade's HP bar length in columns, 346 + 90 units a Body level (15 a column). ponytail: the level is
      * estimated from the max HP (2000, then 500 a level), so gear's extra HP reads high; stream it once confirmed in game.
      */
@@ -134,9 +143,7 @@ public final class AvatarHud {
         int[] burst = gauges == null || !(gauges[4] > 0) ? null : cubes(gauges[2], gauges[3], BURST_CUBES);
         float[] shield = shield(actor), tachy = tachy(actor);
         int blocks = shield == null ? 0 : (int) shield[0];
-        // From the maxima, which change only with upgrades: the scale does not flicker in play.
-        int widest = Math.max(Math.max(beta == null ? 0 : 8 * beta[0] - 3, burst == null ? 0 : 8 * burst[0] - 3), Math.max(36 * blocks - 3, 68));
-        int[] fit = layout(w, g, hpColumns(AvatarStats.current().maxHp()), widest);
+        int[] fit = layout(w, g, hpColumns(AvatarStats.current().maxHp()), widest(beta == null ? 0 : beta[0], burst == null ? 0 : burst[0], blocks));
         width = w; height = h; scale = g; panel = fit[0]; columns = fit[1];
         lift = chatBottom(panel, g) - CHAT;
         float f = (float) panel / g;
