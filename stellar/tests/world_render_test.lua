@@ -131,6 +131,10 @@ assert(not cloth_render.restore() and flags.StellarViewportFlags==1 and body_fie
     and tail_fields.StellarLastRenderTime==1e9,trace())
 StaticFindObject=found; world_time=50; reset()
 assert(cloth_render.restore() and trace()=='tail.StellarLastRenderTime=50',trace())
+-- A cloth component the engine deleted meanwhile is skipped at restore.
+cloth_render.tick(true,worn); tail_fields.valid=false; reset()
+assert(cloth_render.restore() and not trace():find('tail.',1,true),trace())
+tail_fields.valid=true
 -- A LastRenderTime that cannot be read or written keeps SB drawing, with nothing of it to restore.
 tail_fields.StellarLastRenderTime=nil; reset()
 assert(cloth_render.tick(true,worn)==false and flags.StellarViewportFlags==1 and body_fields.AlwaysTickPoseDistance==0
