@@ -186,21 +186,27 @@ public final class AvatarStreamTest {
         assert java.util.Arrays.equals(AvatarHud.layout(640, 3, 77, 109), new int[] {3, 45}) && java.util.Arrays.equals(AvatarHud.layout(427, 6, 77, 109), new int[] {3, 38});
         assert java.util.Arrays.equals(AvatarHud.layout(480, 4, 77, 177), new int[] {2, 56}) : "Never below half the GUI scale";
         assert java.util.Arrays.equals(AvatarHud.layout(320, 4, 77, 109), new int[] {2, 10}) : "At least 10 HP columns";
+        assert java.util.Arrays.equals(AvatarHud.layout(512, 5, 77, 177), new int[] {3, 52}) : "Half an odd GUI scale rounds up";
         assert AvatarHud.widest(14, 9, 2) == 109 && AvatarHud.widest(0, 0, 0) == 68 : "The user's maxima; HP's 23 columns";
         assert AvatarHud.widest(14, 0, 3) == 141 && java.util.Arrays.equals(AvatarHud.layout(640, 3, 77, 141), new int[] {2, 77})
                 : "The gold absorption block past three shield blocks keeps the panel off the offhand slot";
         assert AvatarHud.hpColumns(2000) == 23 && AvatarHud.hpColumns(4000) == 47 && AvatarHud.hpColumns(6500) == 77 && AvatarHud.hpColumns(1e6f) == 77;
+        assert AvatarHud.hpColumns(2240) == 23 && AvatarHud.hpColumns(2260) == 29 && AvatarHud.hpColumns(0) == 23 : "Nearest Body level, at least 0";
         assert AvatarHud.chatBottom(2, 2) == 70 && AvatarHud.chatBottom(2, 4) == 40 && AvatarHud.chatBottom(3, 5) == 44;
         actor[7] = 500;
         actor[8] = 500;
         actor[11] = 2;
         assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {2, 2, 1}) : "EVE's base shield: two full blocks of 250";
+        actor[7] = 250;
+        assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {2, 1, 1}) : "Exactly one block full";
         actor[7] = 300;
         assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {2, 2, 0.2f}) : "The second block a fifth full";
         actor[7] = 0;
         assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {2, 0, 0}) : "Broken";
         actor[11] = 7;
         assert AvatarHud.shield(actor)[0] == 5 : "At most five blocks";
+        actor[7] = 500;
+        assert java.util.Arrays.equals(AvatarHud.shield(actor), new float[] {5, 5, 1}) : "Lit blocks capped at the five shown";
         actor[11] = Float.NaN;
         assert AvatarHud.shield(null) == null && AvatarHud.shield(actor) == null : "Unread or non-finite";
         actor[11] = 2;
