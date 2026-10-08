@@ -99,55 +99,77 @@ assert(#logs==2 and logs[1]=='Render: restoring the cut a Lua reload left' and l
 reloaded.tick(true,meshes); reloaded.tick(false); assert(flags.StellarViewportFlags==1 and drone_fields.AlwaysTickPoseDistance==0)
 body_fields.AlwaysTickPoseDistance=1e7; reset(); reloaded.tick(false); assert(#writes==0,'Swept once per Lua lifetime')
 
--- The ponytail's cloth ticks only while rendered at OnlyTickPoseWhenRendered (3): AlwaysTickPose (1) during the cut,
--- before the bit, and its own value back after; any other value is left alone.
+-- The ponytail's cloth ticks unrendered only while recently rendered, whatever tick option SB switches it to: its
+-- LastRenderTime holds a time past the world clock from before the bit, set again whenever changed, and gets the world's
+-- time back after the bit; the tick option is never written.
 package.loaded.world_render=nil
 local cloth_render=require('world_render').new(function() end)
-local tail,tail_fields=object('tail',{AlwaysTickPoseDistance=0,VisibilityBasedAnimTickOption=3})
+local tail,tail_fields=object('tail',{AlwaysTickPoseDistance=0,VisibilityBasedAnimTickOption=3,StellarLastRenderTime=7})
+local world_time,statics=42.5,{IsValid=function() return true end}
+function statics:GetTimeSeconds(context) assert(context==tail,'The cloth component is the world context'); return world_time end
+StaticFindObject=function(path) assert(path=='/Script/Engine.Default__GameplayStatics',path); return statics end
+PropertyTypes.FloatProperty='float'
 local worn={{handle=body,object=8},{handle=tail,object=24,cloth=true}}
 body_fields.AlwaysTickPoseDistance=0; flags.StellarViewportFlags=1
-cloth_render.tick(false); reset(); assert(cloth_render.tick(true,worn))
-assert(trace()=='body.AlwaysTickPoseDistance=1e+07 tail.VisibilityBasedAnimTickOption=1 tail.AlwaysTickPoseDistance=1e+07 '
+cloth_render.tick(false); reset(); local specs=#registered; assert(cloth_render.tick(true,worn))
+assert(trace()=='body.AlwaysTickPoseDistance=1e+07 tail.StellarLastRenderTime=1e+09 tail.AlwaysTickPoseDistance=1e+07 '
     ..'viewport.StellarViewportFlags=5',trace())
-reset(); cloth_render.tick(true,worn); assert(#writes==0,'A held cut leaves the tick option alone')
+local spec=registered[specs+1]
+assert(#registered==specs+2 and spec.Name=='StellarLastRenderTime' and spec.Type=='float'
+    and spec.BelongsToClass=='/Script/Engine.PrimitiveComponent' and spec.OffsetInternal==0x30c)
+reset(); cloth_render.tick(true,worn); assert(#writes==0,'A held cut writes nothing')
+tail_fields.StellarLastRenderTime=3; tail_fields.VisibilityBasedAnimTickOption=0; reset(); cloth_render.tick(true,worn)
+assert(trace()=='tail.StellarLastRenderTime=1e+09','A render time written meanwhile is replaced, SB\'s tick option left alone')
 reset(); assert(cloth_render.tick(false))
-assert(writes[1]=='viewport.StellarViewportFlags=1' and tail_fields.VisibilityBasedAnimTickOption==3
-    and trace():find('tail.VisibilityBasedAnimTickOption=3',1,true),trace())
-tail_fields.VisibilityBasedAnimTickOption=0; reset(); cloth_render.tick(true,worn)
-assert(not trace():find('VisibilityBasedAnimTickOption',1,true),'Another tick option is left alone')
-reset(); cloth_render.tick(false); assert(not trace():find('VisibilityBasedAnimTickOption',1,true) and tail_fields.VisibilityBasedAnimTickOption==0)
-tail_fields.VisibilityBasedAnimTickOption=nil; reset()
-assert(cloth_render.tick(true,worn)==false and flags.StellarViewportFlags==1 and body_fields.AlwaysTickPoseDistance==0,
-    'An unreadable tick option keeps SB drawing')
+assert(writes[1]=='viewport.StellarViewportFlags=1' and writes[#writes]=='tail.StellarLastRenderTime=42.5'
+    and not trace():find('VisibilityBasedAnimTickOption',1,true) and tail_fields.VisibilityBasedAnimTickOption==0,trace())
+reset(); assert(cloth_render.tick(false) and #writes==0,'Nothing to restore twice')
+assert(#registered==specs+2,'Each property is registered once per Lua lifetime')
+-- Without the world's time the restore is retried, the bit and the distances already back.
+cloth_render.tick(true,worn); local found=StaticFindObject; StaticFindObject=function() end; reset()
+assert(not cloth_render.restore() and flags.StellarViewportFlags==1 and body_fields.AlwaysTickPoseDistance==0
+    and tail_fields.StellarLastRenderTime==1e9,trace())
+StaticFindObject=found; world_time=50; reset()
+assert(cloth_render.restore() and trace()=='tail.StellarLastRenderTime=50',trace())
+-- A LastRenderTime that cannot be read or written keeps SB drawing, with nothing of it to restore.
+tail_fields.StellarLastRenderTime=nil; reset()
+assert(cloth_render.tick(true,worn)==false and flags.StellarViewportFlags==1 and body_fields.AlwaysTickPoseDistance==0
+    and not trace():find('tail.StellarLastRenderTime',1,true),'An unreadable LastRenderTime keeps SB drawing')
+tail_fields.StellarLastRenderTime=7; tail_fields.fail='StellarLastRenderTime'; reset()
+assert(cloth_render.tick(true,worn)==false and flags.StellarViewportFlags==1 and cloth_render.restore()
+    and tail_fields.StellarLastRenderTime==7,trace())
+tail_fields.fail=nil
 
 -- While the cut holds, each tick samples the cloth's tick gates without writing them: a timed line at the cut's start and
 -- at each change (at most 150 per Lua load), counters per cut in the status and when the cut ends.
 package.loaded.world_render=nil
 local gates,clock,lines={rendered=false,suspended=false,disabled=false,paused=false},12.5,{}
 local function state(c)
-    assert(c.handle==tail,'Only the cloth component')
+    if c.handle~=tail then gates.asked=c.handle end
     return {tick=c.handle.VisibilityBasedAnimTickOption,rendered=gates.rendered,suspended=gates.suspended,disabled=gates.disabled,paused=gates.paused}
 end
 local sampling=require('world_render').new(function(message) lines[#lines+1]=message end,function() return clock end,state)
 local function line(text) return '^Cloth state at %d%d:%d%d:%d%d %(t '..text:gsub('[%(%)%.]','%%%0') end
 tail_fields.VisibilityBasedAnimTickOption=3; reset()
 assert(sampling.tick(true,worn) and lines[1]=='Render: SB world drawing off (pose ticking kept on 2 meshes)' and #lines==2)
-assert(lines[2]:find(line('12.50): tick option 1 (guard set 1), recently rendered false, suspended false, disabled false, tick paused false')..'$'),lines[2])
+assert(lines[2]:find(line('12.50): tick option 3, recently rendered false, suspended false, disabled false, tick paused false')..'$'),lines[2])
 clock=12.7; sampling.tick(true,worn); assert(#lines==2,'An unchanged state is not logged again')
-tail_fields.VisibilityBasedAnimTickOption=3; reset(); sampling.tick(true,worn)
-assert(#writes==0 and lines[3]:find(line('12.70): tick option 3 (guard set 1), recently')),'Stellar Blade wrote 3 back: logged, never set again')
+tail_fields.VisibilityBasedAnimTickOption=0; reset(); sampling.tick(true,worn)
+assert(#writes==0 and lines[3]:find(line('12.70): tick option 0, recently')),'Stellar Blade switched the tick option: logged, never written')
 gates.rendered=true; sampling.tick(true,worn)
 gates.suspended=nil; sampling.tick(true,worn)
+assert(gates.asked==nil,'Only the cloth component is sampled')
 assert(lines[4]:find('recently rendered true, suspended false',1,true) and lines[5]:find('recently rendered true, suspended ?, disabled false',1,true))
-assert(sampling.status()=='SB world drawing off (pose ticking kept on 2 meshes); cloth: 5 ticks sampled, tick option 3 or above in 3,'
+assert(sampling.status()=='SB world drawing off (pose ticking kept on 2 meshes); cloth: 5 ticks sampled, tick option 3 or above in 2,'
     ..' recently rendered in 2, suspended in 0, simulation disabled in 0, tick paused in 0',sampling.status())
-gates.rendered,gates.suspended,gates.disabled,gates.paused=false,true,true,true; sampling.tick(true,worn)
-assert(sampling.tick(false) and lines[7]=='Render: cloth over the cut: 6 ticks sampled, tick option 3 or above in 4, recently rendered in 2,'
+gates.rendered,gates.suspended,gates.disabled,gates.paused=false,true,true,true; tail_fields.VisibilityBasedAnimTickOption=4
+sampling.tick(true,worn)
+assert(sampling.tick(false) and lines[7]=='Render: cloth over the cut: 6 ticks sampled, tick option 3 or above in 3, recently rendered in 2,'
     ..' suspended in 1, simulation disabled in 1, tick paused in 1' and lines[8]=='Render: SB world drawing on',lines[7])
--- Each cut counts and logs afresh; the guard's own choice shows; then the line budget.
+-- Each cut counts and logs afresh; then the line budget.
 gates.suspended,gates.disabled,gates.paused=false,false,false
 tail_fields.VisibilityBasedAnimTickOption=0; sampling.tick(true,worn)
-assert(#lines==10 and lines[10]:find('tick option 0 (guard left 0)',1,true) and sampling.status():find('; cloth: 1 ticks sampled, ',1,true),lines[10])
+assert(#lines==10 and lines[10]:find('tick option 0, recently rendered false',1,true) and sampling.status():find('; cloth: 1 ticks sampled, ',1,true),lines[10])
 for _=1,200 do gates.disabled=not gates.disabled; sampling.tick(true,worn) end
 local states,notices=0,0
 for _,l in ipairs(lines) do
@@ -161,4 +183,4 @@ local blind=require('world_render').new(function(message) lines[#lines+1]=messag
 reset(); local before=#lines
 assert(blind.tick(true,worn) and #lines==before+1 and flags.StellarViewportFlags==5 and blind.status()=='SB world drawing off (pose ticking kept on 2 meshes)')
 blind.tick(false)
-print('PASS world drawing: guards before the bit, bit before guards on restore, SB-owned bit kept, apply and restore failures, Lua reload, cloth tick option, cloth state sampling')
+print('PASS world drawing: guards before the bit, bit before guards on restore, SB-owned bit kept, apply and restore failures, Lua reload, cloth render time, cloth state sampling')

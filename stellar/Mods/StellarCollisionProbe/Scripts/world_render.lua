@@ -3,12 +3,16 @@
 -- 0x42cd100 on UWorld::GetGameViewport); SB sets and clears it itself (0x3f162d6, 0x3f16628). EVE's body ticks its
 -- pose only while rendered within the last second (OnlyTickPoseWhenRendered, 0x411f210), unless SB's
 -- AlwaysTickPoseDistance (+0x7d0) covers the distance to its camera (0x411f080), so that guard goes on first. The
--- ponytail's cloth tick (0x4534ea0) ignores that distance: with VisibilityBasedAnimTickOption OnlyTickPoseWhenRendered
--- (3) it stops unrendered, so the cloth component (marked cloth by pose_stream.lua) gets AlwaysTickPose (1) meanwhile.
+-- ponytail's cloth tick (0x4534ea0) ignores that distance: it runs only at a VisibilityBasedAnimTickOption below
+-- OnlyTickPoseWhenRendered (3), which SB itself switches between 0 and 3 as EVE acts, or while bRecentlyRendered (+0x7d6
+-- bit 6); a skipped tick resets the cloth when it resumes. The component's own tick (0x411f210, the cloth tick's
+-- prerequisite) sets that bit each frame from LastRenderTime (+0x30c, unreflected) > UWorld TimeSeconds - 1, and only a
+-- render writes LastRenderTime, so the cloth component (marked cloth by pose_stream.lua) holds SEEN meanwhile.
 local UE=require('UEHelpers')
 local Render={}
 local BIT,FAR=4,1e7 -- FAR: 100 km in cm, any camera distance.
-local RENDERED,ALWAYS=3,1 -- EVisibilityBasedAnimTickOption OnlyTickPoseWhenRendered, AlwaysTickPose.
+local GATED=3 -- EVisibilityBasedAnimTickOption OnlyTickPoseWhenRendered.
+local SEEN=1e9 -- Seconds past any world clock, exact in a float.
 local LINES=150 -- Cloth state lines per Lua load.
 local function valid(object) return object and object:IsValid() end
 local function shown(value) return value==nil and '?' or type(value)=='number' and string.format('%g',value) or tostring(value) end
@@ -16,33 +20,32 @@ local function shown(value) return value==nil and '?' or type(value)=='number' a
 function Render.new(log,clock,cloth_state)
     clock=clock or os.clock
     local api={}
-    -- saved: the viewport and whether SB had the bit set, then {handle, previous distance} by component address,
-    -- {handle, previous tick option} by address for cloth components, and the cut's cloth counters.
-    local registered,swept,saved,guarded,last,lines=false,false,nil,0,'SB world drawing on',0
+    -- saved: the viewport and whether SB had the bit set, then {handle, previous distance} by component address, the
+    -- handles of cloth components holding SEEN by address, and the cut's cloth counters.
+    local registered,swept,saved,guarded,last,lines={},false,nil,0,'SB world drawing on',0
     local function note(message) if message~=last then last=message; log('Render: '..message) end end
     local function counts(n)
         return string.format('%d ticks sampled, tick option 3 or above in %d, recently rendered in %d, suspended in %d, '
             ..'simulation disabled in %d, tick paused in %d',n.ticks,n.gated,n.rendered,n.suspended,n.disabled,n.paused)
     end
     -- Diagnostics while the cut holds, once per bridge tick: the cloth's tick gates (its cloth ticks only at a tick option
-    -- below 3 or while recently rendered, unless suspended, disabled or paused), counted per cut, each change logged. The
-    -- tick option is not set again here: a 3 after the guard set 1 means something else wrote it.
+    -- below 3 or while recently rendered, unless suspended, disabled or paused), counted per cut, each change logged. SB's
+    -- own tick option shows; with the guard holding, recently rendered stays true whatever it is.
     local function sample(components)
         for _,c in ipairs(components) do
-            local guard,ok,s=c.cloth and saved.tick[c.object]
-            if guard then ok,s=pcall(cloth_state,c) end
+            local ok,s
+            if c.cloth then ok,s=pcall(cloth_state,c) end
             if ok then
                 local n=saved.cloth or {ticks=0,gated=0,rendered=0,suspended=0,disabled=0,paused=0}
                 saved.cloth=n
                 n.ticks=n.ticks+1
-                if type(s.tick)=='number' and s.tick>=RENDERED then n.gated=n.gated+1 end
+                if type(s.tick)=='number' and s.tick>=GATED then n.gated=n.gated+1 end
                 if s.rendered==true then n.rendered=n.rendered+1 end
                 if s.suspended==true then n.suspended=n.suspended+1 end
                 if s.disabled==true then n.disabled=n.disabled+1 end
                 if s.paused==true then n.paused=n.paused+1 end
-                local text=string.format('tick option %s (guard %s), recently rendered %s, suspended %s, disabled %s, tick paused %s',
-                    shown(s.tick),guard[2]==RENDERED and 'set '..ALWAYS or 'left '..shown(guard[2]),shown(s.rendered),
-                    shown(s.suspended),shown(s.disabled),shown(s.paused))
+                local text=string.format('tick option %s, recently rendered %s, suspended %s, disabled %s, tick paused %s',
+                    shown(s.tick),shown(s.rendered),shown(s.suspended),shown(s.disabled),shown(s.paused))
                 if text~=n.seen and lines<=LINES then
                     lines=lines+1
                     log(lines<=LINES and string.format('Cloth state at %s (t %.2f): %s',os.date('%H:%M:%S'),clock(),text)
@@ -52,14 +55,15 @@ function Render.new(log,clock,cloth_state)
             end
         end
     end
+    local function register(name,kind,class,offset,what)
+        if registered[name] then return end
+        assert(type(RegisterCustomProperty)=='function' and PropertyTypes and PropertyTypes[kind],
+            'This loader cannot expose '..what..'.')
+        RegisterCustomProperty({Name=name,Type=PropertyTypes[kind],BelongsToClass=class,OffsetInternal=offset})
+        registered[name]=true
+    end
     local function viewport()
-        if not registered then
-            assert(type(RegisterCustomProperty)=='function' and PropertyTypes and PropertyTypes.UInt32Property,
-                'This loader cannot expose the viewport flags.')
-            RegisterCustomProperty({Name='StellarViewportFlags',Type=PropertyTypes.UInt32Property,
-                BelongsToClass='/Script/Engine.GameViewportClient',OffsetInternal=0x6c})
-            registered=true
-        end
+        register('StellarViewportFlags','UInt32Property','/Script/Engine.GameViewportClient',0x6c,'the viewport flags')
         local controller=UE.GetPlayerController()
         local found=valid(controller) and valid(controller.Player) and controller.Player.ViewportClient
         assert(valid(found),'No game viewport.')
@@ -69,12 +73,13 @@ function Render.new(log,clock,cloth_state)
     end
     -- A cut a Lua reload left behind: EVE's body at FAR (SB's own distance is 0) marks it, and the bit is then taken
     -- for ours. ponytail: only her current body is checked; a pawn replaced since (a map load) loses the mark, so restart
-    -- Stellar Blade then. Her other meshes keep FAR until the next cut adopts them at 0.
+    -- Stellar Blade then. Her other meshes keep FAR until the next cut adopts them at 0. ponytail: the cloth keeps SEEN,
+    -- so it simulates unseen, until SB draws it (a render writes its own time) or the next cut restores it.
     local function sweep()
         local pawn=UE.GetPlayer()
         local mesh=valid(pawn) and pawn.Mesh
         if not valid(mesh) or mesh.AlwaysTickPoseDistance~=FAR then return end
-        saved,guarded={far={[mesh:GetAddress()]={mesh,0}},tick={}},1
+        saved,guarded={far={[mesh:GetAddress()]={mesh,0}},seen={}},1
         note('restoring the cut a Lua reload left')
         local found,flags=viewport()
         saved.viewport=found
@@ -82,15 +87,16 @@ function Render.new(log,clock,cloth_state)
     end
     local function apply(components)
         assert(#components>0,'No streamed mesh to keep ticking.')
-        saved=saved or {far={},tick={}}
+        saved=saved or {far={},seen={}}
         for _,c in ipairs(components) do
             local h=c.handle
-            -- ponytail: a Lua reload mid-cut leaves the cloth at AlwaysTickPose, which only keeps ticking it unseen.
-            if c.cloth and not saved.tick[c.object] then
-                local old=h.VisibilityBasedAnimTickOption
-                assert(type(old)=='number','VisibilityBasedAnimTickOption is unavailable.')
-                saved.tick[c.object]={h,old}
-                if old==RENDERED then h.VisibilityBasedAnimTickOption=ALWAYS end
+            -- Set again each tick, like the distance: nothing renders it meanwhile, but a stray render would write its time.
+            if c.cloth then
+                register('StellarLastRenderTime','FloatProperty','/Script/Engine.PrimitiveComponent',0x30c,'LastRenderTime')
+                local seen=h.StellarLastRenderTime
+                assert(type(seen)=='number','LastRenderTime is unavailable.')
+                if seen~=SEEN then h.StellarLastRenderTime=SEEN end
+                saved.seen[c.object]=h
             end
             if not saved.far[c.object] then
                 local old=h.AlwaysTickPoseDistance
@@ -116,9 +122,16 @@ function Render.new(log,clock,cloth_state)
             if valid(e[1]) then e[1].AlwaysTickPoseDistance=e[2] end
             saved.far[object]=nil; guarded=guarded-1
         end
-        for object,e in pairs(saved.tick) do
-            if valid(e[1]) and e[1].VisibilityBasedAnimTickOption~=e[2] then e[1].VisibilityBasedAnimTickOption=e[2] end
-            saved.tick[object]=nil
+        -- The world's time, not the value before the cut (minutes old): recently rendered for the second SB's renderer
+        -- needs to take over, so the cloth does not skip a tick and reset at hand-back.
+        for _,h in pairs(saved.seen) do
+            if valid(h) then
+                local gameplay=StaticFindObject('/Script/Engine.Default__GameplayStatics')
+                assert(valid(gameplay),'World time is unavailable.')
+                local now=gameplay:GetTimeSeconds(h)
+                assert(type(now)=='number','World time is unavailable.')
+                h.StellarLastRenderTime=now
+            end
         end
         if saved.cloth then log('Render: cloth over the cut: '..counts(saved.cloth)) end
         saved=nil

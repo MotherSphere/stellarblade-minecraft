@@ -224,7 +224,7 @@ function Stream.new(engine,directory,clock,log,link)
         assert(#text<=65536,'EVE component table exceeds the stream bound.')
         write(text)
         -- Once per run: how Stellar Blade ticks, blends, resets and pauses the cloth, as found before world_render.lua's
-        -- tick guard ('?': unreadable).
+        -- cut ('?': unreadable).
         for _,c in ipairs(list) do
             if c.cloth and cloth_logged~=run then
                 cloth_logged=run
