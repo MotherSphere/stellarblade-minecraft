@@ -9,7 +9,8 @@
 #include <vector>
 
 namespace stellar_pose {
-constexpr uint32_t MaxComponents = 16, MaxBones = 256, MaxMorphs = 1024, MaxParameters = 32;
+// MaxBones per component: suits carry up to 364 bones.
+constexpr uint32_t MaxComponents = 16, MaxBones = 512, MaxMorphs = 1024, MaxParameters = 32;
 // Active effects per published slot, each an effect index then its world transform (11 floats).
 constexpr uint32_t MaxEffects = 8, EffectFloats = 11, MaxEffectAssets = 32;
 // 256 KiB slots: room for EVE's ponytail cloth (10 + 3 * 17309 floats) after the table's floats.

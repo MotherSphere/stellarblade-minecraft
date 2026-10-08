@@ -230,8 +230,9 @@ public final class AvatarModelTest {
         }
         assert climbs && reaches : "The near wall's east face and the ground before it";
         clothSkinning();
+        wideSkeleton();
         System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cloth"
-                + " deltas through the rigid palette, cut-out mipmaps, weapon trails, shader-pack inputs, and sun and shadow math");
+                + " deltas through the rigid palette, 512-bone palettes, cut-out mipmaps, weapon trails, shader-pack inputs, and sun and shadow math");
     }
 
     /**
@@ -313,6 +314,64 @@ public final class AvatarModelTest {
         AvatarMesh.parse("Pair", pair.flip()).cloth(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2}, new float[12], paired);
         Vector3d shared = new Vector3d(paired.get(3), paired.get(4), paired.get(5) + 1); // Plus the reference normal +Z.
         assert shared.distance(new Vector3d(0, -2, -1).normalize()) < 1e-6 : "Area-weighted normal " + shared;
+    }
+
+    /**
+     * Suits carry up to 364 bones: a 512-bone chain (bone k one centimeter above bone k - 1) loads, its palette fills the
+     * Palette block exactly (bone k at byte 48 k) and a CPU copy of avatar.vsh places the vertices of bones past 255 (u16
+     * indices) where their bones went; a 513th bone is refused, as is a driver whose uniform blocks cannot hold the palette.
+     */
+    static void wideSkeleton() {
+        int[] skinned = {0, 1, 255, 256, 300, 511};
+        AvatarMesh wide = AvatarMesh.parse("Wide", chain(AvatarMesh.MAX_BONES, skinned));
+        String[] names = java.util.Arrays.stream(wide.bones).map(AvatarMesh.Bone::name).toArray(String[]::new);
+        AvatarModel model = new AvatarModel(java.util.List.of(new AvatarRecording.Component("CharacterMesh0", "Wide", null, names, new String[0], 0)),
+                Map.of("Wide", wide));
+        float[] local = new float[10 * names.length];
+        float root90 = (float) Math.sqrt(0.5);
+        System.arraycopy(new float[] {root90, 0, 0, root90, 0, 0, 0, 1, 1, 1}, 0, local, 0, 10); // The root turned 90 degrees about X.
+        for (int k = 1; k < names.length; k++) System.arraycopy(new float[] {0, 0, 0, 1, 0, 0, 1, 1, 1, 1}, 0, local, 10 * k, 10);
+        var pose = new AvatarRecording.Pose(new float[][] {IDENTITY.clone()}, new float[][] {local}, new float[1][0], new float[1][]);
+        FloatBuffer[] palettes = {FloatBuffer.allocate(12 * names.length)};
+        model.palettes(pose, new Matrix4d(AvatarModel.UNREAL_TO_MINECRAFT), palettes, false);
+        assert 4 * palettes[0].remaining() == AvatarRenderer.PALETTE_BYTES : "One palette fills the block";
+        for (int v = 0; v < skinned.length; v++) {
+            int at = v * AvatarMesh.VERTEX_BYTES, bone = Short.toUnsignedInt(wide.vertices.getShort(at + 32));
+            double[] position = new double[3];
+            for (int row = 0; row < 3; row++) {
+                int m = bone * 12 + row * 4;
+                for (int c = 0; c < 3; c++) position[row] += palettes[0].get(m + c) * wide.vertices.getFloat(at + 4 * c);
+                position[row] += palettes[0].get(m + 3);
+            }
+            // (0, 0, k) cm turned about X is (0, -k, 0), Minecraft (0, 0, -k / 100).
+            assert bone == skinned[v] && new Vector3d(position[0], position[1], position[2]).distance(0, 0, -bone / 100.0) < 1e-5
+                    : "Bone " + bone + " at " + java.util.Arrays.toString(position);
+        }
+        try {
+            AvatarMesh.parse("Wider", chain(AvatarMesh.MAX_BONES + 1, skinned));
+            throw new AssertionError("A mesh past MAX_BONES bones was accepted");
+        } catch (IllegalArgumentException expected) { }
+        assert AvatarRenderer.paletteRefusal(65536, 14, 84) == null : "An RTX 5080's limits";
+        String refusal = AvatarRenderer.paletteRefusal(16384, 12, 36); // GL 3.2's minimum block size.
+        assert refusal != null && refusal.contains("24576 bytes") && AvatarRenderer.paletteRefusal(65536, 14, 15) != null;
+    }
+
+    /** A chain of bones, each one centimeter above its parent, with one vertex at each skinned bone, in triangles. */
+    static ByteBuffer chain(int bones, int[] skinned) {
+        ByteBuffer b = ByteBuffer.allocate(64 + 64 * bones + 64 * skinned.length).order(ByteOrder.LITTLE_ENDIAN);
+        b.put("SBAVMESH".getBytes(StandardCharsets.US_ASCII)).putInt(2).putInt(bones);
+        for (int k = 0; k < bones; k++) {
+            name(b, "B" + k);
+            b.putInt(k - 1);
+            for (float v : k == 0 ? IDENTITY : new float[] {0, 0, 0, 1, 0, 0, 1, 1, 1, 1}) b.putFloat(v);
+        }
+        b.putInt(skinned.length);
+        for (int bone : skinned) vertex(b, 0, 0, bone, bone);
+        b.putInt(skinned.length);
+        for (int i = 0; i < skinned.length; i++) b.putInt(i);
+        b.putInt(1); name(b, "Skin"); b.putInt(0).putInt(skinned.length / 3);
+        b.putInt(0);
+        return b.flip();
     }
 
     /** Applies bone row matrices (GLSL mat3x4 layout) to an Unreal reference-space point. */

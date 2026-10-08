@@ -36,7 +36,7 @@ final class Wardrobe {
             new Slot(10, 23, "look", "earrings", "Lookfocus_Icon02"), new Slot(17, 28, "look", "drone", "Lookfocus_Icon03"),
             new Slot(8, 21, "look", "hair", "Lookfocus_Icon06"));
     static final List<String> GROUPS = List.of("exospine", "gear", "look");
-    static final int MAX_BONES = 256; // The pose stream's limit per mesh (Lua's pose table, AvatarStream).
+    static final int MAX_BONES = AvatarMesh.MAX_BONES; // The pose stream's limit per mesh (Lua's pose table, AvatarStream).
 
     /**
      * The adapter's v1 slot rule: equip into a slot that holds an item, or into the earring (10) or face accessory (11)

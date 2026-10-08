@@ -2,6 +2,7 @@
 -- Game-thread only. Publishes alternating slots eve-pose-components.0/1 while Minecraft's request is fresh.
 local Stream={}
 local LEASE_MS=3000
+local MAX_BONES=512 -- Per component, as the adapter and Minecraft parse it (suits carry up to 364 bones).
 local CLOTH='SBPonytail' -- ponytail: only the long ponytail's cloth is streamed; add SBPonytailShort when someone plays with it.
 local function identity(value) return type(value)=='string' and #value==32 and value:match('^[0-9a-f]+$')~=nil end
 local function hex(address)
@@ -195,14 +196,14 @@ function Stream.new(engine,directory,clock,log,link)
         for i=#list,1,-1 do
             local c=list[i]
             c.bones,c.morphs=engine.names(c)
-            local carried=#c.bones<=256 and #c.morphs<=1024
+            local carried=#c.bones<=MAX_BONES and #c.morphs<=1024
             for _,name in ipairs(c.bones) do carried=carried and token(name) end
             for _,name in ipairs(c.morphs) do carried=carried and token(name) end
             if c.drone and not carried then skipped[#skipped+1]=table.remove(list,i).name..' (not streamable)'
             else
                 for _,name in ipairs(c.bones) do assert(token(name),c.name..' has a bone name the stream cannot carry.') end
                 for _,name in ipairs(c.morphs) do assert(token(name),c.name..' has a morph name the stream cannot carry.') end
-                assert(#c.bones<=256 and #c.morphs<=1024,c.name..' exceeds the pose stream bounds.')
+                assert(#c.bones<=MAX_BONES and #c.morphs<=1024,c.name..' exceeds the pose stream bounds.')
             end
         end
         local function floats()

@@ -319,15 +319,22 @@ int main() {
   }
   assert(broken("MORPHS 2 Smile Blink\n", ""));
   assert(broken("3 2 Body", "300 2 Body"));
-  // Payload must fit one slot.
-  std::string huge = "SBMC_POSE_COMPONENTS 1\nRUN " + Run +
-                     "\nGENERATION 1\nSESSION none\nANCHOR none\nCOUNT 16\n";
-  for (int i = 1; i <= 16; i++) {
-    huge += "COMPONENT " + std::to_string(i) + " 0000000000000010 0000000000001000 0000000000002000 256 0 C M -\nBONES " + std::to_string(i);
-    for (int k = 0; k < 256; k++) huge += " b";
-    huge += "\n";
-  }
-  assert(!parse_components(huge + "END 1\n"));
+  // A component carries up to MaxBones bones (suits up to 364); the payload must fit one slot.
+  auto boned = [&](uint32_t bones, uint32_t count) {
+    std::string text = "SBMC_POSE_COMPONENTS 1\nRUN " + Run +
+                       "\nGENERATION 1\nSESSION none\nANCHOR none\nCONTROLLER none\nCOUNT " + std::to_string(count) + "\n";
+    for (uint32_t i = 1; i <= count; i++) {
+      text += "COMPONENT " + std::to_string(i) + " 0000000000000010 0000000000001000 0000000000002000 " +
+              std::to_string(bones) + " 0 C M -\nBONES " + std::to_string(i);
+      for (uint32_t k = 0; k < bones; k++) text += " b";
+      text += "\n";
+    }
+    return text + "PARAMETERS 0\nEFFECTS none\nCLOTH none\nEND 1\n";
+  };
+  static_assert(MaxBones == 512);
+  assert(parse_components(boned(MaxBones, 1))->floats == 10 + 10 * MaxBones);
+  assert(!parse_components(boned(MaxBones + 1, 1)) && "Past MaxBones a component is refused");
+  assert(parse_components(boned(MaxBones, 12)) && !parse_components(boned(MaxBones, 16)) && "The payload fits one slot");
   auto other = components(9, 0x10, 0x20);
   other.replace(other.find(Run), 32, std::string(32, '4'));
   assert(select_components(components(4, 0x10, 0x20), components(5, 0x10, 0x20), Run)->generation == 5);

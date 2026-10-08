@@ -146,10 +146,22 @@ engine.identities=function() return crowd end
 local _,crowded=droned.tick()
 assert(crowded:find('16 components',1,true) and crowded:find('skipped Drone.CharacterMesh0 (no room)',1,true),crowded)
 local names=engine.names
-engine.names=function(c) if c.drone then local bones={} for i=1,300 do bones[i]='B'..i end return bones,{} end return names(c) end
+engine.names=function(c) if c.drone then local bones={} for i=1,513 do bones[i]='B'..i end return bones,{} end return names(c) end
 engine.identities=function() return {eve,companion} end
 local _,wide=droned.tick()
 assert(wide:find('1 components',1,true) and wide:find('skipped Drone.CharacterMesh0 (not streamable)',1,true),wide)
+-- Suits carry up to 364 bones: EVE's own components stream up to 512; past that the stream stops rather than drop her.
+local function boned(count)
+    return function(c) if c.drone then return names(c) end local bones={} for i=1,count do bones[i]='B'..i end return bones,{} end
+end
+engine.names=boned(512)
+engine.identities=function() return {eve} end
+local _,suit=droned.tick()
+local published=(read('eve-pose-components.0') or '')..(read('eve-pose-components.1') or '')
+assert(suit:find('1 components',1,true) and published:find(' 512 0 CharacterMesh0 CH_P_EVE_52_TypeB -\n',1,true),suit)
+engine.names=boned(513)
+engine.identities=function() return {{name=eve.name,object=eve.object,class=eve.class,mesh=eve.mesh,mesh_name='CH_P_EVE_Nikke_02'}} end
+assert(not pcall(droned.tick),'A component past 512 bones stops the stream')
 local heavy={eve}
 for i=1,6 do heavy[#heavy+1]={name='Part'..i,object=0x7f0000100000+0x1000*i,class=0x7f0000002000,mesh=0x7f0000003000,mesh_name='M'} end
 heavy[#heavy+1]=companion

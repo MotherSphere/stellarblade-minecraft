@@ -27,6 +27,7 @@ import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL21;
 import org.lwjgl.opengl.GL30;
+import org.lwjgl.opengl.GL31;
 import org.lwjgl.stb.STBImage;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -60,8 +61,11 @@ final class AvatarRenderer implements AutoCloseable {
     private record Material(String slot, int[] maps, boolean hair, boolean overlay, boolean glow) {
         int base() { return maps[0]; }
     }
-    private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, pass,
-            opacity, emissiveTint, hurtTint, skinning, skinningBones, sunDirection, sunWeight, shadowMatrix, shadowDepth;
+    private final int program, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, pass,
+            opacity, emissiveTint, hurtTint, skinning, sunDirection, sunWeight, shadowMatrix, shadowDepth;
+    // avatar.vsh's Palette block: one part's bones at a time (std140 mat3x4, 48 bytes a bone), bound at PALETTE while we draw.
+    static final int PALETTE = 15, PALETTE_BYTES = 48 * AvatarMesh.MAX_BONES;
+    private int paletteBuffer;
     // EVE's shadow map (depth only, from the sun) and the program darkening the block faces her shadow falls on.
     static final int SHADOW_SIZE = 1024;
     private int shadowFramebuffer, shadowTexture, cast, castArray, castBuffer;
@@ -89,8 +93,11 @@ final class AvatarRenderer implements AutoCloseable {
 
     AvatarRenderer(AvatarModel model, Path pack) throws IOException {
         this.model = model;
+        String refusal = paletteRefusal(GL11.glGetInteger(GL31.GL_MAX_UNIFORM_BLOCK_SIZE), GL11.glGetInteger(GL31.GL_MAX_VERTEX_UNIFORM_BLOCKS),
+                GL11.glGetInteger(GL31.GL_MAX_UNIFORM_BUFFER_BINDINGS));
+        if (refusal != null) throw new IOException(refusal);
         int previousProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), previousArray = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
-        int previousBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+        int previousBuffer = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING), previousUniforms = GL11.glGetInteger(GL31.GL_UNIFORM_BUFFER_BINDING);
         int count = model.parts.size();
         arrays = new int[count];
         vertexBuffers = new int[count];
@@ -108,7 +115,7 @@ final class AvatarRenderer implements AutoCloseable {
         program = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES);
         boolean complete = false;
         try {
-            bones = GL20.glGetUniformLocation(program, "Bones");
+            GL31.glUniformBlockBinding(program, GL31.glGetUniformBlockIndex(program, "Palette"), PALETTE);
             viewProjection = GL20.glGetUniformLocation(program, "ViewProjection");
             lightUv = GL20.glGetUniformLocation(program, "LightUv");
             fogStart = GL20.glGetUniformLocation(program, "FogStart");
@@ -122,7 +129,10 @@ final class AvatarRenderer implements AutoCloseable {
             hairShading = GL20.glGetUniformLocation(program, "Hair");
             cutoff = GL20.glGetUniformLocation(program, "AlphaCutoff");
             skinning = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES, SKINNED);
-            skinningBones = GL20.glGetUniformLocation(skinning, "Bones");
+            GL31.glUniformBlockBinding(skinning, GL31.glGetUniformBlockIndex(skinning, "Palette"), PALETTE);
+            paletteBuffer = GL15.glGenBuffers();
+            GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, paletteBuffer);
+            GL15.glBufferData(GL31.GL_UNIFORM_BUFFER, PALETTE_BYTES, GL15.GL_DYNAMIC_DRAW); // The block's full size, whatever the part.
             sunDirection = GL20.glGetUniformLocation(program, "SunDirection");
             sunWeight = GL20.glGetUniformLocation(program, "SunWeight");
             shadowMatrix = GL20.glGetUniformLocation(program, "ShadowMatrix");
@@ -202,6 +212,7 @@ final class AvatarRenderer implements AutoCloseable {
         } finally {
             GlStateManager._glBindVertexArray(previousArray);
             GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, previousBuffer);
+            GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, previousUniforms);
             GlStateManager._glUseProgram(previousProgram);
             if (!complete) close();
         }
@@ -261,7 +272,7 @@ final class AvatarRenderer implements AutoCloseable {
                 for (int p = 0; p < arrays.length; p++) {
                     if (!drawn(p)) continue;
                     GlStateManager._glBindVertexArray(arrays[p]);
-                    GL21.glUniformMatrix3x4fv(bones, false, palettes[p]);
+                    palette(p);
                     AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
                     for (int s = 0; s < sections.length; s++) {
                         Material material = sectionMaterials[p][s];
@@ -323,7 +334,7 @@ final class AvatarRenderer implements AutoCloseable {
                 for (int p = 0; p < arrays.length; p++) {
                     if (!drawn(p)) continue;
                     GlStateManager._glBindVertexArray(arrays[p]);
-                    GL21.glUniformMatrix3x4fv(bones, false, palettes[p]);
+                    palette(p);
                     AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
                     for (int s = 0; s < sections.length; s++) {
                         Material material = sectionMaterials[p][s];
@@ -486,7 +497,7 @@ final class AvatarRenderer implements AutoCloseable {
             for (int p = 0; p < arrays.length; p++) {
                 if (!drawn(p)) continue;
                 GlStateManager._glBindVertexArray(arrays[p]);
-                GL21.glUniformMatrix3x4fv(skinningBones, false, palettes[p]);
+                palette(p);
                 GL30.glBindBufferBase(GL30.GL_TRANSFORM_FEEDBACK_BUFFER, 0, skinned[p]);
                 GL30.glBeginTransformFeedback(GL11.GL_POINTS);
                 GL11.glDrawArrays(GL11.GL_POINTS, 0, model.parts.get(p).mesh().vertexCount);
@@ -500,9 +511,26 @@ final class AvatarRenderer implements AutoCloseable {
         }
     }
 
+    /**
+     * Null when this driver holds AvatarMesh.MAX_BONES bones in avatar.vsh's Palette block at binding PALETTE (GL 3.2 only
+     * promises 16384-byte blocks), else why EVE cannot be drawn. The plain vertex uniforms left beside it are a few dozen.
+     */
+    static String paletteRefusal(int blockBytes, int vertexBlocks, int bindings) {
+        if (blockBytes >= PALETTE_BYTES && vertexBlocks >= 1 && bindings > PALETTE) return null;
+        return String.format("This GL driver holds %d-byte uniform blocks (%d per vertex shader, %d bindings); EVE's %d-bone palettes need %d bytes"
+                + " at binding %d", blockBytes, vertexBlocks, bindings, AvatarMesh.MAX_BONES, PALETTE_BYTES, PALETTE);
+    }
+
+    /** Uploads a part's palette into the Palette block and binds it at PALETTE for the next draws; restoring rebinds what was there. */
+    private void palette(int part) {
+        GL30.glBindBufferBase(GL31.GL_UNIFORM_BUFFER, PALETTE, paletteBuffer);
+        GL15.glBufferSubData(GL31.GL_UNIFORM_BUFFER, 0, palettes[part]);
+    }
+
     /** Runs a draw with the GL and shader-texture state it may change saved first and restored after. */
     private static void restoring(Runnable draw) {
         int program0 = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), array0 = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+        int uniforms0 = GL11.glGetInteger(GL31.GL_UNIFORM_BUFFER_BINDING), palette0 = GL30.glGetIntegeri(GL31.GL_UNIFORM_BUFFER_BINDING, PALETTE);
         int buffer0 = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING), active0 = GlStateManager._getActiveTexture();
         int[] bound0 = new int[8], shaderTextures0 = {RenderSystem.getShaderTexture(0), RenderSystem.getShaderTexture(1), RenderSystem.getShaderTexture(2)};
         int[] blendFunction0 = {GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB), GL11.glGetInteger(GL14.GL_BLEND_DST_RGB),
@@ -520,6 +548,8 @@ final class AvatarRenderer implements AutoCloseable {
             GlStateManager._glBindVertexArray(array0);
             GlStateManager._glUseProgram(program0);
             GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buffer0);
+            GL30.glBindBufferBase(GL31.GL_UNIFORM_BUFFER, PALETTE, palette0);
+            GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, uniforms0);
             for (int unit = 0; unit < bound0.length; unit++) {
                 GlStateManager._activeTexture(GL13.GL_TEXTURE0 + unit);
                 GlStateManager._bindTexture(bound0[unit]);
@@ -681,6 +711,8 @@ final class AvatarRenderer implements AutoCloseable {
         if (shadowTexture != 0) GlStateManager._deleteTexture(shadowTexture);
         cast = castArray = castBuffer = shadowFramebuffer = shadowTexture = 0;
         if (skinning != 0) GL20.glDeleteProgram(skinning);
+        if (paletteBuffer != 0) GL15.glDeleteBuffers(paletteBuffer);
+        paletteBuffer = 0;
         if (trail != null) trail.close();
         trail = null;
         if (sprites != null) sprites.close();

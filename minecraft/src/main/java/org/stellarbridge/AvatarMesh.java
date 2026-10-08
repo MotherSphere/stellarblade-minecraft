@@ -16,7 +16,8 @@ import org.joml.Matrix4d;
  * mesh's Unreal MorphTargets order as sparse deltas: vertex, 3 floats position, 3 floats normal.
  */
 final class AvatarMesh {
-    static final int VERTEX_BYTES = 56, MAX_BONES = 256;
+    // MAX_BONES per mesh, as the pose stream carries them (suits have up to 364); AvatarRenderer's palette block holds that many.
+    static final int VERTEX_BYTES = 56, MAX_BONES = 512;
     record Bone(String name, int parent, float[] reference) { }
     record Section(String material, int firstIndex, int indexCount) { }
     record Morph(String name, int[] vertices, float[] deltas) { }

@@ -151,7 +151,7 @@ final class AvatarStream implements AutoCloseable {
         if (state == 0) {
             require(producerPid == 0, "Pose producer reset its claimed run");
             if (nowNanos - createdNanos > 5_000_000_000L)
-                throw new IOException("No native pose producer: the adapter, Lua revision 55 and a loaded EVE are required");
+                throw new IOException("No native pose producer: the adapter, Lua revision 56 and a loaded EVE are required");
             return null;
         }
         require(pid != 0 && (producerPid == 0 || producerPid == pid), "Pose producer changed; start a new stream");
@@ -632,7 +632,7 @@ final class AvatarStream implements AutoCloseable {
                 require(f.length == 10 && f[0].equals("COMPONENT") && f[1].equals(Integer.toString(i)), "component");
                 for (int k = 2; k <= 4; k++) require(f[k].matches("[0-9a-f]{16}"), "address");
                 int bones = Integer.parseInt(f[5]), morphs = Integer.parseInt(f[6]);
-                require(bones >= 0 && bones <= 256 && morphs >= 0 && morphs <= 1024 && !f[7].isEmpty() && !f[8].isEmpty() && !f[9].isEmpty(), "counts");
+                require(bones >= 0 && bones <= AvatarMesh.MAX_BONES && morphs >= 0 && morphs <= 1024 && !f[7].isEmpty() && !f[8].isEmpty() && !f[9].isEmpty(), "counts");
                 String[] boneNames = bones > 0 ? names(lines[at++], "BONES", i, bones) : null;
                 String[] morphNames = morphs > 0 ? names(lines[at++], "MORPHS", i, morphs) : new String[0];
                 String leader = f[9].equals("-") ? null : f[9];

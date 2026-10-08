@@ -8,8 +8,11 @@ in vec4 BoneWeights;
 in vec3 MorphPosition;
 in vec3 MorphNormal;
 
-// Affine rows per bone, already in camera-relative Minecraft blocks.
-uniform mat3x4 Bones[256];
+// Affine rows per bone, already in camera-relative Minecraft blocks: a uniform block (std140, 48 bytes a bone), as
+// AvatarMesh.MAX_BONES of them pass the 4096 plain vertex uniform components some drivers allow.
+layout(std140) uniform Palette {
+    mat3x4 Bones[512];
+};
 uniform mat4 ViewProjection;
 
 out vec2 texCoord;

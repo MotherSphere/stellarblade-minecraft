@@ -53,6 +53,13 @@ public final class AvatarStreamTest {
         for (String bad : new String[] {"CLOTH 0", "CLOTH 3", "CLOTH", "CLOTH +1", "CLOTH 02", "CLOTH 1 2", "CLOTH -1"})
             assert AvatarStream.parse(fixture.replace("CLOTH none", bad)) == null : bad;
         assert AvatarStream.parse(fixture.replace("CLOTH none\n", "")) == null : "The cloth line is required";
+        // A component carries up to AvatarMesh.MAX_BONES bones (suits up to 364), as the adapter parses it.
+        for (int bones : new int[] {AvatarMesh.MAX_BONES, AvatarMesh.MAX_BONES + 1}) {
+            var wide = AvatarStream.parse(fixture.replace(" 3 0 CharacterMesh0 ", " " + bones + " 0 CharacterMesh0 ")
+                    .replace("BONES 1 Root Bip001 Bip001-Head", "BONES 1" + " b".repeat(bones)));
+            assert bones == 512 ? wide != null && wide.floats() == 10 + 10 * 512 + 12 && wide.components().get(0).bones().length == 512
+                    : wide == null : bones + " bones";
+        }
         float[] effectPayload = new float[sparkling.floats()];
         java.util.Arrays.fill(effectPayload, 52, effectPayload.length, 0);
         for (int r = 0; r < AvatarStream.MAX_EFFECTS; r++) effectPayload[52 + r * AvatarStream.EFFECT_FLOATS] = -1;
