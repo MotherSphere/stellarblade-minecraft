@@ -350,7 +350,7 @@ local function material(class,textures) -- textures: {{parameter, texture}, ...}
     return typed(class..'_0',class,{TextureParameterValues=tarray(values)})
 end
 -- The heal slot shows the Tumbler's cup, which has no thumbnail; the util slot's general child draws the Camera.
-local healSlot=widget('WB_MainHUD_HealItem',{ItemCount=3,RecoveryPotionMaxCount=5,CoolTimePercent=0,UseActive=true,
+local healSlot=widget('WB_MainHUD_HealItem',{ItemCount=3,RecoveryPotionMaxCount=5,ChangeItemCategory=12,CoolTimePercent=0,UseActive=true,
     Image_Item_Thumb=thumb(nil),WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{}))})
 local utilSlot=widget('WB_MainHUD_UtilItem',{ItemCount=wrap(2),CoolTimePercent=0.4,Image_Item_Thumb=thumb(nil),
     WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{{'Mask_Texture','Mask'},{'Icon_Texture','Icon_Camera'},{'Noise_Texture','Noise'}}))})
@@ -372,7 +372,8 @@ local function walked() local n=0; for _,count in pairs(walks) do n=n+count end;
 local hud=widgets.hud()
 assert(hud.search and hud.search.missing=='lower, bullets' and hud.search.retry==2 and hud.search.ms==0,'The first call searches: '..tostring(hud.search and hud.search.missing))
 assert(hud.found_util==true,'The search found the util widget')
-assert(hud.heal.thumb==nil and hud.heal.count==3 and hud.heal.max==5 and hud.heal.cooldown==0 and hud.heal.usable==true,'The live heal slot, not its template')
+assert(hud.heal.thumb==nil and hud.heal.count==3 and hud.heal.max==5 and hud.heal.category==12 and hud.heal.cooldown==0 and hud.heal.usable==true,
+    'The live heal slot, not its template')
 assert(hud.util.thumb=='Icon_Camera' and hud.util.count==2 and hud.util.cooldown==0.4 and hud.util.usable==nil,'The material\'s icon; unreadable values are nil')
 assert(hud.lower==nil and hud.dash==0.25 and hud.bullet=='Bullet_Normal' and hud.ammo==nil,'No bullet slot, no ammo; the live dash slot')
 local searches={}

@@ -746,11 +746,12 @@ function Adapter.new()
     -- HUD_RETRY seconds, doubling up to HUD_RETRY_MAX (back to HUD_RETRY once a search finds one), and at once when one
     -- found went. FindAllOf also lists each widget's designer template, which sits in its widget class's own WidgetTree
     -- (full name '<class>_C:WidgetTree.<name>'), keeps the Blueprint defaults and is never drawn, so it is skipped. Each
-    -- slot: {thumb=, count=, max=, cooldown=, usable=}; thumb is the name of the texture the slot draws (see icon), usable
-    -- its UseActive (the HUD logic clears it while EVE's ActorState_BlockItemUseHeal/Util blocks the slot; SlotUseAllow
-    -- is another flag, false at rest); an unreadable property is nil. search: what a search made by this call cost,
-    -- {ms=, missing=, retry=}. found_util: this call's search found the util widget, so its values are no continuation
-    -- of an earlier one's.
+    -- slot: {thumb=, count=, max=, category=, cooldown=, usable=}; thumb is the name of the texture the slot draws (see
+    -- icon), category its ChangeItemCategory (the item row's ESBItemCategory, which the HUD logic writes on each slot
+    -- update; RecoveryPotionMaxCount only for 12, RecoveryPotion), usable its UseActive (the HUD logic clears it while
+    -- EVE's ActorState_BlockItemUseHeal/Util blocks the slot; SlotUseAllow is another flag, false at rest); an unreadable
+    -- property is nil. search: what a search made by this call cost, {ms=, missing=, retry=}. found_util: this call's
+    -- search found the util widget, so its values are no continuation of an earlier one's.
     local HUD_RETRY,HUD_RETRY_MAX=2,30
     local HUD_SLOTS={heal='WB_MainHUD_HealItem',util='WB_MainHUD_UtilItem',lower='WB_MainHUD_Lower1Item'}
     local widgets,bullets,hud_next,hud_wait={},{},-math.huge,HUD_RETRY
@@ -818,7 +819,7 @@ function Adapter.new()
             return icon(widget.Image_Item_Thumb) or general and icon(general.Image_Item_Thumb) or nil
         end)
         return {thumb=ok and thumb or nil,count=get(widget,'ItemCount'),max=get(widget,'RecoveryPotionMaxCount'),
-            cooldown=get(widget,'CoolTimePercent'),usable=get(widget,'UseActive')}
+            category=get(widget,'ChangeItemCategory'),cooldown=get(widget,'CoolTimePercent'),usable=get(widget,'UseActive')}
     end
     function engine.hud()
         local util=widgets.util

@@ -5,8 +5,8 @@ local function read(name) local f=io.open(directory..'/'..name,'rb'); if not f t
 local f=assert(io.open('protocol/fixtures/hud.txt','rb')); local fixture=f:read('a'); f:close()
 
 assert(Hud.kind('Grenade')=='shock' and Hud.kind('PluseGrenade')=='pulse' and Hud.kind(nil)=='none' and Hud.kind('Foo')=='other')
-assert(Hud.kind(nil,5)=='tumbler' and Hud.kind('',0)=='none' and Hud.kind('Icon_Potion',5)=='potion' and Hud.kind('Icon_Camera')=='other',
-    'A thumbless heal slot with a capacity is the Tumbler')
+assert(Hud.kind(nil,true)=='tumbler' and Hud.kind('',false)=='none' and Hud.kind('Icon_Potion',true)=='potion' and Hud.kind('Icon_Camera')=='other',
+    'A thumbless RecoveryPotion is the Tumbler')
 assert(Hud.format(string.rep('a',32),7,1760000000000,{heal={kind='tumbler',count=3,max=5,usable=true},
     util={kind='shock',count=2,cooldown=0.4,usable=true},ammo={alias='Bullet_Normal',count=120,cooldown=0},dash=0.25,uses={1,0,0,0}})==fixture,
     'the text Java parses')
@@ -31,7 +31,7 @@ local function newest() -- The newer slot's text, by SEQ.
 end
 local function second() wall=wall+1; hud.tick(); return newest() end
 local function stable() hud.tick(); return second() end -- Two agreeing reads.
-state={heal={thumb='Icon_PotionR',count=3,max=5,cooldown=0,usable=true},util=slot('Grenade',2),bullet='Bullet_Normal',
+state={heal={thumb='Icon_PotionR',count=3,max=5,category=12,cooldown=0,usable=true},util=slot('Grenade',2),bullet='Bullet_Normal',
     ammo={count=120,cooldown=0},dash=0.25,search={ms=1.5,missing='lower',retry=2}}
 hud.tick()
 assert(read('eve-hud.0')==nil and read('eve-hud.1')==nil,'Without a link, no file is written')
@@ -41,7 +41,7 @@ local text=read('eve-hud.1')
 assert(text and read('eve-hud.0')==nil and text==string.format('SBMC_HUD 1\nSESSION %s\nSEQ 1\nTIME %d\nHEAL tumbler 3 5 1\nUTIL shock 2 0.00 1\n'..
     'AMMO Bullet_Normal 120 0.00\nDASH 0.25\nUSES 0 0 0 0\nEND 1\n',SESSION,wall*1000),'The first tick writes slot 1 with SEQ 1: '..tostring(text))
 assert(logs('widget search 1.5 ms, missing lower, next in 2 s')==1,'The first search is logged')
-assert(logs('heal Icon_PotionR 3/5 use true; util Grenade 2 cool 0 use true; lower - -; bullet Bullet_Normal 120; dash 0.25')==1,logged[#logged])
+assert(logs('heal Icon_PotionR 3/5 cat 12 use true; util Grenade 2 cool 0 use true; lower - -; bullet Bullet_Normal 120; dash 0.25')==1,logged[#logged])
 state.search={ms=2,missing='lower',retry=4}
 hud.tick()
 assert(read('eve-hud.0')==nil,'Same state in the same second: no new SEQ')
@@ -90,10 +90,15 @@ failure=nil
 state={heal={count=3},util={thumb='Grenade'},bullet='Bullet Normal',ammo={count=1},dash='n/a'}
 text=second()
 assert(text:find('\nHEAL none\nUTIL none\nAMMO none\nDASH none\n',1,true),text)
--- The heal slot's Tumbler cup has no thumbnail: with a capacity it is the Tumbler; a util slot stays none without one.
-state={heal={count=5,max=5,usable=true},util={count=5,max=5,cooldown=0,usable=true}}
+-- The heal slot's Tumbler cup has no thumbnail: a RecoveryPotion (12) is the Tumbler, a widget not yet written (its
+-- defaults, category 0) is none, a util slot stays none without one; max is the Tumbler's alone.
+state={heal={count=5,max=5,category=0,usable=true},util={count=5,max=5,cooldown=0,usable=true}}
 text=second()
+assert(text:find('\nHEAL none\nUTIL none\n',1,true),text)
+state.heal.category=12; text=second()
 assert(text:find('\nHEAL tumbler 5 5 1\nUTIL none\n',1,true),text)
+state.heal={thumb='Icon_Potion',count=2,max=5,category=5,usable=true}; text=second()
+assert(text:find('\nHEAL potion 2 0 1\n',1,true),text)
 -- A drop adds its size; a selection to a lower count is none; unchanged values are logged once.
 state={util=slot('Grenade',3)}; stable(); state.util=slot('Grenade',1); text=stable()
 assert(text:find('\nUSES 3 0 1 0\n',1,true),'A drop of two is two uses: '..text)

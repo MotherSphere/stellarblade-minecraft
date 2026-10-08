@@ -1,22 +1,22 @@
 -- Stellar Blade's HUD item slots for Minecraft (eve-hud.0/.1, SBMC_HUD 1), as Stellar Blade's own HUD widgets show them
 -- (engine.hud): the heal and util slots, EVE's selected drone bullet with its ammo, the dash attack's cooldown, and the
--- uses of each combat consumable since this Lua loaded. A util count that drops while its item (the slot's thumbnail
--- texture) stays the same is that many uses; a rise (a refill) or another item (a selection) is none, so Stellar Blade
+-- uses of each combat consumable since this Lua loaded. A util count that drops while its item (the texture the slot
+-- draws) stays the same is that many uses; a rise (a refill) or another item (a selection) is none, so Stellar Blade
 -- stays authoritative for selection, counts, cooldowns and conditions. A read counts once the next one agrees: Stellar
 -- Blade writes the count and the thumbnail apart (the brush may load later). Published while a link is entered, when the
 -- content changes and at least every wall second, in alternating slots (SEQ % 2). Game-thread only; call tick on the
 -- 200 ms bridge timer.
 local Hud={}
 local LINES,READS=200,150 -- Read-value lines have their own budget, so a value that keeps changing cannot hide a use.
--- ItemTable.Asset2D, the thumbnail texture's name, to the item's kind.
+-- ItemTable.Asset2D, the name of the texture a slot draws, to the item's kind.
 Hud.KINDS={Icon_PotionR='tumbler',Icon_Potion='potion',Icon_PotionSmall='lingering',HealGrenade='field',Grenade='shock',
     PluseGrenade='pulse',TrapGrenade='mine',FlashGrenade='sonic',WbPump='pump'}
 Hud.USES={'shock','pulse','mine','sonic'}
--- max: the heal slot's RecoveryPotionMaxCount. Its Tumbler shows as a cup (WB_MainHUD_ItemSlotRefill) without a
--- thumbnail, so a heal slot without one but with a Tumbler capacity holds the Tumbler. ponytail: the widget's Blueprint
--- default (5) counts as a capacity; read its CurrentItemCategory (12, RecoveryPotion) if another item ever shows there.
-function Hud.kind(thumb,max)
-    if thumb==nil or thumb=='' then return (tonumber(max) or 0)>0 and 'tumbler' or 'none' end
+-- tumbler: the heal slot's ChangeItemCategory is 12 (RecoveryPotion). That slot also holds potions and the Biotic Field
+-- and shows the Tumbler as a cup (WB_MainHUD_ItemSlotRefill) that may draw no texture, so without one only that category
+-- is the Tumbler; a widget the HUD logic has not written yet (category 0, its Blueprint defaults) is none.
+function Hud.kind(thumb,tumbler)
+    if thumb==nil or thumb=='' then return tumbler and 'tumbler' or 'none' end
     return Hud.KINDS[thumb] or 'other'
 end
 local function whole(n,max) n=tonumber(n); return math.floor(n and n>0 and math.min(n,max) or 0) end -- NaN and -0 give 0.
@@ -57,10 +57,10 @@ function Hud.new(engine,directory,wall,log,link)
         if exists then exists:close(); assert(os.remove(slot)) end
         assert(os.rename(temporary,slot))
     end
-    local function item(s,heal) -- A slot shown with a known item and a readable count, else none.
-        local kind=Hud.kind(s and s.thumb,heal and s and s.max)
+    local function item(s,heal) -- A slot shown with a known item and a readable count, else none; max only for the Tumbler.
+        local kind=Hud.kind(s and s.thumb,heal and s and s.category==12)
         if kind=='none' or type(s.count)~='number' then return nil end
-        return {kind=kind,count=s.count,max=s.max,cooldown=s.cooldown,usable=s.usable}
+        return {kind=kind,count=s.count,max=kind=='tumbler' and s.max or 0,cooldown=s.cooldown,usable=s.usable}
     end
     local function v(x) return x==nil and '-' or math.type(x)=='float' and string.format('%.2f',x) or tostring(x) end
     function api.tick()
@@ -94,11 +94,11 @@ function Hud.new(engine,directory,wall,log,link)
         end
         pending={kind=kind,count=count}
         local h,u,l,a=read.heal or {},s or {},read.lower or {},read.ammo or {}
-        local values={v(h.thumb),v(h.count),v(h.max),v(h.usable),v(u.thumb),v(u.count),v(u.cooldown),v(u.usable),v(l.thumb),v(l.count),
-            v(read.bullet),v(a.count),v(read.dash)}
-        local line=string.format('heal %s %s/%s use %s; util %s %s cool %s use %s; lower %s %s; bullet %s %s; dash %s',table.unpack(values))
+        local values={v(h.thumb),v(h.count),v(h.max),v(h.category),v(h.usable),v(u.thumb),v(u.count),v(u.cooldown),v(u.usable),v(l.thumb),
+            v(l.count),v(read.bullet),v(a.count),v(read.dash)}
+        local line=string.format('heal %s %s/%s cat %s use %s; util %s %s cool %s use %s; lower %s %s; bullet %s %s; dash %s',table.unpack(values))
         -- A running cooldown is logged where it starts and ends, not at each step; ammo where it appears or goes, not at each shot.
-        values[7],values[12],values[13]=tostring((tonumber(u.cooldown) or 0)>0),tostring(a.count~=nil),tostring((tonumber(read.dash) or 0)>0)
+        values[8],values[13],values[14]=tostring((tonumber(u.cooldown) or 0)>0),tostring(a.count~=nil),tostring((tonumber(read.dash) or 0)>0)
         local seen=table.concat(values,' ')
         if seen~=shown then
             shown=seen
