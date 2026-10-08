@@ -28,6 +28,7 @@ local function backend()
     -- A new or parked actor takes its spec's place, size and collision; b.inside counts any made solid around EVE.
     function b.configure(a,spec)
         b.events[#b.events+1]={'configure',a.id}
+        assert(b.live[a.id],'TriggerBox has no BoxComponent.')
         if b.fail_configure==a.id then error('configure failed') end
         if Terrain.overlaps(spec,b.position,35,90) then b.inside=(b.inside or 0)+1 end
         a.spec,a.solid,a.visible=spec,true,spec.visuals_visible~=false
@@ -509,6 +510,16 @@ check('a parked actor that fails its setup rolls the move back like a new one',f
     for id in pairs(applied) do assert(now[id]) end
     b.fail_configure=nil
     ok,message=t.update(packet(3))
+    assert(ok and message:find('reused 6, spawned 1',1,true) and t.pose().ack==3,message)
+    consistent(b,t); assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a parked actor the engine deleted is dropped, not placed',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.live[3]=nil -- One of the first guard set, parked.
+    local ok,message=t.update(packet(3))
     assert(ok and message:find('reused 6, spawned 1',1,true) and t.pose().ack==3,message)
     consistent(b,t); assert(t.restore()); assert(b.count()==0)
 end)

@@ -89,6 +89,11 @@ function Terrain.new(engine,scale,clock)
         spec.visuals_visible=visuals_visible
         local started=clock()
         local parked=table.remove(fixture.pool)
+        -- One the engine deleted while parked is dropped (a surviving visual destroyed) instead of failing the import.
+        while parked and not engine.valid(parked.actor) do
+            pcall(engine.destroy,parked.actor)
+            parked=table.remove(fixture.pool)
+        end
         local actor=parked and parked.actor or engine.spawn(spec)
         assert(actor,'spawn returned no actor')
         group[#group+1]={actor=actor,spec=spec,key=key}
