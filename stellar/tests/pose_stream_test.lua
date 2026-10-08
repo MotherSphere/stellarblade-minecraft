@@ -171,6 +171,18 @@ assert(worn.components()[2].cloth and not worn.components()[1].cloth and not wor
 assert(#cloth_log==1 and cloth_log[1]=='Cloth: SBPonytail tick option 3, blend weight 1, simulation disabled false',cloth_log[1])
 place={session=string.rep('a',32),anchor={X=0,Y=0,Z=0},scale=100}; worn.tick()
 assert(#cloth_log==1,'Logged once per run')
+-- The cloth's 10 + 3 * 17309 floats share the slot: with the ponytail listed, the drone gives way at 13567 table floats.
+engine.names=function(c) if c.drone or c.name:find('^Part') then local bones={} for i=1,250 do bones[i]='B'..i end return bones,{} end return names(c) end
+local tailed={eve}
+for i=1,5 do tailed[#tailed+1]=heavy[i+1] end
+tailed[#tailed+1]=companion
+engine.identities=function() return tailed end
+local _,untailed=worn.tick()
+assert(untailed:find('7 components',1,true) and not untailed:find('skipped',1,true),untailed)
+table.insert(tailed,2,tail)
+local _,crowded_tail=worn.tick()
+assert(crowded_tail:find('7 components',1,true) and crowded_tail:find('skipped Drone.CharacterMesh0 (no room)',1,true),crowded_tail)
+engine.names=names
 engine.cloth=function() error('no reflection') end
 RUN=string.rep('3',32); request(); worn.tick()
 assert(cloth_log[2]:find('^Cloth: SBPonytail state unavailable: ') and cloth_log[2]:find('no reflection',1,true),cloth_log[2])

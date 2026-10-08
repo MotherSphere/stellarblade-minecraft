@@ -210,10 +210,13 @@ function Stream.new(engine,directory,clock,log,link)
             for _,q in ipairs(parameters) do if q.component<=#list then total=total+q.floats end end
             return total
         end
-        -- ponytail: the table keeps a 64 KiB slot's floats; the rest of the 256 KiB slot carries the cloth.
-        while floats()>16352 and list[#list].drone do skipped[#skipped+1]=table.remove(list).name..' (no room)' end
+        -- ponytail: with the cloth listed, the table keeps what a 65504-float slot leaves after 10 + 3 * 17309 cloth
+        -- floats (the long ponytail's particles); a larger cloth needs bigger slots. Otherwise a 64 KiB slot's floats.
+        local room=16352
+        for _,c in ipairs(list) do if c.cloth then room=13567 end end
+        while floats()>room and list[#list].drone do skipped[#skipped+1]=table.remove(list).name..' (no room)' end
         for i=#parameters,1,-1 do if parameters[i].component>#list then table.remove(parameters,i) end end
-        assert(floats()<=16352,'EVE pose exceeds one stream slot.')
+        assert(floats()<=room,'EVE pose exceeds one stream slot.')
         generation=generation+1
         local text=encode(list,place,controller,parameters)
         assert(#text<=65536,'EVE component table exceeds the stream bound.')
