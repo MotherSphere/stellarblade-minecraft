@@ -15,9 +15,10 @@ import org.lwjgl.glfw.GLFW;
  * Minecraft owns menus and hardware events; only this explicit session forwards controller states. In EVE mode the
  * keys follow Stellar Blade's keyboard defaults (its DefaultInput.ini) and press their controller equivalents: movement
  * on the left stick, jump A, sneak B (dodge), EVE sprint L3, EVE walk WALK_KEY (Stellar Blade's walk has no controller
- * key, so the adapter answers its walk key test with this bit), attack X (light), use Y (heavy), the inventory key LB (guard, parry), hotbar keys 1 to 4 the Beta skills (LB, then X, Y, A or B) or with the burst key
- * the Burst skills (RB instead of LB), drone aim LT (attack then fires with RT), heal D-pad up, item D-pad down,
- * interact RT, scan Back, lock-on R3 and Tachy mode L3 with R3. Minecraft actions sharing those keys wait for build mode.
+ * key, so the adapter answers its walk key test with this bit), attack X (light), use Y (heavy), the inventory key LB
+ * (guard, parry), hotbar keys 1 to 4 the Beta skills (LB, then X, Y, A or B) or with the burst key the Burst skills (RB
+ * instead of LB), drone aim LT (attack then fires with RT), heal D-pad up, item D-pad down, interact RT, scan Back,
+ * lock-on R3 and Tachy mode L3 with R3. Minecraft actions sharing those keys wait for build mode.
  */
 public final class ControlBridge {
     private static final int LB = 0x100, RB = 0x200, X = 0x4000, Y = 0x8000, A = 0x1000, B = 0x2000, L3 = 0x40, R3 = 0x80,
