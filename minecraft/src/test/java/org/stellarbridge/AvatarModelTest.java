@@ -161,6 +161,7 @@ public final class AvatarModelTest {
         assert Math.abs(AvatarShadows.sun(0, 0.5f, 13).strength() - 0.25f) < 1e-6;
         // The shadow's light: straight up without a sun, never below 15 degrees.
         assert AvatarShadows.toward(AvatarShadows.NONE).distance(0, 1, 0) < 1e-6;
+        assert AvatarShadows.toward(AvatarShadows.sun(0.2f, 1, 15)).distance(0, 1, 0) < 1e-6 : "A sun at strength 0 casts straight down";
         Vector3f low = AvatarShadows.toward(new AvatarShadows.Light(new Vector3f(1, 0.05f, 0).normalize(), 1));
         assert Math.abs(low.y - Math.sin(Math.toRadians(15))) < 1e-5 && Math.abs(low.length() - 1) < 1e-5 && low.z == 0 : "15 degree clamp";
         // The fitted light view holds the padded box, centred, and its depth spans the box along the light.
@@ -176,13 +177,15 @@ public final class AvatarModelTest {
         }
         Vector3f center = light.transformProject(0, -0.7f, 2.25f, new Vector3f());
         assert Math.abs(center.x) < 1e-5 && Math.abs(center.y) < 1e-5 : "Box centred";
+        // The shaders clear depth to 1 and keep the nearest to the light.
+        assert light.transformProject(slanted.x / 2, -0.7f + slanted.y / 2, 2.25f + slanted.z / 2, new Vector3f()).z < center.z : "Nearer the light, nearer in depth";
         double span = 0;
         for (int i = 0; i < 3; i++) span += Math.abs(slanted.get(i)) * (boxHigh.get(i) - boxLow.get(i) + 2 * AvatarShadows.PAD);
         assert Math.abs(depth - span) < 1e-4 : "Depth " + depth + " against " + span;
-        // Faces under her: a floor, and a wall at x = 2 three blocks high.
+        // Faces under her: a floor, and a wall at x = 2 three blocks high; light level 0 inside full cubes, as Minecraft's.
         AvatarShadows.Cells cells = new AvatarShadows.Cells() {
             @Override public float top(int x, int y, int z) { return y < 0 || (x == 2 && y < 3) ? 1 : 0; }
-            @Override public float brightness(int x, int y, int z) { return 1; }
+            @Override public float brightness(int x, int y, int z) { return top(x, y, z) >= 1 ? 0 : 1; }
         };
         Vector3d feet = new Vector3d(-0.3, 0, -0.3), head = new Vector3d(0.3, 1.7, 0.3);
         FloatBuffer faces = FloatBuffer.allocate(7 * 6 * 2048);
