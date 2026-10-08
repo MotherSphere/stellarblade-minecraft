@@ -28,7 +28,10 @@ import org.lwjgl.stb.STBImageWrite;
  * Minecraft's own cut-out entity and eyes programs (read from the client jar), with a sword glow. sun (degrees, azimuth from
  * +Z toward +X) puts a floor, a three-block wall and a slab around her, lights her with that sun, draws her cast shadow and
  * prints the GPU time of her draw, her shadow map and the cast faces; with entity, it draws instead what a shader pack's
- * shadow pass receives: her opaque and cut-out sections seen from that sun.
+ * shadow pass receives: her opaque and cut-out sections seen from that sun. cloth=FILE draws the SBPonytail component from
+ * Stellar Blade's cloth as the adapter streams it (little-endian floats: ComponentRelativeTransform, then the simulation-space
+ * particles), prints how far the drawn vertices lie from that cloth (CPU copy of the vertex shader) and, at the first time,
+ * the per-frame CPU cost of the cloth path; bones with it draws her bones instead and prints their distance from the cloth.
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
@@ -69,6 +72,20 @@ public final class AvatarRenderCheck {
 
         AvatarRecording recording = AvatarRecording.read(poses);
         AvatarModel model = AvatarModel.load(pack, recording.components, new java.util.HashMap<>());
+        String clothArgument = java.util.Arrays.stream(args).filter(a -> a.startsWith("cloth=")).findFirst().orElse(null);
+        boolean bones = java.util.List.of(args).contains("bones");
+        int clothComponent = -1, clothPart = -1;
+        float[] cloth = null;
+        if (clothArgument != null) {
+            for (int c = 0; c < recording.components.size(); c++) if (recording.components.get(c).name().equals("SBPonytail")) clothComponent = c;
+            for (int p = 0; p < model.parts.size(); p++) if (model.parts.get(p).component() == clothComponent) clothPart = p;
+            if (clothPart < 0) throw new IllegalArgumentException("No drawn SBPonytail component for the cloth");
+            var bytes = java.nio.ByteBuffer.wrap(java.nio.file.Files.readAllBytes(Path.of(clothArgument.substring(6)))).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            float[] floats = new float[bytes.remaining() / 4];
+            bytes.asFloatBuffer().get(floats);
+            cloth = AvatarStream.cloth(floats, model.parts.get(clothPart).mesh().vertexCount, null);
+            if (cloth == null) throw new IllegalArgumentException("The cloth does not fit " + model.parts.get(clothPart).mesh().name);
+        }
         boolean entity = java.util.List.of(args).contains("entity");
         String sunArgument = java.util.Arrays.stream(args).filter(a -> a.startsWith("sun=")).findFirst().orElse(null);
         AvatarShadows.Light key = AvatarShadows.NONE;
@@ -106,6 +123,7 @@ public final class AvatarRenderCheck {
             GL11.glClearColor(0.47f, 0.65f, 1f, 1);
             GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
             AvatarRecording.Pose pose = recording.emptyPose();
+            if (cloth != null && !bones) pose.cloth()[clothComponent] = cloth;
             // Swings in the recording: when the weapon trail would show.
             StringBuilder swings = new StringBuilder();
             for (double t = 0; t < recording.duration(); t += 1 / 120.0) {
@@ -146,7 +164,16 @@ public final class AvatarRenderCheck {
                         renderer.effects(active, eye, facing, t);
                     }
                 }
-                for (int p = 0; p < model.parts.size(); p++) System.out.println("  " + bounds(model.parts.get(p).mesh(), model.morphWeights[p], renderer.palettes[p], eye));
+                for (int p = 0; p < model.parts.size(); p++) System.out.println("  " + bounds(model, p, renderer.palettes[p], eye));
+                if (cloth != null) System.out.println("  " + clothError(model, clothPart, renderer.palettes[clothPart], placement, pose.world()[clothComponent], cloth, bones));
+                if (cloth != null && !bones && i == 0) {
+                    benchmark(recording, model, renderer, pose, placement, clothComponent, clothPart, cloth, now, projectionCheck(camera, eye, tileWidth, tileHeight), lightmap);
+                    GL11.glScissor(0, 0, tileWidth, tileHeight); // The timing drew over the tile: clear it first.
+                    GL11.glEnable(GL11.GL_SCISSOR_TEST);
+                    GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+                    GL11.glDisable(GL11.GL_SCISSOR_TEST);
+                    model.palettes(pose, placement, renderer.palettes, false);
+                }
                 Matrix4f view = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
                 Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(40), (float) tileWidth / tileHeight, 0.05f, 100);
                 GL11.glViewport(i * tileWidth, 0, tileWidth, tileHeight);
@@ -314,27 +341,110 @@ public final class AvatarRenderCheck {
         return id;
     }
 
-    /** CPU copy of the vertex shader's morphing and skinning: the part's extent around EVE's feet, in blocks. */
-    static String bounds(AvatarMesh mesh, float[] weights, java.nio.FloatBuffer palette, Vector3d eye) {
-        double[] low = {1e9, 1e9, 1e9}, high = {-1e9, -1e9, -1e9};
-        java.nio.FloatBuffer offsets = java.nio.FloatBuffer.allocate(6 * mesh.vertexCount);
-        mesh.morph(weights, offsets);
+    /** CPU copy of the vertex shader's morphing (or cloth) and skinning: the part's extent around EVE's feet, in blocks. */
+    static String bounds(AvatarModel model, int part, java.nio.FloatBuffer palette, Vector3d eye) {
+        AvatarMesh mesh = model.parts.get(part).mesh();
+        double[] low = {1e9, 1e9, 1e9}, high = {-1e9, -1e9, -1e9}, at = new double[3];
+        java.nio.FloatBuffer offsets = offsets(model, part);
         for (int v = 0; v < mesh.vertexCount; v++) {
-            int at = v * AvatarMesh.VERTEX_BYTES;
-            double[] p = {mesh.vertices.getFloat(at) + offsets.get(6 * v), mesh.vertices.getFloat(at + 4) + offsets.get(6 * v + 1),
-                    mesh.vertices.getFloat(at + 8) + offsets.get(6 * v + 2)};
+            skin(mesh, offsets, palette, v, at);
             for (int row = 0; row < 3; row++) {
-                double value = 0;
-                for (int k = 0; k < 4; k++) {
-                    int bone = Short.toUnsignedInt(mesh.vertices.getShort(at + 32 + 2 * k)), base = bone * 12 + row * 4;
-                    float weight = mesh.vertices.getFloat(at + 40 + 4 * k);
-                    value += weight * (palette.get(base) * p[0] + palette.get(base + 1) * p[1] + palette.get(base + 2) * p[2] + palette.get(base + 3));
-                }
-                value += row == 0 ? eye.x : row == 1 ? eye.y : eye.z;
+                double value = at[row] + (row == 0 ? eye.x : row == 1 ? eye.y : eye.z);
                 low[row] = Math.min(low[row], value);
                 high[row] = Math.max(high[row], value);
             }
         }
         return String.format("%s x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f", mesh.name, low[0], high[0], low[1], high[1], low[2], high[2]);
+    }
+    /** The morph deltas the renderer uploads for a part after palettes: its cloth's, else its morphs'. */
+    static java.nio.FloatBuffer offsets(AvatarModel model, int part) {
+        AvatarMesh mesh = model.parts.get(part).mesh();
+        java.nio.FloatBuffer offsets = java.nio.FloatBuffer.allocate(6 * mesh.vertexCount);
+        if (model.cloth[part] != null) mesh.cloth(model.cloth[part], new float[3 * mesh.vertexCount], offsets);
+        else mesh.morph(model.morphWeights[part], offsets);
+        return offsets;
+    }
+    /** avatar.vsh's position of vertex v: (Position + MorphPosition) through the weighted bone rows, camera-relative blocks. */
+    static void skin(AvatarMesh mesh, java.nio.FloatBuffer offsets, java.nio.FloatBuffer palette, int v, double[] out) {
+        int at = v * AvatarMesh.VERTEX_BYTES;
+        double[] p = {mesh.vertices.getFloat(at) + offsets.get(6 * v), mesh.vertices.getFloat(at + 4) + offsets.get(6 * v + 1),
+                mesh.vertices.getFloat(at + 8) + offsets.get(6 * v + 2)};
+        for (int row = 0; row < 3; row++) {
+            out[row] = 0;
+            for (int k = 0; k < 4; k++) {
+                int bone = Short.toUnsignedInt(mesh.vertices.getShort(at + 32 + 2 * k)), base = bone * 12 + row * 4;
+                float weight = mesh.vertices.getFloat(at + 40 + 4 * k);
+                out[row] += weight * (palette.get(base) * p[0] + palette.get(base + 1) * p[1] + palette.get(base + 2) * p[2] + palette.get(base + 3));
+            }
+        }
+    }
+
+    /** How far the drawn cloth part's vertices lie from Stellar Blade's cloth (placement * world * cloth), in cm. */
+    static String clothError(AvatarModel model, int part, java.nio.FloatBuffer palette, Matrix4d placement, float[] world, float[] cloth, boolean bones) {
+        AvatarMesh mesh = model.parts.get(part).mesh();
+        Matrix4d expected = new Matrix4d(placement).mul(AvatarMesh.transform(world, 0, new Matrix4d()));
+        java.nio.FloatBuffer offsets = offsets(model, part);
+        double[] errors = new double[mesh.vertexCount], at = new double[3];
+        Vector3d want = new Vector3d();
+        for (int v = 0; v < mesh.vertexCount; v++) {
+            skin(mesh, offsets, palette, v, at);
+            expected.transformPosition(want.set(cloth[3 * v], cloth[3 * v + 1], cloth[3 * v + 2]));
+            errors[v] = 100 * want.distance(at[0], at[1], at[2]);
+        }
+        java.util.Arrays.sort(errors);
+        return String.format("cloth: %s vs Stellar Blade's cloth over %d vertices: median %.3g, p90 %.3g, max %.3g cm", bones ? "bones" : "drawn cloth",
+                mesh.vertexCount, errors[errors.length / 2], errors[errors.length * 9 / 10], errors[errors.length - 1]);
+    }
+
+    /** The tile's projection-view, as the main loop builds it. */
+    static Matrix4f projectionCheck(double[] camera, Vector3d eye, int width, int height) {
+        Vector3d target = new Vector3d(0, camera.length > 3 ? camera[3] : camera[1], 0);
+        Matrix4f view = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
+        return new Matrix4f().perspective((float) Math.toRadians(40), (float) width / height, 0.05f, 100).mul(view);
+    }
+
+    /**
+     * Median CPU milliseconds per displayed frame of the cloth path: the display pose's blend (whole pose, cloth lerp included),
+     * the cloth part's deltas and recomputed normals, and a draw whose cloth changed (deltas, upload) against one whose
+     * cloth did not, each with palettes and glFinish.
+     */
+    static void benchmark(AvatarRecording recording, AvatarModel model, AvatarRenderer renderer, AvatarRecording.Pose pose, Matrix4d placement,
+                          int component, int part, float[] cloth, double now, Matrix4f projectionView, int lightmap) {
+        AvatarRecording.Pose a = recording.emptyPose(), b = recording.emptyPose(), out = recording.emptyPose();
+        recording.sample(now, a);
+        recording.sample(now, b);
+        float[] moved = cloth.clone();
+        for (int k = 0; k < moved.length; k++) moved[k] += 0.5f;
+        a.cloth()[component] = cloth;
+        b.cloth()[component] = moved;
+        double blend = cpu(() -> AvatarView.blend(a, b, 0.5f, out));
+        AvatarMesh mesh = model.parts.get(part).mesh();
+        float[] normals = new float[cloth.length];
+        java.nio.FloatBuffer deltas = BufferUtils.createFloatBuffer(6 * mesh.vertexCount);
+        double recompute = cpu(() -> mesh.cloth(cloth, normals, deltas));
+        float[] fog = {0.75f, 0.84f, 1f, 1f}, sky = {0.47f, 0.65f, 1f};
+        boolean[] flip = {false};
+        GL11.glViewport(0, 0, 600, 900);
+        Runnable draw = () -> {
+            model.palettes(pose, placement, renderer.palettes, false);
+            renderer.draw(projectionView, lightmap, 15, 15, 1000, 2000, fog, sky, AvatarShadows.NONE);
+            GL11.glFinish();
+        };
+        double changing = cpu(() -> { pose.cloth()[component] = (flip[0] = !flip[0]) ? moved : cloth; draw.run(); });
+        pose.cloth()[component] = cloth;
+        double still = cpu(draw);
+        System.out.printf("cloth CPU ms per frame (median of 200): pose blend %.3f, deltas and normals %.3f, draw with a new cloth %.3f, with the same %.3f%n",
+                blend, recompute, changing, still);
+    }
+    /** Median wall milliseconds of a CPU step over 200 runs, after 30 to warm up. */
+    static double cpu(Runnable step) {
+        double[] times = new double[200];
+        for (int k = -30; k < times.length; k++) {
+            long started = System.nanoTime();
+            step.run();
+            if (k >= 0) times[k] = (System.nanoTime() - started) / 1e6;
+        }
+        java.util.Arrays.sort(times);
+        return times[times.length / 2];
     }
 }
