@@ -5,6 +5,8 @@ local function read(name) local f=io.open(directory..'/'..name,'rb'); if not f t
 local f=assert(io.open('protocol/fixtures/hud.txt','rb')); local fixture=f:read('a'); f:close()
 
 assert(Hud.kind('Grenade')=='shock' and Hud.kind('PluseGrenade')=='pulse' and Hud.kind(nil)=='none' and Hud.kind('Foo')=='other')
+assert(Hud.kind(nil,5)=='tumbler' and Hud.kind('',0)=='none' and Hud.kind('Icon_Potion',5)=='potion' and Hud.kind('Icon_Camera')=='other',
+    'A thumbless heal slot with a capacity is the Tumbler')
 assert(Hud.format(string.rep('a',32),7,1760000000000,{heal={kind='tumbler',count=3,max=5,usable=true},
     util={kind='shock',count=2,cooldown=0.4,usable=true},ammo={alias='Bullet_Normal',count=120,cooldown=0},dash=0.25,uses={1,0,0,0}})==fixture,
     'the text Java parses')
@@ -88,6 +90,10 @@ failure=nil
 state={heal={count=3},util={thumb='Grenade'},bullet='Bullet Normal',ammo={count=1},dash='n/a'}
 text=second()
 assert(text:find('\nHEAL none\nUTIL none\nAMMO none\nDASH none\n',1,true),text)
+-- The heal slot's Tumbler cup has no thumbnail: with a capacity it is the Tumbler; a util slot stays none without one.
+state={heal={count=5,max=5,usable=true},util={count=5,max=5,cooldown=0,usable=true}}
+text=second()
+assert(text:find('\nHEAL tumbler 5 5 1\nUTIL none\n',1,true),text)
 -- A drop adds its size; a selection to a lower count is none; unchanged values are logged once.
 state={util=slot('Grenade',3)}; stable(); state.util=slot('Grenade',1); text=stable()
 assert(text:find('\nUSES 3 0 1 0\n',1,true),'A drop of two is two uses: '..text)
@@ -106,4 +112,4 @@ assert(text:find('\nUSES 3 0 1 1\n',1,true) and logs('HUD: sonic used (2 -> 1)')
 for _=1,6 do consume() end
 assert(logs('consume request seen')==5 and logs('consume request seen (5)')==1)
 os.remove(directory..'/eve-hud.0'); os.remove(directory..'/eve-hud.1'); os.remove(directory)
-print('PASS HUD items: kinds, shared fixture text, slot publication, use counting, failing reads and the consume probe')
+print('PASS HUD items: kinds, the thumbless Tumbler, shared fixture text, slot publication, use counting, failing reads and the consume probe')

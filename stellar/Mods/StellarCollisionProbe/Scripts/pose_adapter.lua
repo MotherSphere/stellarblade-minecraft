@@ -744,9 +744,13 @@ function Adapter.new()
     -- CurrentBulletItemAlias) with its WB_Tps_Bullet2_Slot_C, and the dash attack's WB_MainHUD_Dash_Slot_C. Kept while
     -- valid. FindAllOf walks every object on the game thread, so while one is missing they are looked for again after
     -- HUD_RETRY seconds, doubling up to HUD_RETRY_MAX (back to HUD_RETRY once a search finds one), and at once when one
-    -- found went. Each slot: {thumb=, count=, max=, cooldown=, usable=}; thumb is Image_Item_Thumb's brush texture name;
-    -- an unreadable property is nil. search: what a search made by this call cost, {ms=, missing=, retry=}. found_util:
-    -- this call's search found the util widget, so its values are no continuation of an earlier one's.
+    -- found went. FindAllOf also lists each widget's designer template, which sits in its widget class's own WidgetTree
+    -- (full name '<class>_C:WidgetTree.<name>'), keeps the Blueprint defaults and is never drawn, so it is skipped. Each
+    -- slot: {thumb=, count=, max=, cooldown=, usable=}; thumb is the name of the texture the slot draws (see icon), usable
+    -- its UseActive (the HUD logic clears it while EVE's ActorState_BlockItemUseHeal/Util blocks the slot; SlotUseAllow
+    -- is another flag, false at rest); an unreadable property is nil. search: what a search made by this call cost,
+    -- {ms=, missing=, retry=}. found_util: this call's search found the util widget, so its values are no continuation
+    -- of an earlier one's.
     local HUD_RETRY,HUD_RETRY_MAX=2,30
     local HUD_SLOTS={heal='WB_MainHUD_HealItem',util='WB_MainHUD_UtilItem',lower='WB_MainHUD_Lower1Item'}
     local widgets,bullets,hud_next,hud_wait={},{},-math.huge,HUD_RETRY
@@ -764,6 +768,10 @@ function Adapter.new()
         if #bullets==0 then list[#list+1]='bullets' end
         return list
     end
+    local function live(object)
+        object=valid(object)
+        return object and not object:GetFullName():find('_C:WidgetTree.',1,true) and object or nil
+    end
     local function find_hud()
         local went=false
         for key,widget in pairs(widgets) do if not valid(widget) then widgets[key]=nil; went=true end end
@@ -773,13 +781,13 @@ function Adapter.new()
         local start,before=os.clock(),#missing()
         if not (widgets.heal and widgets.util and widgets.lower) then -- Each class is walked only while one of its widgets is missing.
             for _,o in ipairs(FindAllOf('WB_MainHUD_ItemSlot_C') or {}) do
-                o=valid(o)
+                o=live(o)
                 local name=o and text(o:GetFName())
                 for key,wanted in pairs(HUD_SLOTS) do if name==wanted and not widgets[key] then widgets[key]=o end end
             end
         end
-        if not widgets.dash then for _,o in ipairs(FindAllOf('WB_MainHUD_Dash_Slot_C') or {}) do widgets.dash=widgets.dash or valid(o) end end
-        if #bullets==0 then for _,o in ipairs(FindAllOf('WB_Tps_Bullet2_Slot_C') or {}) do bullets[#bullets+1]=valid(o) end end
+        if not widgets.dash then for _,o in ipairs(FindAllOf('WB_MainHUD_Dash_Slot_C') or {}) do widgets.dash=widgets.dash or live(o) end end
+        if #bullets==0 then for _,o in ipairs(FindAllOf('WB_Tps_Bullet2_Slot_C') or {}) do bullets[#bullets+1]=live(o) end end
         local now,left=os.clock(),missing()
         if #left<before then hud_wait=HUD_RETRY end
         hud_next=now+hud_wait
@@ -787,14 +795,30 @@ function Adapter.new()
         if retry then hud_wait=math.min(hud_wait*2,HUD_RETRY_MAX) end
         return {ms=(now-start)*1000,missing=#left>0 and table.concat(left,', ') or 'none',retry=retry}
     end
+    -- The name of the texture an image's brush draws: the brush's texture, or the Icon_Texture parameter its dynamic
+    -- material instance sets (WB_MainHUD_ItemSlotGeneral feeds UI_IconProgress_Inst the item's texture that way); nil
+    -- for none or any other material (UI_IconProgress_Inst's own Icon_Texture is a placeholder).
+    local function icon(image)
+        image=valid(image)
+        local resource=image and valid(value_of(value_of(image.Brush).ResourceObject))
+        if not resource then return nil end
+        local class=text(valid(resource:GetClass()):GetFName())
+        if class~='MaterialInstanceDynamic' then return not class:find('Material',1,true) and text(resource:GetFName()) or nil end
+        local name
+        each(resource.TextureParameterValues,function(_,value)
+            local texture=text(value_of(value_of(value.ParameterInfo).Name))=='Icon_Texture' and valid(value.ParameterValue)
+            if texture then name=text(texture:GetFName()) end
+        end)
+        return name
+    end
     local function slot(widget)
         if not widget then return nil end
         local ok,thumb=pcall(function()
-            local texture=valid(value_of(value_of(value_of(widget.Image_Item_Thumb).Brush).ResourceObject))
-            return texture and text(texture:GetFName()) or nil
+            local general=valid(widget.WB_MainHUD_ItemSlotGeneral)
+            return icon(widget.Image_Item_Thumb) or general and icon(general.Image_Item_Thumb) or nil
         end)
         return {thumb=ok and thumb or nil,count=get(widget,'ItemCount'),max=get(widget,'RecoveryPotionMaxCount'),
-            cooldown=get(widget,'CoolTimePercent'),usable=get(widget,'SlotUseAllow')}
+            cooldown=get(widget,'CoolTimePercent'),usable=get(widget,'UseActive')}
     end
     function engine.hud()
         local util=widgets.util

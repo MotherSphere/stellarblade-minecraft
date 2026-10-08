@@ -335,17 +335,32 @@ local near=swords.lock_neighbours(proxy,3500)
 assert(near=='Near tribe Enemy at 0 1000 -2000 (1000 cm, bearing 90, hidden false)',near)
 FindAllOf=function() return {holder,proxy} end
 assert(swords.lock_neighbours(proxy,3500)=='none within 3500 cm')
--- Stellar Blade's HUD widgets: item slots by name, the dash slot and bullet slots by class; kept while valid; while one is
--- missing, searched again 2 s later, doubling up to 30 s (2 s again once a search finds one), at once when one found went.
-local function thumb(texture) return object('Image_Item_Thumb',{Brush=wrap({ResourceObject=texture and object(texture)})}) end
-local healSlot=object('WB_MainHUD_HealItem',{ItemCount=3,RecoveryPotionMaxCount=5,CoolTimePercent=0,SlotUseAllow=true,Image_Item_Thumb=thumb('Icon_PotionR')})
-local utilSlot=object('WB_MainHUD_UtilItem',{ItemCount=wrap(2),CoolTimePercent=0.4,Image_Item_Thumb=thumb(nil)})
-setmetatable(utilSlot,{__index=function(_,key) if key=='SlotUseAllow' then error('no such property') end end})
-local lowerSlot=object('WB_MainHUD_Lower1Item',{ItemCount=0})
-local dashSlot=object('WB_Dash_Slot',{CoolTimeProgress=0.25})
-local bulletSlots={object('Slot0',{ItemAlias=fname('Bullet_Scatter'),ItemCount=8,CooltimePercent=0}),
-    object('Slot1',{ItemAlias=wrap(fname('Bullet_Normal')),ItemCount=120,CooltimePercent=0.5})}
-local instances={WB_MainHUD_ItemSlot_C={object('WB_MainHUD_HealItem_Old',{}),healSlot,utilSlot},WB_MainHUD_Dash_Slot_C={dashSlot},WB_Tps_Bullet2_Slot_C={}}
+-- Stellar Blade's HUD widgets: item slots by name, the dash slot and bullet slots by class, never their designer
+-- templates; kept while valid; while one is missing, searched again 2 s later, doubling up to 30 s (2 s again once a
+-- search finds one), at once when one found went. A slot's texture is its thumbnail's, else the Icon_Texture its general
+-- child's dynamic material sets.
+local LIVE,TEMPLATE='/Engine/Transient.GameEngine_1:SBGameInstance_C_1.WB_MainHUD_Master_C_7.WidgetTree.','/Game/Art/UI/Widget/HUD/WB_MainHUD_Master.WB_MainHUD_Master_C:WidgetTree.'
+local function widget(name,fields,path) local o=object(name,fields); o.GetFullName=function() return 'Widget '..(path or LIVE)..name end; return o end
+local function typed(name,class,fields) local o=object(name,fields); o.GetClass=function() return object(class) end; return o end
+local function thumb(resource) return object('Image_Item_Thumb',{Brush=wrap({ResourceObject=resource})}) end
+local function general(resource) return object('WB_MainHUD_ItemSlotGeneral',{Image_Item_Thumb=thumb(resource)}) end
+local function material(class,textures)
+    local values={}
+    for name,texture in pairs(textures) do values[#values+1]={ParameterInfo={Name=fname(name)},ParameterValue=typed(texture,'Texture2D')} end
+    return typed(class..'_0',class,{TextureParameterValues=tarray(values)})
+end
+-- The heal slot shows the Tumbler's cup, which has no thumbnail; the util slot's general child draws the Camera.
+local healSlot=widget('WB_MainHUD_HealItem',{ItemCount=3,RecoveryPotionMaxCount=5,CoolTimePercent=0,UseActive=true,
+    Image_Item_Thumb=thumb(nil),WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{}))})
+local utilSlot=widget('WB_MainHUD_UtilItem',{ItemCount=wrap(2),CoolTimePercent=0.4,Image_Item_Thumb=thumb(nil),
+    WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{Mask_Texture='Mask',Icon_Texture='Icon_Camera'}))})
+setmetatable(utilSlot,{__index=function(_,key) if key=='UseActive' then error('no such property') end end})
+local lowerSlot=widget('WB_MainHUD_Lower1Item',{ItemCount=0,WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceConstant',{Icon_Texture='OrganicCork'}))})
+local dashSlot=widget('WB_Dash_Slot',{CoolTimeProgress=0.25})
+local bulletSlots={widget('Slot0',{ItemAlias=fname('Bullet_Scatter'),ItemCount=8,CooltimePercent=0}),
+    widget('Slot1',{ItemAlias=wrap(fname('Bullet_Normal')),ItemCount=120,CooltimePercent=0.5})}
+local instances={WB_MainHUD_ItemSlot_C={widget('WB_MainHUD_HealItem',{ItemCount=5},TEMPLATE),widget('WB_MainHUD_HealItem_Old',{}),healSlot,utilSlot},
+    WB_MainHUD_Dash_Slot_C={widget('WB_MainHUD_Dash_Slot',{CoolTimeProgress=1},TEMPLATE),dashSlot},WB_Tps_Bullet2_Slot_C={}}
 local walks={}
 FindAllOf=function(class) walks[class]=(walks[class] or 0)+1; return instances[class] end
 local shooter=object('EVE',{CurrentBulletItemAlias=fname('Bullet_Normal')})
@@ -356,9 +371,9 @@ local function walked() local n=0; for _,count in pairs(walks) do n=n+count end;
 local hud=widgets.hud()
 assert(hud.search and hud.search.missing=='lower, bullets' and hud.search.retry==2 and hud.search.ms==0,'The first call searches: '..tostring(hud.search and hud.search.missing))
 assert(hud.found_util==true,'The search found the util widget')
-assert(hud.heal.thumb=='Icon_PotionR' and hud.heal.count==3 and hud.heal.max==5 and hud.heal.cooldown==0 and hud.heal.usable==true)
-assert(hud.util.thumb==nil and hud.util.count==2 and hud.util.cooldown==0.4 and hud.util.usable==nil,'Unreadable values are nil')
-assert(hud.lower==nil and hud.dash==0.25 and hud.bullet=='Bullet_Normal' and hud.ammo==nil,'No bullet slot, no ammo')
+assert(hud.heal.thumb==nil and hud.heal.count==3 and hud.heal.max==5 and hud.heal.cooldown==0 and hud.heal.usable==true,'The live heal slot, not its template')
+assert(hud.util.thumb=='Icon_Camera' and hud.util.count==2 and hud.util.cooldown==0.4 and hud.util.usable==nil,'The material\'s icon; unreadable values are nil')
+assert(hud.lower==nil and hud.dash==0.25 and hud.bullet=='Bullet_Normal' and hud.ammo==nil,'No bullet slot, no ammo; the live dash slot')
 local searches={}
 for _,t in ipairs({101,101.9,102,105.9,106,113.9,114,129.9,130,159.9,160}) do
     clock=t
@@ -371,6 +386,7 @@ assert(walks.WB_MainHUD_Dash_Slot_C==1,'A found class is not walked again')
 instances.WB_MainHUD_ItemSlot_C[#instances.WB_MainHUD_ItemSlot_C+1]=lowerSlot
 clock=190; hud=widgets.hud()
 assert(hud.search.missing=='bullets' and hud.search.retry==2 and hud.lower.count==0 and hud.found_util==false,'A search that finds one waits 2 s again')
+assert(hud.lower.thumb==nil,'Another material\'s Icon_Texture is no item')
 instances.WB_Tps_Bullet2_Slot_C=bulletSlots
 clock=192; hud=widgets.hud()
 assert(hud.search.missing=='none' and hud.search.retry==nil and walks.WB_MainHUD_ItemSlot_C==7,'Everything found, the item slots not walked again')
@@ -382,13 +398,14 @@ instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot}
 hud=widgets.hud()
 assert(hud.search and hud.search.missing=='util' and hud.search.retry==2 and hud.util==nil and hud.found_util==false,'A widget that went is searched for at once')
 assert(walks.WB_MainHUD_ItemSlot_C==8 and walks.WB_MainHUD_Dash_Slot_C==1 and walks.WB_Tps_Bullet2_Slot_C==8,'Only its class is walked')
-instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot,object('WB_MainHUD_UtilItem',{ItemCount=0})}
+instances.WB_MainHUD_ItemSlot_C={healSlot,lowerSlot,widget('WB_MainHUD_UtilItem',{ItemCount=0,Image_Item_Thumb=thumb(typed('Grenade','Texture2D')),
+    WB_MainHUD_ItemSlotGeneral=general(material('MaterialInstanceDynamic',{Icon_Texture='TrapGrenade'}))})}
 clock=195; hud=widgets.hud()
-assert(hud.found_util==true and hud.util.count==0,'A new util widget is flagged')
+assert(hud.found_util==true and hud.util.count==0 and hud.util.thumb=='Grenade','A new util widget is flagged; a thumbnail texture comes first')
 clock=196; assert(widgets.hud().found_util==false,'Only in the call that found it')
 local hooked
 RegisterHook=function(path,fn) hooked={path=path,fn=fn} end
 widgets.watch_consume(print)
 assert(hooked.path=='/Script/SB.SBNetworkPlayerController:ServerRequest_ItemBucketItemConsume' and hooked.fn==print)
 os.clock=real_clock
-print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone, the sword Shows per weapon and hairstyle, the lock soft-disable clear, status, trace and neighbours, and the HUD widgets')
+print('PASS pose adapter: wrapped component lists, TArray structs, weak leaders, socket fallback, failing components, glow parameters, drawn attached effects, Show key lifts, hit reactions by strength, the drone, the sword Shows per weapon and hairstyle, the lock soft-disable clear, status, trace and neighbours, and the live HUD widgets with their thumbnail or material textures')

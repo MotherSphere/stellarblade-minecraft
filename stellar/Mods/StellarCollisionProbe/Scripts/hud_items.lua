@@ -12,8 +12,11 @@ local LINES,READS=200,150 -- Read-value lines have their own budget, so a value 
 Hud.KINDS={Icon_PotionR='tumbler',Icon_Potion='potion',Icon_PotionSmall='lingering',HealGrenade='field',Grenade='shock',
     PluseGrenade='pulse',TrapGrenade='mine',FlashGrenade='sonic',WbPump='pump'}
 Hud.USES={'shock','pulse','mine','sonic'}
-function Hud.kind(thumb)
-    if thumb==nil or thumb=='' then return 'none' end
+-- max: the heal slot's RecoveryPotionMaxCount. Its Tumbler shows as a cup (WB_MainHUD_ItemSlotRefill) without a
+-- thumbnail, so a heal slot without one but with a Tumbler capacity holds the Tumbler. ponytail: the widget's Blueprint
+-- default (5) counts as a capacity; read its CurrentItemCategory (12, RecoveryPotion) if another item ever shows there.
+function Hud.kind(thumb,max)
+    if thumb==nil or thumb=='' then return (tonumber(max) or 0)>0 and 'tumbler' or 'none' end
     return Hud.KINDS[thumb] or 'other'
 end
 local function whole(n,max) n=tonumber(n); return math.floor(n and n>0 and math.min(n,max) or 0) end -- NaN and -0 give 0.
@@ -54,8 +57,8 @@ function Hud.new(engine,directory,wall,log,link)
         if exists then exists:close(); assert(os.remove(slot)) end
         assert(os.rename(temporary,slot))
     end
-    local function item(s) -- A slot shown with a known item and a readable count, else none.
-        local kind=Hud.kind(s and s.thumb)
+    local function item(s,heal) -- A slot shown with a known item and a readable count, else none.
+        local kind=Hud.kind(s and s.thumb,heal and s and s.max)
         if kind=='none' or type(s.count)~='number' then return nil end
         return {kind=kind,count=s.count,max=s.max,cooldown=s.cooldown,usable=s.usable}
     end
@@ -102,7 +105,7 @@ function Hud.new(engine,directory,wall,log,link)
             if reads<READS then reads=reads+1; log('HUD: '..line) end
         end
         local alias=read.bullet
-        local state={heal=item(read.heal),util=item(s),dash=type(read.dash)=='number' and read.dash or nil,
+        local state={heal=item(read.heal,true),util=item(s),dash=type(read.dash)=='number' and read.dash or nil,
             uses={uses.shock,uses.pulse,uses.mine,uses.sonic}}
         if read.ammo and type(read.ammo.count)=='number' and type(alias)=='string' and alias~='None' and #alias<=64 and alias:match('^[%w_]+$') then
             state.ammo={alias=alias,count=read.ammo.count,cooldown=read.ammo.cooldown}
