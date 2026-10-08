@@ -2,6 +2,7 @@
 -- Game-thread only. Publishes alternating slots eve-pose-components.0/1 while Minecraft's request is fresh.
 local Stream={}
 local LEASE_MS=3000
+local CLOTH='SBPonytail' -- ponytail: only the long ponytail's cloth is streamed; add SBPonytailShort when someone plays with it.
 local function identity(value) return type(value)=='string' and #value==32 and value:match('^[0-9a-f]+$')~=nil end
 local function hex(address)
     assert(math.type(address)=='integer' and address>0 and address%8==0,'Invalid object address.')
@@ -27,6 +28,7 @@ function Stream.new(engine,directory,clock,log,link)
     local layout,assets,asset_seen=nil,{},{} -- Effect reading layout; effect assets in first-seen order (at most 32).
     local combat_logged=false -- EVE's combat-named functions and properties, logged once per Lua lifetime (at most 300 lines).
     local drone_state,drone_lines=nil,0 -- Last logged drone state; at most 200 log lines per Lua lifetime.
+    local cloth_logged -- The run whose cloth component was logged.
     local function remember(found)
         for _,a in ipairs(found or {}) do
             if #assets<32 and not asset_seen[a.object] and token(a.name) and math.type(a.object)=='integer' and a.object%8==0 then
@@ -76,6 +78,10 @@ function Stream.new(engine,directory,clock,log,link)
                 layout.active_byte,layout.active_mask,hex(layout.niagara),hex(layout.particle),#assets)
             for index,a in ipairs(assets) do lines[#lines+1]=string.format('EFFECT %d %s %s',index,hex(a.object),a.name) end
         else lines[#lines+1]='EFFECTS none' end
+        -- The component whose finished cloth the adapter streams after the payload.
+        local cloth='none'
+        for index,c in ipairs(list) do if c.cloth then cloth=tostring(index) end end
+        lines[#lines+1]='CLOTH '..cloth
         lines[#lines+1]='END '..generation
         return table.concat(lines,'\n')..'\n'
     end
@@ -108,7 +114,7 @@ function Stream.new(engine,directory,clock,log,link)
             if not (token(c.name) and token(c.mesh_name) and (c.leader==nil or token(c.leader))) then
                 skipped[#skipped+1]=tostring(c.name)
             elseif c.drone and #list>=16 then skipped[#skipped+1]=c.name..' (no room)' -- The drone follows EVE's own.
-            else list[#list+1]=c end
+            else list[#list+1]=c; c.cloth=not c.drone and c.name==CLOTH or nil end
         end
         assert(#list>0 and #list<=16,'EVE needs one to sixteen drawable skeletal mesh components.')
         streamed=list
@@ -204,6 +210,7 @@ function Stream.new(engine,directory,clock,log,link)
             for _,q in ipairs(parameters) do if q.component<=#list then total=total+q.floats end end
             return total
         end
+        -- ponytail: the table keeps a 64 KiB slot's floats; the rest of the 256 KiB slot carries the cloth.
         while floats()>16352 and list[#list].drone do skipped[#skipped+1]=table.remove(list).name..' (no room)' end
         for i=#parameters,1,-1 do if parameters[i].component>#list then table.remove(parameters,i) end end
         assert(floats()<=16352,'EVE pose exceeds one stream slot.')
@@ -211,6 +218,16 @@ function Stream.new(engine,directory,clock,log,link)
         local text=encode(list,place,controller,parameters)
         assert(#text<=65536,'EVE component table exceeds the stream bound.')
         write(text)
+        -- Once per run: how Stellar Blade ticks and blends the cloth, as found before world_render.lua's tick guard.
+        for _,c in ipairs(list) do
+            if c.cloth and cloth_logged~=run then
+                cloth_logged=run
+                local ok,state=pcall(function() return engine.cloth(c) end)
+                log(ok and string.format('Cloth: %s tick option %s, blend weight %s, simulation disabled %s',c.name,
+                    tostring(state.tick),tostring(state.blend),tostring(state.disabled))
+                    or 'Cloth: '..c.name..' state unavailable: '..tostring(state))
+            end
+        end
         signature=next_signature
         published=generation
         return true,string.format('Pose stream generation %d: %d components%s%s%s%s.',generation,#list,

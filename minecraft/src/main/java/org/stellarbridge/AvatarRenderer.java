@@ -78,6 +78,9 @@ final class AvatarRenderer implements AutoCloseable {
     private final int[] skinned, entityArrays; // Per part for drawEntity: transform feedback buffer, vertex array.
     private final float[][] appliedWeights; // Morph weights currently uploaded per part.
     private final FloatBuffer[] morphOffsets;
+    // Per part with cloth: the cloth positions currently uploaded as morph deltas (null: bones), and normal scratch.
+    private final float[][] appliedCloth, clothNormals;
+    private final boolean[] appliedClothed; // The part's deltas hold its cloth.
     private final Material[][] sectionMaterials;
     private final Map<String, Material> materials = new HashMap<>();
     private final Map<String, Integer> textures = new HashMap<>();
@@ -97,6 +100,9 @@ final class AvatarRenderer implements AutoCloseable {
         entityArrays = new int[count];
         appliedWeights = new float[count][];
         morphOffsets = new FloatBuffer[count];
+        appliedCloth = new float[count][];
+        clothNormals = new float[count][];
+        appliedClothed = new boolean[count];
         sectionMaterials = new Material[count][];
         palettes = new FloatBuffer[count];
         program = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES);
@@ -179,18 +185,8 @@ final class AvatarRenderer implements AutoCloseable {
                 GL30.glVertexAttribIPointer(3, 4, GL11.GL_UNSIGNED_SHORT, stride, 32);
                 GL20.glVertexAttribPointer(4, 4, GL11.GL_FLOAT, false, stride, 40);
                 for (int a = 0; a < 5; a++) GL20.glEnableVertexAttribArray(a);
-                if (mesh.morphs.length > 0) {
-                    // Summed morph deltas per vertex; meshes without morphs read the zero generic attribute instead.
-                    morphOffsets[p] = BufferUtils.createFloatBuffer(6 * mesh.vertexCount);
-                    appliedWeights[p] = new float[mesh.morphs.length];
-                    morphBuffers[p] = GL15.glGenBuffers();
-                    GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, morphBuffers[p]);
-                    GL15.glBufferData(GL15.GL_ARRAY_BUFFER, morphOffsets[p], GL15.GL_DYNAMIC_DRAW);
-                    GL20.glVertexAttribPointer(5, 3, GL11.GL_FLOAT, false, 24, 0);
-                    GL20.glVertexAttribPointer(6, 3, GL11.GL_FLOAT, false, 24, 12);
-                    GL20.glEnableVertexAttribArray(5);
-                    GL20.glEnableVertexAttribArray(6);
-                }
+                // Summed morph deltas per vertex; meshes without morphs read the zero generic attribute instead.
+                if (mesh.morphs.length > 0) morphBuffer(p);
                 sectionMaterials[p] = new Material[mesh.sections.length];
                 for (int s = 0; s < mesh.sections.length; s++) sectionMaterials[p][s] = material(pack, mesh.sections[s].material());
                 skinned[p] = GL15.glGenBuffers();
@@ -589,21 +585,54 @@ final class AvatarRenderer implements AutoCloseable {
         return value == null ? 0 : value[channel];
     }
 
-    /** Current morph deltas for every part; parts without morphs read the zero generic attributes 5 and 6. */
+    /**
+     * Current morph deltas for every part; parts without morphs read the zero generic attributes 5 and 6. A part with cloth
+     * (AvatarModel.cloth) carries it as deltas instead, with its normals recomputed.
+     */
     private void uploadMorphs() {
         GL20.glVertexAttrib3f(5, 0, 0, 0);
         GL20.glVertexAttrib3f(6, 0, 0, 0);
-        for (int p = 0; p < arrays.length; p++) if (morphBuffers[p] != 0 && drawn(p)) uploadMorphs(p);
+        for (int p = 0; p < arrays.length; p++) if ((morphBuffers[p] != 0 || model.cloth[p] != null) && drawn(p)) uploadMorphs(p);
+    }
+    /** A part's morph delta buffer on attributes 5 and 6 of its vertex array, bound meanwhile. */
+    private void morphBuffer(int part) {
+        int array0 = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING), buffer0 = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+        AvatarMesh mesh = model.parts.get(part).mesh();
+        morphOffsets[part] = BufferUtils.createFloatBuffer(6 * mesh.vertexCount);
+        appliedWeights[part] = new float[mesh.morphs.length];
+        morphBuffers[part] = GL15.glGenBuffers();
+        GlStateManager._glBindVertexArray(arrays[part]);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, morphBuffers[part]);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, morphOffsets[part], GL15.GL_DYNAMIC_DRAW);
+        GL20.glVertexAttribPointer(5, 3, GL11.GL_FLOAT, false, 24, 0);
+        GL20.glVertexAttribPointer(6, 3, GL11.GL_FLOAT, false, 24, 12);
+        GL20.glEnableVertexAttribArray(5);
+        GL20.glEnableVertexAttribArray(6);
+        GlStateManager._glBindVertexArray(array0);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buffer0);
     }
     /** Whether part p is drawn this frame (every part without a shown list, as in replays). */
     private boolean drawn(int p) { return shown == null || shown[model.parts.get(p).component()]; }
     private void uploadMorphs(int part) {
-        float[] weights = model.morphWeights[part];
-        boolean changed = false;
-        for (int m = 0; m < weights.length && !changed; m++) changed = Math.abs(weights[m] - appliedWeights[part][m]) > 1e-4f;
-        if (!changed) return;
-        model.parts.get(part).mesh().morph(weights, morphOffsets[part]);
-        System.arraycopy(weights, 0, appliedWeights[part], 0, weights.length);
+        float[] weights = model.morphWeights[part], cloth = model.cloth[part];
+        AvatarMesh mesh = model.parts.get(part).mesh();
+        if (cloth != null) { // Each new cloth frame once, however many passes draw it.
+            if (morphBuffers[part] == 0) morphBuffer(part);
+            if (appliedCloth[part] == null) {
+                appliedCloth[part] = new float[cloth.length];
+                clothNormals[part] = new float[cloth.length];
+            } else if (appliedClothed[part] && java.util.Arrays.equals(cloth, appliedCloth[part])) return;
+            mesh.cloth(cloth, clothNormals[part], morphOffsets[part]);
+            System.arraycopy(cloth, 0, appliedCloth[part], 0, cloth.length);
+            appliedClothed[part] = true;
+        } else {
+            boolean changed = appliedClothed[part]; // Back to bones: the morphs (zeros without any) replace the cloth once.
+            for (int m = 0; m < weights.length && !changed; m++) changed = Math.abs(weights[m] - appliedWeights[part][m]) > 1e-4f;
+            if (!changed) return;
+            mesh.morph(weights, morphOffsets[part]);
+            System.arraycopy(weights, 0, appliedWeights[part], 0, weights.length);
+            appliedClothed[part] = false;
+        }
         int previous = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
         GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, morphBuffers[part]);
         GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, morphOffsets[part]);

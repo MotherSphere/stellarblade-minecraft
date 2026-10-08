@@ -17,8 +17,8 @@ namespace stellar_pose {
 namespace {
 // 2: component status bit 3 (Hidden); 3: the dolly refusal at slot byte 56 and the drone shot count at header byte ShotsAt;
 // 4: the adapter's report (heal count, mirror, losses, gains, actor stats) at header 488-1036; it reads Minecraft's health
-// and gains words at 280 and 312.
-constexpr uint32_t Slots = 3, Dirty = 4, Format = 4;
+// and gains words at 280 and 312; 5: 256 KiB slots, the cloth particle count at slot byte 60 and the Cloth bit.
+constexpr uint32_t Slots = 3, Dirty = 4, Format = 5;
 constexpr uint64_t Lease = 3000, LockLease = 600; // LockLease: Lua's own lock lease.
 using stellar_input::detail::identity;
 using stellar_input::detail::Lines;
@@ -47,6 +47,14 @@ constexpr int32_t PendingKill = 1 << 29, Unreachable = 1 << 28;
 // FVectorParameterValue (FMaterialParameterInfo, FLinearColor, FGuid) without
 // editor data; FMaterialParameterInfo starts with the FName.
 constexpr size_t ScalarStride = 36, VectorStride = 48, ParameterValue = 16;
+// USkeletalMeshComponent::CurrentSimulationData, TMap<int32, FClothSimulData>
+// written by WritebackClothingSimulationData (0x4111210) through
+// FClothingSimulationNv::GetSimulationData (0x49a2b40): sparse array data
+// pointer, ArrayNum at +8, NumFreeIndices at +0x34; 0xf0-byte elements with the
+// key at +0 and the value at +0x10 (as GetClothSimulatedPosition_GameThread,
+// 0x453fe40, reads them). In the value: Positions (data, num, max) at +0 and
+// ComponentRelativeTransform at +0x50.
+constexpr size_t ClothData = 0xe20, ClothFree = 0x34, ClothValue = 0x10, ClothTransform = 0x50;
 
 bool fresh(uint64_t value, uint64_t now, uint64_t lease = Lease) {
   return value && (value <= now ? now - value <= lease : value - now <= 100);
@@ -275,6 +283,16 @@ std::optional<Table> parse_components(std::string_view text) {
     table.effects = std::move(fx);
   } else if (e.size() != 2 || e[0] != "EFFECTS" || e[1] != "none")
     return {};
+  // CLOTH none, or CLOTH component (1-based): the component whose finished cloth the adapter streams.
+  if (lines.at >= lines.rows.size())
+    return {};
+  auto cloth = split(lines.rows[lines.at++]);
+  uint64_t clothed = 0;
+  if (cloth.size() != 2 || cloth[0] != "CLOTH" ||
+      (cloth[1] != "none" && (!number(cloth[1], clothed) || !clothed || clothed > count)))
+    return {};
+  if (clothed)
+    table.cloth = uint32_t(clothed - 1);
   if (floats > Capacity || !lines.end(table.generation))
     return {};
   table.floats = static_cast<uint32_t>(floats);
@@ -294,12 +312,17 @@ std::optional<Table> select_components(std::string_view slot0,
   return a ? a : b;
 }
 
+// The live, non-pending-kill object of the published class with the published mesh.
+static bool published(const Engine &engine, const Component &c) {
+  auto object = static_cast<uintptr_t>(c.object);
+  return engine.objects && alive(engine.objects, object) && at<uint64_t>(object + ClassPrivate) == c.cls &&
+         at<uint64_t>(object + SkeletalMesh) == c.mesh;
+}
+
 uint32_t read_component(const Engine &engine, const Component &c, float *out) {
   std::memset(out, 0, sizeof(float) * (10 + 10 * size_t(c.bones) + c.morphs));
   auto object = static_cast<uintptr_t>(c.object);
-  if (!engine.objects || !alive(engine.objects, object) ||
-      at<uint64_t>(object + ClassPrivate) != c.cls ||
-      at<uint64_t>(object + SkeletalMesh) != c.mesh)
+  if (!published(engine, c))
     return 0;
   uint32_t status = WorldValid | (hidden(engine.objects, object) ? Hidden : 0);
   transform(object + WorldTransform, out);
@@ -322,6 +345,24 @@ uint32_t read_component(const Engine &engine, const Component &c, float *out) {
     }
   }
   return status;
+}
+
+uint32_t read_cloth(const Engine &engine, const Component &c, float *out, uint32_t room) {
+  if (!published(engine, c))
+    return 0;
+  auto map = static_cast<uintptr_t>(c.object) + ClothData;
+  auto data = at<uintptr_t>(map);
+  if (!data || at<int32_t>(map + 8) != 1 || at<int32_t>(map + ClothFree) != 0 || at<int32_t>(data) != 0)
+    return 0;
+  auto value = data + ClothValue;
+  auto positions = at<uintptr_t>(value);
+  auto n = at<int32_t>(value + 8);
+  if (!positions || n <= 0 || at<int32_t>(value + 12) < n || room < 10 || uint64_t(n) > (room - 10) / 3)
+    return 0;
+  transform(value + ClothTransform, out);
+  // ponytail: two copies, game heap to payload to slot; read straight into the slot if the read time shows.
+  std::memcpy(out + 10, reinterpret_cast<const void *>(positions), 12 * size_t(n));
+  return uint32_t(n);
 }
 
 bool read_parameter(const Engine &engine, const Parameter &q, float *out) {
@@ -993,10 +1034,11 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
                        const float *rotation, uint32_t look,
                        uint64_t wall, uint32_t read_us, const float *gauges,
                        const uint32_t *evades, const float *stats, DollyRefusal refusal,
-                       uint32_t shots, const Report &report) {
+                       uint32_t shots, const Report &report, uint32_t cloth) {
   auto &self = *impl_;
+  uint64_t total = floats + (cloth ? 10 + 3 * uint64_t(cloth) : 0);
   if (!active(wall) || !generation || generation > stellar_input::max_integer ||
-      !count || count > MaxComponents || floats > Capacity) {
+      !count || count > MaxComponents || total > Capacity) {
     return false;
   }
   auto *slot = self.base + Header + size_t(SlotBytes) * self.back;
@@ -1013,8 +1055,9 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
     std::memcpy(slot + 40, rotation, 4 * sizeof(float));
     put(slot, 56, (look & PitchSynced) || refusal >= DollyRefusals ? uint32_t(DollyNone) : refusal);
   }
+  put(slot, 60, cloth); // Cloth particles after the table's floats.
   std::memcpy(slot + 64, status, sizeof(uint32_t) * count);
-  std::memcpy(slot + SlotHeader, payload, sizeof(float) * floats);
+  std::memcpy(slot + SlotHeader, payload, sizeof(float) * total);
   // Same back/middle/front exchange as the raw frame mapping.
   auto previous = exchange32(self.base, 128, self.back | Dirty);
   if (!middle_valid(previous)) {
@@ -1162,6 +1205,14 @@ bool guarded(const Engine &e, const Controller &c, float *out) {
     return false;
   }
 }
+// A cloth freed or reallocated under the read faults at worst; contained as no cloth.
+uint32_t guarded_cloth(const Engine &e, const Component &c, float *out, uint32_t room) {
+  __try {
+    return read_cloth(e, c, out, room);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return 0;
+  }
+}
 uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
   __try {
     return read_effects(e, t, out);
@@ -1285,6 +1336,9 @@ uint32_t guarded_rows(bool) { return 0; }        // nor a table manager.
 uint32_t guarded_effects(const Engine &e, const Table &t, float *out) {
   return read_effects(e, t, out);
 }
+uint32_t guarded_cloth(const Engine &e, const Component &c, float *out, uint32_t room) {
+  return read_cloth(e, c, out, room);
+}
 bool guarded_turn(const Engine &e, const Controller &c, float pitch, float yaw) {
   return turn_controller(e, c, pitch, yaw);
 }
@@ -1399,6 +1453,13 @@ void on_gameplay_poll(std::string_view owner) {
     guarded_effects(engine, *table, payload.data() + offset);
     offset += MaxEffects * EffectFloats;
   }
+  // The ponytail's cloth after the table's floats, for a component read this frame.
+  uint32_t cloth = 0;
+  if (table->cloth && (status[*table->cloth] & WorldValid)) {
+    cloth = guarded_cloth(engine, table->components[*table->cloth], payload.data() + offset, Capacity - offset);
+    if (cloth)
+      status[*table->cloth] |= Cloth;
+  }
   float gauges[GaugeFloats];
   bool gauged = guarded_gauges(game_world(), gauges);
   float stats[StatFloats];
@@ -1413,6 +1474,7 @@ void on_gameplay_poll(std::string_view owner) {
                    gauged ? gauges : nullptr, evade_starts.counts, statted ? stats : nullptr,
                    static_cast<DollyRefusal>(refusal), evade_starts.shots,
                    Report{mirror.healed, mirror.state, mirror.lost, {grants.granted[0], grants.granted[1]},
-                          acted ? actor : nullptr});
+                          acted ? actor : nullptr},
+                   cloth);
 }
 } // namespace stellar_pose

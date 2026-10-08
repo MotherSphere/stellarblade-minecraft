@@ -30,6 +30,7 @@ final class AvatarModel {
     final List<Part> parts;
     final List<String> skipped;
     final float[][] morphWeights; // Per part, in mesh morph order; filled by palettes.
+    final float[][] cloth; // Per part, the pose's cloth positions (component space) or null; set by palettes.
     private final Matrix4d[][] componentSpace; // Per recorded component, reused every frame.
     private final Matrix4d world = new Matrix4d(), bone = new Matrix4d(), socket = new Matrix4d();
 
@@ -80,6 +81,7 @@ final class AvatarModel {
         this.parts = List.copyOf(parts);
         this.skipped = List.copyOf(skipped);
         morphWeights = new float[parts.size()][];
+        cloth = new float[parts.size()][];
         for (int p = 0; p < parts.size(); p++) morphWeights[p] = new float[parts.get(p).mesh.morphs.length];
     }
 
@@ -113,7 +115,9 @@ final class AvatarModel {
     /**
      * Writes each part's skinning matrices as Minecraft-space affine rows (12 floats per bone, the GLSL mat3x4 layout).
      * placement maps Unreal world space to the target space, e.g. camera-relative Minecraft blocks. Bone transforms are
-     * parent-relative (recordings) or already in component space (the native stream).
+     * parent-relative (recordings) or already in component space (the native stream). A part with cloth in the pose gets
+     * its component's world transform for every bone: its weights sum to 1, so the vertex shader then places the cloth
+     * positions its morph deltas carry exactly.
      */
     void palettes(AvatarRecording.Pose pose, Matrix4d placement, FloatBuffer[] out, boolean componentSpaceBones) {
         for (int c = 0; c < componentSpace.length; c++) {
@@ -135,9 +139,11 @@ final class AvatarModel {
                 morphWeights[p][m] = part.morphWeights[m] < 0 ? 0 : pose.weights()[part.component][part.morphWeights[m]];
             FloatBuffer target = out[p].clear();
             Matrix4d[] cs = componentSpace[part.driver];
+            cloth[p] = pose.cloth()[part.component];
             for (int k = 0; k < part.mesh.bones.length; k++) {
                 int source = part.leaderBones == null ? k : part.leaderBones[k];
-                if (source >= 0) world.mul(cs[source], bone).mul(part.mesh.inverseReference[k]);
+                if (cloth[p] != null) bone.set(world);
+                else if (source >= 0) world.mul(cs[source], bone).mul(part.mesh.inverseReference[k]);
                 else bone.set(world); // A follower bone absent from the leader keeps its reference pose.
                 for (int row = 0; row < 3; row++)
                     target.put((float) bone.get(0, row)).put((float) bone.get(1, row)).put((float) bone.get(2, row)).put((float) bone.get(3, row));

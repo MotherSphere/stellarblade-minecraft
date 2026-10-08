@@ -2,14 +2,18 @@
 -- Game-thread only. Pinned SB 573aaff1: UGameViewportClient word 0x6c bit 2 is bDisableWorldRendering (read at
 -- 0x42cd100 on UWorld::GetGameViewport); SB sets and clears it itself (0x3f162d6, 0x3f16628). EVE's body ticks its
 -- pose only while rendered within the last second (OnlyTickPoseWhenRendered, 0x411f210), unless SB's
--- AlwaysTickPoseDistance (+0x7d0) covers the distance to its camera (0x411f080), so that guard goes on first.
+-- AlwaysTickPoseDistance (+0x7d0) covers the distance to its camera (0x411f080), so that guard goes on first. The
+-- ponytail's cloth tick (0x4534ea0) ignores that distance: with VisibilityBasedAnimTickOption OnlyTickPoseWhenRendered
+-- (3) it stops unrendered, so the cloth component (marked cloth by pose_stream.lua) gets AlwaysTickPose (1) meanwhile.
 local UE=require('UEHelpers')
 local Render={}
 local BIT,FAR=4,1e7 -- FAR: 100 km in cm, any camera distance.
+local RENDERED,ALWAYS=3,1 -- EVisibilityBasedAnimTickOption OnlyTickPoseWhenRendered, AlwaysTickPose.
 local function valid(object) return object and object:IsValid() end
 function Render.new(log)
     local api={}
-    -- saved: the viewport and whether SB had the bit set, then {handle, previous distance} by component address.
+    -- saved: the viewport and whether SB had the bit set, then {handle, previous distance} by component address, and
+    -- {handle, previous tick option} by address for cloth components.
     local registered,swept,saved,guarded,last=false,false,nil,0,'SB world drawing on'
     local function note(message) if message~=last then last=message; log('Render: '..message) end end
     local function viewport()
@@ -34,7 +38,7 @@ function Render.new(log)
         local pawn=UE.GetPlayer()
         local mesh=valid(pawn) and pawn.Mesh
         if not valid(mesh) or mesh.AlwaysTickPoseDistance~=FAR then return end
-        saved,guarded={far={[mesh:GetAddress()]={mesh,0}}},1
+        saved,guarded={far={[mesh:GetAddress()]={mesh,0}},tick={}},1
         note('restoring the cut a Lua reload left')
         local found,flags=viewport()
         saved.viewport=found
@@ -42,9 +46,16 @@ function Render.new(log)
     end
     local function apply(components)
         assert(#components>0,'No streamed mesh to keep ticking.')
-        saved=saved or {far={}}
+        saved=saved or {far={},tick={}}
         for _,c in ipairs(components) do
             local h=c.handle
+            -- ponytail: a Lua reload mid-cut leaves the cloth at AlwaysTickPose, which only keeps ticking it unseen.
+            if c.cloth and not saved.tick[c.object] then
+                local old=h.VisibilityBasedAnimTickOption
+                assert(type(old)=='number','VisibilityBasedAnimTickOption is unavailable.')
+                saved.tick[c.object]={h,old}
+                if old==RENDERED then h.VisibilityBasedAnimTickOption=ALWAYS end
+            end
             if not saved.far[c.object] then
                 local old=h.AlwaysTickPoseDistance
                 assert(type(old)=='number','AlwaysTickPoseDistance is unavailable.')
@@ -68,6 +79,10 @@ function Render.new(log)
         for object,e in pairs(saved.far) do
             if valid(e[1]) then e[1].AlwaysTickPoseDistance=e[2] end
             saved.far[object]=nil; guarded=guarded-1
+        end
+        for object,e in pairs(saved.tick) do
+            if valid(e[1]) and e[1].VisibilityBasedAnimTickOption~=e[2] then e[1].VisibilityBasedAnimTickOption=e[2] end
+            saved.tick[object]=nil
         end
         saved=nil
     end

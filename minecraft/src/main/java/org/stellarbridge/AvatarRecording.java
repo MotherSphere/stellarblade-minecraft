@@ -21,8 +21,11 @@ final class AvatarRecording {
     record Component(String name, String mesh, String leader, String[] bones, String[] morphs, int weights) {
         boolean recorded() { return bones != null; }
     }
-    /** Component world transforms plus local (parent bone space) bone transforms and morph weights of recorded components. */
-    record Pose(float[][] world, float[][] local, float[][] weights) { }
+    /**
+     * Component world transforms plus local (parent bone space) bone transforms and morph weights of recorded components,
+     * and per component Stellar Blade's cloth as component-space positions (3 floats per mesh vertex), or null: bones.
+     */
+    record Pose(float[][] world, float[][] local, float[][] weights, float[][] cloth) { }
 
     final List<Component> components;
     final double[] seconds;
@@ -96,7 +99,7 @@ final class AvatarRecording {
                     weights[i] = floats(data, c.weights);
                 }
             }
-            frames[f] = new Pose(world, local, weights);
+            frames[f] = new Pose(world, local, weights, new float[components.size()][]);
         }
         return new AvatarRecording(List.copyOf(components), seconds, frames);
     }
@@ -130,7 +133,7 @@ final class AvatarRecording {
             local[i] = new float[frames[0].local[i].length];
             weights[i] = new float[frames[0].weights[i].length];
         }
-        return new Pose(world, local, weights);
+        return new Pose(world, local, weights, new float[components.size()][]);
     }
 
     /** Normalized quaternion interpolation on the shorter arc; linear translation and scale. */

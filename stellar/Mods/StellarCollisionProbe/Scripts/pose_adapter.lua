@@ -133,6 +133,12 @@ function Adapter.new()
         end)
         return list
     end
+    -- A cloth component's VisibilityBasedAnimTickOption (3: its cloth ticks only while rendered), ClothBlendWeight and
+    -- bDisableClothSimulation, for the log.
+    function engine.cloth(c)
+        local h=c.handle
+        return {tick=h.VisibilityBasedAnimTickOption,blend=h.ClothBlendWeight,disabled=h.bDisableClothSimulation}
+    end
     -- EVE's drone: its own Stellar Blade character (CH_Drone_BP_C, tribe Drone; CharacterMesh0 carries CH_NPC_Drone or
     -- the equipped skin) that follows her, scans and turns into her gun. The nearest of its tribe, kept while valid and
     -- looked for again at most every DRONE_RETRY seconds (FindAllOf walks every object), at once when the one found went.

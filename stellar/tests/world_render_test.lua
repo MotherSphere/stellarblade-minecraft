@@ -98,4 +98,25 @@ assert(flags.StellarViewportFlags==1 and body_fields.AlwaysTickPoseDistance==0 a
 assert(#logs==2 and logs[1]=='Render: restoring the cut a Lua reload left' and logs[2]=='Render: SB world drawing on',logs[1])
 reloaded.tick(true,meshes); reloaded.tick(false); assert(flags.StellarViewportFlags==1 and drone_fields.AlwaysTickPoseDistance==0)
 body_fields.AlwaysTickPoseDistance=1e7; reset(); reloaded.tick(false); assert(#writes==0,'Swept once per Lua lifetime')
-print('PASS world drawing: guards before the bit, bit before guards on restore, SB-owned bit kept, apply and restore failures, Lua reload')
+
+-- The ponytail's cloth ticks only while rendered at OnlyTickPoseWhenRendered (3): AlwaysTickPose (1) during the cut,
+-- before the bit, and its own value back after; any other value is left alone.
+package.loaded.world_render=nil
+local cloth_render=require('world_render').new(function() end)
+local tail,tail_fields=object('tail',{AlwaysTickPoseDistance=0,VisibilityBasedAnimTickOption=3})
+local worn={{handle=body,object=8},{handle=tail,object=24,cloth=true}}
+body_fields.AlwaysTickPoseDistance=0; flags.StellarViewportFlags=1
+cloth_render.tick(false); reset(); assert(cloth_render.tick(true,worn))
+assert(trace()=='body.AlwaysTickPoseDistance=1e+07 tail.VisibilityBasedAnimTickOption=1 tail.AlwaysTickPoseDistance=1e+07 '
+    ..'viewport.StellarViewportFlags=5',trace())
+reset(); cloth_render.tick(true,worn); assert(#writes==0,'A held cut leaves the tick option alone')
+reset(); assert(cloth_render.tick(false))
+assert(writes[1]=='viewport.StellarViewportFlags=1' and tail_fields.VisibilityBasedAnimTickOption==3
+    and trace():find('tail.VisibilityBasedAnimTickOption=3',1,true),trace())
+tail_fields.VisibilityBasedAnimTickOption=0; reset(); cloth_render.tick(true,worn)
+assert(not trace():find('VisibilityBasedAnimTickOption',1,true),'Another tick option is left alone')
+reset(); cloth_render.tick(false); assert(not trace():find('VisibilityBasedAnimTickOption',1,true) and tail_fields.VisibilityBasedAnimTickOption==0)
+tail_fields.VisibilityBasedAnimTickOption=nil; reset()
+assert(cloth_render.tick(true,worn)==false and flags.StellarViewportFlags==1 and body_fields.AlwaysTickPoseDistance==0,
+    'An unreadable tick option keeps SB drawing')
+print('PASS world drawing: guards before the bit, bit before guards on restore, SB-owned bit kept, apply and restore failures, Lua reload, cloth tick option')

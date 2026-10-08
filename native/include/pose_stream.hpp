@@ -12,13 +12,15 @@ namespace stellar_pose {
 constexpr uint32_t MaxComponents = 16, MaxBones = 256, MaxMorphs = 1024, MaxParameters = 32;
 // Active effects per published slot, each an effect index then its world transform (11 floats).
 constexpr uint32_t MaxEffects = 8, EffectFloats = 11, MaxEffectAssets = 32;
-constexpr uint32_t Header = 4096, SlotBytes = 65536, SlotHeader = 128;
+// 256 KiB slots: room for EVE's ponytail cloth (10 + 3 * 17309 floats) after the table's floats.
+constexpr uint32_t Header = 4096, SlotBytes = 262144, SlotHeader = 128;
 constexpr uint32_t Capacity = (SlotBytes - SlotHeader) / 4; // Payload floats.
 constexpr uint32_t TotalBytes = Header + 3 * SlotBytes;
 // Status bits per component in a published slot. Hidden: Stellar Blade does
 // not draw it (not visible, hidden in game, or its actor hidden); its floats
-// are still copied.
-constexpr uint32_t WorldValid = 1, BonesValid = 2, MorphsValid = 4, Hidden = 8;
+// are still copied. Cloth: the table's cloth component carries Stellar Blade's
+// finished cloth after the payload (count at slot byte 60).
+constexpr uint32_t WorldValid = 1, BonesValid = 2, MorphsValid = 4, Hidden = 8, Cloth = 16;
 
 struct Request {
   std::string run;
@@ -64,6 +66,7 @@ struct Table {
   std::vector<Component> components;
   std::vector<Parameter> parameters;
   std::optional<Effects> effects;
+  std::optional<uint32_t> cloth; // The component (0-based) whose cloth is streamed (Lua's CLOTH line).
   // 10 world + 10 per bone + 1 per morph, per component, then the parameters'
   // floats, then MaxEffects effect records when effects are configured.
   uint32_t floats = 0;
@@ -85,6 +88,14 @@ struct Engine {
 // non-pending-kill object of the published class with the published mesh.
 // Components of any actor qualify (EVE's, then her drone's).
 uint32_t read_component(const Engine &, const Component &, float *out);
+// Copies Stellar Blade's finished cloth of a component (its
+// USkeletalMeshComponent::CurrentSimulationData, one entry with key 0) into
+// out: 10 floats ComponentRelativeTransform (simulation to component space),
+// then the particles' Positions (simulation space, 3 floats each). Returns the
+// particle count, 0 (nothing usable) unless the component passes
+// read_component's checks, the map holds exactly that entry and 10 + 3n floats
+// fit room.
+uint32_t read_cloth(const Engine &, const Component &, float *out, uint32_t room);
 // Copies a material parameter; false (and zeros) unless the instance is live
 // with its class and the element still carries the published name.
 bool read_parameter(const Engine &, const Parameter &, float *out);
@@ -337,13 +348,15 @@ public:
   // InputGranted.
   // evades: EvadeWords words for the header, or none; stats: StatFloats
   // floats, or none (unreadable); shots: the drone shot count for ShotsAt;
-  // report: the adapter's report from HealedAt (zeros and state 0 by default).
+  // report: the adapter's report from HealedAt (zeros and state 0 by default);
+  // cloth: the particle count at slot byte 60, whose 10 + 3 * cloth floats
+  // follow the table's floats in payload.
   bool publish(uint64_t generation, const uint32_t *status, uint32_t count,
                const float *payload, uint32_t floats, const float *rotation,
                uint32_t look, uint64_t wall, uint32_t read_us,
                const float *gauges = nullptr, const uint32_t *evades = nullptr,
                const float *stats = nullptr, DollyRefusal refusal = DollyNone,
-               uint32_t shots = 0, const Report &report = {});
+               uint32_t shots = 0, const Report &report = {}, uint32_t cloth = 0);
   // Minecraft's camera (Unreal Pitch, Yaw in degrees), if active, fresh
   // within 200 ms and finite; pitch within [-90, 90], yaw in [0, 360).
   bool look(uint64_t wall, float &pitch, float &yaw) const;

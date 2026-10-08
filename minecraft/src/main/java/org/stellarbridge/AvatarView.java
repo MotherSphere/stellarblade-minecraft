@@ -83,6 +83,8 @@ public final class AvatarView {
         final AvatarCombat.Blade blade = new AvatarCombat.Blade();
         final AvatarCombat.Gun gun = new AvatarCombat.Gun();
         long effectSamples; // Samples with at least one active effect.
+        AvatarStream.ClothWatch cloth = new AvatarStream.ClothWatch(); // Whether Stellar Blade's cloth moves.
+        long clothPoses; // Poses drawing Stellar Blade's cloth.
         double gapSum, gapMax; // Yaw gap in degrees between Minecraft's camera and the published controller rotation.
         double pitchSum, pitchMax; // Pitch gap in degrees between Minecraft's camera and the camera pitch of synced poses.
         final long[] refusals = new long[AvatarStream.DOLLY_REFUSALS.length + 1]; // Controlled poses by dolly refusal.
@@ -253,6 +255,10 @@ public final class AvatarView {
             } else if (sample != null && current.model != null) {
                 int slot = (current.newest + 1) % Live.RING;
                 if (AvatarStream.decode(current.table, sample, current.model, current.ring[slot], current.spare)) {
+                    // A cloth frozen while her head moves falls back to bones.
+                    int clothed = current.table.cloth();
+                    if (!current.cloth.accept(current.table, sample)) current.ring[slot].cloth()[clothed] = null;
+                    if (clothed >= 0 && current.ring[slot].cloth()[clothed] != null) current.clothPoses++;
                     AvatarStream.steady(current.drawn, current.spare, current.shown);
                     boolean[] newest = current.spare;
                     current.spare = current.shown;
@@ -428,6 +434,7 @@ public final class AvatarView {
         current.newest = -1;
         current.count = 0;
         current.posed = false;
+        current.cloth = new AvatarStream.ClothWatch();
         int n = table.components().size();
         current.shown = new boolean[n];
         current.spare = new boolean[n];
@@ -547,15 +554,28 @@ public final class AvatarView {
             System.arraycopy(source.world()[i], 0, target.world()[i], 0, source.world()[i].length);
             if (source.local()[i] != null) System.arraycopy(source.local()[i], 0, target.local()[i], 0, source.local()[i].length);
             if (source.weights()[i] != null) System.arraycopy(source.weights()[i], 0, target.weights()[i], 0, source.weights()[i].length);
+            float[] cloth = source.cloth()[i];
+            target.cloth()[i] = cloth == null ? null : lerp(cloth, cloth, 0, target.cloth()[i]);
         }
     }
+    /**
+     * Blends two poses; cloth positions interpolate linearly where both ends carry cloth, else the part takes bones for the
+     * interval (as a part shown again waits for steady). Arrays are reused, new only when the cloth comes back.
+     */
     static void blend(AvatarRecording.Pose a, AvatarRecording.Pose b, float alpha, AvatarRecording.Pose out) {
         for (int i = 0; i < a.world().length; i++) {
             AvatarRecording.blend(a.world()[i], b.world()[i], alpha, out.world()[i]);
             if (a.local()[i] != null) AvatarRecording.blend(a.local()[i], b.local()[i], alpha, out.local()[i]);
             if (a.weights()[i] != null)
                 for (int k = 0; k < a.weights()[i].length; k++) out.weights()[i][k] = a.weights()[i][k] + (b.weights()[i][k] - a.weights()[i][k]) * alpha;
+            float[] from = a.cloth()[i], to = b.cloth()[i];
+            out.cloth()[i] = from == null || to == null || from.length != to.length ? null : lerp(from, to, alpha, out.cloth()[i]);
         }
+    }
+    private static float[] lerp(float[] a, float[] b, float alpha, float[] reuse) {
+        float[] out = reuse != null && reuse.length == a.length ? reuse : new float[a.length];
+        for (int k = 0; k < a.length; k++) out[k] = a[k] + (b[k] - a[k]) * alpha;
+        return out;
     }
 
     /** Minecraft-world feet position of the displayed EVE when she stands at the bridged position, else null. */
@@ -626,11 +646,20 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + AvatarItems.status() + AvatarHud.status()
+                + clothStatus(current) + AvatarItems.status() + AvatarHud.status()
                 + hiddenStatus(current) + AvatarCombat.status() + current.gun.status(current.stream.shots())
                 + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
                 + AvatarStats.status(current.stats) + reportStatus(current.stream.report())
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
+    }
+
+    /** How many poses drew Stellar Blade's ponytail cloth, and its stale samples (particles unchanged while her head moved). */
+    private static String clothStatus(Live current) {
+        if (current.table == null || current.table.cloth() < 0) return " Cloth: none in the component table.";
+        float[] shown = current.pose == null ? null : current.pose.cloth()[current.table.cloth()];
+        return String.format(" Cloth: %d of %d poses used Stellar Blade's ponytail cloth%s; %d stale samples (particles unchanged while her"
+                + " head moved).", current.clothPoses, current.poses, shown == null ? ", bones now" : " (" + shown.length / 3 + " particles)",
+                current.cloth.stale);
     }
 
     private static String reportStatus(long[] report) {

@@ -35,6 +35,8 @@ struct Fake {
     alignas(16) uint8_t bytes[0x1c00]{};
     alignas(16) float space[2][3 * 12]{}; // Two double-buffered 3-bone arrays.
     float morphs[2]{};
+    alignas(16) uint8_t element[0xf0]{}; // CurrentSimulationData's one element (key, FClothSimulData).
+    float particles[3 * 4]{};
   };
   Object a, b, controller, pawn, boom;
   Fake() {
@@ -112,6 +114,27 @@ struct Fake {
     std::memcpy(o.bytes + 0x738, &morphs, 8);
     std::memcpy(o.bytes + 0x740, &two, 4);
   }
+  // The component's finished cloth: CurrentSimulationData (+0xe20) with one element, key 0, n particles
+  // (x = index, y = 10 * index, z = -index) and a ComponentRelativeTransform turned 90 degrees about Z, moved by
+  // (5, 6, 7).
+  static void cloth(Object &o, int32_t n) {
+    auto data = reinterpret_cast<uintptr_t>(o.element), positions = reinterpret_cast<uintptr_t>(o.particles);
+    int32_t one = 1, zero = 0, max = 4;
+    std::memcpy(o.bytes + 0xe20, &data, 8);
+    std::memcpy(o.bytes + 0xe28, &one, 4);
+    std::memcpy(o.bytes + 0xe20 + 0x34, &zero, 4);
+    std::memcpy(o.element, &zero, 4);
+    std::memcpy(o.element + 0x10, &positions, 8);
+    std::memcpy(o.element + 0x18, &n, 4);
+    std::memcpy(o.element + 0x1c, &max, 4);
+    float turn = std::sqrt(0.5f), crt[12] = {0, 0, turn, turn, 5, 6, 7, 9, 1, 1, 1, 9};
+    std::memcpy(o.element + 0x10 + 0x50, crt, sizeof crt);
+    for (int k = 0; k < 4; k++) {
+      o.particles[3 * k] = float(k);
+      o.particles[3 * k + 1] = float(10 * k);
+      o.particles[3 * k + 2] = float(-k);
+    }
+  }
   Engine engine() { return Engine{reinterpret_cast<uintptr_t>(objects)}; }
   static Component component(Object &o) {
     return Component{reinterpret_cast<uint64_t>(o.bytes), 0x1000, 0x2000, 3, 2};
@@ -124,7 +147,8 @@ static std::string hex(uint64_t value) {
   return text;
 }
 static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint64_t controller = 0,
-                              uint64_t pawn = 0x40, std::string parameters = "PARAMETERS 0\nEFFECTS none\n") {
+                              uint64_t pawn = 0x40, std::string parameters = "PARAMETERS 0\nEFFECTS none\n",
+                              std::string cloth = "CLOTH none\n") {
   return "SBMC_POSE_COMPONENTS 1\nRUN " + Run + "\nGENERATION " +
          std::to_string(generation) + "\nSESSION none\nANCHOR 1 2 3 100\n" +
          (controller ? "CONTROLLER " + hex(controller) + " 0000000000001000 00000318 " + hex(pawn) +
@@ -134,7 +158,7 @@ static std::string components(uint64_t generation, uint64_t a, uint64_t b, uint6
          "COMPONENT 1 " + hex(a) + " 0000000000001000 0000000000002000 3 2 Body Mesh -\n"
          "BONES 1 Root Hip Head\nMORPHS 1 Smile Blink\n"
          "COMPONENT 2 " + hex(b) + " 0000000000001000 0000000000002000 0 2 Face FaceMesh Body\n"
-         "MORPHS 2 Smile Blink\n" + parameters + "END " + std::to_string(generation) + "\n";
+         "MORPHS 2 Smile Blink\n" + parameters + cloth + "END " + std::to_string(generation) + "\n";
 }
 static std::string request(uint64_t time, const char *state = "active") {
   return "SBMC_POSE_REQUEST 1\nRUN " + Run + "\nTIME " + std::to_string(time) +
@@ -181,6 +205,15 @@ int main() {
   assert(broken("CONTROLLER none", "CONTROLLER"));
   assert(broken("PARAMETERS 0\n", "") && "The parameter count is required");
   assert(broken("EFFECTS none\n", "") && "The effects line is required");
+  {
+    // CLOTH names the component (1-based) whose finished cloth the adapter streams, or none; the line is required.
+    assert(!table->cloth && broken("CLOTH none\n", "") && "The cloth line is required");
+    auto clothed = parse_components(components(4, 0x10, 0x20, 0, 0x40, "PARAMETERS 0\nEFFECTS none\n", "CLOTH 2\n"));
+    assert(clothed && clothed->cloth == 1u && clothed->floats == table->floats && "Cloth floats are not the table's");
+    for (auto bad : {"CLOTH 0\n", "CLOTH 3\n", "CLOTH\n", "CLOTH 2 2\n", "CLOTH two\n", "CLOTH -1\n"})
+      assert(!parse_components(components(4, 0x10, 0x20, 0, 0x40, "PARAMETERS 0\nEFFECTS none\n", bad)) &&
+             "A cloth component within the table");
+  }
   {
     // Effects: offsets, mask, both classes, then the assets Minecraft draws; records follow the parameters.
     std::string fx = "PARAMETERS 0\nEFFECTS 00000300 00000200 00000208 00000088 10 0000000000001000 0000000000001008 2\n"
@@ -286,6 +319,42 @@ int main() {
   std::memcpy(fake.b.bytes + 0x0c, &outside, 4);
   assert(read_component(engine, Fake::component(fake.b), out.data()) == 0);
   assert(read_component(Engine{}, Fake::component(fake.b), out.data()) == 0);
+  {
+    // Stellar Blade's finished cloth: the transform, then the positions, only from the one element with key 0.
+    Fake worn;
+    auto e = worn.engine();
+    auto tail = Fake::component(worn.b);
+    Fake::cloth(worn.b, 3);
+    std::vector<float> cloth(10 + 3 * 4, -1);
+    assert(read_cloth(e, tail, cloth.data(), 10 + 9) == 3);
+    assert(std::fabs(cloth[2] - std::sqrt(0.5f)) < 1e-7f && cloth[4] == 5 && cloth[6] == 7 && cloth[7] == 1 && cloth[9] == 1 &&
+           "ComponentRelativeTransform as 10 floats");
+    assert(cloth[10] == 0 && cloth[13] == 1 && cloth[14] == 10 && cloth[15] == -1 && cloth[18] == -2 && cloth[19] == -1 &&
+           "Then the particles, nothing past them");
+    auto refused = [&](uint8_t *at, auto value, const char *why) {
+      decltype(value) saved;
+      std::memcpy(&saved, at, sizeof value);
+      std::memcpy(at, &value, sizeof value);
+      bool read = read_cloth(e, tail, cloth.data(), 10 + 12) != 0;
+      std::memcpy(at, &saved, sizeof value);
+      assert(!read && why);
+    };
+    refused(worn.b.bytes + 0xe28, 2, "Two elements");
+    refused(worn.b.bytes + 0xe28, 0, "No element");
+    refused(worn.b.bytes + 0xe20 + 0x34, 1, "A free slot");
+    refused(worn.b.element, 1, "Key 1");
+    refused(worn.b.element + 0x18, 0, "No particle");
+    refused(worn.b.element + 0x18, -3, "A negative count");
+    refused(worn.b.element + 0x1c, 2, "A count above the array's capacity");
+    refused(worn.b.bytes + 0xe20, uint64_t(0), "No data");
+    refused(worn.b.element + 0x10, uint64_t(0), "No positions");
+    assert(read_cloth(e, tail, cloth.data(), 10 + 8) == 0 && read_cloth(e, tail, cloth.data(), 9) == 0 &&
+           "The particles must fit the room left");
+    auto other = tail;
+    other.mesh = 0x3000;
+    assert(read_cloth(e, other, cloth.data(), 100) == 0 && "Read as read_component validates");
+    assert(read_cloth(Engine{}, tail, cloth.data(), 100) == 0);
+  }
   {
     // What Stellar Blade draws: Hidden when the component is not visible, hidden in game or owned by a live hidden
     // actor (EVE's drone between its appearances); its floats are copied all the same.
@@ -625,7 +694,7 @@ int main() {
     assert(direct.publish(5, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades, stats, DollyNone, 5,
                           Report{1000, MirrorHeld, 1, {17, 200}, actor_stats}));
     auto *latest = view.base + Header + SlotBytes * (stellar_shared::load32(view.base, 128) & 3);
-    assert(stellar_shared::plain<uint64_t>(latest, 16) == 5 && stellar_shared::plain<uint32_t>(latest, 24) == 4 && "Format 4");
+    assert(stellar_shared::plain<uint64_t>(latest, 16) == 5 && stellar_shared::plain<uint32_t>(latest, 24) == 5 && "Format 5");
     uint32_t report[5] = {1000, 2, 1, 17, 200};
     for (uint32_t i = 0; i < 5; i++)
       assert(stellar_shared::plain<uint32_t>(view.base, 488 + 4 * i) == report[i] && "The report in order at 488");
@@ -636,6 +705,23 @@ int main() {
            "Nothing after the actor's stats, nor between the camera and the gains word");
     assert(direct.publish(6, &state, 1, pose, 10, nullptr, 0, now, 0, nullptr, evades));
     assert(std::all_of(view.base + 488, view.base + 512, zero) && "No report: zeros and actor state 0");
+    // Format 5: cloth particles after the table's floats, their count at slot byte 60; the slot's float count stays
+    // the table's. A payload past the slot is refused.
+    std::vector<float> clothed(10 + 10 + 3 * 2, 0);
+    clothed[10 + 10 + 5] = 42;
+    assert(direct.publish(7, &state, 1, clothed.data(), 10, nullptr, 0, now, 0, nullptr, evades, nullptr, DollyNone, 0, {}, 2));
+    latest = view.base + Header + SlotBytes * (stellar_shared::load32(view.base, 128) & 3);
+    assert(stellar_shared::plain<uint32_t>(latest, 24) == 5 && stellar_shared::plain<uint32_t>(latest, 32) == 10 &&
+           stellar_shared::plain<uint32_t>(latest, 60) == 2 && stellar_shared::plain<float>(latest, SlotHeader + 4 * 25) == 42 &&
+           "Count at 60, the particles after the table's floats");
+    assert(direct.publish(8, &state, 1, clothed.data(), 10, nullptr, 0, now, 0, nullptr, evades));
+    latest = view.base + Header + SlotBytes * (stellar_shared::load32(view.base, 128) & 3);
+    assert(stellar_shared::plain<uint32_t>(latest, 60) == 0 && "No cloth, count 0");
+    std::vector<float> wide(Capacity, 0);
+    assert(!direct.publish(9, &state, 1, wide.data(), Capacity - 15, nullptr, 0, now, 0, nullptr, evades, nullptr, DollyNone, 0, {},
+                           2) && "Table and cloth must fit one slot");
+    assert(direct.publish(9, &state, 1, wide.data(), Capacity - 16, nullptr, 0, now, 0, nullptr, evades, nullptr, DollyNone, 0, {},
+                          2));
     // Minecraft's health and gains words, read only while its camera is fresh.
     Feedback fed;
     assert(!direct.feedback(now, fed) && "No camera, no words");
@@ -656,8 +742,11 @@ int main() {
     assert(!direct.feedback(now, fed) && "An inactive camera, no words");
     direct.stop();
   }
+  // The face follower wears the cloth here.
+  Fake::cloth(live.b, 2);
   auto slots = components(7, reinterpret_cast<uint64_t>(live.a.bytes), reinterpret_cast<uint64_t>(live.b.bytes),
-                          reinterpret_cast<uint64_t>(live.controller.bytes), reinterpret_cast<uint64_t>(live.pawn.bytes));
+                          reinterpret_cast<uint64_t>(live.controller.bytes), reinterpret_cast<uint64_t>(live.pawn.bytes),
+                          "PARAMETERS 0\nEFFECTS none\n", "CLOTH 2\n");
   {
     // EVE's gauges: game world -> actor manager -> player actor -> stats at +0x118 + 4 * stat.
     std::vector<uint8_t> world(0x100), manager(0x100), actor(0x2700);
@@ -1156,9 +1245,11 @@ int main() {
     assert(middle == (1 | 4) && stellar_shared::load64(base, 216) == 1);
     auto *slot = base + Header + SlotBytes * 1;
     assert(stellar_shared::plain<uint64_t>(slot, 0) == 1 && stellar_shared::plain<uint64_t>(slot, 16) == 7);
-    assert(stellar_shared::plain<uint32_t>(slot, 24) == 4 && "Format 4 carries the adapter's report");
+    assert(stellar_shared::plain<uint32_t>(slot, 24) == 5 && "Format 5 carries the cloth");
     assert(stellar_shared::plain<uint32_t>(slot, 28) == 2 && stellar_shared::plain<uint32_t>(slot, 32) == 54);
-    assert(stellar_shared::plain<uint32_t>(slot, 64) == 7 && stellar_shared::plain<uint32_t>(slot, 68) == (WorldValid | MorphsValid));
+    assert(stellar_shared::plain<uint32_t>(slot, 64) == 7 && stellar_shared::plain<uint32_t>(slot, 68) == (WorldValid | MorphsValid | Cloth));
+    assert(stellar_shared::plain<uint32_t>(slot, 60) == 2 && stellar_shared::plain<float>(slot, 128 + 4 * (54 + 4)) == 5 &&
+           stellar_shared::plain<float>(slot, 128 + 4 * (54 + 10 + 4)) == 10 && "The face's cloth after the table's floats");
     assert(stellar_shared::plain<float>(slot, 128 + 4 * 4) == 100);
     assert(stellar_shared::plain<uint32_t>(slot, 36) == 1 && stellar_shared::plain<float>(slot, 44) == 135 &&
            "The controller rotation travels in the slot header");

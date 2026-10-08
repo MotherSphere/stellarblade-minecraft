@@ -130,6 +130,35 @@ final class AvatarMesh {
         target.limit(6 * vertexCount);
     }
 
+    /**
+     * Deltas from the reference vertices to Stellar Blade's cloth (component-space positions, 3 floats per vertex) into
+     * target, as morph writes them, with the normals recomputed from the moved triangles: area-weighted, the winding
+     * reversed, as the pack's normals are. normals is scratch of 3 floats per vertex.
+     */
+    void cloth(float[] positions, float[] normals, FloatBuffer target) {
+        java.util.Arrays.fill(normals, 0);
+        for (int t = 0, count = indices.capacity() / 4; t < count; t += 3) {
+            int a = 3 * indices.getInt(4 * t), b = 3 * indices.getInt(4 * t + 4), c = 3 * indices.getInt(4 * t + 8);
+            float ux = positions[c] - positions[a], uy = positions[c + 1] - positions[a + 1], uz = positions[c + 2] - positions[a + 2];
+            float vx = positions[b] - positions[a], vy = positions[b + 1] - positions[a + 1], vz = positions[b + 2] - positions[a + 2];
+            float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; // (p2 - p0) x (p1 - p0)
+            normals[a] += nx; normals[a + 1] += ny; normals[a + 2] += nz;
+            normals[b] += nx; normals[b + 1] += ny; normals[b + 2] += nz;
+            normals[c] += nx; normals[c + 1] += ny; normals[c + 2] += nz;
+        }
+        target.clear();
+        for (int v = 0; v < vertexCount; v++) {
+            int at = v * VERTEX_BYTES, i = 3 * v;
+            double length = Math.sqrt(normals[i] * normals[i] + normals[i + 1] * normals[i + 1] + normals[i + 2] * normals[i + 2]);
+            for (int k = 0; k < 3; k++) {
+                target.put(6 * v + k, positions[i + k] - vertices.getFloat(at + 4 * k));
+                // A vertex of degenerate triangles only keeps its reference normal.
+                target.put(6 * v + 3 + k, length > 0 ? (float) (normals[i + k] / length) - vertices.getFloat(at + 12 + 4 * k) : 0);
+            }
+        }
+        target.limit(6 * vertexCount);
+    }
+
     /** Unreal FTransform (quaternion, translation, scale) as T * R * S for column vectors. */
     static Matrix4d transform(float[] values, int at, Matrix4d target) {
         return target.translationRotateScale(values[at + 4], values[at + 5], values[at + 6],

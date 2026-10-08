@@ -12,29 +12,37 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import org.joml.Matrix4d;
 
 /**
  * Minecraft side of the EVE pose stream: the request, Lua's component tables and the native pose mapping
- * (eve-pose-RUN.bin, the raw mapping's ownership protocol with 64 KiB pose slots). Render thread only.
+ * (eve-pose-RUN.bin, the raw mapping's ownership protocol with 256 KiB pose slots). Render thread only.
  */
 final class AvatarStream implements AutoCloseable {
-    static final int HEADER = 4096, SLOT = 65536, SLOT_HEADER = 128, CAPACITY = (SLOT - SLOT_HEADER) / 4, TOTAL = HEADER + 3 * SLOT;
+    static final int HEADER = 4096, SLOT = 262144, SLOT_HEADER = 128, CAPACITY = (SLOT - SLOT_HEADER) / 4, TOTAL = HEADER + 3 * SLOT;
     /**
      * Component status bits; HIDDEN: Stellar Blade does not draw the component (its floats still arrive). Slot format 4:
      * format 2's HIDDEN bit, format 3's dolly refusal at slot byte 56 and drone shot count in the header, plus the
-     * adapter's report at header 488..1036 and Minecraft's health and gains words at 280 and 312.
+     * adapter's report at header 488..1036 and Minecraft's health and gains words at 280 and 312. Format 5: 256 KiB slots
+     * and Stellar Blade's finished cloth of the table's cloth component (CLOTH bit) after the table's floats, its particle
+     * count at slot byte 60.
      */
-    static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8, FORMAT = 4;
+    static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8, CLOTH = 16, FORMAT = 5;
     private static final long MAX = 9007199254740991L;
     private static final byte[] MAGIC = "SBMCPOS1".getBytes(StandardCharsets.US_ASCII);
 
     /**
      * A Lua component table; anchor is Unreal X, Y, Z and units per block, or null without an entered link.
-     * controller says whether poses carry the player controller's rotation (and the adapter may turn its camera).
+     * controller says whether poses carry the player controller's rotation (and the adapter may turn its camera). cloth
+     * is the component whose finished cloth the adapter streams, or -1.
      */
     record Table(String run, long generation, String session, double[] anchor, boolean controller,
                  List<AvatarRecording.Component> components, List<Parameter> parameters, List<String> effects, boolean effectRecords,
-                 int floats) {
+                 int floats, int cloth) {
+        Table(String run, long generation, String session, double[] anchor, boolean controller, List<AvatarRecording.Component> components,
+              List<Parameter> parameters, List<String> effects, boolean effectRecords, int floats) {
+            this(run, generation, session, anchor, controller, components, parameters, effects, effectRecords, floats, -1);
+        }
         /** Payload floats of the components; the parameters' floats follow them, then the effect records. */
         int componentFloats() {
             int total = floats - (effectRecords ? MAX_EFFECTS * EFFECT_FLOATS : 0);
@@ -61,9 +69,16 @@ final class AvatarStream implements AutoCloseable {
      * the adapter set its dolly from Minecraft's this frame, or NaN when it did not, and whether this run owned
      * forwarded input that frame (Stellar Blade grants it: not paused, no cutscene), and why the adapter left the
      * camera's pitch to pitch input that frame (one of DOLLY_REFUSALS' 1-based index; 0 when it did not try or set it).
+     * cloth: the cloth component's ComponentRelativeTransform (10 floats) and particles (simulation space, 3 floats
+     * each), or null; the stream reuses this array, so it is valid until the next poll.
      */
     record Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation,
-                  boolean lookApplied, float cameraPitch, boolean inputGranted, int dollyRefusal) { }
+                  boolean lookApplied, float cameraPitch, boolean inputGranted, int dollyRefusal, float[] cloth) {
+        Sample(long counter, long publication, long generation, int[] status, float[] payload, float[] rotation,
+               boolean lookApplied, float cameraPitch, boolean inputGranted, int dollyRefusal) {
+            this(counter, publication, generation, status, payload, rotation, lookApplied, cameraPitch, inputGranted, dollyRefusal, null);
+        }
+    }
     // The adapter's DollyRefusal codes 1..10, in order.
     static final String[] DOLLY_REFUSALS = {"no camera boom", "dolly unused", "camera follows the controller", "easing after a mode change",
             "rotation lag", "another camera spline", "aim", "fishing", "slope camera", "unreadable values"};
@@ -77,6 +92,7 @@ final class AvatarStream implements AutoCloseable {
     private int fd = -1, front = 2, producerPid;
     private long previousCounter, heartbeatMillis, heartbeatNanos, requestMillis;
     private boolean stopped, pendingDelete;
+    private float[] clothFloats; // The newest sample's cloth, reused (about 208 KB).
 
     AvatarStream(Path directory, String run, long nowMs) throws IOException {
         if (!Platform.isLinux() || Native.POINTER_SIZE != 8) throw new IOException("The pose stream requires 64-bit Linux");
@@ -135,7 +151,7 @@ final class AvatarStream implements AutoCloseable {
         if (state == 0) {
             require(producerPid == 0, "Pose producer reset its claimed run");
             if (nowNanos - createdNanos > 5_000_000_000L)
-                throw new IOException("No native pose producer: the adapter, Lua revision 53 and a loaded EVE are required");
+                throw new IOException("No native pose producer: the adapter, Lua revision 54 and a loaded EVE are required");
             return null;
         }
         require(pid != 0 && (producerPid == 0 || producerPid == pid), "Pose producer changed; start a new stream");
@@ -163,6 +179,8 @@ final class AvatarStream implements AutoCloseable {
         int format = map.getInt(at + 24);
         require(format == FORMAT, "Pose slot format " + format + ", this build reads " + FORMAT + ": install the matching adapter");
         require(generation > 0 && count >= 1 && count <= 16 && floats >= 0 && floats <= CAPACITY, "Invalid pose slot layout");
+        int particles = map.getInt(at + 60); // Cloth: 10 + 3 * particles floats after the table's.
+        require(particles >= 0 && (particles == 0 || particles <= (CAPACITY - floats - 10) / 3), "Invalid cloth particle count");
         int rotated = map.getInt(at + 36);
         require(rotated == 0 || (rotated & ~14) == 1, "Invalid controller rotation status");
         if (rotated == 0) zeros(at + 40, at + 52);
@@ -170,7 +188,6 @@ final class AvatarStream implements AutoCloseable {
         int refusal = map.getInt(at + 56);
         require(refusal >= 0 && refusal <= DOLLY_REFUSALS.length && (refusal == 0 || rotated != 0 && (rotated & 4) == 0),
                 "Invalid dolly refusal");
-        zeros(at + 60, at + 64);
         zeros(at + 64 + 4 * count, at + SLOT_HEADER);
         RawFrameBus.LONG.setRelease(map, 272, counter);
         if (table == null || generation != table.generation) return new Sample(counter, publication, generation, null, null, null, false, Float.NaN, false, 0);
@@ -178,14 +195,23 @@ final class AvatarStream implements AutoCloseable {
         int[] status = new int[count];
         for (int i = 0; i < count; i++) {
             status[i] = map.getInt(at + 64 + 4 * i);
-            require((status[i] & ~15) == 0, "Invalid pose component status");
+            require((status[i] & ~31) == 0, "Invalid pose component status");
+            require((status[i] & CLOTH) == 0 || i == table.cloth && particles > 0 && (status[i] & WORLD) != 0,
+                    "Cloth on a component the table does not name");
         }
-        float[] payload = new float[floats];
+        require(particles == 0 || table.cloth >= 0 && (status[table.cloth] & CLOTH) != 0, "Cloth particles without their component");
+        float[] payload = new float[floats], cloth = null;
         map.slice(at + SLOT_HEADER, 4 * floats).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(payload);
+        if (particles > 0) {
+            if (clothFloats == null || clothFloats.length != 10 + 3 * particles) clothFloats = new float[10 + 3 * particles];
+            cloth = clothFloats;
+            map.slice(at + SLOT_HEADER + 4 * floats, 4 * cloth.length).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(cloth);
+        }
         validateHeader();
         require((int) RawFrameBus.INT.getAcquire(map, 192) == producerPid && (int) RawFrameBus.INT.getAcquire(map, 196) == 1,
                 "Pose producer stopped during the copy");
         for (float value : payload) require(Float.isFinite(value), "Non-finite pose value");
+        if (cloth != null) for (float value : cloth) require(Float.isFinite(value), "Non-finite cloth value");
         float[] rotation = null;
         float cameraPitch = Float.NaN;
         if (rotated != 0) {
@@ -197,7 +223,7 @@ final class AvatarStream implements AutoCloseable {
             require(Float.isFinite(cameraPitch), "Non-finite camera pitch");
         }
         return new Sample(counter, publication, generation, status, payload, rotation, (rotated & 2) != 0, cameraPitch,
-                (rotated & 8) != 0, refusal);
+                (rotated & 8) != 0, refusal, cloth);
     }
 
     /**
@@ -310,7 +336,7 @@ final class AvatarStream implements AutoCloseable {
      * Decodes a sample of the table's generation into a component-space pose and, per component, whether Stellar Blade
      * draws it with its data in this sample (shown). False when one of EVE's own parts lacks its data or its leader's
      * bones, as before; only the drone's parts (OPTIONAL) are then left out of the drawing instead. A part Stellar Blade
-     * hides is left out either way.
+     * hides is left out either way. The table's cloth component gets the sample's cloth in component space, or null.
      */
     static boolean decode(Table table, Sample sample, AvatarModel model, AvatarRecording.Pose target, boolean[] shown) {
         int offset = 0;
@@ -333,7 +359,77 @@ final class AvatarStream implements AutoCloseable {
             if (!table.components.get(part.component()).name().startsWith(OPTIONAL)) return false;
             shown[part.component()] = false;
         }
+        if (table.cloth >= 0) {
+            float[] cloth = null;
+            for (var part : model.parts)
+                if (part.component() == table.cloth) cloth = cloth(sample.cloth, part.mesh().vertexCount, target.cloth()[table.cloth]);
+            target.cloth()[table.cloth] = cloth;
+        }
         return true;
+    }
+
+    /**
+     * Stellar Blade's cloth (ComponentRelativeTransform, then simulation-space particles) as component-space positions,
+     * into reuse when it has the size, or null: no cloth, a particle count other than the mesh's vertex count (particle i
+     * is vertex i), or a transform whose rotation is not a unit quaternion or whose scale is not positive.
+     */
+    static float[] cloth(float[] floats, int vertices, float[] reuse) {
+        if (floats == null || floats.length != 10 + 3 * vertices) return null;
+        double norm = floats[0] * floats[0] + floats[1] * floats[1] + floats[2] * floats[2] + floats[3] * floats[3];
+        if (Math.abs(norm - 1) > 1e-2 || !(floats[7] > 0 && floats[8] > 0 && floats[9] > 0)) return null;
+        Matrix4d m = AvatarMesh.transform(floats, 0, new Matrix4d());
+        float[] out = reuse != null && reuse.length == 3 * vertices ? reuse : new float[3 * vertices];
+        for (int i = 0, at = 10; i < 3 * vertices; i += 3, at += 3) {
+            double x = floats[at], y = floats[at + 1], z = floats[at + 2];
+            out[i] = (float) (m.m00() * x + m.m10() * y + m.m20() * z + m.m30());
+            out[i + 1] = (float) (m.m01() * x + m.m11() * y + m.m21() * z + m.m31());
+            out[i + 2] = (float) (m.m02() * x + m.m12() * y + m.m22() * z + m.m32());
+        }
+        return out;
+    }
+
+    /**
+     * Whether Stellar Blade's cloth is live. A cloth sample is stale when its particles are those of the previous cloth
+     * sample, bit for bit, while her head moved (the cloth leader's Bip001-Head in component space, or the cloth
+     * component's world transform without one): Stellar Blade's cloth tick stopped. After STALE stale samples in a row the
+     * cloth is taken as frozen and the pose falls back to bones until it moves again.
+     */
+    static final class ClothWatch {
+        static final int STALE = 6; // About 0.1 s at 60 Hz; a solver frame without iterations is a single sample.
+        long stale; // Stale cloth samples so far.
+        private float[] particles;
+        private final float[] head = new float[10];
+        private int run;
+
+        /** After decode: false when the sample's cloth is to be dropped as frozen. */
+        boolean accept(Table table, Sample sample) {
+            if (table.cloth < 0 || sample.cloth == null) { particles = null; run = 0; return true; }
+            int at = headAt(table);
+            boolean moved = !java.util.Arrays.equals(sample.payload, at, at + 10, head, 0, 10);
+            System.arraycopy(sample.payload, at, head, 0, 10);
+            boolean same = particles != null && java.util.Arrays.equals(sample.cloth, 10, sample.cloth.length, particles, 10, particles.length);
+            if (particles == null || particles.length != sample.cloth.length) particles = new float[sample.cloth.length];
+            System.arraycopy(sample.cloth, 0, particles, 0, particles.length);
+            run = same && moved ? run + 1 : 0;
+            if (run > 0) stale++;
+            return run < STALE;
+        }
+
+        /** Payload index of the head transform the cloth hangs from. */
+        private static int headAt(Table table) {
+            int offset = 0, leaderAt = -1, cloth = 0;
+            String leader = table.components.get(table.cloth).leader();
+            for (int i = 0; i < table.components.size(); i++) {
+                var c = table.components.get(i);
+                if (i == table.cloth) cloth = offset;
+                if (c.recorded() && c.name().equals(leader)) {
+                    int head = java.util.Arrays.asList(c.bones()).indexOf("Bip001-Head");
+                    if (head >= 0) leaderAt = offset + 10 + 10 * head;
+                }
+                offset += 10 + 10 * (c.recorded() ? c.bones().length : 0) + c.weights();
+            }
+            return leaderAt >= 0 ? leaderAt : cloth;
+        }
     }
     static final String OPTIONAL = "Drone."; // Components whose missing data never drops EVE's pose.
 
@@ -374,7 +470,7 @@ final class AvatarStream implements AutoCloseable {
             if (c.recorded()) local[i] = new float[10 * c.bones().length];
             weights[i] = new float[c.weights()];
         }
-        return new AvatarRecording.Pose(world, local, weights);
+        return new AvatarRecording.Pose(world, local, weights, new float[n][]);
     }
 
     static Table select(String slot0, String slot1, String run) {
@@ -471,9 +567,13 @@ final class AvatarStream implements AutoCloseable {
                 }
                 floats += MAX_EFFECTS * EFFECT_FLOATS;
             } else require(fx.length == 2 && fx[1].equals("none"), "effects form");
+            String[] cloth = lines[at++].split(" ", -1);
+            require(cloth.length == 2 && cloth[0].equals("CLOTH") && (cloth[1].equals("none") || cloth[1].matches("[1-9][0-9]?")), "cloth");
+            int clothed = cloth[1].equals("none") ? -1 : Integer.parseInt(cloth[1]) - 1;
+            require(clothed < count, "cloth component");
             require(floats <= CAPACITY && lines[at++].equals("END " + generation) && at == lines.length, "end");
             return new Table(run, generation, session, anchor, controlled, List.copyOf(components), List.copyOf(parameters),
-                    List.copyOf(effects), records, (int) floats);
+                    List.copyOf(effects), records, (int) floats, clothed);
         } catch (IOException | RuntimeException rejected) {
             return null;
         }

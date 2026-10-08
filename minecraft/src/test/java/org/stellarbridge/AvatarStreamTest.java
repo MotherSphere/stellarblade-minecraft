@@ -48,6 +48,11 @@ public final class AvatarStreamTest {
         assert AvatarStream.parse(fixture.replace("EFFECTS none\n", effectLines.replace(" 10 ", " 00 "))) == null : "A zero mask";
         assert AvatarStream.parse(fixture.replace("EFFECTS none\n", effectLines.replace(" 1\nEFFECT", " 2\nEFFECT"))) == null : "Missing asset";
         assert AvatarStream.parse(fixture.replace("EFFECTS none\n", "")) == null : "The effects line is required";
+        // CLOTH names the component (1-based) whose finished cloth follows the payload, or none; the line is required.
+        assert table.cloth() == -1 && AvatarStream.parse(fixture.replace("CLOTH none", "CLOTH 2")).cloth() == 1;
+        for (String bad : new String[] {"CLOTH 0", "CLOTH 3", "CLOTH", "CLOTH +1", "CLOTH 02", "CLOTH 1 2", "CLOTH -1"})
+            assert AvatarStream.parse(fixture.replace("CLOTH none", bad)) == null : bad;
+        assert AvatarStream.parse(fixture.replace("CLOTH none\n", "")) == null : "The cloth line is required";
         float[] effectPayload = new float[sparkling.floats()];
         java.util.Arrays.fill(effectPayload, 52, effectPayload.length, 0);
         for (int r = 0; r < AvatarStream.MAX_EFFECTS; r++) effectPayload[52 + r * AvatarStream.EFFECT_FLOATS] = -1;
@@ -324,6 +329,18 @@ public final class AvatarStreamTest {
         end.world()[0][4] = 10; end.weights()[0][0] = 1;
         AvatarView.blend(start, end, 0.25f, mid);
         assert mid.world()[0][4] == 2.5f && mid.weights()[0][0] == 0.25f && mid.world()[0][3] == 1;
+        // Cloth positions interpolate linearly into a reused array; with one end on bones, bones for the interval.
+        start.cloth()[0] = new float[] {0, 0, 0};
+        end.cloth()[0] = new float[] {4, 8, -12};
+        AvatarView.blend(start, end, 0.25f, mid);
+        float[] blended = mid.cloth()[0];
+        assert java.util.Arrays.equals(blended, new float[] {1, 2, -3}) : java.util.Arrays.toString(blended);
+        AvatarView.blend(start, end, 1.5f, mid);
+        assert mid.cloth()[0] == blended && blended[1] == 12 : "Extrapolated as the bones are, in the same array";
+        end.cloth()[0] = null;
+        AvatarView.blend(start, end, 0.25f, mid);
+        assert mid.cloth()[0] == null : "One end without cloth";
+        start.cloth()[0] = null;
         // Interpolation on publication times: bracketing samples, oldest clamp, bounded extrapolation, ring wrap.
         AvatarRecording.Pose[] ring = new AvatarRecording.Pose[4];
         double[] times = new double[4];
@@ -358,7 +375,7 @@ public final class AvatarStreamTest {
                 assert stream.table().generation() == 1;
                 try (var channel = FileChannel.open(stream.path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
                     var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
-                    assert map.getInt(96) != 0 && (int) RawFrameBus.INT.getAcquire(map, 256) == 1 && map.getInt(16) == 65536;
+                    assert map.getInt(96) != 0 && (int) RawFrameBus.INT.getAcquire(map, 256) == 1 && map.getInt(16) == 262144;
                     assert stream.poll(table, now, System.nanoTime()) == null : "Unclaimed: nothing yet";
                     stream.feedback(0.5f, 7, 30, 200);
                     for (int i = AvatarStream.HEALTH_AT; i < AvatarStream.GAINS_AT + 8; i++)
@@ -547,8 +564,9 @@ public final class AvatarStreamTest {
                 }
             }
             // A slot of the previous format (an older adapter) ends the stream with the reason.
-            assert refusedWith(directory, table, AvatarStream.HEADER + AvatarStream.SLOT + 24, 3)
-                    .equals("Pose slot format 3, this build reads 4: install the matching adapter");
+            assert refusedWith(directory, table, AvatarStream.HEADER + AvatarStream.SLOT + 24, 4)
+                    .equals("Pose slot format 4, this build reads 5: install the matching adapter");
+            cloth(directory, fixture);
             // The header stays reserved between the camera and the gains word, and after the adapter's report.
             assert refusedWith(directory, table, 308, 1).equals("Pose mapping reserved bytes changed");
             assert refusedWith(directory, table, 376, 1).equals("Pose mapping reserved bytes changed") : "Reserved after the evade words";
@@ -629,6 +647,109 @@ public final class AvatarStreamTest {
         }
     }
 
+    /**
+     * Stellar Blade's cloth in format 5: its particles after the table's floats, their count at slot byte 60 and the CLOTH bit
+     * on the table's cloth component only; decoded into component space for a part with as many vertices, else bones; and the
+     * watch that drops a cloth frozen while her head moves.
+     */
+    private static void cloth(Path directory, String fixture) throws Exception {
+        var worn = AvatarStream.parse(fixture.replace("CLOTH none", "CLOTH 2"));
+        float turn = (float) Math.sqrt(0.5);
+        // ComponentRelativeTransform -90 degrees about Y (the Root bone's), moved by (1, 2, 3); particles (10, 0, 0) and (0, 0, 10).
+        float[] floats = {0, -turn, 0, turn, 1, 2, 3, 1, 1, 1, 10, 0, 0, 0, 0, 10};
+        float[] payload = java.util.Arrays.copyOf(payload(), 52 + floats.length);
+        System.arraycopy(floats, 0, payload, 52, floats.length);
+        var sample = clothSlot(directory, worn, new int[] {7, 5 | AvatarStream.CLOTH}, 2, payload);
+        assert sample.payload().length == 52 && java.util.Arrays.equals(sample.cloth(), floats) : "The table's floats, then the cloth";
+        assert clothSlot(directory, worn, new int[] {7, 5}, 0, payload()).cloth() == null : "No particles, no cloth";
+        assert clothRefused(directory, worn, new int[] {7 | AvatarStream.CLOTH, 5}, 2, payload).equals("Cloth on a component the table does not name");
+        assert clothRefused(directory, table(fixture), new int[] {7, 5 | AvatarStream.CLOTH}, 2, payload).equals("Cloth on a component the table does not name")
+                : "A table without cloth";
+        assert clothRefused(directory, worn, new int[] {7, 5}, 2, payload).equals("Cloth particles without their component");
+        assert clothRefused(directory, worn, new int[] {7, 5 | AvatarStream.CLOTH}, 0, payload()).equals("Cloth on a component the table does not name")
+                : "The bit without particles";
+        assert clothRefused(directory, worn, new int[] {7, 4 | AvatarStream.CLOTH}, 2, payload).equals("Cloth on a component the table does not name")
+                : "Cloth of a component not read";
+        int past = (AvatarStream.CAPACITY - 52 - 10) / 3 + 1;
+        assert clothRefused(directory, worn, new int[] {7, 5 | AvatarStream.CLOTH}, past, java.util.Arrays.copyOf(payload, 52 + 10 + 3 * past))
+                .equals("Invalid cloth particle count") : "Past the slot";
+        payload[60] = Float.NaN;
+        assert clothRefused(directory, worn, new int[] {7, 5 | AvatarStream.CLOTH}, 2, payload).equals("Non-finite cloth value");
+
+        // Decoded for EVE's ponytail mesh, two vertices here: R_y(-90) (x, y, z) = (-z, y, x), then moved.
+        AvatarMesh body = AvatarMesh.parse("Body", AvatarModelTest.mesh("Bip001-Head", b -> { })), tail = AvatarMesh.parse("Tail", AvatarModelTest.mesh("Tip", b -> { }));
+        var hair = new AvatarStream.Table(RUN, 1, "none", null, false, java.util.List.of(
+                new AvatarRecording.Component("CharacterMesh0", "Body", null, new String[] {"Root", "Bip001-Head"}, new String[0], 0),
+                new AvatarRecording.Component("SBPonytail", "Tail", "CharacterMesh0", null, new String[0], 0)),
+                java.util.List.of(), java.util.List.of(), false, 40, 1);
+        AvatarModel model = new AvatarModel(hair.components(), Map.of("Body", body, "Tail", tail));
+        var pose = AvatarStream.emptyPose(hair);
+        float[] values = new float[40];
+        for (int at : new int[] {0, 10, 20, 30}) values[at + 3] = values[at + 7] = values[at + 8] = values[at + 9] = 1;
+        java.util.function.Function<float[], AvatarStream.Sample> worn2 = cloth -> new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, values.clone(),
+                null, false, Float.NaN, false, 0, cloth);
+        assert AvatarStream.decode(hair, worn2.apply(floats.clone()), model, pose, new boolean[2]) && pose.cloth()[0] == null;
+        float[] decoded = pose.cloth()[1];
+        float[] want = {1, 2, 13, -9, 2, 3};
+        for (int k = 0; k < 6; k++) assert Math.abs(decoded[k] - want[k]) < 1e-5 : java.util.Arrays.toString(decoded);
+        AvatarStream.decode(hair, worn2.apply(floats.clone()), model, pose, new boolean[2]);
+        assert pose.cloth()[1] == decoded : "The array is reused";
+        assert AvatarStream.decode(hair, worn2.apply(java.util.Arrays.copyOf(floats, 19)), model, pose, new boolean[2]) && pose.cloth()[1] == null
+                : "Another particle count than the mesh's vertices: bones";
+        float[] skewed = floats.clone();
+        skewed[3] = 0.9f;
+        assert AvatarStream.decode(hair, worn2.apply(skewed), model, pose, new boolean[2]) && pose.cloth()[1] == null : "No rotation";
+        skewed = floats.clone();
+        skewed[8] = 0;
+        assert AvatarStream.decode(hair, worn2.apply(skewed), model, pose, new boolean[2]) && pose.cloth()[1] == null : "A flat scale";
+        assert AvatarStream.decode(hair, worn2.apply(null), model, pose, new boolean[2]) && pose.cloth()[1] == null : "No cloth";
+        var bare = new AvatarModel(hair.components(), Map.of("Body", body));
+        assert AvatarStream.decode(hair, worn2.apply(floats.clone()), bare, pose, new boolean[2]) && pose.cloth()[1] == null : "No ponytail mesh";
+
+        // The watch: the same particles while her head (the leader's Bip001-Head at 20) moves are stale; STALE in a row drop
+        // the cloth until it moves again. A still head or moving particles are live.
+        var watch = new AvatarStream.ClothWatch();
+        java.util.function.BiFunction<Float, Float, AvatarStream.Sample> at = (head, particle) -> {
+            float[] p = values.clone(), c = floats.clone();
+            p[24] = head;
+            c[10] = particle;
+            return new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, p, null, false, Float.NaN, false, 0, c);
+        };
+        assert watch.accept(hair, at.apply(0f, 0f)) && watch.stale == 0;
+        for (int k = 1; k < AvatarStream.ClothWatch.STALE; k++) assert watch.accept(hair, at.apply((float) k, 0f)) : "Stale " + k + " times: kept";
+        assert !watch.accept(hair, at.apply(99f, 0f)) && watch.stale == AvatarStream.ClothWatch.STALE : "Frozen while the head moves: bones";
+        assert !watch.accept(hair, at.apply(100f, 0f)) && watch.accept(hair, at.apply(101f, 1f)) : "Until the particles move";
+        assert watch.accept(hair, at.apply(101f, 1f)) && watch.accept(hair, at.apply(101f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 1
+                : "A still head with still particles is not stale";
+        assert watch.accept(hair, at.apply(102f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "Counted";
+        var moving = values.clone();
+        assert watch.accept(hair, new AvatarStream.Sample(1, 1, 1, new int[] {3, 1}, moving, null, false, Float.NaN, false, 0, null))
+                && watch.accept(hair, at.apply(103f, 1f)) && watch.stale == AvatarStream.ClothWatch.STALE + 2 : "A sample without cloth restarts the watch";
+    }
+    private static AvatarStream.Table table(String fixture) { return AvatarStream.parse(fixture); }
+    private static int clothRuns; // Each cloth slot's stream has its own run.
+    /** What a fresh stream decodes from one native slot with these statuses, cloth particles and payload. */
+    private static AvatarStream.Sample clothSlot(Path directory, AvatarStream.Table table, int[] status, int particles, float[] payload) throws Exception {
+        long now = System.currentTimeMillis();
+        try (var stream = new AvatarStream(directory, String.format("c%031x", ++clothRuns), now);
+             var channel = FileChannel.open(stream.path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
+            assert (boolean) RawFrameBus.INT.compareAndSet(map, 192, 0, 777);
+            RawFrameBus.LONG.setRelease(map, 208, now);
+            RawFrameBus.INT.setRelease(map, 196, 1);
+            publish(map, 1, 1, 1, now, status, payload, particles);
+            return stream.poll(table, now, System.nanoTime());
+        }
+    }
+    private static String clothRefused(Path directory, AvatarStream.Table table, int[] status, int particles, float[] payload) throws Exception {
+        try {
+            clothSlot(directory, table, status, particles, payload);
+            throw new AssertionError("Accepted cloth " + particles);
+        } catch (java.io.IOException failure) {
+            return failure.getMessage();
+        }
+    }
+
     /** Reads poses from the external native fixture (pose_stream_fixture), which plays Lua and the game thread. */
     private static void interop(Path directory, int wanted) throws Exception {
         Files.createDirectories(directory);
@@ -677,10 +798,15 @@ public final class AvatarStreamTest {
 
     /** Writes a native slot into back and exchanges it into the middle, as the adapter does. */
     static void publish(java.nio.ByteBuffer map, int back, long counter, long generation, long now, int[] status, float[] payload) {
+        publish(map, back, counter, generation, now, status, payload, 0);
+    }
+    /** The same with cloth particles: payload ends with their 10 + 3 * particles floats. */
+    static void publish(java.nio.ByteBuffer map, int back, long counter, long generation, long now, int[] status, float[] payload, int particles) {
         int at = AvatarStream.HEADER + back * AvatarStream.SLOT;
         for (int i = 0; i < AvatarStream.SLOT_HEADER; i++) map.put(at + i, (byte) 0);
         map.putLong(at, counter).putLong(at + 8, now).putLong(at + 16, generation).putInt(at + 24, AvatarStream.FORMAT)
-                .putInt(at + 28, status.length).putInt(at + 32, payload.length);
+                .putInt(at + 28, status.length).putInt(at + 32, payload.length - (particles > 0 ? 10 + 3 * particles : 0))
+                .putInt(at + 60, particles);
         for (int i = 0; i < status.length; i++) map.putInt(at + 64 + 4 * i, status[i]);
         for (int i = 0; i < payload.length; i++) map.putFloat(at + AvatarStream.SLOT_HEADER + 4 * i, payload[i]);
         RawFrameBus.INT.getAndSet(map, 128, back | 4);

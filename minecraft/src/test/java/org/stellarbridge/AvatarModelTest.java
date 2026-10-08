@@ -229,7 +229,77 @@ public final class AvatarModelTest {
             assert nx != 1 || x != -4 || y != 0 : "The far wall's east face";
         }
         assert climbs && reaches : "The near wall's east face and the ground before it";
-        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cut-out mipmaps, weapon trails, shader-pack inputs, and sun and shadow math");
+        clothSkinning();
+        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cloth"
+                + " deltas through the rigid palette, cut-out mipmaps, weapon trails, shader-pack inputs, and sun and shadow math");
+    }
+
+    /**
+     * Stellar Blade's cloth through the vertex shader: a CPU copy of avatar.vsh ((P + d) * sum of w * M) with the cloth part's
+     * rigid palette and its deltas must place each vertex at placement * world * cloth and turn its normal as the cloth
+     * turned the triangle, whatever its bone weights.
+     */
+    static void clothSkinning() {
+        // One triangle on the Root/Tip chain, its pack normal +Z opposite to (p1 - p0) x (p2 - p0), as the ponytail's are; the
+        // last vertex split between both bones.
+        ByteBuffer b = ByteBuffer.allocate(512).order(ByteOrder.LITTLE_ENDIAN);
+        b.put("SBAVMESH".getBytes(StandardCharsets.US_ASCII)).putInt(2).putInt(2);
+        name(b, "Root"); b.putInt(-1); for (float v : IDENTITY) b.putFloat(v);
+        name(b, "Tip"); b.putInt(0); for (float v : new float[] {0, 0, 0, 1, 0, 0, 100, 1, 1, 1}) b.putFloat(v);
+        b.putInt(3);
+        vertex(b, 0, 0, 0, 0);
+        vertex(b, 0, 100, 0, 1);
+        b.putFloat(100).putFloat(0).putFloat(0).putFloat(0).putFloat(0).putFloat(1).putFloat(0).putFloat(0);
+        b.putShort((short) 0).putShort((short) 1).putShort((short) 0).putShort((short) 0).putFloat(0.6f).putFloat(0.4f).putFloat(0).putFloat(0);
+        b.putInt(3).putInt(0).putInt(1).putInt(2);
+        b.putInt(1); name(b, "Hair"); b.putInt(0).putInt(1);
+        b.putInt(0);
+        AvatarMesh tail = AvatarMesh.parse("Tail", b.flip()), body = AvatarMesh.parse("Body", mesh("Tip", x -> { }));
+        var components = java.util.List.of(new AvatarRecording.Component("CharacterMesh0", "Body", null, new String[] {"Root", "Tip"}, new String[0], 0),
+                new AvatarRecording.Component("SBPonytail", "Tail", "CharacterMesh0", null, new String[0], 0));
+        AvatarModel model = new AvatarModel(components, Map.of("Body", body, "Tail", tail));
+        AvatarRecording.Pose pose = new AvatarRecording.Pose(new float[2][10], new float[][] {new float[20], null}, new float[2][0], new float[2][]);
+        float root90 = (float) Math.sqrt(0.5);
+        float[] world = {0, 0, root90, root90, 100, 200, 300, 1, 1, 1}; // 90 degrees about Z, then moved.
+        System.arraycopy(world, 0, pose.world()[0], 0, 10);
+        System.arraycopy(world, 0, pose.world()[1], 0, 10);
+        System.arraycopy(new float[] {root90, 0, 0, root90, 0, 0, 0, 1, 1, 1}, 0, pose.local()[0], 0, 10); // Bones turned: unused by cloth.
+        System.arraycopy(new float[] {0, 0, 0, 1, 0, 0, 100, 1, 1, 1}, 0, pose.local()[0], 10, 10);
+        // The cloth: the reference triangle turned 90 degrees about X (y to z) and moved by (5, 6, 7).
+        float[] cloth = {5, 6, 7, 5, 6, 107, 105, 6, 7};
+        pose.cloth()[1] = cloth;
+        Matrix4d placement = new Matrix4d().translation(-1, -2, -3).mul(AvatarModel.UNREAL_TO_MINECRAFT);
+        FloatBuffer[] palettes = {FloatBuffer.allocate(24), FloatBuffer.allocate(24)};
+        model.palettes(pose, placement, palettes, false);
+        assert model.cloth[1] == cloth && model.cloth[0] == null;
+        FloatBuffer deltas = FloatBuffer.allocate(18);
+        tail.cloth(cloth, new float[9], deltas);
+        assert deltas.limit() == 18 && deltas.get(0) == 5 && deltas.get(7) == -94 && deltas.get(8) == 107 : "Position deltas from the reference";
+        Matrix4d expected = new Matrix4d(placement).mul(AvatarMesh.transform(world, 0, new Matrix4d()));
+        Vector3d turnedNormal = expected.transformDirection(new Vector3d(0, -1, 0)).normalize(); // +Z turned about X.
+        for (int v = 0; v < 3; v++) {
+            int at = v * AvatarMesh.VERTEX_BYTES;
+            double[] position = new double[3], normal = new double[3];
+            for (int row = 0; row < 3; row++)
+                for (int k = 0; k < 4; k++) {
+                    int bone = Short.toUnsignedInt(tail.vertices.getShort(at + 32 + 2 * k)), m = bone * 12 + row * 4;
+                    float weight = tail.vertices.getFloat(at + 40 + 4 * k);
+                    for (int c = 0; c < 3; c++) {
+                        position[row] += weight * palettes[1].get(m + c) * (tail.vertices.getFloat(at + 4 * c) + deltas.get(6 * v + c));
+                        normal[row] += weight * palettes[1].get(m + c) * (tail.vertices.getFloat(at + 12 + 4 * c) + deltas.get(6 * v + 3 + c));
+                    }
+                    position[row] += weight * palettes[1].get(m + 3);
+                }
+            Vector3d want = expected.transformPosition(new Vector3d(cloth[3 * v], cloth[3 * v + 1], cloth[3 * v + 2]));
+            assert want.distance(position[0], position[1], position[2]) < 1e-5 : "Vertex " + v + " at " + java.util.Arrays.toString(position) + ", not " + want;
+            Vector3d drawn = new Vector3d(normal[0], normal[1], normal[2]).normalize();
+            assert drawn.distance(turnedNormal) < 1e-5 : "Normal " + v + " " + drawn + ", not " + turnedNormal;
+        }
+        // Without cloth the part is skinned to its leader's bones again (the turned root).
+        float[] rigid = palettes[1].array().clone();
+        pose.cloth()[1] = null;
+        model.palettes(pose, placement, palettes, false);
+        assert model.cloth[1] == null && !java.util.Arrays.equals(rigid, palettes[1].array()) : "Bones again";
     }
 
     /** Applies bone row matrices (GLSL mat3x4 layout) to an Unreal reference-space point. */
