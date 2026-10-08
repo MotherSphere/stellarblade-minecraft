@@ -310,14 +310,14 @@ function Terrain.new(engine,scale,clock)
                 queue[#queue+1]={spec=spec,key=key}
             end
         end
+        fixture.import={packet=copy_packet(packet),queue=queue,wanted=wanted,next=1,started=clock(),frames=0,
+            reused=0,spawned=0,slowest=0}
         if not guarded and #fixture.fresh>0 then
-            -- A superseded window's guards; the applied window's guards still hold EVE.
+            -- A superseded window's guards, parked within this revision's summary; the applied window's guards still hold EVE.
             local remaining,why=release(fixture.fresh,true)
             fixture.fresh=remaining
             if #remaining>0 then fixture.complete=false; error('Superseded window guards remain; cleanup required: '..why,0) end
         end
-        fixture.import={packet=copy_packet(packet),queue=queue,wanted=wanted,next=1,started=clock(),frames=0,
-            reused=0,spawned=0,slowest=0}
         local ok,err=pcall(function()
             for _,spec in ipairs(guards) do spawn_owned(fixture.fresh,spec) end
         end)

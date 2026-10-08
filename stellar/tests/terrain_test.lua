@@ -8,7 +8,7 @@ local function check(name, run)
 end
 local function backend()
     local b = {live={},next_id=0,pawn_id=1,world_id=2,
-        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0,spawns=0}
+        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0,park_cost=0,spawns=0}
     function b.time() return b.clock end
     function b.snapshot()
         return {pawn_id=b.pawn_id,world_id=b.world_id,
@@ -34,6 +34,7 @@ local function backend()
         a.spec,a.solid,a.visible=spec,true,spec.visuals_visible~=false
     end
     function b.park(a)
+        b.clock=b.clock+b.park_cost
         if b.fail_park==a.id then error('park failed') end
         a.solid,a.visible=false,false
         b.events[#b.events+1]={'park',a.id}
@@ -432,10 +433,12 @@ check('a window moved back during its import drops the new guards at once',funct
     local boxes=scattered(); boxes[1]={-2.5,-1,-4.5,6.5,0,4.5}
     assert(t.update(moved(2,boxes,{-2.5,-2,-4.5,6.5,4,4.5})))
     assert(#roles(t,'lab-wall')==8 and t.pose().ack==1,'both windows are guarded while the move imports')
+    b.park_cost=0.003
     local ok,done=t.update(packet(3,scattered()))
     assert(ok and #roles(t,'lab-wall')==4,'the applied window keeps only its own guards')
     -- The dropped guards are parked and placed again as boxes at no spawn cost, so the rest fits this frame.
     assert(done:find('revision 3: 8 boxes added',1,true) and done:find('reused 6, spawned 2',1,true)
+        and done:find('in 24 ms over 1 frames',1,true) -- The six guards' parks, two spawns, one box parked.
         and not done:find('window moved',1,true) and t.pose().ack==3,done)
     assert(t.restore()); assert(b.count()==0)
 end)
