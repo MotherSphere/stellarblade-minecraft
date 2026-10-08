@@ -430,6 +430,7 @@ end})
 terrain_engine.stream_at({X=1,Y=2,Z=3})
 assert(streaming.enabled and streaming.location.X==1 and streaming.location.Z==3 and streaming.writes==2,'the location, then the flag')
 terrain_engine.stream_at({X=1,Y=2,Z=3}); assert(streaming.writes==2,'a pin in place writes nothing')
+terrain_engine.stream_at({X=4,Y=5,Z=6},true); assert(streaming.writes==2 and streaming.location.X==1,'if_unpinned keeps a pin')
 terrain_engine.stream_at(nil); assert(not streaming.enabled and streaming.writes==3)
 terrain_engine.stream_at(nil); assert(streaming.writes==3,'an unset pin writes nothing')
 streaming.tables=false -- The vector property refuses a table: written one component at a time.
@@ -439,6 +440,8 @@ streaming.location=setmetatable({},{__index=function() return 0 end,__newindex=f
 local pinned,why=pcall(terrain_engine.stream_at,{X=7,Y=8,Z=9})
 assert(not pinned and tostring(why):find('did not accept the streaming location',1,true),'a pin that never lands fails')
 streaming.location={X=0,Y=0,Z=0}; streaming.enabled=false
+paused=true; assert(terrain_engine.paused()==true)
+paused=false; assert(terrain_engine.paused()==false)
 local traced
 function system:LineTraceSingle(context,from,to) traced={context,from,to}; return false end
 assert(terrain_engine.ground_at({X=1,Y=2,Z=300},95)==false and traced[1]==pawn and traced[3].Z==300-95-30,'a downward trace from the start')

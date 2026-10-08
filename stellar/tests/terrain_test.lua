@@ -15,12 +15,14 @@ local function backend()
             position={X=b.position.X,Y=b.position.Y,Z=b.position.Z},
             rotation={Pitch=0,Yaw=0,Roll=0},half_height=90,radius=35}
     end
-    -- Stellar Blade's streaming pin (b.pin), its ground under the return point and its autosave switch.
+    -- Stellar Blade's streaming pin (b.pin), its ground under the return point, its pause and its autosave switch.
     b.ground,b.autosave_on,b.flushes=true,true,0
-    function b.stream_at(position)
+    function b.stream_at(position,if_unpinned)
+        if if_unpinned and b.pin then return end
         if b.fail_pin and (position or b.pin) then error('pin refused') end -- Clearing an unset pin writes nothing.
         b.pin=position and {X=position.X,Y=position.Y,Z=position.Z} or nil
     end
+    function b.paused() return b.pause==true end
     function b.ground_at(position,half_height)
         assert(position.X==10 and position.Y==20 and position.Z==100 and half_height==90,'the trace starts at EVE\'s start')
         return b.ground
@@ -599,7 +601,8 @@ check('the return from a lab site waits for the ground, then moves, unpins and r
     b.clock=9.9; assert(not t.restore() and b.moves==1 and b.flushes==0)
     b.ground=true; b.clock=10.5
     ok,message=t.restore()
-    assert(ok and message:find('Returned after waiting 10.5 s for the return point to stream and removed',1,true),message)
+    assert(ok and message:find('Returned after waiting 10.5 s for the return point to stream and removed',1,true)
+        and not message:find('forced',1,true),message)
     assert(b.position.X==10 and b.position.Z==100 and b.pin==nil and b.autosave_on and b.count()==0 and b.flushes==0)
 end)
 
@@ -610,8 +613,30 @@ check('a lab site return without ground flushes streaming once after the wait an
     b.clock=10; b.fail_move=true
     local ok,message=t.restore()
     assert(not ok and message:find('Return teleport failed',1,true) and b.flushes==1,message)
-    b.fail_move=false; assert(t.restore())
+    b.fail_move=false; ok,message=t.restore()
+    assert(ok and message:find('to stream (one forced load) and removed',1,true),message)
     assert(b.flushes==1 and b.position.Z==100 and b.pin==nil and b.autosave_on,'one flush, then the return')
+end)
+
+check('a lab site return never times out while Stellar Blade is paused',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    b.ground=false; b.pause=true; assert(not t.restore())
+    b.clock=20; local ok,message=t.restore()
+    assert(not ok and message:find('Waiting for Stellar Blade',1,true) and b.moves==1 and b.flushes==0,message)
+    b.pause=false; b.clock=29.9; assert(not t.restore() and b.flushes==0,'the wait starts again once it runs')
+    b.clock=30; assert(t.restore()); assert(b.flushes==1 and b.position.Z==100 and b.pin==nil)
+end)
+
+check('a new pawn in the same world gets autosave and streaming back though its return is refused',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.pawn_id=9
+    local ok,message=t.restore()
+    assert(not ok and message:find('Player/world changed',1,true) and b.autosave_on and b.moves==1,message)
+    b=backend(); t=Terrain.new(b); assert(t.create(packet())); assert(t.enter()); b.pawn_id=9
+    assert(not t.restore()); assert(b.pin==nil and b.moves==1,'the start no longer pinned')
+    b=backend(); b.site=SITE; t=Terrain.new(b); assert(t.create(packet())); assert(t.enter()); b.world_id=7
+    assert(not t.restore()); assert(not b.autosave_on,'another world\'s controller is left alone')
 end)
 
 check('a failed unpin or autosave restore is retried after EVE is back',function()
@@ -638,15 +663,34 @@ check('a lab site whose streaming pin is refused keeps the lab above EVE',functi
     assert(t.restore()); assert(b.position.Z==100 and b.count()==0)
 end)
 
+check('a pin the lab site probe could not clear is cleared by the return',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b)
+    local stream_at=b.stream_at
+    b.stream_at=function(position) assert(position,'clear refused'); stream_at(position) end
+    local ok,message=t.create(packet())
+    assert(ok and message:find('Lab above EVE: streaming pin unavailable: ',1,true) and b.pin,message)
+    b.stream_at=stream_at; assert(t.restore()); assert(b.pin==nil and b.moves==0)
+end)
+
 check('without a site the start is pinned while entered, re-asserted and cleared after the return',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(b.pin==nil)
     assert(t.enter()); assert(b.pin.X==10 and b.pin.Y==20 and b.pin.Z==100 and b.autosave_on)
     b.pin=nil -- Stellar Blade's own warp clears it.
     assert(t.update(packet(1))); assert(b.pin and b.pin.X==10,'the next heartbeat pins it again')
-    b.fail_pin=true; assert(t.update(packet(2)) and t.pose().ack==2,'a refused pin never blocks the terrain')
+    b.pin=nil; b.fail_pin=true; assert(t.update(packet(2)) and t.pose().ack==2,'a refused pin never blocks the terrain')
     b.fail_pin=nil
     assert(t.restore()); assert(b.pin==nil and b.position.Z==100 and b.flushes==0)
+end)
+
+check('the heartbeat never replaces Stellar Blade\'s own pin, nor pins once its warp has taken EVE away',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    b.pin={X=50000,Y=60000,Z=0} -- Its warp pins its destination during its fade-out.
+    assert(t.update(packet(1))); assert(b.pin.X==50000,'its destination streams')
+    b.position={X=50000,Y=60000,Z=0}; b.pin=nil -- It moved EVE there and cleared its pin.
+    assert(t.update(packet(2))); assert(b.pin==nil,'streaming follows EVE, not her old start')
+    assert(t.restore()); assert(b.position.Z==100)
 end)
 
 check('a window move that would leave the world is deferred',function()

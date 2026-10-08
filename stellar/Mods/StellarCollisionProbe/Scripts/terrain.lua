@@ -131,6 +131,12 @@ function Terrain.new(engine,scale,clock)
         return #errors==0,table.concat(errors,'; ')
     end
     local function mapped(box,role) return Terrain.mapped(box,fixture.anchor,scale,role) end
+    -- Whether EVE's feet are inside window bounds b (blocks from the anchor).
+    local function inside(now,b)
+        local a=fixture.anchor
+        local x,y,z=(now.position.X-a.X)/scale,(now.position.Z-now.half_height-a.Z)/scale,(now.position.Y-a.Y)/scale
+        return x>b[1] and x<b[4] and y>=b[2] and y<b[5] and z>b[3] and z<b[6]
+    end
     local function lab_guards(bounds,half_height)
         local pad=25/scale
         local x0,y0,z0,x1,y1,z1=table.unpack(bounds)
@@ -226,11 +232,12 @@ function Terrain.new(engine,scale,clock)
             and bounds[3]*scale < -origin.radius and bounds[6]*scale > origin.radius
             and bounds[2]<0 and bounds[5]>0,'The Minecraft anchor must fit inside the guarded patch.')
         -- A lab site (engine.snapshot) is used only where the return can pin Stellar Blade's streaming (restore).
-        local unpinned
+        local unpinned,stuck
         if origin.site then
             local pinned,why=pcall(engine.stream_at,origin.position)
             local cleared,clear_why=pcall(engine.stream_at,nil)
             if not (pinned and cleared) then origin.site,unpinned=nil,tostring(pinned and clear_why or why) end
+            stuck=pinned and not cleared or nil -- Cleared by restore, as after an entry.
         end
         -- The lab floor stays 4 m above EVE's starting centre however deep the patch reaches; at a site, kilometres away
         -- where Stellar Blade streams none of its world, else above her.
@@ -239,7 +246,7 @@ function Terrain.new(engine,scale,clock)
         assert(anchor.Z+bounds[2]*scale-50 > origin.position.Z+origin.half_height,
             'The bounded patch is too deep for the elevated lab; no actors created.')
         fixture={origin=origin,anchor=anchor,packet=copy_packet(packet),
-            guards={},fresh={},terrain={},pool={},entered=false,complete=false,
+            guards={},fresh={},terrain={},pool={},entered=false,complete=false,pinned=stuck,
             entry={X=anchor.X,Y=anchor.Y,Z=anchor.Z+origin.half_height+5}}
         local started=os.clock()
         local ok,err=pcall(function()
@@ -286,8 +293,11 @@ function Terrain.new(engine,scale,clock)
         assert(fixture,'Create the terrain patch first.')
         assert(fixture.complete,'Terrain incomplete; only return and cleanup are allowed.')
         local now=same_context()
-        -- Each heartbeat (the 200 ms bridge tick) puts back a pin Stellar Blade's own warp cleared; it never blocks terrain.
-        if fixture.entered and fixture.pinned then pcall(engine.stream_at,fixture.origin.position) end
+        -- Each heartbeat (the 200 ms bridge tick) puts back a pin Stellar Blade's own warp cleared, but never over the pin
+        -- of a warp still under way, nor once one has taken EVE out of the window; it never blocks terrain.
+        if fixture.entered and fixture.pinned and inside(now,fixture.packet.bounds) then
+            pcall(engine.stream_at,fixture.origin.position,true)
+        end
         same_anchor(packet)
         local newest=fixture.import and fixture.import.packet or fixture.packet
         assert(packet.seq>=newest.seq,'Older terrain revision rejected.')
@@ -312,9 +322,7 @@ function Terrain.new(engine,scale,clock)
             local a,b=fixture.anchor,packet.bounds
             assert(math.max(math.abs(a.X+b[1]*scale),math.abs(a.X+b[4]*scale),math.abs(a.Y+b[3]*scale),
                 math.abs(a.Y+b[6]*scale))<=WORLD_EDGE,'Window move deferred: the new window would leave the world.')
-            local x,y,z=(now.position.X-a.X)/scale,(now.position.Z-now.half_height-a.Z)/scale,(now.position.Y-a.Y)/scale
-            assert(x>b[1] and x<b[4] and y>=b[2] and y<b[5] and z>b[3] and z<b[6],
-                'Window move deferred: EVE is outside the new window.')
+            assert(inside(now,b),'Window move deferred: EVE is outside the new window.')
             guards=lab_guards(b,fixture.origin.half_height)
             for _,spec in ipairs(guards) do
                 assert(not overlaps(spec,now.position,now.radius,now.half_height),'Window move deferred: a new guard intersects EVE.')
@@ -357,9 +365,20 @@ function Terrain.new(engine,scale,clock)
         return step()
     end)
 
+    -- Kept until they succeed: a failure here is retried like a failed teleport.
+    local function unwind()
+        if fixture.pinned then engine.stream_at(nil); fixture.pinned=nil end
+        if fixture.autosave~=nil then engine.autosave(fixture.autosave); fixture.autosave=nil end
+    end
     api.restore=protected(function()
         assert(fixture,'No terrain patch is active.')
-        same_context()
+        local same,changed=pcall(same_context)
+        if not same then
+            -- A new pawn in the same world (a respawn) keeps the controller and the world: autosave and streaming are
+            -- put back even though the old return is refused.
+            pcall(function() assert(engine.snapshot().world_id==fixture.origin.world_id); unwind() end)
+            error(changed,0)
+        end
         if fixture.entered then
             if fixture.origin.site then
                 -- As Stellar Blade's own warp: streaming pinned at the return point, EVE stays in the lab until its ground
@@ -369,6 +388,10 @@ function Terrain.new(engine,scale,clock)
                 engine.stream_at(fixture.origin.position)
                 fixture.waiting=fixture.waiting or clock()
                 if not engine.ground_at(fixture.origin.position,fixture.origin.half_height) then
+                    -- Paused, World Composition requests nothing (UWorld::Tick) and a flush would load nothing: the wait
+                    -- starts again once Stellar Blade runs.
+                    local known,paused=pcall(engine.paused)
+                    if known and paused then fixture.waiting=clock() end
                     assert(clock()-fixture.waiting>=RETURN_WAIT,'Waiting for Stellar Blade to stream the return point.')
                     if not fixture.flushed then fixture.flushed=true; engine.flush_streaming() end
                 end
@@ -378,14 +401,12 @@ function Terrain.new(engine,scale,clock)
                 'Return teleport failed; supporting terrain retained. Retry return.')
             fixture.entered=false
         end
-        -- Kept until they succeed: a failure here is retried like a failed teleport.
-        if fixture.pinned then engine.stream_at(nil); fixture.pinned=nil end
-        if fixture.autosave~=nil then engine.autosave(fixture.autosave); fixture.autosave=nil end
-        local waited=fixture.waited
+        unwind()
+        local waited,flushed=fixture.waited,fixture.flushed
         local ok,err=cleanup()
         assert(ok,'Some owned terrain actors remain; retry cleanup: '..err)
-        return 'Returned'..(waited and string.format(' after waiting %.1f s for the return point to stream',waited) or '')
-            ..' and removed owned Minecraft collision and lab guard actors.'
+        return 'Returned'..(waited and string.format(' after waiting %.1f s for the return point to stream%s',waited,
+            flushed and ' (one forced load)' or '') or '')..' and removed owned Minecraft collision and lab guard actors.'
     end)
 
     function api.status()

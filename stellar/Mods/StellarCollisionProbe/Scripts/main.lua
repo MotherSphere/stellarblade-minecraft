@@ -218,9 +218,10 @@ end
 function engine.ground_at(position, half_height) return trace_down(player(),position,half_height,{})==true end
 -- Stellar Blade's own warp pin (UWorld bEnableFixedStreamingLocation 0x793, FixedStreamingLocation 0x794, read by World
 -- Composition and its level volumes, RVA 0x46a48a0): its world streams around position instead of its camera; nil
--- clears it. Writes only what differs.
-function engine.stream_at(position)
+-- clears it. Writes only what differs; if_unpinned leaves any pin in place, such as a warp's at its destination.
+function engine.stream_at(position, if_unpinned)
     local _,world = player()
+    if if_unpinned and world.bEnableFixedStreamingLocation then return end
     local function at(wanted)
         local now = world.FixedStreamingLocation
         return math.abs(now.X-wanted.X)<1 and math.abs(now.Y-wanted.Y)<1 and math.abs(now.Z-wanted.Z)<1
@@ -237,6 +238,13 @@ function engine.stream_at(position)
         world.bEnableFixedStreamingLocation = position~=nil
         assert(world.bEnableFixedStreamingLocation == (position~=nil), 'Stellar Blade did not accept the streaming pin.')
     end
+end
+-- Paused, Stellar Blade's World Composition requests no tiles (UWorld::Tick, RVA 0x42d3680).
+function engine.paused()
+    local _,world = player()
+    local gameplay = StaticFindObject('/Script/Engine.Default__GameplayStatics')
+    assert(valid(gameplay), 'Native pause state is unavailable.')
+    return gameplay:IsGamePaused(world)==true
 end
 -- Blocks until the streaming levels Stellar Blade requested are loaded and visible (UWorld::FlushLevelStreaming).
 function engine.flush_streaming()
