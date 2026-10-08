@@ -241,7 +241,7 @@ public final class AvatarRenderCheck {
         return shader;
     }
 
-    /** The scene's visible faces within 8 blocks, camera-relative, in AvatarShadows.faces' layout: from above, then each side. */
+    /** The scene's visible faces within 8 blocks, camera-relative, in AvatarShadows.faces' layout: from above, each side, then the slabs' sides. */
     static java.nio.FloatBuffer ground(AvatarShadows.Cells cells, Vector3d eye, java.nio.FloatBuffer out) {
         out.clear();
         Matrix4f everywhere = new Matrix4f().scaling(1e-3f); // Every cell inside the shadow map's footprint.
@@ -252,6 +252,16 @@ public final class AvatarRenderCheck {
             int n = AvatarShadows.faces(cells, low, high, toward, everywhere, eye.x, eye.y, eye.z, part);
             for (int v = 0; v < n; v++) // Tops from above, sides from the sides.
                 if ((toward.y > 0.99f) == (part.get(7 * v + 4) > 0.5f)) for (int c = 0; c < 7; c++) out.put(part.get(7 * v + c));
+        }
+        // faces() gives a slab its top only; its sides hide the floor's top under it, as in Minecraft.
+        for (int x = -8; x <= 8; x++) for (int y = -1; y <= 3; y++) for (int z = -8; z <= 8; z++) {
+            float top = cells.top(x, y, z);
+            if (top <= 0 || top >= 1) continue;
+            float rx = (float) (x - eye.x), ry = (float) (y - eye.y), rz = (float) (z - eye.z);
+            AvatarShadows.face(out, rx + 1, ry, rz, 0, top, 0, 0, 0, 1, 1, 0, 0, 1);
+            AvatarShadows.face(out, rx, ry, rz, 0, 0, 1, 0, top, 0, -1, 0, 0, 1);
+            AvatarShadows.face(out, rx, ry, rz + 1, 1, 0, 0, 0, top, 0, 0, 0, 1, 1);
+            AvatarShadows.face(out, rx, ry, rz, 0, top, 0, 1, 0, 0, 0, 0, -1, 1);
         }
         return out.flip();
     }

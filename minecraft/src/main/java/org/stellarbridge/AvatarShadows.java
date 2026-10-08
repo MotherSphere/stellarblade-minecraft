@@ -171,9 +171,9 @@ final class AvatarShadows {
         return false;
     }
 
-    /** One unit face from an origin along u then v (u x v its normal, counter-clockwise from the front): six vertices. */
-    private static int face(FloatBuffer out, float ox, float oy, float oz, float ux, float uy, float uz, float vx, float vy, float vz,
-                            float nx, float ny, float nz, float brightness) {
+    /** One face from an origin along u then v (u x v its normal, counter-clockwise from the front): six vertices. */
+    static int face(FloatBuffer out, float ox, float oy, float oz, float ux, float uy, float uz, float vx, float vy, float vz,
+                    float nx, float ny, float nz, float brightness) {
         float[][] corners = {{0, 0}, {1, 0}, {1, 1}, {0, 0}, {1, 1}, {0, 1}};
         for (float[] c : corners)
             out.put(ox + ux * c[0] + vx * c[1]).put(oy + uy * c[0] + vy * c[1]).put(oz + uz * c[0] + vz * c[1]).put(nx).put(ny).put(nz).put(brightness);
