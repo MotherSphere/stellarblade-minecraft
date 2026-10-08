@@ -40,7 +40,7 @@ import org.slf4j.LoggerFactory;
 final class WardrobeScreen extends Screen {
     static final long ANSWER = 5_000_000_000L; // An answer takes at most a second and a poll; past this none will come.
     private static final int HEADING = 0xFFBEC0C3, TITLE = AvatarHud.COOL, HOVER = 0xFFB8CDE8, TEXT = 0xFFDEDBDE, FRAME = 0xFF292C40,
-            SILHOUETTE = 0xFF444444, HINT = 0xFF8A8A8A;
+            SILHOUETTE = 0xFF444444, HINT = 0xFF8A8A8A, PANEL = 0x60141414;
     private static final SystemToast.Type TOAST = new SystemToast.Type(4000L);
     private static long seq; // The adapter takes each session's requests in increasing SEQ; one counter serves every session.
 
@@ -235,7 +235,11 @@ final class WardrobeScreen extends Screen {
         // AvatarRenderCheck (tile=WxH) at 960 x 540 and 320 x 240.
         boolean head = slot.type() == 8 || slot.type() == 10 || slot.type() == 11;
         int x0 = layout.previewX0(), x1 = layout.previewX1(), y0 = layout.top(), y1 = layout.previewY1();
-        if (!AvatarView.drawPreview(context, x0, y0, x1, y1, head ? 1.0 : 2.8, head ? 1.45 : 0.85, yaw)) {
+        // A framed panel, EVE drawn inside its frame: her drone flies where Stellar Blade puts it, often past the camera's
+        // view, and was cut at the panel's invisible edge beside the list, as if it spilled onto it.
+        context.fill(x0, y0, x1, y1, PANEL);
+        context.drawBorder(x0, y0, x1 - x0, y1 - y0, FRAME);
+        if (!AvatarView.drawPreview(context, x0 + 1, y0 + 1, x1 - 1, y1 - 1, head ? 1.0 : 2.8, head ? 1.45 : 0.85, yaw)) {
             List<OrderedText> lines = textRenderer.wrapLines(Text.translatable("stellar_bridge.wardrobe.no_pose"), x1 - x0 - 8);
             for (int k = 0; k < lines.size(); k++)
                 context.drawText(textRenderer, lines.get(k), (x0 + x1 - textRenderer.getWidth(lines.get(k))) / 2, (y0 + y1) / 2 + 9 * k, HINT, false);
@@ -357,7 +361,7 @@ final class WardrobeScreen extends Screen {
         @Override public int getRowLeft() { return getX() + 2; }
         @Override public int getRowWidth() { return width - 10; }
         @Override protected int getScrollbarX() { return getRight() - 6; }
-        @Override protected void drawMenuListBackground(DrawContext context) { context.fill(getX(), getY(), getRight(), getBottom(), 0x60141414); }
+        @Override protected void drawMenuListBackground(DrawContext context) { context.fill(getX(), getY(), getRight(), getBottom(), PANEL); }
         @Override protected void drawHeaderAndFooterSeparators(DrawContext context) { }
         @Override protected void drawSelectionHighlight(DrawContext context, int y, int entryWidth, int entryHeight, int borderColor, int fillColor) { }
     }
