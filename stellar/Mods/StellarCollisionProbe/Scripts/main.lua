@@ -316,8 +316,9 @@ if configured then
     mobs=require('mobs').new(engine,config.directory,os.time,os.clock,log,entered_link)
     -- Stellar Blade's HUD item slots and item uses, for Minecraft's HUD and its item effects.
     hud=require('hud_items').new(require('pose_adapter').new(),config.directory,os.time,log,entered_link)
-    -- Stellar Blade's 3D world drawing, off while only the avatar stream needs EVE; every capture restores it first.
-    world_render=require('world_render').new(log)
+    -- Stellar Blade's 3D world drawing, off while only the avatar stream needs EVE; every capture restores it first. It
+    -- samples the ponytail's cloth state meanwhile.
+    world_render=require('world_render').new(log,os.clock,require('pose_adapter').new().cloth)
 end
 local function cancel_hd(message)
     hd_session.cancel(message)
@@ -660,4 +661,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 54; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 55; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

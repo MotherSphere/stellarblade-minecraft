@@ -62,6 +62,14 @@ assert(fallback.method=='sockets' and fallback.fallback:find('out%-param') and f
 assert(fallback.weights[1]==0 and fallback.weights[2]==0.5)
 assert(engine.snapshot(list[2].handle).method=='sockets','A failed snapshot is not retried every frame')
 assert(engine.world(list[1].handle).z==100)
+-- The ponytail's cloth state for the log: each value read on its own, nil where reflection has none or fails.
+local tail=setmetatable({VisibilityBasedAnimTickOption=3,ClothBlendWeight=1,bDisableClothSimulation=false,TeleportDistanceThreshold=0,
+    bRecentlyRendered=false,bPauseClothTickAlways=true,on=true,IsClothingSimulationSuspended=function(self) return self.on end,
+    GetClothMaxDistanceScale=function() error('no such function') end},
+    {__index=function(_,name) if name=='bWaitForParallelClothTask' then error('unreadable') end end})
+local cloth=engine.cloth({handle=tail})
+assert(cloth.tick==3 and cloth.blend==1 and cloth.disabled==false and cloth.teleport_distance==0 and cloth.rendered==false
+    and cloth.paused==true and cloth.suspended==true and cloth.scale==nil and cloth.wait==nil and cloth.teleport_rotation==nil)
 -- Glow parameters: only named scalars and vectors of dynamic instances, with their array offset and element.
 local function named(text,index) local n=fname(text); n.GetComparisonIndex=function() return index end; return n end
 local midClass=object('MaterialInstanceDynamic')

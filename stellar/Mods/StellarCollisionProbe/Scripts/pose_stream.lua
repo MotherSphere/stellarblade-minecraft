@@ -15,6 +15,7 @@ end
 local function token(value)
     return type(value)=='string' and #value>0 and value:match('^[!-~]+$')~=nil
 end
+local function shown(value) return value==nil and '?' or type(value)=='number' and string.format('%g',value) or tostring(value) end
 function Stream.parse_request(text)
     if type(text)~='string' or #text>512 then return nil end
     local run,time,state=text:match('^SBMC_POSE_REQUEST 1\nRUN (%x+)\nTIME (%d+)\nSTATE (%a+)\nEND\n$')
@@ -221,14 +222,18 @@ function Stream.new(engine,directory,clock,log,link)
         local text=encode(list,place,controller,parameters)
         assert(#text<=65536,'EVE component table exceeds the stream bound.')
         write(text)
-        -- Once per run: how Stellar Blade ticks and blends the cloth, as found before world_render.lua's tick guard.
+        -- Once per run: how Stellar Blade ticks, blends, resets and pauses the cloth, as found before world_render.lua's
+        -- tick guard ('?': unreadable).
         for _,c in ipairs(list) do
             if c.cloth and cloth_logged~=run then
                 cloth_logged=run
-                local ok,state=pcall(function() return engine.cloth(c) end)
-                log(ok and string.format('Cloth: %s tick option %s, blend weight %s, simulation disabled %s',c.name,
-                    tostring(state.tick),tostring(state.blend),tostring(state.disabled))
-                    or 'Cloth: '..c.name..' state unavailable: '..tostring(state))
+                local ok,s=pcall(function() return engine.cloth(c) end)
+                log(ok and string.format('Cloth: %s tick option %s, blend weight %s, simulation disabled %s; teleport distance %s,'
+                    ..' rotation %s, reset after teleport %s, max distance scale %s, wait for parallel task %s, update rate'
+                    ..' optimizations %s, recently rendered %s, suspended %s, tick paused always %s',c.name,shown(s.tick),
+                    shown(s.blend),shown(s.disabled),shown(s.teleport_distance),shown(s.teleport_rotation),shown(s.reset),
+                    shown(s.scale),shown(s.wait),shown(s.uro),shown(s.rendered),shown(s.suspended),shown(s.paused))
+                    or 'Cloth: '..c.name..' state unavailable: '..tostring(s))
             end
         end
         signature=next_signature

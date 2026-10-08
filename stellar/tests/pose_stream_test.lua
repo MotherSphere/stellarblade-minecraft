@@ -160,7 +160,8 @@ assert(full:find('7 components',1,true) and full:find('skipped Drone.CharacterMe
 engine.names=names
 -- EVE's ponytail: CLOTH names its index, the stream marks it for world_render.lua and logs its cloth state once per run.
 local cloth_log={}
-engine.cloth=function(c) return {tick=3,blend=1,disabled=false} end
+engine.cloth=function(c) return {tick=3,blend=1.0,disabled=false,teleport_distance=0.0,teleport_rotation=0.5,reset=true,scale=1,wait=false,
+    uro=false,rendered=true,suspended=false} end -- bPauseClothTickAlways unreadable.
 local tail={name='SBPonytail',object=0x7f0000021000,class=0x7f0000002000,mesh=0x7f0000023000,mesh_name='CH_P_EVE_Hair_PonyTail_2',leader='CharacterMesh0'}
 local drone_tail={name='SBPonytail',object=0x7f0000031000,class=0x7f0000002000,mesh=0x7f0000033000,mesh_name='M',drone=true}
 engine.identities=function() return {eve,tail,drone_tail} end
@@ -168,7 +169,9 @@ local worn=Stream.new(engine,directory,function() return now end,function(line) 
 RUN=string.rep('4',32); request(); worn.tick()
 assert(read('eve-pose-components.1'):find('\nEFFECTS none\nCLOTH 2\nEND ',1,true),read('eve-pose-components.1'))
 assert(worn.components()[2].cloth and not worn.components()[1].cloth and not worn.components()[3].cloth,'Only EVE\'s ponytail')
-assert(#cloth_log==1 and cloth_log[1]=='Cloth: SBPonytail tick option 3, blend weight 1, simulation disabled false',cloth_log[1])
+assert(#cloth_log==1 and cloth_log[1]=='Cloth: SBPonytail tick option 3, blend weight 1, simulation disabled false; teleport distance 0,'
+    ..' rotation 0.5, reset after teleport true, max distance scale 1, wait for parallel task false, update rate optimizations false,'
+    ..' recently rendered true, suspended false, tick paused always ?',cloth_log[1])
 place={session=string.rep('a',32),anchor={X=0,Y=0,Z=0},scale=100}; worn.tick()
 assert(#cloth_log==1,'Logged once per run')
 -- The cloth's 10 + 3 * 17309 floats share the slot: with the ponytail listed, the drone gives way at 13567 table floats.

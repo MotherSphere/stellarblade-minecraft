@@ -134,10 +134,19 @@ function Adapter.new()
         return list
     end
     -- A cloth component's VisibilityBasedAnimTickOption (3: its cloth ticks only while rendered), ClothBlendWeight and
-    -- bDisableClothSimulation, for the log.
+    -- bDisableClothSimulation, then what else resets, skips or pauses its cloth (SDK names: USkinnedMeshComponent,
+    -- USkeletalMeshComponent; ClothMaxDistanceScale is not reflected, its getter is), for the log; nil where unreadable.
     function engine.cloth(c)
         local h=c.handle
-        return {tick=h.VisibilityBasedAnimTickOption,blend=h.ClothBlendWeight,disabled=h.bDisableClothSimulation}
+        local function get(name,call)
+            local ok,value=pcall(function() if call then return h[name](h) end; return h[name] end)
+            if ok then return value end
+        end
+        return {tick=get('VisibilityBasedAnimTickOption'),blend=get('ClothBlendWeight'),disabled=get('bDisableClothSimulation'),
+            teleport_distance=get('TeleportDistanceThreshold'),teleport_rotation=get('TeleportRotationThreshold'),
+            reset=get('bResetAfterTeleport'),scale=get('GetClothMaxDistanceScale',true),wait=get('bWaitForParallelClothTask'),
+            uro=get('bEnableUpdateRateOptimizations'),rendered=get('bRecentlyRendered'),
+            suspended=get('IsClothingSimulationSuspended',true),paused=get('bPauseClothTickAlways')}
     end
     -- EVE's drone: its own Stellar Blade character (CH_Drone_BP_C, tribe Drone; CharacterMesh0 carries CH_NPC_Drone or
     -- the equipped skin) that follows her, scans and turns into her gun. The nearest of its tribe, kept while valid and
