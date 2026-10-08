@@ -6,7 +6,9 @@
 #include "pose_stream.hpp"
 #include "raw_capture.hpp"
 #include <array>
+#include <atomic>
 #include <bcrypt.h>
+#include <cstring>
 #include <intrin.h>
 #include <mutex>
 #include <thread>
@@ -33,6 +35,14 @@ constexpr uintptr_t objects_rva = 0x6dd7230;
 constexpr std::array<unsigned char, 19> call_bytes = {
     0x0f, 0x57, 0xc0, 0x48, 0x8d, 0x55, 0x90, 0x33, 0xc9, 0x0f,
     0x11, 0x45, 0x90, 0xff, 0x15, 0x3d, 0x6f, 0x9b, 0x02};
+// Stellar Blade's walk action has no controller key, and only its key test
+// starts the sprint-to-walk transit. That test (USBPlayerInput, RVA 0x23c9860)
+// has one caller, the input tick's call at RVA 0x23c8d3a, which is redirected
+// to force_walk: held while Minecraft holds the walk key.
+constexpr uintptr_t walk_call_rva = 0x23c8d3a, walk_test_rva = 0x23c9860;
+using WalkTestFn = unsigned char (*)(void *);
+WalkTestFn walk_test = nullptr;
+std::atomic<bool> bridge_walk{false};
 constexpr std::array<unsigned char, 32> expected_hash = {
     0x57, 0x3a, 0xaf, 0xf1, 0xc9, 0x45, 0x5f, 0x85, 0xea, 0x60, 0x36,
     0xef, 0x6f, 0x6c, 0xcb, 0x07, 0x74, 0xde, 0x41, 0x64, 0x72, 0x2a,
@@ -104,6 +114,45 @@ bool hash_matches(const std::wstring &path) {
     BCryptCloseAlgorithmProvider(algorithm, 0);
   CloseHandle(f);
   return ok && digest == expected_hash;
+}
+unsigned char force_walk(void *input) {
+  unsigned char held = walk_test(input); // Always called: its toggle mode counts presses.
+  return bridge_walk.load(std::memory_order_relaxed) ? 1 : held;
+}
+// A jump to force_walk in a page within rel32 reach below the image, then the
+// call's displacement swapped in one atomic store of its aligned code word.
+bool hook_walk(uintptr_t base) {
+  uintptr_t site = base + walk_call_rva, word_at = site & ~uintptr_t(7);
+  void *page = nullptr;
+  for (uintptr_t at = (base & ~uintptr_t(0xffff)) - 0x10000;
+       !page && at && site - at < 0x7fff0000; at -= 0x10000)
+    page = VirtualAlloc(reinterpret_cast<void *>(at), 4096,
+                        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if (!page)
+    return false;
+  auto target = reinterpret_cast<uintptr_t>(&force_walk);
+  const unsigned char jump[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
+  std::memcpy(page, jump, sizeof(jump));
+  std::memcpy(static_cast<char *>(page) + sizeof(jump), &target, sizeof(target));
+  walk_test = reinterpret_cast<WalkTestFn>(base + walk_test_rva);
+  auto *word = reinterpret_cast<volatile LONG64 *>(word_at);
+  auto expected = static_cast<uint64_t>(*word);
+  auto next = stellar_input::redirect_call(expected, word_at, site,
+                                           base + walk_test_rva,
+                                           reinterpret_cast<uintptr_t>(page));
+  DWORD protection = 0, ignored = 0;
+  bool done = next && VirtualProtect(page, 4096, PAGE_EXECUTE_READ, &ignored) &&
+              VirtualProtect(reinterpret_cast<void *>(word_at), 8,
+                             PAGE_EXECUTE_READWRITE, &protection);
+  if (done) {
+    done = InterlockedCompareExchange64(word, LONG64(*next), LONG64(expected)) ==
+           LONG64(expected);
+    VirtualProtect(reinterpret_cast<void *>(word_at), 8, protection, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void *>(word_at), 8);
+  }
+  if (!done)
+    VirtualFree(page, 0, MEM_RELEASE);
+  return done;
 }
 bool verify_host() {
   auto module = GetModuleHandleW(nullptr);
@@ -273,6 +322,10 @@ void initialize() {
     return;
   // Keep the DLL and its sole worker alive until process termination.
   verified = true;
+#ifndef STELLAR_INPUT_TEST_HOST
+  // Only once pinned: the redirected call jumps into this DLL. Optional: without it the walk key does nothing.
+  hook_walk(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
+#endif
   try {
     stellar_raw::initialize_raw_capture(GetModuleHandleW(nullptr), directory);
   } catch (...) {
@@ -308,6 +361,9 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
   {
     std::lock_guard<std::mutex> lock(state_lock);
     result = core.poll(gameplay, wall_ms(), GetTickCount64());
+    bridge_walk.store(result.override &&
+                          (result.pad.buttons & stellar_input::walk_button),
+                      std::memory_order_relaxed);
     if (result.override) {
       if (result.pad != previous_pad) {
         previous_pad = result.pad;

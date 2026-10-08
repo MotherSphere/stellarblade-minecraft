@@ -8,7 +8,7 @@
   "key.stellar_bridge.r3": "Controller right stick button",
   "key.stellar_bridge.dpad_up": "Controller D-pad up",
   "key.stellar_bridge.sprint": "EVE sprint (L3)",
-  "key.stellar_bridge.walk": "EVE walk (light stick tilt)",
+  "key.stellar_bridge.walk": "EVE walk",
   "key.stellar_bridge.aim": "EVE drone aim (LT)",
   "key.stellar_bridge.burst": "EVE Burst skills with 1-4 (RB)",
   "key.stellar_bridge.heal": "EVE heal (D-pad up)",

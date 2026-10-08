@@ -139,9 +139,24 @@ public final class ControlHooksTest {
         held[20] = true;
         assert ControlBridge.buttons(held, since, 0) == 0x40 : "The EVE sprint key is L3";
         held[20] = false;
+        // Walk is Stellar Blade's walk key, answered by the adapter; the stick stays at full deflection (a smaller one
+        // never ends a sprint, and its axial 0.25 dead zone zeroes a light diagonal).
+        assert ControlBridge.buttons(held, since, 0) == 0 && java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 0});
         held[ControlBridge.WALK] = true;
-        assert ControlBridge.buttons(held, since, 0) == 0 : "Walk only shapes the stick";
+        assert ControlBridge.buttons(held, since, 0) == 0x40000 : "The EVE walk key is the adapter's walk bit";
+        assert java.util.Arrays.stream(ControlBridge.SENT).anyMatch(bit -> bit == 0x40000) : "The walk bit is sent";
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 0}) : "Walk alone does not move";
+        held[0] = true;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 32767}) : "Walking forward is a full stick";
+        held[2] = true;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {-23170, 23170}) : "A diagonal walk is a full stick";
         held[ControlBridge.WALK] = false;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {-23170, 23170}) : "Running is the same stick";
+        held[1] = held[3] = true;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 0}) : "Opposite keys cancel";
+        held[0] = true; held[1] = held[2] = false;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {23170, 23170}) : "Forward right";
+        held[0] = held[3] = false;
         held[6] = true;
         assert ControlBridge.buttons(held, since, 0) == 0 : "Minecraft's own sprint key does nothing for EVE";
         held[6] = false;

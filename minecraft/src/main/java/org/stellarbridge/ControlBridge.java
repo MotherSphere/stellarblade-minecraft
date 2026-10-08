@@ -14,21 +14,21 @@ import org.lwjgl.glfw.GLFW;
 /**
  * Minecraft owns menus and hardware events; only this explicit session forwards controller states. In EVE mode the
  * keys follow Stellar Blade's keyboard defaults (its DefaultInput.ini) and press their controller equivalents: movement
- * on the left stick (walk key: a light tilt), jump A, sneak B (dodge), EVE sprint L3, attack X (light), use Y (heavy),
- * the inventory key LB (guard, parry), hotbar keys 1 to 4 the Beta skills (LB, then X, Y, A or B) or with the burst key
+ * on the left stick, jump A, sneak B (dodge), EVE sprint L3, EVE walk WALK_KEY (Stellar Blade's walk has no controller
+ * key, so the adapter answers its walk key test with this bit), attack X (light), use Y (heavy), the inventory key LB (guard, parry), hotbar keys 1 to 4 the Beta skills (LB, then X, Y, A or B) or with the burst key
  * the Burst skills (RB instead of LB), drone aim LT (attack then fires with RT), heal D-pad up, item D-pad down,
  * interact RT, scan Back, lock-on R3 and Tachy mode L3 with R3. Minecraft actions sharing those keys wait for build mode.
  */
 public final class ControlBridge {
     private static final int LB = 0x100, RB = 0x200, X = 0x4000, Y = 0x8000, A = 0x1000, B = 0x2000, L3 = 0x40, R3 = 0x80,
-            LT = 0x10000, RT = 0x20000, UP = 0x1, DOWN = 0x2, BACK = 0x20;
-    // Per binding index (bindings()): movement (0-3) and walk shape the stick; skills (16-19) are sequenced by buttons();
+            LT = 0x10000, RT = 0x20000, UP = 0x1, DOWN = 0x2, BACK = 0x20, WALK_KEY = 0x40000;
+    // Per binding index (bindings()): movement (0-3) shapes the stick; skills (16-19) are sequenced by buttons();
     // Minecraft's own sprint key (6) does nothing in EVE mode, where the EVE sprint key sprints.
     private static final int[] BUTTON = {0, 0, 0, 0, A, B, 0, X, Y,
-            Y, RB, LT, RT, R3, UP, LB, 0, 0, 0, 0, L3, 0, LT, 0, UP, DOWN, RT, BACK, R3, L3 | R3};
+            Y, RB, LT, RT, R3, UP, LB, 0, 0, 0, 0, L3, WALK_KEY, LT, 0, UP, DOWN, RT, BACK, R3, L3 | R3};
     static final int DODGE = 5, ATTACK = 7, EXTRA_R3 = 13, GUARD = 15, SKILLS = 16, WALK = 21, AIM = 22, BURST = 23, LOCK = 28, TACHY = 29;
-    static final double WALK_TILT = 0.35; // Stick deflection while the walk key is held: Stellar Blade walks.
     private static final int[] SKILL_FACE = {X, Y, A, B}; // BetaSkill1..4: face left, top, bottom, right.
+    static final int[] SENT = {A, B, L3, X, Y, RB, LT, RT, R3, UP, DOWN, BACK, LB, WALK_KEY}; // Edge order within one apply().
     static final long SKILL_DELAY = 40_000_000L; // LB leads a skill's face button by 40 ms, as a player's thumb would.
     private static final boolean[] held = new boolean[30];
     private static final long[] heldSince = new long[30];
@@ -294,7 +294,7 @@ public final class ControlBridge {
         if (avatar && held[LOCK] && !held[EXTRA_R3]) mask &= ~R3; // Stellar Blade's own lock-on would recenter its camera.
         // The dodge and guard keys' latest presses, for Minecraft's damage to meet at the impact.
         if (!build) AvatarCombat.inputs(heldSince[DODGE], heldSince[GUARD], held[GUARD]);
-        for (int bit : new int[] {A, B, L3, X, Y, RB, LT, RT, R3, UP, DOWN, BACK, LB}) state.button(bit, (mask & bit) != 0, time);
+        for (int bit : SENT) state.button(bit, (mask & bit) != 0, time);
     }
 
     /** Each avatar render frame: refresh the steering and publish at most every 20 ms, the adapter's read period. */
@@ -335,19 +335,28 @@ public final class ControlBridge {
         return new int[] {x, y, turn};
     }
 
+    /**
+     * The left stick for held movement bindings (indices as bindings()), before steering: always at full deflection, so
+     * Stellar Blade runs; walking is its walk key's (WALK_KEY), as on its keyboard.
+     */
+    static int[] stick(boolean[] held) {
+        int x = (held[3] ? 1 : 0) - (held[2] ? 1 : 0), y = (held[0] ? 1 : 0) - (held[1] ? 1 : 0);
+        int scale = x != 0 && y != 0 ? 23170 : 32767;
+        return new int[] {x * scale, y * scale};
+    }
+
     private static ControlState.Axes axes() {
-        int x = build ? 0 : (held[3] ? 1 : 0) - (held[2] ? 1 : 0);
-        int y = build ? 0 : (held[0] ? 1 : 0) - (held[1] ? 1 : 0);
-        int scale = (int) Math.round((x != 0 && y != 0 ? 23170 : 32767) * (held[WALK] && !build ? WALK_TILT : 1));
+        int[] stick = build ? new int[2] : stick(held);
+        int x = stick[0], y = stick[1];
         if (avatar) {
             var player = MinecraftClient.getInstance().player;
             float[] rotation = AvatarView.controllerRotation();
-            if (player == null || rotation == null) return new ControlState.Axes(x * scale, y * scale, 0, 0);
-            int[] steered = steer(yawError(player.getYaw(), rotation[1]), x * scale, y * scale);
+            if (player == null || rotation == null) return new ControlState.Axes(x, y, 0, 0);
+            int[] steered = steer(yawError(player.getYaw(), rotation[1]), x, y);
             // While the adapter turns the camera through look input, the right stick stays neutral.
             return new ControlState.Axes(steered[0], steered[1], AvatarView.lookApplied() ? 0 : steered[2], 0);
         }
-        return new ControlState.Axes(x * scale, y * scale,
+        return new ControlState.Axes(x, y,
                 (int) Math.clamp(Math.round(lookX * gain), -32767, 32767),
                 (int) Math.clamp(Math.round(lookY * gain), -32767, 32767));
     }

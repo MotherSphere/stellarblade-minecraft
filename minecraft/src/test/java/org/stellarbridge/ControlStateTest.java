@@ -85,6 +85,9 @@ public final class ControlStateTest {
         assert queued.packet(TIME).contains("EDGES 32\n");
         queued.button(0x1000, true, TIME);
         assert !queued.active() && queued.packet(TIME).contains("BASE 0 0\nEDGES 0\n");
+        var walk = ready(); walk.button(0x40000, true, TIME);
+        assert walk.packet(TIME).contains("EDGE 1 262144 ") : "The walk key is an ordered edge";
+        rejects(() -> walk.button(0x80000, true, TIME));
         var oldEdge = ready(); oldEdge.button(0x1000, true, TIME);
         oldEdge.eligibility(true, false, TIME + 501, 1);
         assert !oldEdge.active();

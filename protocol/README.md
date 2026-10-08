@@ -10,7 +10,7 @@ The shared directory is private to the local user (0700). Text snapshots are bou
 | Capture request | Minecraft | Lua/native | `SBMC_CAPTURE_SESSION 2`, RUN, SESSION, TIME, SIZE, STATE, END |
 | Raw frame | Native | Minecraft | Mapping v1 containing frame-v6 metadata, RGBA8 and R32F depth |
 | Control permit | Lua | Native | `SBMC_CONTROL 1`, run/session, generation, sequence and native context |
-| Input / acknowledgement | Minecraft / native | Native / Minecraft | `SBMC_INPUT 1`, ordered edges, epochs, sequence and leases |
+| Input / acknowledgement | Minecraft / native | Native / Minecraft | `SBMC_INPUT 1`, ordered edges (button masks: XInput's, then LT 0x10000, RT 0x20000 and the walk key 0x40000), epochs, sequence and leases |
 | Pose request | Minecraft | Lua/native | `SBMC_POSE_REQUEST 1`, RUN, TIME, STATE, END |
 | Pose components | Lua | Native/Minecraft | `SBMC_POSE_COMPONENTS 1`, generation, placement and the skeletal mesh components of EVE and her drone |
 | Pose | Native | Minecraft | Pose mapping v1, slot format 5, with world, component-space bone and morph-weight floats and EVE's ponytail cloth |

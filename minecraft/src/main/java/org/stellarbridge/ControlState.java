@@ -6,7 +6,7 @@ import java.util.List;
 
 /** Ordered controller transitions retained until the native gameplay poll acknowledges them. */
 final class ControlState {
-    static final int BUTTONS = 0x3f3ff;
+    static final int BUTTONS = 0x7f3ff; // XInput's buttons, LT and RT (0x10000, 0x20000) and the walk key (0x40000).
     private static final long MAX = 9007199254740991L, LEASE = 500_000_000L;
     record Axes(int lx, int ly, int rx, int ry) {
         static final Axes ZERO = new Axes(0, 0, 0, 0);

@@ -9,7 +9,26 @@
 
 namespace stellar_input {
 constexpr uint64_t max_integer = 9007199254740991ULL, lease_ms = 500;
-constexpr uint32_t allowed_buttons = 0x3f3ff;
+// Above XInput's 16 button bits: LT and RT become full triggers, and the walk
+// key answers Stellar Blade's force-walk key test (proxy.cpp) instead of any
+// controller key.
+constexpr uint32_t walk_button = 0x40000, allowed_buttons = 0x7f3ff;
+// The aligned code word at word_at holding the whole `call rel32` at site,
+// redirected from callee to target; empty unless the word holds that call and
+// target is within its reach.
+inline std::optional<uint64_t> redirect_call(uint64_t word, uint64_t word_at,
+                                             uint64_t site, uint64_t callee,
+                                             uint64_t target) {
+  if (word_at % 8 || site < word_at || site + 5 > word_at + 8)
+    return {};
+  unsigned shift = unsigned(site - word_at) * 8;
+  int64_t from = int64_t(callee - site - 5), to = int64_t(target - site - 5);
+  if (uint8_t(word >> shift) != 0xe8 ||
+      int32_t(uint32_t(word >> (shift + 8))) != from || to != int32_t(to))
+    return {};
+  return (word & ~(uint64_t(0xffffffff) << (shift + 8))) |
+         uint64_t(uint32_t(to)) << (shift + 8);
+}
 struct Pad {
   uint32_t buttons = 0;
   int16_t lx = 0, ly = 0, rx = 0, ry = 0;
