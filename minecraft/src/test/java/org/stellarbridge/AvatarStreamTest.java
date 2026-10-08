@@ -626,7 +626,75 @@ public final class AvatarStreamTest {
         } finally {
             try (var files = Files.walk(directory)) { files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
         }
-        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation, combat, gauge gains, heals and the HUD panel");
+        rebuilds(fixture);
+        System.out.println("PASS avatar stream: shared table grammar, newest run slot, native mapping protocol, decoding, component-space skinning, release, steering, display interpolation, combat, gauge gains, heals, the HUD panel and rebuilds off the render thread");
+    }
+
+    /**
+     * AvatarRebuild: a build superseded while it runs is discarded, take hands over only the wanted table with the result built
+     * from that table, a table no longer wanted (the drawn model fits the newest) leaves nothing, and a failure comes with its table.
+     */
+    private static void rebuilds(String fixture) throws Exception {
+        java.util.function.LongFunction<AvatarStream.Table> generation =
+                g -> AvatarStream.parse(fixture.replace("GENERATION 1", "GENERATION " + g).replace("END 1", "END " + g));
+        var building = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var building7 = new java.util.concurrent.CountDownLatch(1);
+        var release7 = new java.util.concurrent.CountDownLatch(1);
+        var discarded = java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
+        try (var rebuild = new AvatarRebuild<String>(table -> {
+            if (table.generation() == 5) { building.countDown(); release.await(); } // A slow build: the suit's textures.
+            if (table.generation() == 7) { building7.countDown(); release7.await(); }
+            if (table.generation() == 8) throw new java.io.IOException("No streamed EVE mesh");
+            return "model of generation " + table.generation();
+        }, discarded::add)) {
+            rebuild.want(generation.apply(5));
+            building.await();
+            rebuild.want(generation.apply(5)); // The same generation read again: no second build.
+            var six = generation.apply(6);
+            rebuild.want(six);
+            assert rebuild.take() == null : "Nothing while building";
+            release.countDown();
+            var built = awaitBuild(rebuild);
+            assert built.table() == six && built.result().equals("model of generation 6") && built.failure() == null;
+            assert discarded.equals(java.util.List.of("model of generation 5")) : "The superseded build is discarded: " + discarded;
+            assert rebuild.take() == null : "Handed over once";
+            rebuild.want(generation.apply(7));
+            building7.await();
+            rebuild.want(null); // The drawn model fits the newest table.
+            release7.countDown();
+            for (int i = 0; i < 500 && discarded.size() < 2; i++) Thread.sleep(10);
+            assert rebuild.take() == null && discarded.get(1).equals("model of generation 7");
+            var eight = generation.apply(8);
+            rebuild.want(eight);
+            built = awaitBuild(rebuild);
+            assert built.table() == eight && built.result() == null && built.failure().getMessage().equals("No streamed EVE mesh");
+        }
+        // Tables arriving faster than builds finish: whatever take hands over is the wanted table and the result built from it.
+        var random = new java.util.Random(7);
+        try (var rebuild = new AvatarRebuild<String>(table -> {
+            Thread.sleep(random.nextInt(3));
+            return "model of generation " + table.generation();
+        }, discarded::add)) {
+            int taken = 0;
+            for (long g = 10; g < 400; g++) {
+                rebuild.want(g % 17 == 0 ? null : generation.apply(g));
+                Thread.sleep(random.nextInt(2));
+                var built = rebuild.take();
+                if (built == null) continue;
+                taken++;
+                assert built.table() == rebuild.wanted() && built.result().equals("model of generation " + built.table().generation()) : built;
+            }
+            assert taken > 0 : "Some builds finish between tables";
+        }
+    }
+    private static <T> AvatarRebuild.Built<T> awaitBuild(AvatarRebuild<T> rebuild) throws InterruptedException {
+        for (int i = 0; i < 500; i++) {
+            var built = rebuild.take();
+            if (built != null) return built;
+            Thread.sleep(10);
+        }
+        throw new AssertionError("No build within 5 s");
     }
 
     /** Why a fresh stream (its run named by status) refuses one native slot with this controller status and camera pitch. */

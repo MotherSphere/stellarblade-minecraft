@@ -116,6 +116,13 @@ final class AvatarMesh {
         return new AvatarMesh(name, bones, vertices, indices, sections, morphs);
     }
 
+    /** Memory the mesh holds: its vertex and index buffers and its morph deltas. */
+    long bytes() {
+        long total = vertices.capacity() + indices.capacity();
+        for (Morph morph : morphs) total += 4L * (morph.vertices.length + morph.deltas.length);
+        return total;
+    }
+
     /** Weighted sum of morph deltas per vertex (3 floats position, 3 floats normal) into target. */
     void morph(float[] weights, FloatBuffer target) {
         target.clear();

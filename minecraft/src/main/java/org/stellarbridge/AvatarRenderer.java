@@ -6,12 +6,15 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
-import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import net.minecraft.client.gl.ShaderProgram;
 import net.minecraft.client.render.OverlayTexture;
 import org.joml.Matrix4d;
@@ -25,10 +28,8 @@ import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
-import org.lwjgl.opengl.GL21;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL31;
-import org.lwjgl.stb.STBImage;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
@@ -87,12 +88,20 @@ final class AvatarRenderer implements AutoCloseable {
     private final boolean[] appliedClothed; // The part's deltas hold its cloth.
     private final Material[][] sectionMaterials;
     private final Map<String, Material> materials = new HashMap<>();
-    private final Map<String, Integer> textures = new HashMap<>();
+    private final AvatarTextures textures; // The pack's textures, shared with the stream's later renderers unless owned.
+    private final boolean ownsTextures;
+    private final Set<String> used = new HashSet<>(); // Keys of the textures this renderer draws.
     private int flatNormal, plainSurface, matte, black;
     final FloatBuffer[] palettes;
 
     AvatarRenderer(AvatarModel model, Path pack) throws IOException {
+        this(model, pack, null);
+    }
+    /** With shared textures (null: its own), which it reads and fills; textures missing there are decoded here. */
+    AvatarRenderer(AvatarModel model, Path pack, AvatarTextures shared) throws IOException {
         this.model = model;
+        ownsTextures = shared == null;
+        textures = ownsTextures ? new AvatarTextures() : shared;
         String refusal = paletteRefusal(GL11.glGetInteger(GL31.GL_MAX_UNIFORM_BLOCK_SIZE), GL11.glGetInteger(GL31.GL_MAX_VERTEX_UNIFORM_BLOCKS),
                 GL11.glGetInteger(GL31.GL_MAX_UNIFORM_BUFFER_BINDINGS));
         if (refusal != null) throw new IOException(refusal);
@@ -698,8 +707,7 @@ final class AvatarRenderer implements AutoCloseable {
 
     @Override
     public void close() {
-        for (int texture : textures.values()) if (texture != 0) GlStateManager._deleteTexture(texture);
-        textures.clear();
+        if (ownsTextures) textures.close();
         for (int texture : new int[] {flatNormal, plainSurface, matte, black}) if (texture != 0) GlStateManager._deleteTexture(texture);
         flatNormal = plainSurface = matte = black = 0;
         for (int i = 0; i < arrays.length; i++) {
@@ -743,91 +751,44 @@ final class AvatarRenderer implements AutoCloseable {
         return material;
     }
 
+    /** Keys of the textures this renderer draws, which a trim of shared textures keeps. */
+    Set<String> textureKeys() { return used; }
+
+    /**
+     * Every texture a renderer of model may ask for, as material(), the trail and the sprites ask for them, so that they can be
+     * decoded beforehand off the render thread.
+     */
+    static List<AvatarTextures.Texture> textures(AvatarModel model, Path pack) {
+        List<AvatarTextures.Texture> wanted = new ArrayList<>();
+        for (AvatarModel.Part part : model.parts) {
+            for (AvatarMesh.Section section : part.mesh().sections)
+                for (String suffix : new String[] {".hair.png", ".png", ".overlay.png", ".glow.png", ".normal.png", ".surface.png", ".emissive.png", ".scatter.png"})
+                    wanted.add(new AvatarTextures.Texture(section.material() + suffix, suffix.equals(".png") ? CUTOFF : 0, null));
+            if (Files.isRegularFile(pack.resolve(part.mesh().name + ".trail.txt"))) {
+                wanted.add(new AvatarTextures.Texture(part.mesh().name + ".trail.png", 0, null));
+                wanted.add(new AvatarTextures.Texture(part.mesh().name + ".trail.png", 0, AvatarTrail::glow));
+            }
+        }
+        for (String name : AvatarSprites.textureNames()) wanted.add(new AvatarTextures.Texture(name, 0, null));
+        return wanted;
+    }
+
     /** One RGBA texture of the pack, or 0 when absent. With a cutoff, mipmaps keep the cut-out coverage. */
     private int texture(Path pack, String name, float cutoff) throws IOException {
         return texture(pack, name, cutoff, null);
     }
     /** The same, its texels first changed in place by convert when given (a separate texture). */
     private int texture(Path pack, String name, float cutoff, java.util.function.Consumer<ByteBuffer> convert) throws IOException {
-        String key = convert == null ? name : name + "#converted";
-        Integer known = textures.get(key);
-        if (known != null) return known;
-        Path file = pack.resolve(name);
-        if (!file.normalize().startsWith(pack.normalize()) || !Files.isRegularFile(file)) {
-            textures.put(key, 0);
-            return 0;
-        }
-        byte[] bytes = Files.readAllBytes(file);
-        ByteBuffer encoded = BufferUtils.createByteBuffer(bytes.length).put(bytes).flip();
-        int id;
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer width = stack.mallocInt(1), height = stack.mallocInt(1), channels = stack.mallocInt(1);
-            ByteBuffer pixels = STBImage.stbi_load_from_memory(encoded, width, height, channels, 4);
-            if (pixels == null) throw new IOException(file.getFileName() + ": " + STBImage.stbi_failure_reason());
-            try {
-                if (convert != null) convert.accept(pixels);
-                id = upload(pixels, width.get(0), height.get(0), cutoff);
-            } finally {
-                STBImage.stbi_image_free(pixels);
-            }
-        }
-        textures.put(key, id);
-        return id;
+        AvatarTextures.Texture texture = new AvatarTextures.Texture(name, cutoff, convert);
+        used.add(texture.key());
+        Integer known = textures.id(texture.key());
+        return known != null ? known : textures.upload(texture.key(), AvatarTextures.decode(pack, texture));
     }
 
     private static int solid(int r, int g, int b, int a) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            return upload(stack.bytes((byte) r, (byte) g, (byte) b, (byte) a), 1, 1, 0);
+            return AvatarTextures.upload(new ByteBuffer[] {stack.bytes((byte) r, (byte) g, (byte) b, (byte) a)}, 1, 1);
         }
-    }
-
-    /**
-     * A new mipmapped texture. With a cutoff and any cut-out texel, each box-filtered level scales its alpha so the share
-     * of texels at or above the cutoff stays that of level 0: thin strands keep their density at a distance.
-     */
-    private static int upload(ByteBuffer pixels, int width, int height, float cutoff) {
-        int previous = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-        int alignment = GL11.glGetInteger(GL11.GL_UNPACK_ALIGNMENT), rowLength = GL11.glGetInteger(GL11.GL_UNPACK_ROW_LENGTH);
-        int skipRows = GL11.glGetInteger(GL11.GL_UNPACK_SKIP_ROWS), skipPixels = GL11.glGetInteger(GL11.GL_UNPACK_SKIP_PIXELS);
-        int unpack = GL11.glGetInteger(GL21.GL_PIXEL_UNPACK_BUFFER_BINDING);
-        int id = GlStateManager._genTexture();
-        try {
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, 0);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 4);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, 0);
-            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, 0);
-            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, 0);
-            GlStateManager._bindTexture(id);
-            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, width, height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
-            int threshold = Math.round(cutoff * 255);
-            double coverage = cutoff > 0 ? coverage(pixels, width * height, 1, threshold) : 1;
-            if (coverage >= 1) GL30.glGenerateMipmap(GL11.GL_TEXTURE_2D);
-            else {
-                ByteBuffer level = pixels;
-                for (int l = 1; width > 1 || height > 1; l++) {
-                    ByteBuffer next = halve(level, width, height);
-                    if (level != pixels) MemoryUtil.memFree(level);
-                    width = Math.max(1, width / 2);
-                    height = Math.max(1, height / 2);
-                    preserve(next, width * height, threshold, coverage);
-                    GL11.glTexImage2D(GL11.GL_TEXTURE_2D, l, GL11.GL_RGBA8, width, height, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, next);
-                    level = next;
-                }
-                if (level != pixels) MemoryUtil.memFree(level);
-            }
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR_MIPMAP_LINEAR);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, GL11.GL_REPEAT);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, GL11.GL_REPEAT);
-        } finally {
-            GlStateManager._bindTexture(previous);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, alignment);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ROW_LENGTH, rowLength);
-            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_ROWS, skipRows);
-            GL11.glPixelStorei(GL11.GL_UNPACK_SKIP_PIXELS, skipPixels);
-            GL15.glBindBuffer(GL21.GL_PIXEL_UNPACK_BUFFER, unpack);
-        }
-        return id;
     }
 
     /** Share of texels whose alpha times scale reaches threshold. */

@@ -113,6 +113,22 @@ final class AvatarModel {
     }
 
     /**
+     * Drops from cache, least recently used first (an access-ordered map), meshes model does not draw while it holds more
+     * than budget bytes.
+     */
+    static void trim(Map<String, AvatarMesh> cache, AvatarModel model, long budget) {
+        long total = 0;
+        for (AvatarMesh mesh : cache.values()) total += mesh.bytes();
+        List<AvatarMesh> drawn = model.parts.stream().map(Part::mesh).toList();
+        for (var it = cache.values().iterator(); total > budget && it.hasNext(); ) {
+            AvatarMesh mesh = it.next();
+            if (drawn.contains(mesh)) continue;
+            total -= mesh.bytes();
+            it.remove();
+        }
+    }
+
+    /**
      * Writes each part's skinning matrices as Minecraft-space affine rows (12 floats per bone, the GLSL mat3x4 layout).
      * placement maps Unreal world space to the target space, e.g. camera-relative Minecraft blocks. Bone transforms are
      * parent-relative (recordings) or already in component space (the native stream). A part with cloth in the pose gets

@@ -111,16 +111,23 @@ final class AvatarSprites implements AutoCloseable {
 
     /** Sprites for a pack's fx textures, or null when the pack has none. */
     static AvatarSprites load(AvatarTrail.TextureLoader loader) throws IOException {
-        Set<String> names = new HashSet<>();
-        for (String asset : new String[] {"NS_A_ParTrail", "HoldBurst_Signal", "HoldBurst_SwordFX", "Electric", "FastDraw", "SpinTrail", "Evade",
-                "JustParry", "Kick", ""})
-            for (Emitter e : recipe(asset)) names.add(e.texture());
         Map<String, Integer> loaded = new HashMap<>();
-        for (String name : names) {
+        for (String name : textures()) {
             int id = loader.load("fx." + name + ".png");
             if (id != 0) loaded.put(name, id);
         }
         return loaded.isEmpty() ? null : new AvatarSprites(loaded);
+    }
+    /** The pack files load asks for. */
+    static List<String> textureNames() {
+        return textures().stream().map(name -> "fx." + name + ".png").toList();
+    }
+    private static Set<String> textures() {
+        Set<String> names = new HashSet<>();
+        for (String asset : new String[] {"NS_A_ParTrail", "HoldBurst_Signal", "HoldBurst_SwordFX", "Electric", "FastDraw", "SpinTrail", "Evade",
+                "JustParry", "Kick", ""})
+            for (Emitter e : recipe(asset)) names.add(e.texture());
+        return names;
     }
 
     private AvatarSprites(Map<String, Integer> loaded) throws IOException {

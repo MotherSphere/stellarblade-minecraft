@@ -40,7 +40,7 @@ public final class AvatarModelTest {
         b.putShort((short) bytes.length).put(bytes);
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws java.io.IOException {
         AvatarMesh body = AvatarMesh.parse("Body", mesh("Tip", b -> { }));
         assert body.bones.length == 2 && body.sections[0].indexCount() == 3 && body.vertices.capacity() == 112;
         rejects(b -> b.putShort(8 + 4 + 4 + (2 + 4 + 4 + 40) + (2 + 3 + 4 + 40) + 4 + 56 + 32, (short) 2)); // Bone index outside the skeleton.
@@ -231,8 +231,61 @@ public final class AvatarModelTest {
         assert climbs && reaches : "The near wall's east face and the ground before it";
         clothSkinning();
         wideSkeleton();
+        caches();
         System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cloth"
-                + " deltas through the rigid palette, 512-bone palettes, cut-out mipmaps, weapon trails, shader-pack inputs, and sun and shadow math");
+                + " deltas through the rigid palette, 512-bone palettes, cut-out mipmaps, weapon trails, shader-pack inputs, sun and shadow math,"
+                + " and the mesh and texture caches");
+    }
+
+    /**
+     * The rebuild caches: meshes the model does not draw go least recently used first beyond the budget; textures already
+     * uploaded are not decoded again (a hit), a missing one is (a miss), and a trim keeps the used ones and the budget.
+     */
+    static void caches() throws java.io.IOException {
+        Map<String, AvatarMesh> meshes = new java.util.LinkedHashMap<>(16, 0.75f, true);
+        for (String name : new String[] {"A", "B", "C"}) meshes.put(name, AvatarMesh.parse(name, mesh("Tip", b -> { })));
+        meshes.get("A"); // B is now the least recently used.
+        long size = meshes.get("C").bytes();
+        AvatarModel wearing = new AvatarModel(java.util.List.of(new AvatarRecording.Component("C", "C", null, new String[] {"Root", "Tip"}, new String[0], 0)), meshes);
+        AvatarModel.trim(meshes, wearing, 2 * size);
+        assert meshes.keySet().equals(java.util.Set.of("A", "C")) : meshes.keySet();
+        AvatarModel.trim(meshes, wearing, 0);
+        assert meshes.keySet().equals(java.util.Set.of("C")) : "The drawn mesh stays, whatever the budget";
+
+        java.nio.file.Path pack = java.nio.file.Files.createTempDirectory("stellar-pack-");
+        try {
+            ByteBuffer rgba = org.lwjgl.BufferUtils.createByteBuffer(64);
+            for (int i = 0; i < 16; i++) rgba.put((byte) 200).put((byte) 100).put((byte) 50).put((byte) (i % 4 == 0 ? 255 : 0));
+            assert org.lwjgl.stb.STBImageWrite.stbi_write_png(pack.resolve("Skin.png").toString(), 4, 4, 4, rgba.flip(), 16);
+            java.nio.file.Files.copy(pack.resolve("Skin.png"), pack.resolve("Skin.normal.png"));
+            long texture = 4 * 16 * 4 / 3; // A 4x4 texture with its mipmaps.
+            java.util.List<Integer> deleted = new java.util.ArrayList<>();
+            AvatarTextures textures = new AvatarTextures(2 * texture, deleted::add);
+            var wanted = java.util.List.of(new AvatarTextures.Texture("Skin.png", 0.5f, null), new AvatarTextures.Texture("Skin.normal.png", 0, null),
+                    new AvatarTextures.Texture("Skin.hair.png", 0, null), new AvatarTextures.Texture("Skin.png", 0.5f, null));
+            var decoded = textures.decode(pack, wanted);
+            assert decoded.size() == 3 && decoded.get("Skin.png").levels().length == 3 && decoded.get("Skin.normal.png").levels().length == 1
+                    && decoded.get("Skin.hair.png").levels() == null : "Cut-out levels, GPU mipmaps, an absent file; one decode per key";
+            int id = 1;
+            for (var entry : decoded.entrySet()) { // As upload keeps them, without GL.
+                textures.keep(entry.getKey(), entry.getValue().levels() == null ? 0 : id++, entry.getValue().bytes());
+                entry.getValue().free();
+            }
+            assert textures.decode(pack, wanted).isEmpty() && textures.id("Skin.hair.png") == 0 && textures.id("Other.png") == null : "Hits";
+            assert textures.decode(pack, java.util.List.of(new AvatarTextures.Texture("Skin.png", 0, AvatarTrail::glow))).size() == 1
+                    : "A converted copy is another texture";
+            int normal = textures.id("Skin.normal.png"), skin = textures.id("Skin.png"); // Skin.png is now the most recently used.
+            textures.keep("Third.png", 9, texture);
+            textures.trim(java.util.Set.of("Third.png"));
+            assert deleted.equals(java.util.List.of(normal)) && !textures.holds("Skin.normal.png") && textures.holds("Skin.png")
+                    && textures.bytes() == 2 * texture : "The least recently used unused texture goes: " + deleted;
+            textures.trim(java.util.Set.of());
+            assert deleted.size() == 1 : "Within the budget nothing goes";
+            textures.close();
+            assert deleted.containsAll(java.util.List.of(skin, 9)) && deleted.size() == 3 && textures.bytes() == 0 && !textures.holds("Skin.png");
+        } finally {
+            try (var files = java.nio.file.Files.walk(pack)) { files.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
+        }
     }
 
     /**

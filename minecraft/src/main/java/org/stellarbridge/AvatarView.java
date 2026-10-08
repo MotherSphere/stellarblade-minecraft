@@ -53,13 +53,32 @@ public final class AvatarView {
     private record Replay(ClientWorld world, AvatarRecording recording, AvatarModel model, AvatarRenderer renderer,
                           AvatarRecording.Pose pose, Vec3d anchor, Vector3d origin, long started) { }
 
-    /** A live stream; the model and renderer follow the newest component table. */
+    // A rebuild uploads its decoded textures for up to UPLOAD_NANOS a frame; meshes stay cached up to MESH_BUDGET bytes.
+    // ponytail: a frame uploads at least one whole texture (up to about 25 ms for a 2048² one through the driver's copy) and the
+    // install frame creates the renderer's mesh buffers (about 20 ms for a full outfit); banded uploads or mesh buffers cached
+    // like the textures if those frames show.
+    static final long UPLOAD_NANOS = 4_000_000L, MESH_BUDGET = 256L << 20;
+
+    /** A model built off the render thread and its decoded textures still to upload (uploads take them out). */
+    private record Prepared(AvatarModel model, Map<String, AvatarTextures.Decoded> textures) {
+        void free() { textures.values().forEach(AvatarTextures.Decoded::free); }
+    }
+
+    /**
+     * A live stream; the model and renderer follow the newest component table. A table needing new meshes is built off the
+     * render thread (meshes read, textures decoded), its textures uploaded over the next frames, then the model, its
+     * renderer and that table are installed together; until then EVE keeps the previous model, table and pose.
+     */
     private static final class Live {
         final AvatarStream stream;
         final ClientWorld world;
         final Path pack;
         final Vec3d relativeAnchor;
-        final Map<String, AvatarMesh> meshes = new HashMap<>();
+        final Map<String, AvatarMesh> meshes = new java.util.LinkedHashMap<>(16, 0.75f, true); // The build worker's only.
+        final AvatarTextures textures = new AvatarTextures(); // Shared by the stream's renderers.
+        final AvatarRebuild<Prepared> rebuild = new AvatarRebuild<>(this::build, Prepared::free);
+        AvatarRebuild.Built<Prepared> uploading; // The wanted table's build while its textures upload.
+        long wantedNanos; // When the wanted table arrived.
         AvatarStream.Table table;
         AvatarModel model;
         AvatarRenderer renderer;
@@ -97,6 +116,13 @@ public final class AvatarView {
         Live(AvatarStream stream, ClientWorld world, Path pack, Vec3d relativeAnchor) {
             this.stream = stream; this.world = world; this.pack = pack; this.relativeAnchor = relativeAnchor;
             windowNanos = System.nanoTime();
+        }
+        /** On the build worker: the table's model and the textures its renderer needs that are not uploaded yet. */
+        private Prepared build(AvatarStream.Table table) throws IOException {
+            AvatarModel model = AvatarModel.load(pack, table.components(), meshes);
+            AvatarModel.trim(meshes, model, MESH_BUDGET);
+            if (model.parts.isEmpty()) throw new IOException("No streamed EVE mesh is in the avatar pack " + pack);
+            return new Prepared(model, textures.decode(pack, AvatarRenderer.textures(model, pack)));
         }
     }
 
@@ -260,8 +286,11 @@ public final class AvatarView {
         try {
             AvatarStream.Sample sample = current.stream.poll(current.table, System.currentTimeMillis(), nanos);
             if (sample != null && (current.table == null || sample.generation() != current.table.generation())) {
-                AvatarStream.Table table = current.stream.table();
-                if (table != null && table.generation() == sample.generation()) install(current, table);
+                AvatarStream.Table wanted = current.rebuild.wanted();
+                if (wanted == null || wanted.generation() != sample.generation()) {
+                    AvatarStream.Table table = current.stream.table();
+                    if (table != null && table.generation() == sample.generation()) want(current, table);
+                }
             } else if (sample != null && current.model != null) {
                 int slot = (current.newest + 1) % Live.RING;
                 if (AvatarStream.decode(current.table, sample, current.model, current.ring[slot], current.spare, current.cloth)) {
@@ -310,6 +339,7 @@ public final class AvatarView {
                     current.lastPoseNanos = nanos;
                 } else current.incomplete++;
             }
+            rebuild(current);
             if (nanos - current.windowNanos >= 2_000_000_000L) {
                 current.rate = current.windowPoses * 1e9 / (nanos - current.windowNanos);
                 current.windowPoses = 0;
@@ -479,16 +509,36 @@ public final class AvatarView {
         }
     }
 
-    /** A new component table: rebuild the model and GPU resources unless only the placement changed. */
-    private static void install(Live current, AvatarStream.Table table) throws IOException {
+    /** A new component table: taken as is when only the placement changed, else built off the render thread. */
+    private static void want(Live current, AvatarStream.Table table) {
+        if (current.uploading != null) { current.uploading.result().free(); current.uploading = null; } // Superseded.
+        current.wantedNanos = System.nanoTime();
         if (current.table != null && sameComposition(current.table.components(), table.components())) {
+            current.rebuild.want(null);
             current.table = table;
-            return;
+        } else current.rebuild.want(table);
+    }
+
+    /** Each frame: takes a finished build, uploads its textures for at most UPLOAD_NANOS, then installs it. */
+    private static void rebuild(Live current) throws IOException {
+        if (current.uploading == null) {
+            AvatarRebuild.Built<Prepared> built = current.rebuild.take();
+            if (built == null) return;
+            if (built.failure() != null)
+                throw built.failure() instanceof IOException failure ? failure : new IOException(built.failure().getMessage(), built.failure());
+            current.uploading = built;
         }
-        AvatarModel model = AvatarModel.load(current.pack, table.components(), current.meshes);
-        if (model.parts.isEmpty()) throw new IOException("No streamed EVE mesh is in the avatar pack " + current.pack);
-        AvatarRenderer renderer = new AvatarRenderer(model, current.pack);
+        if (!current.textures.upload(current.uploading.result().textures(), UPLOAD_NANOS)) return;
+        AvatarRebuild.Built<Prepared> built = current.uploading;
+        current.uploading = null;
+        install(current, built.table(), built.result().model());
+    }
+
+    /** A built model with its table: its renderer (textures uploaded already) replaces the previous one. */
+    private static void install(Live current, AvatarStream.Table table, AvatarModel model) throws IOException {
+        AvatarRenderer renderer = new AvatarRenderer(model, current.pack, current.textures);
         if (current.renderer != null) current.renderer.close();
+        current.textures.trim(renderer.textureKeys());
         current.table = table;
         current.model = model;
         current.renderer = renderer;
@@ -505,8 +555,9 @@ public final class AvatarView {
         current.drawn = new boolean[n];
         renderer.shown(current.drawn);
         int[] sections = renderer.sectionCounts();
-        report(String.format("EVE live avatar: generation %d, %d meshes, %d/%d material sections%s.", table.generation(),
-                model.parts.size(), sections[0], sections[1], model.skipped.isEmpty() ? "" : "; skipped " + String.join(", ", model.skipped)), null);
+        report(String.format("EVE live avatar: generation %d, %d meshes, %d/%d material sections, ready %.0f ms after its table (%d MB of textures kept)%s.",
+                table.generation(), model.parts.size(), sections[0], sections[1], (System.nanoTime() - current.wantedNanos) / 1e6,
+                current.textures.bytes() >> 20, model.skipped.isEmpty() ? "" : "; skipped " + String.join(", ", model.skipped)), null);
     }
 
     private static boolean sameComposition(List<AvatarRecording.Component> a, List<AvatarRecording.Component> b) {
@@ -776,7 +827,10 @@ public final class AvatarView {
             ControlBridge.stop();
         }
         String summary = liveStatus(current);
+        current.rebuild.close();
+        if (current.uploading != null) current.uploading.result().free();
         if (current.renderer != null) current.renderer.close();
+        current.textures.close();
         current.stream.stop();
         unreaped.add(current.stream);
         reap();
