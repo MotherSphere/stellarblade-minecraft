@@ -157,6 +157,7 @@ void transform(uintptr_t source, float *out) {
   std::memcpy(out, raw, 7 * sizeof(float));
   std::memcpy(out + 7, raw + 8, 3 * sizeof(float));
 }
+uint64_t micros(); // Below, with the game-thread state.
 } // namespace
 
 std::optional<Request> parse_request(std::string_view text) {
@@ -1057,7 +1058,10 @@ bool Producer::publish(uint64_t generation, const uint32_t *status,
   }
   put(slot, 60, cloth); // Cloth particles after the table's floats.
   std::memcpy(slot + 64, status, sizeof(uint32_t) * count);
+  // The read time includes this copy: with the cloth it moves about 220 KB into the mapping, which can page-fault.
+  auto copying = micros();
   std::memcpy(slot + SlotHeader, payload, sizeof(float) * total);
+  read_us = static_cast<uint32_t>(std::min<uint64_t>(read_us + (micros() - copying), UINT32_MAX));
   // Same back/middle/front exchange as the raw frame mapping.
   auto previous = exchange32(self.base, 128, self.back | Dirty);
   if (!middle_valid(previous)) {
