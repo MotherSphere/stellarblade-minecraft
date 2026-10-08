@@ -1,26 +1,34 @@
 package org.stellarbridge;
 
+import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Vector3d;
+import org.joml.Vector3f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.GLFW;
+import org.lwjgl.opengl.ARBTimerQuery;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL15;
+import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.stb.STBImageWrite;
 
 /**
  * Offline GPU check of a private avatar pack and pose recording: renders EVE with the mod's renderer
  * in a hidden GL 3.2 core context and writes a contact sheet. Not part of the suites (needs a GPU and private files).
- * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees [glow | hurt | fx=A+B]]: the
- * camera (default 3.2 blocks from her front, looking at 0.9 blocks) orbits by degrees around her feet; glow streams an
- * orange sword-edge glow as a special attack would; hurt draws her red hurt flash; fx plays those effect assets for 0.2 s before each frame, at the blade
+ * Usage: AvatarRenderCheck <pack dir> <recording dir> <out.png> <seconds,...> [distance,height,degrees[,target] [glow | hurt | fx=A+B]]
+ * [sun=elevation,azimuth]: the camera (default 3.2 blocks from her front, looking at 0.9 blocks, or at target) orbits by degrees
+ * around her feet; glow streams an orange sword-edge glow as a special attack would; hurt draws her red hurt flash; fx plays those effect assets for 0.2 s before each frame, at the blade
  * tip for NS_A_ParTrail ones and at the hilt otherwise. A last argument entity draws her as under a shader pack, through
- * Minecraft's own cut-out entity and eyes programs (read from the client jar), with a sword glow.
+ * Minecraft's own cut-out entity and eyes programs (read from the client jar), with a sword glow. sun (degrees, azimuth from
+ * +Z toward +X) puts a floor, a three-block wall and a slab around her, lights her with that sun, draws her cast shadow and
+ * prints the GPU time of her draw, her shadow map and the cast faces; with entity, it draws instead what a shader pack's
+ * shadow pass receives: her opaque and cut-out sections seen from that sun.
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
@@ -62,6 +70,23 @@ public final class AvatarRenderCheck {
         AvatarRecording recording = AvatarRecording.read(poses);
         AvatarModel model = AvatarModel.load(pack, recording.components, new java.util.HashMap<>());
         boolean entity = java.util.List.of(args).contains("entity");
+        String sunArgument = java.util.Arrays.stream(args).filter(a -> a.startsWith("sun=")).findFirst().orElse(null);
+        AvatarShadows.Light key = AvatarShadows.NONE;
+        if (sunArgument != null) {
+            String[] angles = sunArgument.substring(4).split(",");
+            double elevation = Math.toRadians(Double.parseDouble(angles[0])), azimuth = Math.toRadians(Double.parseDouble(angles[1]));
+            key = new AvatarShadows.Light(new Vector3f((float) (Math.cos(elevation) * Math.sin(azimuth)), (float) Math.sin(elevation),
+                    (float) (Math.cos(elevation) * Math.cos(azimuth))), 1);
+        }
+        // The sun's scene: a floor below y = 0, a three-block wall at x = -3 for |z| <= 3 and a slab at (1, 0, -2), in full light.
+        AvatarShadows.Cells cells = new AvatarShadows.Cells() {
+            @Override public float top(int x, int y, int z) {
+                if (y < 0 || (x == -3 && y < 3 && Math.abs(z) <= 3)) return 1;
+                return x == 1 && y == 0 && z == -2 ? 0.5f : 0;
+            }
+            @Override public float brightness(int x, int y, int z) { return 1; }
+        };
+        java.nio.FloatBuffer faces = BufferUtils.createFloatBuffer(7 * 6 * 4096), ground = BufferUtils.createFloatBuffer(7 * 6 * 4096);
         net.minecraft.client.gl.ShaderProgram cutout = entity ? vanilla("rendertype_entity_cutout_no_cull") : null;
         net.minecraft.client.gl.ShaderProgram translucent = entity ? vanilla("rendertype_entity_translucent") : null;
         net.minecraft.client.gl.ShaderProgram eyes = entity ? vanilla("rendertype_eyes") : null;
@@ -74,6 +99,8 @@ public final class AvatarRenderCheck {
                     "CH_W_Sword_02_Blade_Edge/Opacity", new float[] {1}, "CH_W_Sword_02_Blade_Edge/Emissive_Intensity", new float[] {4},
                     "CH_W_Sword_02_Blade_Edge/Emissive_Color", new float[] {1, 0.35f, 0.05f, 1}));
             if (args.length > 5 && args[5].equals("hurt")) renderer.hurt(true);
+            int terrain = sunArgument == null ? 0 : AvatarRenderer.link(flat(GL20.GL_VERTEX_SHADER, FLAT_VERTEX),
+                    flat(GL20.GL_FRAGMENT_SHADER, FLAT_FRAGMENT), new String[] {"Position", "Normal", "Brightness"});
             int[] sections = renderer.sectionCounts();
             System.out.println(model.parts.size() + " meshes, sections drawn " + sections[0] + "/" + sections[1] + ", skipped " + model.skipped);
             GL11.glClearColor(0.47f, 0.65f, 1f, 1);
@@ -96,7 +123,7 @@ public final class AvatarRenderCheck {
                 Matrix4d body = AvatarMesh.transform(root, 0, new Matrix4d());
                 Vector3d forward = AvatarModel.UNREAL_TO_MINECRAFT.transformDirection(body.transformDirection(new Vector3d(1, 0, 0))).setComponent(1, 0).normalize();
                 forward.rotateY(Math.toRadians(camera[2]));
-                Vector3d eye = new Vector3d(forward).mul(camera[0]).add(0, camera[1] + 0.1, 0), target = new Vector3d(0, camera[1], 0);
+                Vector3d eye = new Vector3d(forward).mul(camera[0]).add(0, camera[1] + 0.1, 0), target = new Vector3d(0, camera.length > 3 ? camera[3] : camera[1], 0);
                 Matrix4d placement = new Matrix4d().translation(-eye.x, -eye.y, -eye.z).mul(AvatarModel.UNREAL_TO_MINECRAFT).translate(-root[4], -root[5], -root[6]);
                 // The trail's last 0.3 s, sampled as Minecraft frames would.
                 double now = Double.parseDouble(times[i]);
@@ -125,9 +152,38 @@ public final class AvatarRenderCheck {
                 GL11.glViewport(i * tileWidth, 0, tileWidth, tileHeight);
                 long started = System.nanoTime();
                 // Daylight: the clear color as sky, a pale horizon as fog color (fog itself starts beyond the scene).
-                if (entity) renderer.drawEntity(view, projection, lightmap, overlay, 15, 15, cutout, translucent, eyes);
-                else renderer.draw(projection.mul(view), lightmap, 15, 15, 1000, 2000, new float[] {0.75f, 0.84f, 1f, 1f},
-                        new float[] {0.47f, 0.65f, 1f});
+                Matrix4f projectionView = new Matrix4f(projection).mul(view);
+                float[] fog = {0.75f, 0.84f, 1f, 1f}, sky = {0.47f, 0.65f, 1f};
+                if (sunArgument != null) {
+                    Vector3d low = new Vector3d(), high = new Vector3d();
+                    Vector3f toward = AvatarShadows.toward(key);
+                    Matrix4f light = new Matrix4f();
+                    renderer.bounds(pose, placement, low, high);
+                    float range = AvatarShadows.fit(low, high, toward, light);
+                    if (entity) renderer.drawShadow(light, new Matrix4f(), lightmap, overlay, cutout);
+                    else {
+                        int vertices = AvatarShadows.faces(cells, low, high, toward, light, eye.x, eye.y, eye.z, faces);
+                        faces.flip();
+                        AvatarShadows.Light sun = key;
+                        if (i == 0) {
+                            double map = gpu(() -> renderer.castShadow(light, range));
+                            double lit = gpu(() -> renderer.draw(projectionView, lightmap, 15, 15, 1000, 2000, fog, sky, sun));
+                            double plain = gpu(() -> renderer.draw(projectionView, lightmap, 15, 15, 1000, 2000, fog, sky, AvatarShadows.NONE));
+                            double cast = gpu(() -> renderer.drawCast(projectionView, faces, vertices, toward, 1000, 2000));
+                            System.out.printf("GPU ms: EVE (no sun) %.3f, EVE (sun) %.3f, shadow map %.3f, cast faces %.3f%n", plain, lit, map, cast);
+                            // The timing drew over the tile many times: clear it before the scene is drawn once.
+                            GL11.glScissor(i * tileWidth, 0, tileWidth, tileHeight);
+                            GL11.glEnable(GL11.GL_SCISSOR_TEST);
+                            GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
+                            GL11.glDisable(GL11.GL_SCISSOR_TEST);
+                        }
+                        drawFaces(terrain, projectionView, ground(cells, eye, ground));
+                        renderer.castShadow(light, range);
+                        renderer.drawCast(projectionView, faces, vertices, toward, 1000, 2000);
+                        renderer.draw(projectionView, lightmap, 15, 15, 1000, 2000, fog, sky, sun);
+                    }
+                } else if (entity) renderer.drawEntity(view, projection, lightmap, overlay, 15, 15, cutout, translucent, eyes);
+                else renderer.draw(projectionView, lightmap, 15, 15, 1000, 2000, fog, sky, key);
                 GL11.glFinish();
                 System.out.printf("t=%s s: draw + finish %.2f ms%n", times[i], (System.nanoTime() - started) / 1e6);
             }
@@ -141,6 +197,88 @@ public final class AvatarRenderCheck {
         System.out.println("wrote " + out);
         GLFW.glfwDestroyWindow(window);
         GLFW.glfwTerminate();
+    }
+
+    /** Median GPU milliseconds of a pass over 300 runs, after 30 to warm up. */
+    static double gpu(Runnable pass) {
+        int query = GL15.glGenQueries();
+        double[] times = new double[300];
+        for (int k = -30; k < times.length; k++) {
+            GL15.glBeginQuery(ARBTimerQuery.GL_TIME_ELAPSED, query);
+            pass.run();
+            GL15.glEndQuery(ARBTimerQuery.GL_TIME_ELAPSED);
+            long nanos = ARBTimerQuery.glGetQueryObjecti64(query, GL15.GL_QUERY_RESULT);
+            if (k >= 0) times[k] = nanos / 1e6;
+        }
+        GL15.glDeleteQueries(query);
+        java.util.Arrays.sort(times);
+        return times[times.length / 2];
+    }
+
+    // The sun's scene in Minecraft's face shading (top 1, north and south 0.8, east and west 0.6) on sand.
+    private static final String FLAT_VERTEX = """
+            #version 150
+            in vec3 Position;
+            in vec3 Normal;
+            uniform mat4 ViewProjection;
+            out float shade;
+            void main() {
+                gl_Position = ViewProjection * vec4(Position, 1.0);
+                shade = Normal.y > 0.5 ? 1.0 : abs(Normal.z) > 0.5 ? 0.8 : 0.6;
+            }
+            """;
+    private static final String FLAT_FRAGMENT = """
+            #version 150
+            in float shade;
+            out vec4 fragColor;
+            void main() { fragColor = vec4(vec3(0.86, 0.79, 0.58) * shade, 1.0); }
+            """;
+    private static int flat(int type, String source) {
+        int shader = GL20.glCreateShader(type);
+        GL20.glShaderSource(shader, source);
+        GL20.glCompileShader(shader);
+        if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) != GL11.GL_TRUE) throw new IllegalStateException(GL20.glGetShaderInfoLog(shader));
+        return shader;
+    }
+
+    /** The scene's visible faces within 8 blocks, camera-relative, in AvatarShadows.faces' layout: from above, then each side. */
+    static java.nio.FloatBuffer ground(AvatarShadows.Cells cells, Vector3d eye, java.nio.FloatBuffer out) {
+        out.clear();
+        Matrix4f everywhere = new Matrix4f().scaling(1e-3f); // Every cell inside the shadow map's footprint.
+        Vector3d low = new Vector3d(-8, -1, -8).sub(eye), high = new Vector3d(8, 3, 8).sub(eye);
+        java.nio.FloatBuffer part = BufferUtils.createFloatBuffer(out.capacity());
+        for (Vector3f toward : new Vector3f[] {new Vector3f(0, 1, 0), new Vector3f(1, 0.3f, 0).normalize(), new Vector3f(-1, 0.3f, 0).normalize(),
+                new Vector3f(0, 0.3f, 1).normalize(), new Vector3f(0, 0.3f, -1).normalize()}) {
+            int n = AvatarShadows.faces(cells, low, high, toward, everywhere, eye.x, eye.y, eye.z, part);
+            for (int v = 0; v < n; v++) // Tops from above, sides from the sides.
+                if ((toward.y > 0.99f) == (part.get(7 * v + 4) > 0.5f)) for (int c = 0; c < 7; c++) out.put(part.get(7 * v + c));
+        }
+        return out.flip();
+    }
+
+    /** Draws faces in ground's layout with the flat program, depth tested and written, back faces culled. */
+    private static void drawFaces(int program, Matrix4f projectionView, java.nio.FloatBuffer faces) {
+        int array = GL30.glGenVertexArrays(), buffer = GL15.glGenBuffers();
+        GlStateManager._glBindVertexArray(array);
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buffer);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, faces, GL15.GL_STATIC_DRAW);
+        for (int a = 0; a < 3; a++) GL20.glEnableVertexAttribArray(a);
+        GL20.glVertexAttribPointer(0, 3, GL11.GL_FLOAT, false, 28, 0);
+        GL20.glVertexAttribPointer(1, 3, GL11.GL_FLOAT, false, 28, 12);
+        GL20.glVertexAttribPointer(2, 1, GL11.GL_FLOAT, false, 28, 24);
+        GlStateManager._glUseProgram(program);
+        try (org.lwjgl.system.MemoryStack stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            GL20.glUniformMatrix4fv(GL20.glGetUniformLocation(program, "ViewProjection"), false, projectionView.get(stack.mallocFloat(16)));
+        }
+        GlStateManager._enableDepthTest();
+        GlStateManager._depthMask(true);
+        GlStateManager._enableCull();
+        GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, faces.limit() / 7);
+        GlStateManager._disableCull();
+        GlStateManager._glUseProgram(0);
+        GlStateManager._glBindVertexArray(0);
+        GL15.glDeleteBuffers(buffer);
+        GL30.glDeleteVertexArrays(array);
     }
 
     /** One of Minecraft's core programs, from the client jar on the classpath, in the entity vertex format. */

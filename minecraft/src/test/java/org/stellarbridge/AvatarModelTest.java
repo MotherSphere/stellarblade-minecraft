@@ -7,8 +7,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.joml.Matrix4d;
+import org.joml.Matrix4f;
+import org.joml.Vector3d;
+import org.joml.Vector3f;
 
-/** Avatar pack parsing, pose recording interpolation and skinning matrices; no GL context or game files. */
+/** Avatar pack parsing, pose recording interpolation and skinning matrices, and the sun and shadow math; no GL context or game files. */
 public final class AvatarModelTest {
     static final float[] IDENTITY = {0, 0, 0, 1, 0, 0, 0, 1, 1, 1};
 
@@ -147,7 +150,63 @@ public final class AvatarModelTest {
         assert glow.get(0) == (byte) 255 && glow.get(2) == (byte) 255 && glow.get(3) == (byte) 255 : "Band and noise saturate";
         assert glow.get(4) == 0 && glow.get(6) == 0 && glow.get(7) == (byte) 255 : "Below the band: dark and opaque";
         assert (glow.get(8) & 0xff) == 155 && glow.get(9) == glow.get(8) && glow.get(10) == glow.get(8) : "smoothstep(0.15, 0.8, r) * 0.7";
-        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cut-out mipmaps, weapon trails and shader-pack inputs");
+        // The sun where Minecraft's sky draws it: up at noon, east in the morning, west in the evening, gone at midnight,
+        // in rain and under a roof; sky light 13 in half rain gives half of half.
+        AvatarShadows.Light noon = AvatarShadows.sun(0, 0, 15);
+        assert noon.direction().distance(0, 1, 0) < 1e-6 && noon.strength() == 1;
+        Vector3f morning = AvatarShadows.sun(0.8f, 0, 15).direction();
+        assert morning.x > 0.9f && morning.y > 0 && morning.z == 0 : "Morning sun in the east";
+        assert AvatarShadows.sun(0.2f, 0, 15).direction().x < -0.9f : "Evening sun in the west";
+        assert AvatarShadows.sun(0.5f, 0, 15).strength() == 0 && AvatarShadows.sun(0, 1, 15).strength() == 0 && AvatarShadows.sun(0, 0, 11).strength() == 0;
+        assert Math.abs(AvatarShadows.sun(0, 0.5f, 13).strength() - 0.25f) < 1e-6;
+        // The shadow's light: straight up without a sun, never below 15 degrees.
+        assert AvatarShadows.toward(AvatarShadows.NONE).distance(0, 1, 0) < 1e-6;
+        Vector3f low = AvatarShadows.toward(new AvatarShadows.Light(new Vector3f(1, 0.05f, 0).normalize(), 1));
+        assert Math.abs(low.y - Math.sin(Math.toRadians(15))) < 1e-5 && Math.abs(low.length() - 1) < 1e-5 && low.z == 0 : "15 degree clamp";
+        // The fitted light view holds the padded box, centred, and its depth spans the box along the light.
+        Vector3d boxLow = new Vector3d(-0.3, -1.6, 2), boxHigh = new Vector3d(0.3, 0.2, 2.5);
+        Vector3f slanted = new Vector3f(1, 1, 0.5f).normalize();
+        Matrix4f light = new Matrix4f();
+        float depth = AvatarShadows.fit(boxLow, boxHigh, slanted, light);
+        for (int k = 0; k < 8; k++) {
+            Vector3f corner = light.transformProject((float) ((k & 1) == 0 ? boxLow.x - AvatarShadows.PAD : boxHigh.x + AvatarShadows.PAD),
+                    (float) ((k & 2) == 0 ? boxLow.y - AvatarShadows.PAD : boxHigh.y + AvatarShadows.PAD),
+                    (float) ((k & 4) == 0 ? boxLow.z - AvatarShadows.PAD : boxHigh.z + AvatarShadows.PAD), new Vector3f());
+            assert Math.abs(corner.x) <= 1 + 1e-4 && Math.abs(corner.y) <= 1 + 1e-4 && Math.abs(corner.z) <= 1 + 1e-4 : "Corner " + k + " at " + corner;
+        }
+        Vector3f center = light.transformProject(0, -0.7f, 2.25f, new Vector3f());
+        assert Math.abs(center.x) < 1e-5 && Math.abs(center.y) < 1e-5 : "Box centred";
+        double span = 0;
+        for (int i = 0; i < 3; i++) span += Math.abs(slanted.get(i)) * (boxHigh.get(i) - boxLow.get(i) + 2 * AvatarShadows.PAD);
+        assert Math.abs(depth - span) < 1e-4 : "Depth " + depth + " against " + span;
+        // Faces under her: a floor, and a wall at x = 2 three blocks high.
+        AvatarShadows.Cells cells = new AvatarShadows.Cells() {
+            @Override public float top(int x, int y, int z) { return y < 0 || (x == 2 && y < 3) ? 1 : 0; }
+            @Override public float brightness(int x, int y, int z) { return 1; }
+        };
+        Vector3d feet = new Vector3d(-0.3, 0, -0.3), head = new Vector3d(0.3, 1.7, 0.3);
+        FloatBuffer faces = FloatBuffer.allocate(7 * 6 * 2048);
+        Vector3f up = AvatarShadows.toward(AvatarShadows.NONE);
+        AvatarShadows.fit(feet, head, up, light);
+        int vertices = AvatarShadows.faces(cells, feet, head, up, light, 0, 0, 0, faces);
+        assert vertices > 0 && vertices % 6 == 0;
+        for (int v = 0; v < vertices; v++) assert faces.get(7 * v + 3) == 0 && faces.get(7 * v + 4) == 1 && faces.get(7 * v + 5) == 0 : "Tops only";
+        Vector3f west = new Vector3f(-1, 0.5f, 0).normalize(); // The sun in the west: her shadow climbs the wall's west face.
+        AvatarShadows.fit(feet, head, west, light);
+        vertices = AvatarShadows.faces(cells, feet, head, west, light, 0, 0, 0, faces);
+        boolean climbs = false;
+        for (int v = 0; v < vertices; v++) {
+            float nx = faces.get(7 * v + 3), nz = faces.get(7 * v + 5);
+            climbs |= nx == -1 && faces.get(7 * v) == 2;
+            assert nx != 1 && nz == 0 : "Only sides turned to the light";
+        }
+        assert climbs : "The wall's west face";
+        AvatarShadows.Cells dark = new AvatarShadows.Cells() {
+            @Override public float top(int x, int y, int z) { return cells.top(x, y, z); }
+            @Override public float brightness(int x, int y, int z) { return 0; }
+        };
+        assert AvatarShadows.faces(dark, feet, head, west, light, 0, 0, 0, faces) == 0 : "No shadow in the dark";
+        System.out.println("PASS avatar model: pack validation, recording interpolation, leader-pose mapping, Minecraft-space skinning, cut-out mipmaps, weapon trails, shader-pack inputs, and sun and shadow math");
     }
 
     /** Applies bone row matrices (GLSL mat3x4 layout) to an Unreal reference-space point. */

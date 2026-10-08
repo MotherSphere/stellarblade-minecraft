@@ -3,6 +3,7 @@ package org.stellarbridge;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import java.io.IOException;
+import java.nio.FloatBuffer;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,6 +30,8 @@ import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Vector3d;
+import org.joml.Vector3f;
+import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.slf4j.LoggerFactory;
 
@@ -469,11 +472,38 @@ public final class AvatarView {
                     GameRenderer.getRenderTypeEyesProgram());
             return;
         }
-        Vec3d sky = context.world().getSkyColor(context.camera().getPos(), context.tickCounter().getTickDelta(false));
+        float tickDelta = context.tickCounter().getTickDelta(false);
+        Vec3d sky = context.world().getSkyColor(context.camera().getPos(), tickDelta);
+        // The sun lights EVE and casts her shadow, fitted to her bones, onto the faces around her before she is drawn.
+        AvatarShadows.Light key = eased(AvatarShadows.sky(context.world(), tickDelta, LightmapTextureManager.getSkyLightCoordinates(light)));
+        boolean cast = MinecraftClient.getInstance().options.getEntityShadows().getValue();
+        if (key.strength() > 0 || cast) {
+            Vector3f toward = AvatarShadows.toward(key);
+            renderer.bounds(pose, placement, LOW, HIGH);
+            renderer.castShadow(SHADOW, AvatarShadows.fit(LOW, HIGH, toward, SHADOW));
+            if (cast) {
+                int vertices = AvatarShadows.faces(AvatarShadows.cells(context.world()), LOW, HIGH, toward, SHADOW, camera.x, camera.y, camera.z, FACES);
+                renderer.drawCast(projectionView, FACES.flip(), vertices, toward, RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd());
+            }
+        }
         renderer.draw(projectionView, lightmap(context.lightmapTextureManager()),
                 LightmapTextureManager.getBlockLightCoordinates(light), LightmapTextureManager.getSkyLightCoordinates(light),
                 RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(), RenderSystem.getShaderFogColor(),
-                new float[] {(float) sky.x, (float) sky.y, (float) sky.z});
+                new float[] {(float) sky.x, (float) sky.y, (float) sky.z}, key);
+    }
+
+    private static final Vector3d LOW = new Vector3d(), HIGH = new Vector3d();
+    private static final Matrix4f SHADOW = new Matrix4f();
+    private static final FloatBuffer FACES = BufferUtils.createFloatBuffer(7 * 6 * 2048);
+    private static float keyStrength;
+    private static long keyNanos;
+    /** The sun with its strength eased over a quarter second: sky light steps by whole levels under trees and roofs. */
+    private static AvatarShadows.Light eased(AvatarShadows.Light target) {
+        long nanos = System.nanoTime();
+        float ease = keyNanos == 0 ? 1 : (float) Math.min(1, (nanos - keyNanos) / 0.25e9);
+        keyNanos = nanos;
+        keyStrength += (target.strength() - keyStrength) * ease;
+        return new AvatarShadows.Light(target.direction(), keyStrength);
     }
 
     /** The lightmap's GL texture; enable() also binds it on the active unit, so that binding is restored. */

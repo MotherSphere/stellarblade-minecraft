@@ -8,7 +8,8 @@ uniform sampler2D Sampler4; // Emissive color.
 uniform sampler2D Sampler5; // Hair: root (1) to tip (0), strand id, depth.
 uniform sampler2D Sampler6; // Subsurface color: light scattered past the terminator; black for none.
 uniform int Hair;
-uniform int Pass; // 0: opaque and cut-out; 1: hair edges below AlphaCutoff, blended; 2: overlays, premultiplied (alpha 0 adds light).
+uniform int Pass; // 0: opaque and cut-out; 1: hair edges below AlphaCutoff, blended; 2: overlays, premultiplied (alpha 0 adds light);
+          // 3: the shadow map's depth, opaque and cut-out.
 uniform float Opacity; // Streamed opacity of a glow overlay; 1 otherwise.
 uniform vec3 EmissiveTint; // Streamed emissive color times intensity of a glow overlay; white otherwise.
 uniform float Hurt; // 1 while EVE flashes red after a hit, as Minecraft tints a hurt entity.
@@ -18,6 +19,10 @@ uniform ivec2 LightUv;
 uniform float FogStart;
 uniform float FogEnd;
 uniform vec4 FogColor;
+uniform vec3 SunDirection; // Toward the sun.
+uniform float SunWeight; // The sun's share of the directional light: 0 keeps Minecraft's two entity lights.
+
+#include shadow.glsl
 
 in vec2 texCoord;
 in vec3 normal;
@@ -52,6 +57,11 @@ float strand(vec3 tangent, vec3 n, vec3 view, vec3 light, float power) {
 }
 
 void main() {
+    if (Pass == 3) { // The shadow map keeps only the cut-out test.
+        if (texture(Sampler0, texCoord).a < AlphaCutoff) discard;
+        fragColor = vec4(0.0);
+        return;
+    }
     // Every texture sample and derivative comes before the cut-out discard.
     vec4 base = texture(Sampler0, texCoord);
     vec3 mapped = texture(Sampler1, texCoord).xyz * 2.0 - 1.0;
@@ -76,6 +86,11 @@ void main() {
     bitangent *= frame;
 
     vec3 light = texelFetch(Sampler2, LightUv, 0).rgb;
+    // Minecraft's entity lights (0.6 each) give way to the sun (1.0) by SunWeight; EVE shadows the sun herself.
+    float occluder;
+    float sun = SunWeight > 0.0 ? sunlit(relative + n * 0.015, 0.003 / ShadowDepth, occluder) : 1.0;
+    vec3 lights[3] = vec3[](LIGHT0, LIGHT1, SunDirection);
+    float weights[3] = float[](0.6 * (1.0 - SunWeight), 0.6 * (1.0 - SunWeight), SunWeight * sun);
     vec3 lit;
     if (Hair == 1) {
         // Strands run along V from root to tip. The depth channel shifts each strand's highlights.
@@ -85,10 +100,10 @@ void main() {
         float occlusion = mix(1.0, 0.55, hair.r * hair.r); // Roots sit inside the hair volume.
         float diffuse = 0.0;
         vec3 shine = vec3(0.0);
-        for (int k = 0; k < 2; k++) {
-            vec3 l = k == 0 ? LIGHT0 : LIGHT1;
-            diffuse += max(0.0, 0.3 + 0.7 * dot(n, l)) * 0.6;
-            shine += (vec3(0.18) * strand(primary, n, view, l, 120.0) + base.rgb * 0.35 * strand(secondary, n, view, l, 30.0)) * 0.6;
+        for (int k = 0; k < 3; k++) {
+            vec3 l = lights[k];
+            diffuse += max(0.0, 0.3 + 0.7 * dot(n, l)) * weights[k];
+            shine += (vec3(0.18) * strand(primary, n, view, l, 120.0) + base.rgb * 0.35 * strand(secondary, n, view, l, 30.0)) * weights[k];
         }
         diffuse = min(1.0, diffuse + 0.4) * occlusion;
         lit = (base.rgb * diffuse + shine * (0.4 + 0.6 * (1.0 - hair.r))) * light;
@@ -99,15 +114,16 @@ void main() {
         // light wrap past the terminator, tinted by the scatter color, along the smooth geometric normal rather than
         // the pores of the normal map.
         vec3 diffuse = vec3(0.4 * occlusion);
-        for (int k = 0; k < 2; k++) {
-            vec3 l = k == 0 ? LIGHT0 : LIGHT1;
+        for (int k = 0; k < 3; k++) {
+            vec3 l = lights[k];
             float lambert = max(dot(shading, l), 0.0), wrapped = max((dot(n, l) + 0.5) / 1.5, 0.0);
-            diffuse += (lambert + scatter * (wrapped - lambert)) * 0.6;
+            diffuse += (lambert + scatter * (wrapped - lambert)) * weights[k];
         }
         diffuse = min(diffuse, vec3(1.0));
         vec3 f0 = mix(vec3(0.08 * surface.a), base.rgb, metallic);
         float alpha = roughness * roughness, power = clamp(2.0 / (alpha * alpha) - 2.0, 2.0, 4096.0); // GGX-like width.
-        vec3 shine = (specular(shading, view, LIGHT0, power, f0) + specular(shading, view, LIGHT1, power, f0)) * 0.6;
+        vec3 shine = vec3(0.0);
+        for (int k = 0; k < 3; k++) shine += specular(shading, view, lights[k], power, f0) * weights[k];
         // Reflected environment: Minecraft's sky above the horizon, its fog color at the horizon and a darker ground
         // below; rough surfaces see the average. It reaches EVE in proportion to the sky light at her position.
         vec3 r = reflect(-view, shading), horizon = FogColor.rgb;

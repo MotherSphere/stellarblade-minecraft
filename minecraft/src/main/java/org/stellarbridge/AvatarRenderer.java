@@ -18,6 +18,7 @@ import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.joml.Vector3d;
+import org.joml.Vector3f;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL13;
@@ -42,6 +43,8 @@ import org.lwjgl.system.MemoryUtil;
  * only while the game raises the slot's streamed Opacity, its emissive map tinted by Emissive_Color times
  * Emissive_Intensity (and the _2 pair).
  * While a shader pack is in use, drawEntity draws the same buffers through Minecraft's entity programs instead.
+ * Without a pack, the sun lights her through a shadow map of her own (castShadow) and her shadow darkens the block faces
+ * below her (drawCast).
  */
 final class AvatarRenderer implements AutoCloseable {
     private static final String[] ATTRIBUTES = {"Position", "Normal", "UV0", "BoneIds", "BoneWeights", "MorphPosition", "MorphNormal"};
@@ -58,7 +61,13 @@ final class AvatarRenderer implements AutoCloseable {
         int base() { return maps[0]; }
     }
     private final int program, bones, viewProjection, lightUv, fogStart, fogEnd, fogColor, skyColor, hairShading, cutoff, pass,
-            opacity, emissiveTint, hurtTint, skinning, skinningBones;
+            opacity, emissiveTint, hurtTint, skinning, skinningBones, sunDirection, sunWeight, shadowMatrix, shadowDepth;
+    // EVE's shadow map (depth only, from the sun) and the program darkening the block faces her shadow falls on.
+    static final int SHADOW_SIZE = 1024;
+    private int shadowFramebuffer, shadowTexture, cast, castArray, castBuffer;
+    private final int castViewProjection, castShadowMatrix, castShadowDepth, castDirection, castFogStart, castFogEnd;
+    private final Matrix4f light = new Matrix4f();
+    private float lightDepth;
     private Map<String, float[]> parameters = Map.of();
     private boolean[] shown; // Per streamed component, whether its part is drawn; null draws every part (replays).
     private boolean hurt;
@@ -108,8 +117,45 @@ final class AvatarRenderer implements AutoCloseable {
             cutoff = GL20.glGetUniformLocation(program, "AlphaCutoff");
             skinning = link(shader(GL20.GL_VERTEX_SHADER, "avatar.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "avatar.fsh"), ATTRIBUTES, SKINNED);
             skinningBones = GL20.glGetUniformLocation(skinning, "Bones");
+            sunDirection = GL20.glGetUniformLocation(program, "SunDirection");
+            sunWeight = GL20.glGetUniformLocation(program, "SunWeight");
+            shadowMatrix = GL20.glGetUniformLocation(program, "ShadowMatrix");
+            shadowDepth = GL20.glGetUniformLocation(program, "ShadowDepth");
             GlStateManager._glUseProgram(program);
-            for (int unit = 0; unit <= 6; unit++) GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler" + unit), unit);
+            for (int unit = 0; unit <= 7; unit++) GL20.glUniform1i(GL20.glGetUniformLocation(program, "Sampler" + unit), unit);
+            cast = link(shader(GL20.GL_VERTEX_SHADER, "cast.vsh"), shader(GL20.GL_FRAGMENT_SHADER, "cast.fsh"), new String[] {"Position", "Normal", "Brightness"});
+            castViewProjection = GL20.glGetUniformLocation(cast, "ViewProjection");
+            castShadowMatrix = GL20.glGetUniformLocation(cast, "ShadowMatrix");
+            castShadowDepth = GL20.glGetUniformLocation(cast, "ShadowDepth");
+            castDirection = GL20.glGetUniformLocation(cast, "ShadowDirection");
+            castFogStart = GL20.glGetUniformLocation(cast, "FogStart");
+            castFogEnd = GL20.glGetUniformLocation(cast, "FogEnd");
+            GlStateManager._glUseProgram(cast);
+            GL20.glUniform1i(GL20.glGetUniformLocation(cast, "Sampler7"), 7);
+            castArray = GL30.glGenVertexArrays();
+            GlStateManager._glBindVertexArray(castArray);
+            castBuffer = GL15.glGenBuffers();
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, castBuffer);
+            GL20.glVertexAttribPointer(0, 3, GL11.GL_FLOAT, false, 28, 0);
+            GL20.glVertexAttribPointer(1, 3, GL11.GL_FLOAT, false, 28, 12);
+            GL20.glVertexAttribPointer(2, 1, GL11.GL_FLOAT, false, 28, 24);
+            for (int a = 0; a < 3; a++) GL20.glEnableVertexAttribArray(a);
+            int texture0 = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
+            shadowTexture = GlStateManager._genTexture();
+            GlStateManager._bindTexture(shadowTexture);
+            GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL14.GL_DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, GL11.GL_DEPTH_COMPONENT, GL11.GL_FLOAT, (ByteBuffer) null);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+            GlStateManager._bindTexture(texture0);
+            int framebuffer0 = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING);
+            shadowFramebuffer = GL30.glGenFramebuffers();
+            GlStateManager._glBindFramebuffer(GL30.GL_FRAMEBUFFER, shadowFramebuffer);
+            GL30.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_DEPTH_ATTACHMENT, GL11.GL_TEXTURE_2D, shadowTexture, 0);
+            GL11.glDrawBuffer(GL11.GL_NONE);
+            GL11.glReadBuffer(GL11.GL_NONE);
+            boolean framed = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER) == GL30.GL_FRAMEBUFFER_COMPLETE;
+            GlStateManager._glBindFramebuffer(GL30.GL_FRAMEBUFFER, framebuffer0);
+            if (!framed) throw new IOException("EVE's shadow map framebuffer is incomplete");
             // Defaults for missing maps: flat normal; full occlusion, roughness 0.8, no metal, 4 % reflectance; black.
             flatNormal = solid(128, 128, 255, 255);
             plainSurface = solid(255, 204, 0, 128);
@@ -169,8 +215,11 @@ final class AvatarRenderer implements AutoCloseable {
      * Draws every part with the palettes filled by AvatarModel.palettes; positions are camera-relative blocks. Sky is
      * Minecraft's sky color, reflected by glossy surfaces in proportion to the sky light.
      */
-    void draw(Matrix4f projectionView, int lightmap, int blockLight, int skyLight, float start, float end, float[] fog, float[] sky) {
+    void draw(Matrix4f projectionView, int lightmap, int blockLight, int skyLight, float start, float end, float[] fog, float[] sky,
+              AvatarShadows.Light key) {
         restoring(() -> {
+            GlStateManager._activeTexture(GL13.GL_TEXTURE7);
+            GlStateManager._bindTexture(shadowTexture);
             GlStateManager._activeTexture(GL13.GL_TEXTURE2);
             GlStateManager._bindTexture(lightmap);
             GlStateManager._enableDepthTest();
@@ -188,6 +237,12 @@ final class AvatarRenderer implements AutoCloseable {
             GL20.glUniform4f(fogColor, fog[0], fog[1], fog[2], fog[3]);
             GL20.glUniform3f(skyColor, sky[0], sky[1], sky[2]);
             GL20.glUniform1f(hurtTint, hurt ? 1 : 0);
+            GL20.glUniform3f(sunDirection, key.direction().x, key.direction().y, key.direction().z);
+            GL20.glUniform1f(sunWeight, AvatarShadows.KEY * key.strength());
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                GL20.glUniformMatrix4fv(shadowMatrix, false, light.get(stack.mallocFloat(16)));
+            }
+            GL20.glUniform1f(shadowDepth, lightDepth);
             uploadMorphs();
             // Opaque and cut-out sections first; then, blended without writing depth, translucent overlays and the soft
             // edges of hair strands that the cut-out dropped, the hair last so that the eyes' overlays never show through it.
@@ -224,6 +279,112 @@ final class AvatarRenderer implements AutoCloseable {
             if (trail != null) trail.draw(projectionView, start, end, fog);
             if (sprites != null) sprites.draw(projectionView, start, end, fog);
         });
+    }
+
+    /**
+     * Renders EVE's opaque and cut-out sections into her shadow map from the sun: lightViewProjection maps camera-relative
+     * blocks to its clip space, depth blocks deep. After palettes; read by the next draw and drawCast.
+     */
+    void castShadow(Matrix4f lightViewProjection, float depth) {
+        light.set(lightViewProjection);
+        lightDepth = depth;
+        restoring(() -> {
+            int draw0 = GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING), read0 = GL11.glGetInteger(GL30.GL_READ_FRAMEBUFFER_BINDING);
+            int[] viewport0 = new int[4];
+            GL11.glGetIntegerv(GL11.GL_VIEWPORT, viewport0);
+            boolean offset0 = GL11.glIsEnabled(GL11.GL_POLYGON_OFFSET_FILL);
+            float factor0 = GL11.glGetFloat(GL11.GL_POLYGON_OFFSET_FACTOR), units0 = GL11.glGetFloat(GL11.GL_POLYGON_OFFSET_UNITS);
+            try {
+                GlStateManager._glBindFramebuffer(GL30.GL_FRAMEBUFFER, shadowFramebuffer);
+                GlStateManager._viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+                GlStateManager._enableDepthTest();
+                GlStateManager._depthFunc(GL11.GL_LEQUAL);
+                GlStateManager._depthMask(true);
+                GlStateManager._disableCull();
+                GlStateManager._disableBlend();
+                GlStateManager._clearDepth(1);
+                GlStateManager._clear(GL11.GL_DEPTH_BUFFER_BIT, false);
+                GlStateManager._enablePolygonOffset();
+                GlStateManager._polygonOffset(1.5f, 4);
+                GlStateManager._glUseProgram(program);
+                try (MemoryStack stack = MemoryStack.stackPush()) {
+                    GL20.glUniformMatrix4fv(viewProjection, false, lightViewProjection.get(stack.mallocFloat(16)));
+                }
+                GL20.glUniform1i(pass, 3);
+                uploadMorphs();
+                GlStateManager._activeTexture(GL13.GL_TEXTURE0);
+                // ponytail: the shadow pass skins her meshes a second time; skin() once by transform feedback and draw both
+                // passes from skinned[] if a profile shows it.
+                for (int p = 0; p < arrays.length; p++) {
+                    if (!drawn(p)) continue;
+                    GlStateManager._glBindVertexArray(arrays[p]);
+                    GL21.glUniformMatrix3x4fv(bones, false, palettes[p]);
+                    AvatarMesh.Section[] sections = model.parts.get(p).mesh().sections;
+                    for (int s = 0; s < sections.length; s++) {
+                        Material material = sectionMaterials[p][s];
+                        if (material.base() == 0 || material.overlay()) continue;
+                        GlStateManager._bindTexture(material.base());
+                        GL20.glUniform1f(cutoff, CUTOFF);
+                        GL11.glDrawElements(GL11.GL_TRIANGLES, sections[s].indexCount(), GL11.GL_UNSIGNED_INT, 4L * sections[s].firstIndex());
+                    }
+                }
+            } finally {
+                GlStateManager._glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, draw0);
+                GlStateManager._glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, read0);
+                GlStateManager._viewport(viewport0[0], viewport0[1], viewport0[2], viewport0[3]);
+                GlStateManager._polygonOffset(factor0, units0);
+                if (offset0) GlStateManager._enablePolygonOffset(); else GlStateManager._disablePolygonOffset();
+            }
+        });
+    }
+
+    /**
+     * Darkens the block faces EVE's shadow falls on (AvatarShadows.faces: camera-relative position, normal, brightness per
+     * vertex, two triangles a face), blended over them as Minecraft's entity shadow; toward is the shadow's light. After
+     * castShadow, before EVE herself is drawn.
+     */
+    void drawCast(Matrix4f projectionView, FloatBuffer faces, int vertices, Vector3f toward, float start, float end) {
+        if (vertices == 0) return;
+        restoring(() -> {
+            GlStateManager._activeTexture(GL13.GL_TEXTURE7);
+            GlStateManager._bindTexture(shadowTexture);
+            GlStateManager._enableDepthTest();
+            GlStateManager._depthFunc(GL11.GL_LEQUAL);
+            GlStateManager._depthMask(false);
+            GlStateManager._enableCull();
+            GlStateManager._enableBlend();
+            GlStateManager._blendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA);
+            GlStateManager._glUseProgram(cast);
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                GL20.glUniformMatrix4fv(castViewProjection, false, projectionView.get(stack.mallocFloat(16)));
+                GL20.glUniformMatrix4fv(castShadowMatrix, false, light.get(stack.mallocFloat(16)));
+            }
+            GL20.glUniform1f(castShadowDepth, lightDepth);
+            GL20.glUniform3f(castDirection, toward.x, toward.y, toward.z);
+            GL20.glUniform1f(castFogStart, start);
+            GL20.glUniform1f(castFogEnd, end);
+            GlStateManager._glBindVertexArray(castArray);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, castBuffer);
+            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, faces, GL15.GL_STREAM_DRAW);
+            GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, vertices);
+        });
+    }
+
+    /** After palettes with the same placement: the drawn parts' bone positions' extent, camera-relative blocks. */
+    void bounds(AvatarRecording.Pose pose, Matrix4d placement, Vector3d low, Vector3d high) {
+        low.set(Double.MAX_VALUE);
+        high.set(-Double.MAX_VALUE);
+        Vector3d origin = new Vector3d(), at = new Vector3d();
+        for (int p = 0; p < arrays.length; p++) {
+            if (!drawn(p)) continue;
+            AvatarModel.Part part = model.parts.get(p);
+            if (part.leaderBones() != null) continue; // A follower's bones are its leader's.
+            for (int k = 0; k < part.mesh().bones.length; k++) {
+                model.point(pose, placement, p, k, origin, at);
+                low.min(at);
+                high.max(at);
+            }
+        }
     }
 
     /**
@@ -337,7 +498,7 @@ final class AvatarRenderer implements AutoCloseable {
     private static void restoring(Runnable draw) {
         int program0 = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM), array0 = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
         int buffer0 = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING), active0 = GlStateManager._getActiveTexture();
-        int[] bound0 = new int[7], shaderTextures0 = {RenderSystem.getShaderTexture(0), RenderSystem.getShaderTexture(1), RenderSystem.getShaderTexture(2)};
+        int[] bound0 = new int[8], shaderTextures0 = {RenderSystem.getShaderTexture(0), RenderSystem.getShaderTexture(1), RenderSystem.getShaderTexture(2)};
         int[] blendFunction0 = {GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB), GL11.glGetInteger(GL14.GL_BLEND_DST_RGB),
                 GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA), GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA)};
         boolean depth0 = GL11.glIsEnabled(GL11.GL_DEPTH_TEST), cull0 = GL11.glIsEnabled(GL11.GL_CULL_FACE), blend0 = GL11.glIsEnabled(GL11.GL_BLEND);
@@ -472,6 +633,12 @@ final class AvatarRenderer implements AutoCloseable {
             arrays[i] = vertexBuffers[i] = indexBuffers[i] = morphBuffers[i] = skinned[i] = entityArrays[i] = 0;
         }
         if (program != 0) GL20.glDeleteProgram(program);
+        if (cast != 0) GL20.glDeleteProgram(cast);
+        if (castArray != 0) GL30.glDeleteVertexArrays(castArray);
+        if (castBuffer != 0) GL15.glDeleteBuffers(castBuffer);
+        if (shadowFramebuffer != 0) GL30.glDeleteFramebuffers(shadowFramebuffer);
+        if (shadowTexture != 0) GlStateManager._deleteTexture(shadowTexture);
+        cast = castArray = castBuffer = shadowFramebuffer = shadowTexture = 0;
         if (skinning != 0) GL20.glDeleteProgram(skinning);
         if (trail != null) trail.close();
         trail = null;
@@ -621,11 +788,8 @@ final class AvatarRenderer implements AutoCloseable {
     }
 
     static int shader(int type, String name) throws IOException {
-        String source;
-        try (InputStream in = AvatarRenderer.class.getResourceAsStream("/assets/stellar_bridge/shaders/avatar/" + name)) {
-            if (in == null) throw new IOException("Missing avatar shader " + name);
-            source = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        String source = source(name);
+        if (source.contains("#include shadow.glsl")) source = source.replace("#include shadow.glsl", source("shadow.glsl"));
         int shader = GL20.glCreateShader(type);
         GL20.glShaderSource(shader, source);
         GL20.glCompileShader(shader);
@@ -635,6 +799,13 @@ final class AvatarRenderer implements AutoCloseable {
             throw new IOException("Avatar shader " + name + " failed: " + log);
         }
         return shader;
+    }
+
+    private static String source(String name) throws IOException {
+        try (InputStream in = AvatarRenderer.class.getResourceAsStream("/assets/stellar_bridge/shaders/avatar/" + name)) {
+            if (in == null) throw new IOException("Missing avatar shader " + name);
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     /** A program with attributes at their indices; varyings, when given, are captured interleaved by transform feedback. */
