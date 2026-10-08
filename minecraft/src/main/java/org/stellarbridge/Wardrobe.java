@@ -91,13 +91,16 @@ final class Wardrobe {
     }
 
     /**
-     * WardrobeScreen's layout in GUI pixels: margin MARGIN, a HEADER (title, the slot's name) and a FOOTER (key hints);
-     * rows of 32 px from a height of 400, else 22, slot cells 2 px larger. Left the slot column (two cells a row under
-     * 10-px group headings: Exospine 1 row, Gear 2, Look 3), then the item list, a third of the width within 140 to 220,
-     * then EVE's preview up to the right margin, with CAPTION px of two text lines under it. ponytail: two fixed row
-     * sizes, not Stellar Blade's continuous scale; scale like the HUD's panel if 960 x 540 looks too sparse.
+     * WardrobeScreen's layout in GUI pixels: margin MARGIN, a HEADER (title, the slot's name) and a FOOTER (key hints).
+     * Left the slot column (two cells a row under 10-px group headings: Exospine 1 row, Gear 2, Look 3), slots of 34 px
+     * from 340 x 280 (their column then fits above the footer and the preview keeps 100 px), else 24, cells 2 px larger;
+     * then the item list, a third of the width within 136 to 220 and down to the slot column's bottom, in Stellar Blade's
+     * one-line rows of ROW px (EntryListWidget draws ROW - 4 and leaves a 4-px gap); then EVE's preview up to the right
+     * margin, with CAPTION px of two text lines under it. Slots and rows hold the pack's 64-px icons at a whole ratio
+     * (icon) of 32 px or more from GUI scale 2, 64 in the 34-px slots at scale 2. ponytail: two fixed slot sizes, not
+     * Stellar Blade's continuous scale; scale like the HUD's panel if 960 x 540 looks too sparse.
      */
-    record Layout(int row, int cell, int slotsX, int listX, int listWidth, int top, int bottom, int previewX0, int previewX1, int previewY1) {
+    record Layout(int slot, int cell, int slotsX, int listX, int listWidth, int top, int bottom, int previewX0, int previewX1, int previewY1) {
         /** The top-left corner of SLOTS' slot i. */
         int[] slot(int i) {
             String group = SLOTS.get(i).group;
@@ -107,16 +110,29 @@ final class Wardrobe {
         /** The top of a group's heading. */
         int heading(String group) {
             int y = top;
-            for (String g : GROUPS.subList(0, GROUPS.indexOf(group)))
-                y += 10 + ((int) SLOTS.stream().filter(s -> s.group.equals(g)).count() + 1) / 2 * cell;
+            for (String g : GROUPS.subList(0, GROUPS.indexOf(group))) y += 10 + rows(g) * cell;
             return y;
         }
     }
-    static final int MARGIN = 8, HEADER = 20, FOOTER = 14, CAPTION = 20;
+    static final int MARGIN = 8, HEADER = 20, FOOTER = 14, CAPTION = 20, ROW = 22;
+
+    /** A group's rows of two slots. */
+    private static int rows(String group) { return ((int) SLOTS.stream().filter(s -> s.group.equals(group)).count() + 1) / 2; }
 
     static Layout layout(int width, int height) {
-        int row = height >= 400 ? 32 : 22, cell = row + 2, listX = MARGIN + 2 * cell + MARGIN, list = Math.clamp(width / 3, 140, 220);
-        return new Layout(row, cell, MARGIN, listX, list, HEADER, height - FOOTER, listX + list + MARGIN, width - MARGIN, height - FOOTER - CAPTION);
+        int slot = width >= 340 && height >= 280 ? 34 : 24, cell = slot + 2, listX = MARGIN + 2 * cell + MARGIN, list = Math.clamp(width / 3, 136, 220);
+        int column = HEADER + GROUPS.stream().mapToInt(g -> 10 + rows(g) * cell).sum() - 2; // The last slot's bottom.
+        return new Layout(slot, cell, MARGIN, listX, list, HEADER, column, listX + list + MARGIN, width - MARGIN, height - FOOTER - CAPTION);
+    }
+
+    /**
+     * The screen pixels a pack icon (64 x 64) takes in a box of box GUI px at a GUI scale: 64, 32, 16 and so on, the
+     * largest that fits, never enlarged. Drawn on whole screen pixels, each pixel then filters whole texels: sharp.
+     */
+    static int icon(int box, int scale) {
+        int pixels = 64;
+        while (pixels > 1 && pixels > box * scale) pixels /= 2;
+        return pixels;
     }
 
     /** The pack's pack.txt (SBAVPACK 1): the Paks folder it was built from and each game file's "bytes mtime-ns" by path under it. */

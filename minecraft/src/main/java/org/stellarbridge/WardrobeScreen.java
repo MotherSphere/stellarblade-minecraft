@@ -87,7 +87,7 @@ final class WardrobeScreen extends Screen {
         slots.clear();
         for (int i = 0; i < Wardrobe.SLOTS.size(); i++) {
             int[] at = layout.slot(i);
-            slots.add(addDrawableChild(new SlotButton(i, at[0], at[1], layout.row())));
+            slots.add(addDrawableChild(new SlotButton(i, at[0], at[1], layout.slot())));
         }
         list = addDrawableChild(new ItemList(layout));
         refresh();
@@ -187,11 +187,21 @@ final class WardrobeScreen extends Screen {
     }
     private boolean usable() { return pending == 0 && failure == null && files != null; }
 
+    /**
+     * A pack icon centred in the size-px box at (x, y), tinted, drawn in screen pixels at a whole ratio of its 64-px
+     * texture (Wardrobe.icon): a GUI scale such as 3 puts no whole number of screen pixels in the box's GUI pixels.
+     */
     private static void tinted(DrawContext context, Identifier id, int x, int y, int size, int color) {
         if (id == null) return;
+        int scale = (int) MinecraftClient.getInstance().getWindow().getScaleFactor(), pixels = Wardrobe.icon(size, scale);
+        var matrices = context.getMatrices();
+        matrices.push();
+        matrices.translate(x, y, 0);
+        matrices.scale(1f / scale, 1f / scale, 1);
         context.setShaderColor((color >> 16 & 255) / 255f, (color >> 8 & 255) / 255f, (color & 255) / 255f, (color >>> 24) / 255f);
-        AvatarHud.blit(context, id, x, y, size);
+        AvatarHud.blit(context, id, (size * scale - pixels) / 2, (size * scale - pixels) / 2, pixels);
         context.setShaderColor(1, 1, 1, 1);
+        matrices.pop();
     }
 
     @Override
@@ -310,7 +320,7 @@ final class WardrobeScreen extends Screen {
 
     private final class ItemList extends AlwaysSelectedEntryListWidget<Row> {
         ItemList(Wardrobe.Layout layout) {
-            super(MinecraftClient.getInstance(), layout.listWidth(), layout.bottom() - layout.top(), layout.top(), layout.row());
+            super(MinecraftClient.getInstance(), layout.listWidth(), layout.bottom() - layout.top(), layout.top(), Wardrobe.ROW);
             setX(layout.listX());
         }
         /**
@@ -382,7 +392,7 @@ final class WardrobeScreen extends Screen {
             context.drawText(textRenderer, shown.equals(name) ? name : textRenderer.trimToWidth(name, x + entryWidth - textX - badge - 4 - textRenderer.getWidth("…")) + "…",
                     textX, y + (entryHeight - 8) / 2, alpha | (missing || blocked ? HINT : 0xFFFFFF) & 0xFFFFFF, false);
             if (badge > 0) { // Stellar Blade's orange "E", or its colour with a letter.
-                int bx = x + entryWidth - badge - 2, by = y + 2;
+                int bx = x + entryWidth - badge - 2, by = y + (entryHeight - badge) / 2;
                 Identifier mark = AvatarHud.texture("icon_equipment_color");
                 if (mark != null) tinted(context, mark, bx, by, badge, 0xFFFFFFFF);
                 else {

@@ -48,32 +48,52 @@ public final class WardrobeTest {
                     .equals(rows.subList(1, rows.size()).stream().map(BridgeProtocol.WardrobeItem::id).toList()) : slot + ": " + rows;
         }
 
-        // The layout over the GUI sizes of 1080p at scale 2 and 3, 1440p and 4:3 at auto scale: {row, list x, list width,
-        // preview x0, x1, y1}; the slot column fits above the footer, nothing overlaps and the preview keeps some room.
-        int[][] sizes = {{960, 540, 32, 84, 220, 312, 952, 506}, {640, 360, 22, 64, 213, 285, 632, 326},
-                {427, 240, 22, 64, 142, 214, 419, 206}, {320, 240, 22, 64, 140, 212, 312, 206}};
+        // The layout over the GUI sizes of 1080p at scale 2 and 3, a 1274 x 692 window at scale 2, 1440p and 4:3 at auto
+        // scale: {slot, list x, list width, preview x0, x1, y1, list bottom}.
+        int[][] sizes = {{960, 540, 34, 88, 220, 316, 952, 506, 264}, {640, 360, 34, 88, 213, 309, 632, 326, 264},
+                {637, 346, 34, 88, 212, 308, 629, 312, 264}, {427, 240, 24, 68, 142, 218, 419, 206, 204}, {320, 240, 24, 68, 136, 212, 312, 206, 204}};
         for (int[] s : sizes) {
             Wardrobe.Layout l = Wardrobe.layout(s[0], s[1]);
-            assert l.row() == s[2] && l.listX() == s[3] && l.listWidth() == s[4] && l.previewX0() == s[5] && l.previewX1() == s[6]
-                    && l.previewY1() == s[7] && l.top() == 20 && l.bottom() == s[1] - 14 : s[0] + "x" + s[1] + ": " + l;
-            int last = 0;
-            for (int i = 0; i < Wardrobe.SLOTS.size(); i++) {
-                int[] at = l.slot(i);
-                String group = Wardrobe.SLOTS.get(i).group();
-                assert at[0] >= Wardrobe.MARGIN && at[0] + l.row() <= l.listX() - Wardrobe.MARGIN && at[1] >= l.heading(group) + 10 : s[0] + ": slot " + i;
-                for (int k = 0; k < i; k++) {
-                    int[] other = l.slot(k);
-                    assert Math.abs(other[0] - at[0]) >= l.cell() || Math.abs(other[1] - at[1]) >= l.cell() : s[0] + ": slots " + k + " and " + i + " overlap";
-                }
-                last = Math.max(last, at[1] + l.row());
-            }
-            assert last <= l.bottom() : s[0] + "x" + s[1] + ": the slot column ends at " + last;
-            assert l.listX() + l.listWidth() + Wardrobe.MARGIN == l.previewX0() && l.previewX1() - l.previewX0() >= 100
-                    && l.previewY1() - l.top() >= 180 : s[0] + "x" + s[1] + ": preview " + l;
+            assert l.slot() == s[2] && l.listX() == s[3] && l.listWidth() == s[4] && l.previewX0() == s[5] && l.previewX1() == s[6]
+                    && l.previewY1() == s[7] && l.top() == 20 && l.bottom() == s[8] : s[0] + "x" + s[1] + ": " + l;
         }
+        // Every GUI size from 320 x 240 to 1440p at scale 1: the slot column fits above the footer and ends with the list, the
+        // French "Équipements" heading (60 px) ends before the list, nothing overlaps, the list shows 8 rows of a text line
+        // or more, and the preview keeps some room.
+        for (int w = 320; w <= 2560; w += 7)
+            for (int h = 240; h <= 1440; h += 5) {
+                Wardrobe.Layout l = Wardrobe.layout(w, h);
+                String at = w + "x" + h + ": " + l;
+                int last = 0;
+                for (int i = 0; i < Wardrobe.SLOTS.size(); i++) {
+                    int[] slot = l.slot(i);
+                    assert slot[0] >= Wardrobe.MARGIN && slot[0] + l.slot() <= l.listX() - Wardrobe.MARGIN
+                            && slot[1] >= l.heading(Wardrobe.SLOTS.get(i).group()) + 10 : at + ", slot " + i;
+                    for (int k = 0; k < i; k++) {
+                        int[] other = l.slot(k);
+                        assert Math.abs(other[0] - slot[0]) >= l.cell() || Math.abs(other[1] - slot[1]) >= l.cell() : at + ", slots " + k + " and " + i + " overlap";
+                    }
+                    last = Math.max(last, slot[1] + l.slot());
+                }
+                assert last == l.bottom() && l.bottom() <= h - Wardrobe.FOOTER && Wardrobe.MARGIN + 60 <= l.listX() : at + ", slot column to " + last;
+                assert (l.bottom() - l.top() - 4) / Wardrobe.ROW >= 8 && Wardrobe.ROW - 4 >= 9 : at + ", list rows";
+                assert l.listX() + l.listWidth() + Wardrobe.MARGIN == l.previewX0() && l.previewX1() == w - Wardrobe.MARGIN
+                        && l.previewX1() - l.previewX0() >= 100 && l.previewY1() - l.top() >= 180 && l.previewY1() + Wardrobe.CAPTION + Wardrobe.FOOTER == h : at + ", preview";
+            }
         Wardrobe.Layout big = Wardrobe.layout(960, 540);
-        assert big.slot(0)[1] == 30 && big.slot(2)[1] == 30 + 34 + 10 && big.slot(6)[1] == 30 + 34 + 10 + 68 + 10 && big.slot(10)[1] == big.slot(6)[1] + 68
-                && big.slot(1)[0] == 8 + 34 : "Exospine, Gear and Look rows under their headings";
+        assert big.slot(0)[1] == 30 && big.slot(2)[1] == 30 + 36 + 10 && big.slot(6)[1] == 30 + 36 + 10 + 72 + 10 && big.slot(10)[1] == big.slot(6)[1] + 72
+                && big.slot(1)[0] == 8 + 36 : "Exospine, Gear and Look rows under their headings";
+
+        // Icons in screen pixels at a whole ratio of their 64-px texture, the largest that fits, at GUI scales 1 to 6 (auto
+        // reaches 6 at 1440p), in WardrobeScreen's boxes: inside both slot sizes, a row's icon, the lock in both, the badge.
+        // From scale 2 the slots and rows get 32 px or more; the large slots 64 at scale 2, the rows 32 at 2 and 64 at 4.
+        for (int scale = 1; scale <= 6; scale++)
+            for (int box : new int[] {34 - 2, 24 - 2, Wardrobe.ROW - 6, 34 / 2, 24 / 2, 9}) {
+                int pixels = Wardrobe.icon(box, scale);
+                assert 64 % pixels == 0 && pixels <= box * scale && (pixels == 64 || 2 * pixels > box * scale)
+                        && (scale < 2 || box < 16 || pixels >= 32) : box + " px at scale " + scale + ": " + pixels;
+            }
+        assert Wardrobe.icon(32, 2) == 64 && Wardrobe.icon(Wardrobe.ROW - 6, 2) == 32 && Wardrobe.icon(Wardrobe.ROW - 6, 4) == 64 && Wardrobe.icon(3, 1) == 2;
 
         // The pack's manifest and the stale-pack check against a Paks folder.
         String manifest = "SBAVPACK 1\nPAKS /games/SB/Content/Paks\nSOURCE pakchunk0-WindowsNoEditor.pak 100 200\nSOURCE ~mods/My Mod_P.utoc 5 6\n"
@@ -114,6 +134,6 @@ public final class WardrobeTest {
         } finally {
             try (var walk = Files.walk(root)) { walk.sorted(java.util.Comparator.reverseOrder()).forEach(p -> p.toFile().delete()); }
         }
-        System.out.println("PASS wardrobe: pack catalog, slot rule, slot lists, layout over four GUI sizes, pack manifest and stale-pack check");
+        System.out.println("PASS wardrobe: pack catalog, slot rule, slot lists, layout over the GUI sizes, icon ratios, pack manifest and stale-pack check");
     }
 }
