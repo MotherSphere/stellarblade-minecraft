@@ -8,7 +8,7 @@ local function check(name, run)
 end
 local function backend()
     local b = {live={},next_id=0,pawn_id=1,world_id=2,
-        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0,park_cost=0,spawns=0}
+        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0,configure_cost=0,park_cost=0,spawns=0}
     function b.time() return b.clock end
     function b.snapshot()
         return {pawn_id=b.pawn_id,world_id=b.world_id,
@@ -27,6 +27,7 @@ local function backend()
     end
     -- A new or parked actor takes its spec's place, size and collision; b.inside counts any made solid around EVE.
     function b.configure(a,spec)
+        b.clock=b.clock+b.configure_cost
         b.events[#b.events+1]={'configure',a.id}
         assert(b.live[a.id],'TriggerBox has no BoxComponent.')
         if b.fail_configure==a.id then error('configure failed') end
@@ -493,6 +494,8 @@ check('a parked actor is placed only where a new one could be, never around EVE'
     b.events={}
     local ok,message=t.update(moved(3,{{-2.5,-1,-4.5,6.5,0,4.5},{-1,0,-1,1,1,1}},EAST))
     assert(not ok and message:find('new geometry intersects EVE',1,true),message)
+    ok,message=t.update(moved(3,{{-0.2,-1,-4.5,8.8,0,4.5}},{-0.2,-2,-4.5,8.8,4,4.5}))
+    assert(not ok and message:find('a new guard intersects EVE',1,true),message)
     b.position.X=b.position.X-1000 -- She stepped out of both windows.
     ok,message=t.update(packet(3))
     assert(not ok and message:find('EVE is outside the new window',1,true),message)
@@ -517,6 +520,26 @@ check('a parked actor that fails its setup rolls the move back like a new one',f
     consistent(b,t); assert(t.restore()); assert(b.count()==0)
 end)
 
+check('a parked box EVE walked into waits like a new one, and its parking counts as an op',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.configure_cost=0.0015 -- Three placements per 4 ms frame, all from the seven parked actors.
+    local boxes={{-2.5,-1,-4.5,6.5,0,4.5}}
+    for i=1,8 do boxes[#boxes+1]={-2.5+i*0.5,1,2,-2.25+i*0.5,2,3} end
+    local ok,message=t.update(moved(3,boxes,EAST))
+    assert(ok and message=='Importing Minecraft collision revision 3: 5 boxes left.',message)
+    b.position={X=22.5,Y=270,Z=795} -- Inside the fifth box, a parked actor.
+    ok,message=t.step(); assert(ok and message:find('waiting',1,true),message)
+    b.position={X=10,Y=20,Z=795}
+    repeat ok,message=t.step(); assert(ok) until message
+    assert(message:find('reused 7, spawned 1',1,true) and b.inside==nil,message)
+    b.park_cost=0.002
+    ok,message=t.update(moved(4,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))
+    assert(ok and message:find('8 removed',1,true) and message:find('slowest op 2.0 ms',1,true),message)
+    assert(t.restore()); assert(b.count()==0)
+end)
+
 check('a parked actor the engine deleted is dropped, not placed',function()
     local b=backend(); local t=Terrain.new(b,100,b.time)
     assert(t.create(packet())); assert(t.enter())
@@ -525,5 +548,15 @@ check('a parked actor the engine deleted is dropped, not placed',function()
     local ok,message=t.update(packet(3))
     assert(ok and message:find('reused 6, spawned 1',1,true) and t.pose().ack==3,message)
     consistent(b,t); assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a parked actor that fails to be destroyed on return keeps the patch for a retry',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    local stuck=next(solid(b))
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.fail_destroy=stuck
+    assert(not t.restore()); assert(t.status()=='cleanup-required' and b.count()==1 and b.live[stuck])
+    b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0 and t.status()=='idle')
 end)
 print(string.format('%d terrain lifecycle tests passed; native physics requires in-game verification.',tests))
