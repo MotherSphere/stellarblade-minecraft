@@ -99,8 +99,8 @@ function Bridge.new(terrain,directory,log,clock)
     end
     function api.tick(packet)
         if not current then return end
-        if stopping then
-            local ok,message=api.restore(); if not ok then report(message) end
+        if stopping then -- A retried return also logs how it ended (a return from a lab site waits for the ground).
+            local _,message=api.restore(); report(message)
             return
         end
         local now=clock()

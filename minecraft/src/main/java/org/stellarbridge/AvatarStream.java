@@ -135,7 +135,7 @@ final class AvatarStream implements AutoCloseable {
         if (state == 0) {
             require(producerPid == 0, "Pose producer reset its claimed run");
             if (nowNanos - createdNanos > 5_000_000_000L)
-                throw new IOException("No native pose producer: the adapter, Lua revision 52 and a loaded EVE are required");
+                throw new IOException("No native pose producer: the adapter, Lua revision 53 and a loaded EVE are required");
             return null;
         }
         require(pid != 0 && (producerPid == 0 || producerPid == pid), "Pose producer changed; start a new stream");

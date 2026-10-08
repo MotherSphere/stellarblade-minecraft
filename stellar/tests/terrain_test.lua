@@ -11,10 +11,22 @@ local function backend()
         position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0,configure_cost=0,park_cost=0,spawns=0}
     function b.time() return b.clock end
     function b.snapshot()
-        return {pawn_id=b.pawn_id,world_id=b.world_id,
+        return {pawn_id=b.pawn_id,world_id=b.world_id,site=b.site,
             position={X=b.position.X,Y=b.position.Y,Z=b.position.Z},
             rotation={Pitch=0,Yaw=0,Roll=0},half_height=90,radius=35}
     end
+    -- Stellar Blade's streaming pin (b.pin), its ground under the return point and its autosave switch.
+    b.ground,b.autosave_on,b.flushes=true,true,0
+    function b.stream_at(position)
+        if b.fail_pin and (position or b.pin) then error('pin refused') end -- Clearing an unset pin writes nothing.
+        b.pin=position and {X=position.X,Y=position.Y,Z=position.Z} or nil
+    end
+    function b.ground_at(position,half_height)
+        assert(position.X==10 and position.Y==20 and position.Z==100 and half_height==90,'the trace starts at EVE\'s start')
+        return b.ground
+    end
+    function b.flush_streaming() b.flushes=b.flushes+1 end
+    function b.autosave(enabled) local old=b.autosave_on; b.autosave_on=enabled; return old end
     function b.spawn(spec)
         b.clock=b.clock+b.spawn_cost -- Seconds each spawn takes, for the frame budget.
         b.next_id=b.next_id+1
@@ -558,5 +570,91 @@ check('a parked actor that fails to be destroyed on return keeps the patch for a
     b.fail_destroy=stuck
     assert(not t.restore()); assert(t.status()=='cleanup-required' and b.count()==1 and b.live[stuck])
     b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0 and t.status()=='idle')
+end)
+
+-- The remote lab site: the lab kilometres away, autosave off while entered, and a return that waits for the ground.
+local SITE={X=-750000,Y=-750000}
+check('at a lab site the anchor is the site and entry, pose and boxes stay relative to it',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    local ok,message=t.create(packet())
+    assert(ok and message:find('Lab at the remote site -750000 -750000.',1,true) and b.pin==nil,message)
+    local floor=imported(b).spec
+    assert(floor.center.X==-750000 and floor.center.Y==-750000 and floor.center.Z==650,'the same box, moved to the site')
+    assert(t.pose().anchor.X==-750000 and t.pose().anchor.Y==-750000 and t.pose().anchor.Z==700)
+    assert(t.enter()); assert(b.position.X==-750000 and b.position.Y==-750000 and b.position.Z==795)
+    assert(not b.autosave_on and b.pin==nil,'autosave off; nothing to pin where nothing streams')
+    b.position={X=-750000+200,Y=-750000+300,Z=890}
+    local p=t.pose(); assert(p.position.x==2 and p.position.y==1 and p.position.z==3)
+    assert(t.restore()); assert(b.position.X==10 and b.position.Y==20 and b.position.Z==100 and b.autosave_on)
+end)
+
+check('the return from a lab site waits for the ground, then moves, unpins and restores autosave',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); local count=b.count()
+    b.ground=false
+    local ok,message=t.restore()
+    assert(not ok and message:find('Waiting for Stellar Blade to stream the return point.',1,true),message)
+    assert(b.pin.X==10 and b.pin.Y==20 and b.pin.Z==100,'streaming pinned at the return point')
+    assert(b.position.X==-750000 and b.count()==count and not b.autosave_on and t.status()=='entered','EVE waits in the lab')
+    b.clock=9.9; assert(not t.restore() and b.moves==1 and b.flushes==0)
+    b.ground=true; b.clock=10.5
+    ok,message=t.restore()
+    assert(ok and message:find('Returned after waiting 10.5 s for the return point to stream and removed',1,true),message)
+    assert(b.position.X==10 and b.position.Z==100 and b.pin==nil and b.autosave_on and b.count()==0 and b.flushes==0)
+end)
+
+check('a lab site return without ground flushes streaming once after the wait and returns anyway',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    b.ground=false; assert(not t.restore())
+    b.clock=10; b.fail_move=true
+    local ok,message=t.restore()
+    assert(not ok and message:find('Return teleport failed',1,true) and b.flushes==1,message)
+    b.fail_move=false; assert(t.restore())
+    assert(b.flushes==1 and b.position.Z==100 and b.pin==nil and b.autosave_on,'one flush, then the return')
+end)
+
+check('a failed unpin or autosave restore is retried after EVE is back',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    b.fail_pin=true
+    assert(not t.restore() and b.moves==1,'no return without the pin')
+    b.fail_pin=nil
+    local stream_at,autosave=b.stream_at,b.autosave
+    b.stream_at=function(position) assert(position,'unpin refused'); stream_at(position) end
+    assert(not t.restore()); assert(b.position.Z==100 and b.pin and b.count()>0,'back, still pinned; actors kept')
+    b.stream_at=stream_at; b.autosave=function() error('autosave refused') end
+    assert(not t.restore()); assert(b.moves==2 and b.pin==nil and not b.autosave_on and b.count()>0)
+    b.autosave=autosave; assert(t.restore()); assert(b.autosave_on and b.count()==0 and t.status()=='idle')
+end)
+
+check('a lab site whose streaming pin is refused keeps the lab above EVE',function()
+    local b=backend(); b.site=SITE; b.fail_pin=true
+    local t=Terrain.new(b)
+    local ok,message=t.create(packet())
+    assert(ok and message:find('Lab above EVE: streaming pin unavailable: ',1,true) and imported(b).spec.center.X==10,message)
+    ok,message=t.enter()
+    assert(ok and message:find('Streaming not pinned',1,true) and b.autosave_on,message)
+    assert(t.restore()); assert(b.position.Z==100 and b.count()==0)
+end)
+
+check('without a site the start is pinned while entered, re-asserted and cleared after the return',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(b.pin==nil)
+    assert(t.enter()); assert(b.pin.X==10 and b.pin.Y==20 and b.pin.Z==100 and b.autosave_on)
+    b.pin=nil -- Stellar Blade's own warp clears it.
+    assert(t.update(packet(1))); assert(b.pin and b.pin.X==10,'the next heartbeat pins it again')
+    b.fail_pin=true; assert(t.update(packet(2)) and t.pose().ack==2,'a refused pin never blocks the terrain')
+    b.fail_pin=nil
+    assert(t.restore()); assert(b.pin==nil and b.position.Z==100 and b.flushes==0)
+end)
+
+check('a window move that would leave the world is deferred',function()
+    local b=backend(); b.site={X=-1039000,Y=0}; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.events={}
+    local ok,message=t.update(moved(2,{{-12.5,-1,-4.5,-3.5,0,4.5}},{-12.5,-2,-4.5,-3.5,4,4.5}))
+    assert(not ok and message:find('Window move deferred: the new window would leave the world.',1,true) and #b.events==0,message)
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))); assert(t.pose().ack==2)
+    assert(t.restore())
 end)
 print(string.format('%d terrain lifecycle tests passed; native physics requires in-game verification.',tests))

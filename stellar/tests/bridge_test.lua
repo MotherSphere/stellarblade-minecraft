@@ -78,6 +78,7 @@ bridge.step(); assert(steps==3,'a stopping bridge imports nothing more')
 local slots=(read('eve.0') or '')..(read('eve.1') or '')
 assert(slots:find('STATE idle 4',1,true),'expired bridge must stop Minecraft pose authority even if return fails')
 return_fails=false; bridge.tick(bridge.read()); assert(state=='idle')
+assert(logged[#logged]=='returned','a retried return logs how it ended')
 local Protocol=require('bridge_protocol')
 local old_sequence=math.max(Protocol.parse_eve(read('eve.0')).seq,Protocol.parse_eve(read('eve.1')).seq)
 -- A recreated bridge simulates a game restart with the same Minecraft session.

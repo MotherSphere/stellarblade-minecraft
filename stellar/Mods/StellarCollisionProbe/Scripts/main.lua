@@ -41,6 +41,9 @@ local function raw_trace(message)
     end
     log(message)
 end
+-- Lab sites (Unreal X/Y, cm) by persistent level, where World Composition streams none of its tiles but the sky's
+-- E05_ENV, the nearest gameplay tile 5.8 km away and the world edge 3 km away; other levels keep the lab above EVE.
+local LAB_SITES = {E05_GreatDesert_P={X=-750000,Y=-750000}}
 function engine.snapshot()
     local pawn,world = player()
     local capsule = pawn.CapsuleComponent
@@ -48,6 +51,7 @@ function engine.snapshot()
     return {pawn_id=pawn:GetAddress(),world_id=world:GetAddress(),
         position=vec(pawn:K2_GetActorLocation()), rotation=rot(pawn:K2_GetActorRotation()),
         half_height=capsule:GetScaledCapsuleHalfHeight(),radius=capsule:GetScaledCapsuleRadius(),
+        site=LAB_SITES[world:GetFullName():match('([%w_]+)$')],
         -- Stellar Blade lets her pass through characters (its evades): mob walls step aside too.
         ignoring=(function() local ok,v=pcall(function() return pawn.bIgnoreCharacterCollision end); return ok and v==true end)()}
 end
@@ -205,6 +209,52 @@ function engine.move(position, rotation)
     local actual = pawn:K2_GetActorLocation()
     return math.abs(actual.X-position.X)<1 and math.abs(actual.Y-position.Y)<1 and math.abs(actual.Z-position.Z)<1
 end
+local function trace_down(pawn, position, half_height, hit)
+    return UE.GetKismetSystemLibrary():LineTraceSingle(pawn,position,
+        {X=position.X,Y=position.Y,Z=position.Z-half_height-30},0,false,{},0,hit,true,
+        {R=0,G=1,B=0,A=1},{R=1,G=0,B=0,A=1},0)
+end
+-- Whether anything is under a capsule centre: from the remote lab site, only Stellar Blade's streamed ground can be.
+function engine.ground_at(position, half_height) return trace_down(player(),position,half_height,{})==true end
+-- Stellar Blade's own warp pin (UWorld bEnableFixedStreamingLocation 0x793, FixedStreamingLocation 0x794, read by World
+-- Composition and its level volumes, RVA 0x46a48a0): its world streams around position instead of its camera; nil
+-- clears it. Writes only what differs.
+function engine.stream_at(position)
+    local _,world = player()
+    local function at(wanted)
+        local now = world.FixedStreamingLocation
+        return math.abs(now.X-wanted.X)<1 and math.abs(now.Y-wanted.Y)<1 and math.abs(now.Z-wanted.Z)<1
+    end
+    if position and not at(position) then
+        pcall(function() world.FixedStreamingLocation = {X=position.X,Y=position.Y,Z=position.Z} end)
+        if not at(position) then -- The vector one component at a time if the table did not reach it.
+            local now = world.FixedStreamingLocation
+            now.X,now.Y,now.Z = position.X,position.Y,position.Z
+            assert(at(position), 'Stellar Blade did not accept the streaming location.')
+        end
+    end
+    if world.bEnableFixedStreamingLocation ~= (position~=nil) then
+        world.bEnableFixedStreamingLocation = position~=nil
+        assert(world.bEnableFixedStreamingLocation == (position~=nil), 'Stellar Blade did not accept the streaming pin.')
+    end
+end
+-- Blocks until the streaming levels Stellar Blade requested are loaded and visible (UWorld::FlushLevelStreaming).
+function engine.flush_streaming()
+    local _,world = player()
+    local gameplay = StaticFindObject('/Script/Engine.Default__GameplayStatics')
+    assert(valid(gameplay), 'Level streaming flush unavailable.')
+    gameplay:FlushLevelStreaming(world)
+end
+-- Stellar Blade's interval autosave (ASBPlayerController.bUseAutoSave): sets it and returns the previous value.
+function engine.autosave(enabled)
+    local controller = UE.GetPlayerController()
+    assert(valid(controller), 'No player controller for the autosave switch.')
+    local old = controller.bUseAutoSave
+    assert(type(old)=='boolean', 'Stellar Blade autosave switch unavailable.')
+    controller.bUseAutoSave = enabled
+    assert(controller.bUseAutoSave==enabled, 'Stellar Blade did not accept the autosave switch.')
+    return old
+end
 
 local probe = Probe.new(engine)
 local active = probe
@@ -290,15 +340,23 @@ local function status()
     local s = engine.snapshot()
     log(string.format('state=%s pawn=%s world=%s pos=(%.2f,%.2f,%.2f) capsule=(radius %.2f,half-height %.2f)',
         active.status(),pawn:GetFullName(),world:GetFullName(),s.position.X,s.position.Y,s.position.Z,s.radius,s.half_height))
+    -- How much of its world Stellar Blade keeps loaded: about 1 tile (the sky) at the remote lab site.
+    local counted,tiles = pcall(function()
+        local loaded,total = 0,0
+        world.WorldComposition.TilesStreaming:ForEach(function(_,tile)
+            total = total+1
+            if tile:get():IsLevelLoaded() then loaded = loaded+1 end
+        end)
+        local at = world.FixedStreamingLocation
+        return string.format('World Composition tiles loaded: %d of %d; streaming %s',loaded,total,
+            world.bEnableFixedStreamingLocation and string.format('pinned at (%.0f,%.0f)',at.X,at.Y) or 'follows the camera')
+    end)
+    log(counted and tiles or 'World Composition tiles unavailable: '..tostring(tiles))
     local timed,timing=pcall(native_timing,world)
     log(timed and timing or 'Native timing unavailable: '..tostring(timing))
     -- A short downward trace can identify support, but cannot prove native traversal by itself.
     local hit = {}
-    local ok, was_hit = pcall(function()
-        return UE.GetKismetSystemLibrary():LineTraceSingle(pawn,s.position,
-            {X=s.position.X,Y=s.position.Y,Z=s.position.Z-s.half_height-30},0,false,{},0,hit,true,
-            {R=0,G=1,B=0,A=1},{R=1,G=0,B=0,A=1},0)
-    end)
+    local ok, was_hit = pcall(trace_down,pawn,s.position,s.half_height,hit)
     if ok and was_hit then
         local support = UE.GetActorFromHitResult(hit)
         if valid(support) then log('Downward trace support: '..support:GetFullName()) end
@@ -581,4 +639,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 52; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 53; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')

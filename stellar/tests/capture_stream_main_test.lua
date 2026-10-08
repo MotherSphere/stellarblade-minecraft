@@ -411,3 +411,52 @@ end
 mesh.valid=false; load_error=true; spawn(box); spawn(box)
 assert(loads==3 and unavailable()==1,'A failed load is reported once and not retried')
 print('PASS terrain actors: the cube loaded once and kept (once more if deleted, a failed load reported once), parked boxes placed again with their visuals')
+-- The remote lab site's engine: the site by level, Stellar Blade's streaming pin, its ground, its flush, its autosave.
+assert(terrain_engine.snapshot().site==nil,'an unknown level gets no site')
+function world:GetFullName() return 'World /Game/Art/BG/WorldMap/E05_GreatDesert_P/E05_GreatDesert_P.E05_GreatDesert_P' end
+local site=terrain_engine.snapshot().site
+assert(site and site.X==-750000 and site.Y==-750000,'the Great Desert has its site')
+local streaming={location={X=0,Y=0,Z=0},enabled=false,writes=0,tables=true}
+setmetatable(world,{__index=function(_,key)
+    if key=='FixedStreamingLocation' then return streaming.location end
+    if key=='bEnableFixedStreamingLocation' then return streaming.enabled end
+end,__newindex=function(_,key,value)
+    streaming.writes=streaming.writes+1
+    if key=='bEnableFixedStreamingLocation' then streaming.enabled=value
+    elseif key=='FixedStreamingLocation' then
+        if streaming.tables then streaming.location={X=value.X,Y=value.Y,Z=value.Z} end
+    else error('unexpected world write '..key) end
+end})
+terrain_engine.stream_at({X=1,Y=2,Z=3})
+assert(streaming.enabled and streaming.location.X==1 and streaming.location.Z==3 and streaming.writes==2,'the location, then the flag')
+terrain_engine.stream_at({X=1,Y=2,Z=3}); assert(streaming.writes==2,'a pin in place writes nothing')
+terrain_engine.stream_at(nil); assert(not streaming.enabled and streaming.writes==3)
+terrain_engine.stream_at(nil); assert(streaming.writes==3,'an unset pin writes nothing')
+streaming.tables=false -- The vector property refuses a table: written one component at a time.
+terrain_engine.stream_at({X=4,Y=5,Z=6})
+assert(streaming.enabled and streaming.location.X==4 and streaming.location.Y==5 and streaming.location.Z==6)
+streaming.location=setmetatable({},{__index=function() return 0 end,__newindex=function() end})
+local pinned,why=pcall(terrain_engine.stream_at,{X=7,Y=8,Z=9})
+assert(not pinned and tostring(why):find('did not accept the streaming location',1,true),'a pin that never lands fails')
+streaming.location={X=0,Y=0,Z=0}; streaming.enabled=false
+local traced
+function system:LineTraceSingle(context,from,to) traced={context,from,to}; return false end
+assert(terrain_engine.ground_at({X=1,Y=2,Z=300},95)==false and traced[1]==pawn and traced[3].Z==300-95-30,'a downward trace from the start')
+function system:LineTraceSingle() return true end
+assert(terrain_engine.ground_at({X=1,Y=2,Z=300},95)==true)
+local flushed
+function gameplay:FlushLevelStreaming(context) flushed=context end
+terrain_engine.flush_streaming(); assert(flushed==world)
+controller.bUseAutoSave=true
+assert(terrain_engine.autosave(false)==true and controller.bUseAutoSave==false)
+assert(terrain_engine.autosave(true)==false and controller.bUseAutoSave==true)
+local function tile(loaded) return {get=function() return {IsLevelLoaded=function() return loaded end} end} end
+rawset(world,'WorldComposition',{TilesStreaming={ForEach=function(_,each)
+    for i,t in ipairs({tile(true),tile(false),tile(false)}) do each(i,t) end
+end}})
+function system:LineTraceSingle() return false end
+keys.F6(); drain()
+local counted
+for _,message in ipairs(logs) do if message:find('World Composition tiles loaded: 1 of 3; streaming follows the camera',1,true) then counted=true end end
+assert(counted,'F6 counts the loaded World Composition tiles')
+print('PASS remote lab site engine: the site by level, the streaming pin and its fallback, ground, flush, autosave, the F6 tile count')
