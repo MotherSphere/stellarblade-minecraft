@@ -1667,7 +1667,9 @@ int main() {
       auto files = [&](const std::string &wardrobe, const std::string &table) {
         return poll_files(directory.wstring(), request(now), table, "", now, "", wardrobe);
       };
-      auto wall = stellar_shared::wall_now();
+      // The test's clock: poll_files gets `now`, so a later wall_now() would read as a request from the future (over
+      // the 100 ms skew) whenever the test reaches this point late, and nothing would be taken.
+      auto wall = now;
       assert(files(ask(1, wall), linked).empty() && "Taken, not answered yet");
       on_gameplay_poll(Run);
       auto answer = files(ask(1, wall), linked);
