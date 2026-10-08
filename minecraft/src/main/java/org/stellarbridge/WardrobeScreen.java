@@ -22,6 +22,7 @@ import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.ClickableWidget;
 import net.minecraft.client.toast.SystemToast;
 import net.minecraft.text.MutableText;
+import net.minecraft.text.OrderedText;
 import net.minecraft.text.Text;
 import net.minecraft.text.TranslatableTextContent;
 import net.minecraft.util.Identifier;
@@ -157,8 +158,13 @@ final class WardrobeScreen extends Screen {
         refresh();
     }
 
+    /**
+     * A toast whose description wraps at 200 px, replacing the last one. SystemToast.show sizes its toast to one line
+     * and, while one shows, only swaps the text in, so a longer message ran past its right edge, off the screen.
+     */
     private void toast(Text title, Text description) {
-        SystemToast.show(client.getToastManager(), TOAST, title, description);
+        SystemToast.hide(client.getToastManager(), TOAST);
+        client.getToastManager().add(SystemToast.create(client, TOAST, title, description));
     }
 
     /** The slot buttons' tooltips and the selected slot's entries, after any change. */
@@ -223,23 +229,29 @@ final class WardrobeScreen extends Screen {
         Text hints = Text.translatable("stellar_bridge.wardrobe.hints");
         context.drawText(textRenderer, hints, width - Wardrobe.MARGIN - textRenderer.getWidth(hints), height - 11, HINT, false);
         if (list.children().isEmpty() && failure == null && pending == 0)
-            context.drawText(textRenderer, Text.translatable("stellar_bridge.wardrobe.nothing"), layout.listX() + 4, layout.top() + 6, HINT, false);
+            context.drawTextWrapped(textRenderer, Text.translatable("stellar_bridge.wardrobe.nothing"), layout.listX() + 4, layout.top() + 6, layout.listWidth() - 8, HINT);
 
         // EVE whole, or her head and shoulders for the hair, earrings and glasses: presets framed offline with
         // AvatarRenderCheck (tile=WxH) at 960 x 540 and 320 x 240.
         boolean head = slot.type() == 8 || slot.type() == 10 || slot.type() == 11;
         int x0 = layout.previewX0(), x1 = layout.previewX1(), y0 = layout.top(), y1 = layout.previewY1();
         if (!AvatarView.drawPreview(context, x0, y0, x1, y1, head ? 1.0 : 2.8, head ? 1.45 : 0.85, yaw)) {
-            Text none = Text.translatable("stellar_bridge.wardrobe.no_pose");
-            context.drawText(textRenderer, none, (x0 + x1 - textRenderer.getWidth(none)) / 2, (y0 + y1) / 2, HINT, false);
+            List<OrderedText> lines = textRenderer.wrapLines(Text.translatable("stellar_bridge.wardrobe.no_pose"), x1 - x0 - 8);
+            for (int k = 0; k < lines.size(); k++)
+                context.drawText(textRenderer, lines.get(k), (x0 + x1 - textRenderer.getWidth(lines.get(k))) / 2, (y0 + y1) / 2 + 9 * k, HINT, false);
         }
-        // Two caption lines: the item under the mouse (else the selected one) or the screen's state, then its warning.
+        // Two caption lines: the item under the mouse (else the selected one) or the screen's state, then its warning; a
+        // failure takes both, wrapped.
         Row shown = list.hovered() != null ? list.hovered() : list.getSelectedOrNull();
-        Text first = failure != null ? Text.translatable("stellar_bridge.wardrobe." + failure)
-                : pending != 0 ? Text.translatable("stellar_bridge.wardrobe.waiting") : shown == null ? Text.empty() : Text.literal(shown.name);
-        Text second = failure == null && shown != null ? shown.warning() : null;
-        context.drawText(textRenderer, textRenderer.trimToWidth(first.getString(), x1 - x0), x0, y1 + 2, failure != null ? TITLE : 0xFFFFFFFF, true);
-        if (second != null) context.drawText(textRenderer, textRenderer.trimToWidth(second.getString(), x1 - x0), x0, y1 + 11, TITLE, false);
+        if (failure != null) {
+            List<OrderedText> lines = textRenderer.wrapLines(Text.translatable("stellar_bridge.wardrobe." + failure), x1 - x0);
+            for (int k = 0; k < Math.min(2, lines.size()); k++) context.drawText(textRenderer, lines.get(k), x0, y1 + 2 + 9 * k, TITLE, k == 0);
+        } else {
+            Text first = pending != 0 ? Text.translatable("stellar_bridge.wardrobe.waiting") : shown == null ? Text.empty() : Text.literal(shown.name);
+            Text second = shown != null ? shown.warning() : null;
+            context.drawText(textRenderer, textRenderer.trimToWidth(first.getString(), x1 - x0), x0, y1 + 2, 0xFFFFFFFF, true);
+            if (second != null) context.drawText(textRenderer, textRenderer.trimToWidth(second.getString(), x1 - x0), x0, y1 + 11, TITLE, false);
+        }
         if (list.hovered() != null) setTooltip(Tooltip.of(list.hovered().tooltip()), HoveredTooltipPositioner.INSTANCE, false);
     }
 
