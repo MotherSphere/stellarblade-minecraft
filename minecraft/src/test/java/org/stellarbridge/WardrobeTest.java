@@ -26,7 +26,8 @@ public final class WardrobeTest {
 
         // The adapter's slot rule, mirrored so the screen offers only what it would take.
         assert Wardrobe.equippable(5, true) && !Wardrobe.equippable(1, false) && !Wardrobe.equippable(6, false) : "Occupied slots only";
-        assert Wardrobe.equippable(10, false) && Wardrobe.equippable(11, false) && Wardrobe.removable(10) && !Wardrobe.removable(5) && !Wardrobe.removable(8);
+        assert Wardrobe.equippable(10, false) && Wardrobe.equippable(11, false) && Wardrobe.removable(10) && !Wardrobe.removable(5) && !Wardrobe.removable(8)
+                && !Wardrobe.removable(17) && !Wardrobe.removable(1) && !Wardrobe.removable(6) : "Only earrings and glasses come off";
         assert Wardrobe.SLOTS.stream().mapToInt(Wardrobe.Slot::type).sorted().boxed().toList().equals(List.of(1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 17));
 
         // The layout over the GUI sizes of 1080p at scale 2 and 3, 1440p and 4:3 at auto scale: {row, list x, list width,
@@ -79,6 +80,7 @@ public final class WardrobeTest {
             assert Wardrobe.stalePack(pack) == null : "No manifest: a pack from before mod tracking";
             Map<String, String> found = Wardrobe.sources(paks);
             assert found.keySet().equals(java.util.Set.of("pakchunk0-WindowsNoEditor.pak", "~mods/My Mod/My Mod_P.utoc")) : found;
+            assert Wardrobe.sources(Files.createSymbolicLink(root.resolve("Linked"), paks)).equals(found) : "A symlinked Paks folder (a moved library)";
             StringBuilder written = new StringBuilder("SBAVPACK 1\nPAKS " + paks + "\n");
             found.forEach((path, stamp) -> written.append("SOURCE ").append(path).append(' ').append(stamp).append('\n'));
             Files.writeString(pack.resolve("pack.txt"), written.append("END\n"));

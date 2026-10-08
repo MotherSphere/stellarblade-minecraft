@@ -146,11 +146,12 @@ final class Wardrobe {
     /** The game files under a Paks folder as pack.py lists them: .pak, .utoc and .ucas files by path under it, "bytes mtime-ns". */
     static Map<String, String> sources(Path paks) throws IOException {
         Map<String, String> found = new TreeMap<>();
-        try (Stream<Path> files = Files.walk(paks)) {
+        Path root = paks.toRealPath(); // Files.walk does not enter a symlinked start folder; pack.py's rglob does.
+        try (Stream<Path> files = Files.walk(root)) {
             for (Path file : (Iterable<Path>) files::iterator) {
                 String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
                 if (!Files.isRegularFile(file) || !(name.endsWith(".pak") || name.endsWith(".utoc") || name.endsWith(".ucas"))) continue;
-                found.put(paks.relativize(file).toString().replace('\\', '/'),
+                found.put(root.relativize(file).toString().replace('\\', '/'),
                         Files.size(file) + " " + Files.getLastModifiedTime(file).to(TimeUnit.NANOSECONDS));
             }
         }
