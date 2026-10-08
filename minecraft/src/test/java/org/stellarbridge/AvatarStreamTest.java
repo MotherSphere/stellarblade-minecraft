@@ -604,13 +604,21 @@ public final class AvatarStreamTest {
             try (var unclaimed = new AvatarStream(directory, "d".repeat(32), System.currentTimeMillis())) {
                 assert unclaimed.reap() && !Files.exists(unclaimed.path);
             }
+            // Minecraft's own 3.5 s stall is not the producer's: a native heartbeat that kept beating keeps the stream, a stale one
+            // ends it, and a heartbeat stuck on a wall clock that jumped back still ends it once Minecraft polls again for 3 s.
+            assert stalled(directory, table, true).equals("Native pose monotonic lease expired at 7 s") : "Lease restarted after the stall";
+            assert stalled(directory, table, false).equals("Native pose heartbeat expired at 3 s");
             // keepAlive keeps the request and the lease fresh while the render thread is blocked (an avatar rebuild) past
-            // Lua's 3 s lease, and never writes after the stop.
+            // Lua's 3 s lease, never moves the lease backwards, lets it lapse past its limit and never writes after the stop.
             Path request = directory.resolve("eve-pose-request.txt");
             try (var kept = new AvatarStream(directory, "e".repeat(32), System.currentTimeMillis());
                  var channel = FileChannel.open(kept.path, StandardOpenOption.READ)) {
                 var map = channel.map(FileChannel.MapMode.READ_ONLY, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
-                kept.keepAlive();
+                long keptAt = System.nanoTime(), lease = (long) RawFrameBus.LONG.getAcquire(map, 264);
+                kept.heartbeat(lease + 10);
+                kept.heartbeat(lease + 5); // The render thread's clock, read before the daemon took the lock.
+                assert (long) RawFrameBus.LONG.getAcquire(map, 264) == lease + 10 : "The consumer lease never moves backwards";
+                kept.keepAlive(4_000_000_000L);
                 Thread.sleep(3500); // The blocked render thread: no heartbeat.
                 long at = System.currentTimeMillis();
                 String fresh = Files.readString(request);
@@ -618,6 +626,10 @@ public final class AvatarStreamTest {
                 assert fresh.equals("SBMC_POSE_REQUEST 1\nRUN " + "e".repeat(32) + "\nTIME " + time + "\nSTATE active\nEND\n")
                         && at - time <= 1000 + 2 * AvatarStream.KEEP_ALIVE_MS : fresh;
                 assert at - (long) RawFrameBus.LONG.getAcquire(map, 264) <= 2 * AvatarStream.KEEP_ALIVE_MS : "The consumer lease stays fresh";
+                Thread.sleep(Math.max(0, 4000 + 2 * AvatarStream.KEEP_ALIVE_MS - (System.nanoTime() - keptAt) / 1_000_000));
+                long lapsed = (long) RawFrameBus.LONG.getAcquire(map, 264);
+                Thread.sleep(2 * AvatarStream.KEEP_ALIVE_MS);
+                assert (long) RawFrameBus.LONG.getAcquire(map, 264) == lapsed : "A hung render thread lets the lease lapse";
                 kept.stop();
                 String stopped = Files.readString(request);
                 Thread.sleep(3 * AvatarStream.KEEP_ALIVE_MS);
@@ -707,6 +719,27 @@ public final class AvatarStreamTest {
             throw new AssertionError("Accepted controller status " + status);
         } catch (java.io.IOException failure) {
             return failure.getMessage();
+        }
+    }
+
+    /**
+     * Why a stream stops after Minecraft polled once, stalled 3.5 s with the native heartbeat beating or not, then polled every
+     * second with its wall clock held (a clock that jumped back) and the heartbeat stuck.
+     */
+    private static String stalled(Path directory, AvatarStream.Table table, boolean beating) throws Exception {
+        long now = System.currentTimeMillis(), nanos = System.nanoTime(), second = 3;
+        try (var stream = new AvatarStream(directory, (beating ? "b1" : "b2").repeat(16), now);
+             var channel = FileChannel.open(stream.path, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            var map = channel.map(FileChannel.MapMode.READ_WRITE, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
+            assert (boolean) RawFrameBus.INT.compareAndSet(map, 192, 0, 777);
+            RawFrameBus.LONG.setRelease(map, 208, now);
+            RawFrameBus.INT.setRelease(map, 196, 1);
+            stream.poll(table, now, nanos);
+            if (beating) RawFrameBus.LONG.setRelease(map, 208, now + 3400);
+            for (; second < 13; second++) stream.poll(table, now + 3500, nanos + second * 1_000_000_000L + 500_000_000L);
+            throw new AssertionError("The stuck heartbeat was accepted");
+        } catch (java.io.IOException refusal) {
+            return refusal.getMessage() + " at " + second + " s";
         }
     }
 

@@ -91,10 +91,10 @@ final class AvatarStream implements AutoCloseable {
     private Pointer address;
     private ByteBuffer map;
     private int fd = -1, front = 2, producerPid;
-    private long previousCounter, heartbeatMillis, heartbeatNanos, requestMillis;
+    private long previousCounter, heartbeatMillis, heartbeatNanos, readNanos, requestMillis, leaseMillis;
     private volatile long renderBeatNanos = System.nanoTime(); // The render thread's last heartbeat, for keepAlive.
     // keepAlive refreshes every KEEP_ALIVE_MS, well inside Lua's 3 s lease, while the render thread called heartbeat within
-    // KEEP_ALIVE_LIMIT_NANOS: a hung client still lets the lease lapse.
+    // the limit it was given (KEEP_ALIVE_LIMIT_NANOS for a live stream): a hung client still lets the lease lapse.
     static final long KEEP_ALIVE_MS = 500, KEEP_ALIVE_LIMIT_NANOS = 15_000_000_000L;
     private boolean stopped, pendingDelete;
     private float[] clothFloats; // The newest sample's cloth, reused (about 208 KB).
@@ -114,7 +114,7 @@ final class AvatarStream implements AutoCloseable {
             map = address.getByteBuffer(0, TOTAL).order(ByteOrder.LITTLE_ENDIAN);
             map.put(0, MAGIC).putInt(8, 1).putInt(12, HEADER).putInt(16, SLOT).putInt(20, CAPACITY).putInt(28, TOTAL)
                     .put(32, run.getBytes(StandardCharsets.US_ASCII)).putInt(96, Math.toIntExact(ProcessHandle.current().pid()));
-            RawFrameBus.LONG.setRelease(map, 264, nowMs);
+            RawFrameBus.LONG.setRelease(map, 264, leaseMillis = nowMs);
             RawFrameBus.INT.setRelease(map, 256, 1);
             request(true, nowMs);
         } catch (IOException | RuntimeException | Error failure) {
@@ -138,19 +138,22 @@ final class AvatarStream implements AutoCloseable {
     }
     private synchronized void refresh(long nowMs) throws IOException {
         require(map != null && !stopped, "Pose stream is stopped");
-        RawFrameBus.LONG.setRelease(map, 264, nowMs);
+        // Two writers: the render thread reads its clock before the lock, so its value can be older than the daemon's.
+        // Native stops the stream when this lease moves backwards.
+        leaseMillis = Math.max(leaseMillis, nowMs);
+        RawFrameBus.LONG.setRelease(map, 264, leaseMillis);
         if (nowMs - requestMillis >= 1000 || nowMs < requestMillis) request(true, nowMs);
     }
 
     /**
-     * Starts a daemon refreshing the request and the lease until the stream stops, so a render thread busy for seconds
-     * (a slow frame, a long upload) does not let Lua's lease lapse and stop the stream. The render thread's heartbeat
-     * still reports a failed write; the daemon just ends.
+     * Starts a daemon refreshing the request and the lease until the stream stops, so a render thread busy for up to
+     * limitNanos (a slow frame, a long upload, a shader reload) does not let Lua's lease lapse and stop the stream. The render
+     * thread's heartbeat still reports a failed write; the daemon just ends.
      */
-    void keepAlive() {
+    void keepAlive(long limitNanos) {
         Thread keeper = new Thread(() -> {
             try {
-                while (System.nanoTime() - renderBeatNanos <= KEEP_ALIVE_LIMIT_NANOS) {
+                while (System.nanoTime() - renderBeatNanos <= limitNanos) {
                     Thread.sleep(KEEP_ALIVE_MS);
                     synchronized (this) {
                         if (map == null || stopped) return;
@@ -193,6 +196,10 @@ final class AvatarStream implements AutoCloseable {
         if (state == 2) throw new IOException("Native pose stream stopped");
         long heartbeat = (long) RawFrameBus.LONG.getAcquire(map, 208);
         require(heartbeat > 0 && heartbeat <= MAX && nowMs - heartbeat <= 3000 && heartbeat - nowMs <= 1000, "Native pose heartbeat expired");
+        // Minecraft's own stall (a reload, a long frame) is not the producer's: restart the monotonic lease after it. The wall
+        // check above still catches a producer that died meanwhile.
+        if (heartbeatMillis != 0 && nowNanos - readNanos > 3_000_000_000L) heartbeatNanos = nowNanos;
+        readNanos = nowNanos;
         require(heartbeatMillis == 0 || nowNanos - heartbeatNanos <= 3_000_000_000L, "Native pose monotonic lease expired");
         require(heartbeat >= heartbeatMillis, "Native pose heartbeat moved backwards");
         if (heartbeat > heartbeatMillis) { heartbeatMillis = heartbeat; heartbeatNanos = nowNanos; }
