@@ -75,6 +75,15 @@ tasks.register('avatarRenderCheck', JavaExec) {
     jvmArgs '-ea'
 }
 
+// Offline GPU timing of avatar rebuilds from a private pack; not part of check. -PavatarRebuild="<pack> <mesh+mesh...> ..."
+tasks.register('avatarRebuildCheck', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.AvatarRebuildCheck'
+    args = (project.findProperty('avatarRebuild') ?: '').toString().tokenize(' ')
+    jvmArgs '-ea'
+}
+
 // Cross-process pose mapping check with the native fixture; not part of check. -PposeInterop="<directory> <poses>"
 tasks.register('avatarStreamInterop', JavaExec) {
     dependsOn testClasses
