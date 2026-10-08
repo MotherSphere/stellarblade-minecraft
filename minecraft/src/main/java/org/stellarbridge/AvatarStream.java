@@ -16,7 +16,8 @@ import org.joml.Matrix4d;
 
 /**
  * Minecraft side of the EVE pose stream: the request, Lua's component tables and the native pose mapping
- * (eve-pose-RUN.bin, the raw mapping's ownership protocol with 256 KiB pose slots). Render thread only.
+ * (eve-pose-RUN.bin, the raw mapping's ownership protocol with 256 KiB pose slots). Render thread only, except the
+ * keepAlive daemon, which shares the request and the lease with it under this object's lock.
  */
 final class AvatarStream implements AutoCloseable {
     static final int HEADER = 4096, SLOT = 262144, SLOT_HEADER = 128, CAPACITY = (SLOT - SLOT_HEADER) / 4, TOTAL = HEADER + 3 * SLOT;
@@ -91,6 +92,10 @@ final class AvatarStream implements AutoCloseable {
     private ByteBuffer map;
     private int fd = -1, front = 2, producerPid;
     private long previousCounter, heartbeatMillis, heartbeatNanos, requestMillis;
+    private volatile long renderBeatNanos = System.nanoTime(); // The render thread's last heartbeat, for keepAlive.
+    // keepAlive refreshes every KEEP_ALIVE_MS, well inside Lua's 3 s lease, while the render thread called heartbeat within
+    // KEEP_ALIVE_LIMIT_NANOS: a hung client still lets the lease lapse.
+    static final long KEEP_ALIVE_MS = 500, KEEP_ALIVE_LIMIT_NANOS = 15_000_000_000L;
     private boolean stopped, pendingDelete;
     private float[] clothFloats; // The newest sample's cloth, reused (about 208 KB).
 
@@ -120,7 +125,7 @@ final class AvatarStream implements AutoCloseable {
         }
     }
 
-    private void request(boolean active, long nowMs) throws IOException {
+    private synchronized void request(boolean active, long nowMs) throws IOException {
         files.write("eve-pose-request.txt", "SBMC_POSE_REQUEST 1\nRUN " + run + "\nTIME " + nowMs + "\nSTATE "
                 + (active ? "active" : "stopped") + "\nEND\n");
         requestMillis = nowMs;
@@ -128,9 +133,36 @@ final class AvatarStream implements AutoCloseable {
 
     /** Keeps the request and the consumer lease fresh; call at least every second. */
     void heartbeat(long nowMs) throws IOException {
+        renderBeatNanos = System.nanoTime();
+        refresh(nowMs);
+    }
+    private synchronized void refresh(long nowMs) throws IOException {
         require(map != null && !stopped, "Pose stream is stopped");
         RawFrameBus.LONG.setRelease(map, 264, nowMs);
         if (nowMs - requestMillis >= 1000 || nowMs < requestMillis) request(true, nowMs);
+    }
+
+    /**
+     * Starts a daemon refreshing the request and the lease until the stream stops, so a render thread busy for seconds
+     * (a slow frame, a long upload) does not let Lua's lease lapse and stop the stream. The render thread's heartbeat
+     * still reports a failed write; the daemon just ends.
+     */
+    void keepAlive() {
+        Thread keeper = new Thread(() -> {
+            try {
+                while (System.nanoTime() - renderBeatNanos <= KEEP_ALIVE_LIMIT_NANOS) {
+                    Thread.sleep(KEEP_ALIVE_MS);
+                    synchronized (this) {
+                        if (map == null || stopped) return;
+                        refresh(System.currentTimeMillis());
+                    }
+                }
+            } catch (InterruptedException | IOException ignored) {
+                // The render thread's heartbeat fails the same way and stops the stream.
+            }
+        }, "EVE pose request");
+        keeper.setDaemon(true);
+        keeper.start();
     }
 
     /** The newest valid table of this run from Lua's two alternating slots, or null. */
@@ -726,7 +758,7 @@ final class AvatarStream implements AutoCloseable {
         require((value & ~7) == 0 && (value & 3) < 3, "Invalid pose ownership word");
     }
 
-    void stop() {
+    synchronized void stop() {
         if (map != null && !stopped) {
             RawFrameBus.INT.setRelease(map, 256, 2);
             stopped = true;
@@ -753,7 +785,7 @@ final class AvatarStream implements AutoCloseable {
         stop();
         unmap(); // An unresolved producer keeps its file; it is never reset for another run.
     }
-    private void unmap() {
+    private synchronized void unmap() {
         map = null;
         if (address != null) { RawFrameBus.C.munmap(address, new NativeLong(TOTAL)); address = null; }
         if (fd >= 0) { RawFrameBus.C.close(fd); fd = -1; }

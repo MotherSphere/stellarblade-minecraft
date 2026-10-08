@@ -203,6 +203,7 @@ public final class AvatarView {
             String run = UUID.randomUUID().toString().replace("-", "");
             live = new Live(new AvatarStream(bridgeDirectory(), run, System.currentTimeMillis()), source.getClient().world,
                     packDirectory(), ahead(player));
+            live.stream.keepAlive();
             // The pack against the game files it was built from (mods included): a warning only, EVE is drawn either way.
             String stale = Wardrobe.stalePack(live.pack);
             if (stale != null) {

@@ -604,6 +604,25 @@ public final class AvatarStreamTest {
             try (var unclaimed = new AvatarStream(directory, "d".repeat(32), System.currentTimeMillis())) {
                 assert unclaimed.reap() && !Files.exists(unclaimed.path);
             }
+            // keepAlive keeps the request and the lease fresh while the render thread is blocked (an avatar rebuild) past
+            // Lua's 3 s lease, and never writes after the stop.
+            Path request = directory.resolve("eve-pose-request.txt");
+            try (var kept = new AvatarStream(directory, "e".repeat(32), System.currentTimeMillis());
+                 var channel = FileChannel.open(kept.path, StandardOpenOption.READ)) {
+                var map = channel.map(FileChannel.MapMode.READ_ONLY, 0, AvatarStream.TOTAL).order(ByteOrder.LITTLE_ENDIAN);
+                kept.keepAlive();
+                Thread.sleep(3500); // The blocked render thread: no heartbeat.
+                long at = System.currentTimeMillis();
+                String fresh = Files.readString(request);
+                long time = Long.parseLong(fresh.split("\n")[2].substring("TIME ".length()));
+                assert fresh.equals("SBMC_POSE_REQUEST 1\nRUN " + "e".repeat(32) + "\nTIME " + time + "\nSTATE active\nEND\n")
+                        && at - time <= 1000 + 2 * AvatarStream.KEEP_ALIVE_MS : fresh;
+                assert at - (long) RawFrameBus.LONG.getAcquire(map, 264) <= 2 * AvatarStream.KEEP_ALIVE_MS : "The consumer lease stays fresh";
+                kept.stop();
+                String stopped = Files.readString(request);
+                Thread.sleep(3 * AvatarStream.KEEP_ALIVE_MS);
+                assert stopped.contains("\nSTATE stopped\n") && Files.readString(request).equals(stopped) : "A stopped request stays stopped";
+            }
         } finally {
             try (var files = Files.walk(directory)) { files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
         }
