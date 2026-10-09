@@ -28,6 +28,14 @@ def gradle_fabric_api():
     return found[0]
 
 
+def tracked(lua):
+    """The Lua mod's files as git knows them: committed or staged, never untracked or ignored ones, so the payload
+    holds what its release name points to."""
+    listed = subprocess.run(['git', '-C', str(lua), 'ls-files', '-z', '--cached', '--', '.'],
+                            capture_output=True, check=True).stdout
+    return sorted(path for name in listed.decode().split('\0') if name and (path := lua / name).is_file())
+
+
 def release():
     version = tomllib.loads((ROOT / 'installer/Cargo.toml').read_text())['package']['version']
     git = ['git', '-C', str(ROOT)]
@@ -42,9 +50,9 @@ def stage(out, *, lua, jar, dll, fabric_api, release):
         raise SystemExit(f'{fabric_api} is not Fabric API 0.116.17+1.21.1')
     with zipfile.ZipFile(fabric_api) as archive:
         license_text = archive.read(FABRIC_LICENSE)
-    files = {f'lua/{path.relative_to(lua).as_posix()}': path.read_bytes()
-             for path in sorted(lua.rglob('*')) if path.is_file()}
-    if any(path.is_symlink() for path in lua.rglob('*')) or 'lua/Scripts/bridge_config.lua' in files:
+    sources = tracked(lua)
+    files = {f'lua/{path.relative_to(lua).as_posix()}': path.read_bytes() for path in sources}
+    if any(path.is_symlink() for path in sources) or 'lua/Scripts/bridge_config.lua' in files:
         raise SystemExit('The Lua source must hold no links and no machine-specific bridge_config.lua')
     files.update({jar.name: jar.read_bytes(), 'xinput1_3.dll': dll.read_bytes(), FABRIC_API: fabric,
                   f'licenses/{FABRIC_LICENSE}': license_text})
