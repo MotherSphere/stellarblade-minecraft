@@ -69,7 +69,14 @@ public final class CombatTest {
         assert AvatarCombat.placed(impact + 260 * MS, client, client, AvatarCombat.allowance(300), false) == impact + 110 * MS;
         // The host's client shares the server's clock: the press counts when it happened, with nothing taken off.
         assert AvatarCombat.placed(impact, impact - 30 * MS, 0, 0, true) == impact - 30 * MS;
-        assert AvatarCombat.placed(impact, impact - AvatarCombat.MAX_WAIT - 1, 0, 0, true) == Long.MIN_VALUE : "A stale press";
+        assert AvatarCombat.placed(impact, impact - AvatarCombat.KEPT - 1, 0, 0, true) == Long.MIN_VALUE : "A stale press";
+        // A host press handled after a 300 ms server stall (an autosave) still counts, and so does a guard release then.
+        long stalled = impact + 300 * MS, key = impact - 50 * MS;
+        assert AvatarCombat.placed(stalled, key, key + MS, 0, true) == key : "The server's own queue never refuses the host's press";
+        var host = new AvatarCombat.Fighter();
+        host.press(BridgeNet.Defense.GUARD_DOWN, impact - 2000 * MS);
+        host.press(BridgeNet.Defense.GUARD_UP, AvatarCombat.placed(stalled, key, key + MS, 0, true));
+        assert host.judge(impact + 3500 * MS, false) == AvatarCombat.Defense.HIT : "A release during a stall never leaves the guard held";
         assert AvatarCombat.placed(impact, impact + 1, 0, 0, true) == Long.MIN_VALUE : "A press from the future";
         assert AvatarCombat.placed(impact, client, client + AvatarCombat.MAX_WAIT + 1, 0, false) == Long.MIN_VALUE
                 && AvatarCombat.placed(impact, client, client - 1, 0, false) == Long.MIN_VALUE : "A client wait out of bounds";

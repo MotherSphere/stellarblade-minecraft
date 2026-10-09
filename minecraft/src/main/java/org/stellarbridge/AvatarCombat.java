@@ -270,11 +270,12 @@ public final class AvatarCombat {
      * Where a defense edge goes on the server's clock, or MIN_VALUE to refuse it: it arrived at server nanoseconds
      * arrival, made at at and sent at sent on its client's System.nanoTime. With the server's own clock (sameClock) at
      * itself; else arrival less its wait on the client (sent - at) and the allowance. A wait outside 0 to MAX_WAIT (a
-     * stale or future stamp) is refused.
+     * stale or future stamp) is refused. The host's own stamps cannot be forged, and its wait includes the server's
+     * queue (a long tick, an autosave), so they go only when future or older than the presses kept.
      */
     static long placed(long arrival, long at, long sent, long allowance, boolean sameClock) {
         long wait = sameClock ? arrival - at : sent - at;
-        if (wait < 0 || wait > MAX_WAIT) return Long.MIN_VALUE;
+        if (wait < 0 || wait > (sameClock ? KEPT : MAX_WAIT)) return Long.MIN_VALUE;
         return sameClock ? at : arrival - wait - allowance;
     }
 
