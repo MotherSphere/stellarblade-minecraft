@@ -48,21 +48,17 @@ pub struct State {
     pub updated: u64,
 }
 
-/// Loads `state.json`. Absent: `None`. Unparsable: moved aside to `state.corrupt`, so nothing overwrites it, then
-/// `None`.
+/// Loads `state.json`. Absent or unparsable: `None`. Reads only: a dry run and the status page call it too.
 pub fn load(path: &Path) -> Option<State> {
-    let text = fs::read(path).ok()?;
-    match serde_json::from_slice(&text) {
-        Ok(state) => Some(state),
-        Err(_) => {
-            let _ = fs::rename(path, path.with_extension("corrupt"));
-            None
-        }
-    }
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
-/// Writes `state.json` through a temporary sibling and a rename, so a crash leaves the old or the new file.
+/// Writes `state.json` through a temporary sibling and a rename, so a crash leaves the old or the new file. An
+/// unparsable `state.json` is first moved aside to `state.corrupt`, so nothing overwrites it.
 pub fn save(path: &Path, state: &State) -> Result<()> {
+    if path.exists() && load(path).is_none() {
+        fs::rename(path, path.with_extension("corrupt"))?;
+    }
     let mut state = state.clone();
     state.updated = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -133,6 +129,13 @@ mod tests {
         assert_eq!(load(&path).unwrap().status, Status::Installed);
         fs::write(&path, "{not json").unwrap();
         assert_eq!(load(&path), None);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "{not json",
+            "loading writes nothing"
+        );
+        save(&path, &state).unwrap();
+        assert_eq!(load(&path).unwrap().release, "0.1.0");
         assert_eq!(
             fs::read_to_string(root.path().join("state.corrupt")).unwrap(),
             "{not json"

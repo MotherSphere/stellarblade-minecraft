@@ -71,7 +71,7 @@ fn main() -> iced::Result {
                      Options:\n      --dry-run  Open the window, show every plan, write nothing\n  \
                      -V, --version  Print the version and the bridge release it carries\n      \
                      --licenses Print the licences of the embedded pieces\n  -h, --help     Print this help\n\n\
-                     The log goes to {} and to stderr.",
+                     The log goes to {} and to stderr (to stderr only in a dry run).",
                     log_path
                         .as_ref()
                         .map_or("(no cache folder)".into(), |p| p.display().to_string())
@@ -86,15 +86,22 @@ fn main() -> iced::Result {
         }
     }
 
-    let log = paths::cache_dir(PROGRAM)
-        .ok()
-        .and_then(|dir| log::open(&dir).ok());
-    log::line(&format!("stellar-bridge-installer {version}"));
-    // A dry run does not even create the data folder.
-    let data = if dry_run {
-        paths::locate::data_dir(PROGRAM)
+    // A dry run creates no folder and writes no file: the log goes to stderr only, preferences stay in memory.
+    let log = if dry_run {
+        None
     } else {
-        paths::data_dir(PROGRAM)
+        paths::cache_dir(PROGRAM)
+            .ok()
+            .and_then(|dir| log::open(&dir).ok())
+    };
+    log::line(&format!("stellar-bridge-installer {version}"));
+    let (data, config) = if dry_run {
+        (
+            paths::locate::data_dir(PROGRAM),
+            paths::locate::config_dir(PROGRAM),
+        )
+    } else {
+        (paths::data_dir(PROGRAM), paths::config_dir(PROGRAM))
     };
     let (data, home) = match (data, platform::home()) {
         (Ok(data), Ok(home)) => (data, home),
@@ -107,10 +114,9 @@ fn main() -> iced::Result {
             std::process::exit(1);
         }
     };
-    let prefs_file = paths::config_dir(PROGRAM)
-        .ok()
-        .map(|d| d.join("preferences.json"));
+    let prefs_file = config.ok().map(|d| d.join("preferences.json"));
     let prefs = prefs_file.as_deref().map(Prefs::load).unwrap_or_default();
+    let prefs_file = prefs_file.filter(|_| !dry_run);
     let ctx = Ctx {
         home,
         proc_root: PathBuf::from("/proc"),

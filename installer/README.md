@@ -6,7 +6,7 @@
 
 ## Using it
 
-Run `stellar-bridge-installer` with Stellar Blade and Minecraft closed. Use `--dry-run` to see every plan without writing anything; a dry run does not even create the installer's data folder. The window follows these pages:
+Run `stellar-bridge-installer` with Stellar Blade and Minecraft closed. Use `--dry-run` to see every plan without writing anything: a dry run creates no folder and writes no file, so its log goes to stderr only and preference changes last until the window closes. The window follows these pages:
 
 1. **Welcome.** Pick the language (French or English, taken from `LANG` the first time) and the role: an **EVE player**, with Stellar Blade and Minecraft on this PC, or a **viewer**, with Minecraft only (the JAR and Fabric API). It says what changes and what is never touched.
 2. **Detect.** This is also the status page. It shows Steam and its libraries, Stellar Blade and its build, the Proton tool (an untested one gets a warning), the prefix, UE4SS (a known or untested build, and its `Mods` folder), the `xinput1_3` override, the Minecraft instances, each installed piece (owned, from another release, foreign or modified), the avatar pack (missing, stale or fresh) and the installer's record. An interrupted run is flagged here. **Repair**, **Roll back** and **Uninstall** are here too, once something is installed.
