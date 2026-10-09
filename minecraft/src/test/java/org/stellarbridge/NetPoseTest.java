@@ -8,10 +8,13 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.Deflater;
 
 /**
- * The network pose: codec precision, keyframe and delta chains under loss and reordering, hostile poses and tables.
+ * The network pose: codec precision, keyframe and delta chains under loss and reordering, hostile payloads, the
+ * names-only table (no process address), the relay's interest tiers and budget, and the clock floor under skew and jitter.
  */
 public final class NetPoseTest {
     static final double[] ANCHOR = {-760000.5, -760000.25, -18000};
@@ -29,8 +32,11 @@ public final class NetPoseTest {
         deltas(table);
         hostilePoses(table);
         hostileTables(table);
+        addresses();
+        relay(table);
+        clock();
         System.out.println("Network pose tests passed: precision within 0.01 deg, 1/64 cm and 1/8192 scale, delta chains under loss and"
-                + " reordering, hostile poses and tables refused");
+                + " reordering, hostile poses and tables refused, no process address in the table, relay tiers and budget, clock floor");
     }
 
     /** Body, face (a follower with morphs), sword (bones and morphs) and the drone; 3 effect assets; the stream's layout adds a parameter. */
@@ -130,10 +136,15 @@ public final class NetPoseTest {
                 at += 10 + 10 * bones + c.weights();
             }
             // Effects: the three valid, near ones, in order, at the stream's record positions; the rest index -1.
-            for (int r = 0; r < NetPose.MAX_ACTIVE; r++) {
-                int got = at + r * NetPose.EFFECT_FLOATS, e = effectsAt(t) + r * NetPose.EFFECT_FLOATS;
-                assert pose.payload()[got] == (r < 3 ? r : -1) : "effect record " + r;
-                if (r < 3) for (int k = 0; k < 3; k++) effect = Math.max(effect, Math.abs(pose.payload()[got + 5 + k] - (p[e + 5 + k] - ANCHOR[k])));
+            var stream = RemoteEves.stream(t);
+            var sample = new AvatarStream.Sample(n + 1, pose.publication(), t.generation(), pose.status(), pose.payload(), null, false, Float.NaN, false, 0);
+            var effects = AvatarStream.effects(stream, sample);
+            assert effects.size() == 3 && effects.get(1).name().equals("NS_A_Weapon_Signal_Sword") : effects;
+            for (int r = 0; r < 3; r++) {
+                int e = effectsAt(t) + r * NetPose.EFFECT_FLOATS;
+                var got = effects.get(r);
+                effect = Math.max(effect, Math.max(Math.abs(got.x() - (p[e + 5] - ANCHOR[0])),
+                        Math.max(Math.abs(got.y() - (p[e + 6] - ANCHOR[1])), Math.abs(got.z() - (p[e + 7] - ANCHOR[2])))));
             }
         }
         assert rotation <= 0.01 : "rotation error " + rotation + " deg";
@@ -367,5 +378,123 @@ public final class NetPoseTest {
         refusedEncode(new NetPose.Table(1, 0, 0, 0, 100, "minecraft:overworld", List.of(body), new long[1], List.of(names("e", 33)), true));
         // A table over MAX_TABLE: 16 components of 300 long-named bones.
         refusedEncode(with(t, java.util.Collections.nCopies(16, new AvatarRecording.Component("A", "M", null, names("b".repeat(100), 300), new String[0], 0))));
+    }
+
+    /** The parsed stream table, re-encoded with names only, holds none of the text table's process addresses. */
+    static void addresses() {
+        String text = "SBMC_POSE_COMPONENTS 1\nRUN aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nGENERATION 3\nSESSION bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+                + "ANCHOR -760000.5 -760000.25 -18000 100\n"
+                + "CONTROLLER 00007f0000005000 00007f0000006000 00000318 00007f0000007000 00007f0000008000 2.5 -2.5\nCOUNT 2\n"
+                + "COMPONENT 1 00007f0000001000 00007f0000002000 00007f0000003000 3 0 CharacterMesh0 CH_P_EVE_52_TypeB -\n"
+                + "BONES 1 Root Bip001 Bip001-Head\n"
+                + "COMPONENT 2 00007f0000001800 00007f0000002000 00007f0000003800 0 2 Mesh_Face CH_P_EVE_Face_Jali3 CharacterMesh0\n"
+                + "MORPHS 2 jawOpen blink\nPARAMETERS 1\nPARAMETER 1 1 Edge Opacity 00007f0000009000 00007f000000a000 00000168 2 4711 1\n"
+                + "EFFECTS 00000130 000006a8 000004b0 00000088 10 00007f000000b000 00007f000000c000 1\n"
+                + "EFFECT 1 00007f000000d000 NS_A_Weapon_Signal_Sword\nCLOTH none\nEND 3\n";
+        AvatarStream.Table stream = AvatarStream.parse(text);
+        assert stream != null && stream.anchor() != null && stream.effectRecords();
+        NetPose.Table table = RemoteEves.outgoing(stream, 10.5, 64, -3.5, "minecraft:overworld", new long[] {0x1122334455667788L, 0});
+        byte[] bytes = table.encode();
+        String wire = new String(bytes, StandardCharsets.ISO_8859_1);
+        Matcher hex = Pattern.compile("\\b[0-9a-f]{8,16}\\b").matcher(text);
+        int addresses = 0;
+        while (hex.find()) {
+            String address = hex.group();
+            if (address.chars().allMatch(c -> c == 'a' || c == 'b')) continue; // The run and session identities.
+            addresses++;
+            assert !wire.contains(address) : "The table carries " + address;
+            long value = Long.parseUnsignedLong(address, 16);
+            if (address.length() == 16) {
+                byte[] big = ByteBuffer.allocate(8).putLong(value).array(), little = ByteBuffer.allocate(8).order(java.nio.ByteOrder.LITTLE_ENDIAN).putLong(value).array();
+                assert indexOf(bytes, big) < 0 && indexOf(bytes, little) < 0 : "The table carries " + address + " in binary";
+            }
+        }
+        assert addresses == 21 : addresses;
+        assert !wire.contains("bbbbbbbbbbbbbbbb") && !wire.contains("aaaaaaaaaaaaaaaa") && !wire.contains("Opacity") : "Nor the identities or parameters";
+        NetPose.Table back = NetPose.Table.decode(bytes);
+        assert back.generation() == 3 && back.units() == 100 && back.components().get(1).leader().equals("CharacterMesh0")
+                && back.components().get(1).bones() == null && Arrays.equals(back.components().get(0).bones(), new String[] {"Root", "Bip001", "Bip001-Head"})
+                && back.fingerprints()[0] == 0x1122334455667788L && back.effects().equals(List.of("NS_A_Weapon_Signal_Sword"));
+        AvatarStream.Table remote = RemoteEves.stream(back);
+        assert remote.floats() == stream.floats() - 1 && remote.componentFloats() == stream.componentFloats() && remote.cloth() == -1
+                && remote.anchor()[0] == 0 && remote.anchor()[3] == 100 && remote.parameters().isEmpty() : "No parameter floats travel";
+    }
+
+    static int indexOf(byte[] haystack, byte[] needle) {
+        outer:
+        for (int i = 0; i + needle.length <= haystack.length; i++) {
+            for (int k = 0; k < needle.length; k++) if (haystack[i + k] != needle[k]) continue outer;
+            return i;
+        }
+        return -1;
+    }
+
+    static void relay(NetPose.Table t) {
+        List<float[]> poses = motion(t, 12);
+        NetPose.Encoder encoder = new NetPose.Encoder(10);
+        List<NetPose.Header> headers = new ArrayList<>();
+        for (int n = 0; n < poses.size(); n++) headers.add(NetPose.header(encoder.encode(t, ANCHOR, ALL, poses.get(n), effectsAt(t), 1000 + 50L * n)));
+        long now = 1_000_000_000L;
+        // Near: everything in chain order; a viewer without the previous pose waits for the keyframe.
+        PoseRelay.Viewer near = new PoseRelay.Viewer();
+        Long last = null;
+        for (NetPose.Header h : headers) {
+            assert PoseRelay.forward(h, last, true, near, 5000, now);
+            last = h.sequence();
+        }
+        assert near.poses == 12 && near.withheld == 0;
+        PoseRelay.Viewer newcomer = new PoseRelay.Viewer();
+        assert !PoseRelay.forward(headers.get(5), null, true, newcomer, 5000, now) && PoseRelay.forward(headers.get(10), null, true, newcomer, 5000, now);
+        assert !PoseRelay.forward(headers.get(5), 3L, true, newcomer, 5000, now) : "A delta on another base is withheld";
+        // Far: keyframes only.
+        PoseRelay.Viewer far = new PoseRelay.Viewer();
+        last = null;
+        for (NetPose.Header h : headers) if (PoseRelay.forward(h, last, false, far, 5000, now)) last = h.sequence();
+        assert far.poses == 2 && far.withheld == 10;
+        // Budget: a second's worth at most; a pose dropped over it breaks the chain until the next keyframe.
+        PoseRelay.Viewer tight = new PoseRelay.Viewer();
+        int big = (int) (PoseRelay.BUDGET / 4) + 1;
+        last = null;
+        int sent = 0;
+        for (NetPose.Header h : headers) if (PoseRelay.forward(h, last, true, tight, big, now)) { last = h.sequence(); sent++; }
+        assert sent == 3 && tight.dropped == 2 && tight.withheld == 7 : sent + " " + tight.dropped + " " + tight.withheld;
+        assert PoseRelay.forward(headers.get(10), last, true, tight, big, now + 1_000_000_000L) : "The budget refills";
+        // The sender's rate cap: RATE poses a second.
+        PoseRelay.Sender sender = new PoseRelay.Sender();
+        int taken = 0;
+        for (int k = 0; k < 50; k++) if (sender.rate.take(now)) taken++;
+        assert taken == (int) PoseRelay.RATE && sender.rate.take(now + 1_000_000_000L / 30) : taken;
+        assert PoseRelay.BUDGET == 512 * 1024 : "512 KiB a second by default";
+    }
+
+    /**
+     * The clock floor: a sender clock 3 s ahead, transit 80 ms with ±20 ms jitter, publications every 50 ms, a drift of
+     * -0.5 ms a second for two minutes. The display time always falls among the received publications, at most half an
+     * interval past the newest, and never steps back.
+     */
+    static void clock() {
+        double floor = Double.NaN, previousAt = Double.NEGATIVE_INFINITY, previousArrival = 0;
+        List<double[]> received = new ArrayList<>(); // Publication (sender clock), arrival (viewer clock).
+        int frames = 0;
+        double viewer = 0;
+        for (int k = 0; k < 2400; k++) {
+            double publication = 50.0 * k + 3000 - 0.0005 * 50.0 * k; // The sender's clock: ahead, and slowing.
+            double arrival = 50.0 * k + 80 + (random.nextDouble() * 40 - 20);
+            arrival = Math.max(arrival, previousArrival); // TCP keeps them in order.
+            for (; viewer < arrival; viewer += 7) { // Frames until this pose arrives.
+                if (received.size() < 20) continue;
+                double at = RemoteEves.displayTime(viewer, floor, 50);
+                double newest = received.get(received.size() - 1)[0], oldest = received.get(received.size() - RemoteEves.RING)[0];
+                assert at >= oldest && at <= newest + 25 : "frame at " + viewer + ": " + at + " outside " + oldest + ".." + newest;
+                assert at >= previousAt - 1e-9 : "The display time steps back at " + viewer;
+                previousAt = at;
+                frames++;
+            }
+            floor = RemoteEves.floor(floor, arrival - publication, (arrival - previousArrival) / 1000);
+            previousArrival = arrival;
+            received.add(new double[] {publication, arrival});
+        }
+        // The floor ends at the least transit (60 ms) less the clock offset, which the drift moved by 60 ms over two minutes.
+        assert frames > 10000 && floor > -3000 + 60 + 60 - 2 && floor < -3000 + 60 + 60 + 40 : floor;
     }
 }

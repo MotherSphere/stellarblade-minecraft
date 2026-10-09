@@ -132,7 +132,8 @@ public final class AvatarView {
                         .then(ClientCommandManager.literal("live").executes(context -> live(context.getSource())))
                         .then(ClientCommandManager.literal("play").executes(context -> play(context.getSource())))
                         .then(ClientCommandManager.literal("status").executes(context -> {
-                            context.getSource().sendFeedback(Text.literal(status()));
+                            context.getSource().sendFeedback(Text.literal(status() + RemoteEves.status()));
+                            RemoteEves.requestRelayStatus(); // The server's relay counts follow as a chat line.
                             return 1;
                         }))
                         .then(ClientCommandManager.literal("off").executes(context -> {
@@ -154,6 +155,7 @@ public final class AvatarView {
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(AvatarView::off));
         ClientLifecycleEvents.CLIENT_STOPPING.register(client -> { off(); reap(); });
         WardrobeScreen.initialize();
+        RemoteEves.initialize();
     }
 
     static Path bridgeDirectory() {
@@ -284,6 +286,7 @@ public final class AvatarView {
         long nanos = System.nanoTime();
         try {
             AvatarStream.Sample sample = current.stream.poll(current.table, System.currentTimeMillis(), nanos);
+            boolean decoded = false; // A new pose of the drawn table this frame, which other players may get.
             if (sample != null && (current.table == null || sample.generation() != current.table.generation())) {
                 AvatarStream.Table wanted = current.rebuild.wanted();
                 if (wanted == null || wanted.generation() != sample.generation()) {
@@ -333,6 +336,7 @@ public final class AvatarView {
                         } else current.refusals[sample.dollyRefusal()]++;
                     }
                     current.posed = true;
+                    decoded = true;
                     current.poses++;
                     current.windowPoses++;
                     current.lastPoseNanos = nanos;
@@ -349,6 +353,7 @@ public final class AvatarView {
             interpolate(current.ring, current.times, current.newest, current.count, wallMillis() - current.interval, current.pose);
             var link = StellarBridge.renderingContext();
             current.anchored = current.table.anchor() != null && link != null && current.table.session().equals(link.session());
+            if (decoded && current.anchored && sample.generation() == current.table.generation()) RemoteEves.send(current.table, sample, link);
             // Her stats while she is the bridged player; a frame the adapter could not read them keeps the last ones.
             float[] stats = current.stream.stats();
             if (stats != null) current.stats = stats;
@@ -664,7 +669,7 @@ public final class AvatarView {
         double span = times[b] - times[a];
         blend(ring[a], ring[b], (float) Math.max(0, Math.min(1.5, (at - times[a]) / span)), out);
     }
-    private static double wallMillis() {
+    static double wallMillis() {
         var now = java.time.Instant.now();
         return now.getEpochSecond() * 1000.0 + now.getNano() / 1e6;
     }

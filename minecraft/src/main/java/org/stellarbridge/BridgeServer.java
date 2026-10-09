@@ -11,6 +11,7 @@ import java.util.stream.DoubleStream;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
+import net.fabricmc.fabric.api.networking.v1.EntityTrackingEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.block.ShapeContext;
@@ -68,6 +69,7 @@ public final class BridgeServer implements ModInitializer {
                     if (current == null) error(player, "No bridge session is active.");
                     else end(current, "Stopped by its player");
                 }
+                case BridgeNet.LinkRequest.RELAY -> player.sendMessage(Text.literal(PoseRelay.status(player)), false);
                 default -> status(player);
             }
         });
@@ -80,10 +82,15 @@ public final class BridgeServer implements ModInitializer {
         ServerPlayNetworking.registerGlobalReceiver(BridgeNet.Defense.ID, (defense, context) -> AvatarCombat.press(context.player(), defense));
         ServerPlayNetworking.registerGlobalReceiver(BridgeNet.ItemUse.ID, (use, context) -> AvatarCombat.use(context.player(), use.kind()));
         ServerPlayNetworking.registerGlobalReceiver(BridgeNet.Status.ID, (status, context) -> AvatarCombat.fighter(context.player()).status(status));
+        // Each EVE player's pose stream to the players tracking them, as opaque bytes (PoseRelay).
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.PoseTable.ID, (table, context) -> PoseRelay.table(context.player(), table.data()));
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.Pose.ID, (pose, context) -> PoseRelay.pose(context.player(), pose.data()));
+        EntityTrackingEvents.START_TRACKING.register(PoseRelay::tracking);
         ServerTickEvents.START_SERVER_TICK.register(AvatarCombat::judgeHeld);
         ServerTickEvents.END_SERVER_TICK.register(BridgeServer::tick);
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             for (Session current : List.copyOf(sessions.values())) if (current.server == server) end(current, "World closed");
+            PoseRelay.clear();
         });
         // Before vanilla saves a leaving player (Save and Quit): EVE's maximum health must never reach the save. A player
         // respawned this tick is not adopted yet, so the session ends on the entity that leaves and is saved.
@@ -94,6 +101,7 @@ public final class BridgeServer implements ModInitializer {
                 end(current, null);
             }
             AvatarCombat.forget(handler.player.getUuid());
+            PoseRelay.forget(handler.player.getUuid());
         });
     }
 

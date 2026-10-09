@@ -61,7 +61,9 @@ public final class ServerSafetyTest {
         assert clientOnly(node("net/minecraft/client/MinecraftClient")) && !clientOnly(node("net/minecraft/server/MinecraftServer"));
         assert !problems("org/stellarbridge/StellarBridge", r -> { }).isEmpty() && !problems("org/stellarbridge/AvatarWeapons$Gun", r -> { }).isEmpty();
         assert loaded.contains("org/stellarbridge/AvatarCombat") && loaded.contains("org/stellarbridge/AvatarItems")
-                && !loaded.contains("org/stellarbridge/StellarBridge") && !loaded.contains("org/stellarbridge/AvatarView") : loaded;
+                && loaded.contains("org/stellarbridge/PoseRelay") && loaded.contains("org/stellarbridge/NetPose")
+                && !loaded.contains("org/stellarbridge/StellarBridge") && !loaded.contains("org/stellarbridge/AvatarView")
+                && !loaded.contains("org/stellarbridge/RemoteEves") && !loaded.contains("org/stellarbridge/AvatarStream") : loaded;
         System.out.println("Server safety tests passed: " + loaded.size() + " server-loaded classes reference no client code");
     }
 

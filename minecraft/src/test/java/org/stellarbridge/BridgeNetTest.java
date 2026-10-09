@@ -12,6 +12,11 @@ import net.minecraft.util.math.Vec3d;
 public final class BridgeNetTest {
     public static void main(String[] args) {
         BridgeProtocol.Box box = new BridgeProtocol.Box(-1.5, 0, 2, 3, 4.25, 5);
+        NetPoseTest.random.setSeed(1);
+        NetPose.Table poseTable = NetPoseTest.table();
+        byte[] table = poseTable.encode(), pose = new NetPose.Encoder(10).encode(poseTable, NetPoseTest.ANCHOR, NetPoseTest.ALL,
+                NetPoseTest.sample(poseTable), NetPoseTest.effectsAt(poseTable), 1_760_000_000_123L);
+        java.util.UUID owner = java.util.UUID.fromString("01234567-89ab-cdef-0123-456789abcdef");
         List<CustomPayload> payloads = List.of(
                 new BridgeNet.Hello(BridgeNet.PROTOCOL, "0.1.0"),
                 new BridgeNet.LinkRequest(BridgeNet.LinkRequest.START),
@@ -30,18 +35,24 @@ public final class BridgeNetTest {
                 new BridgeNet.Status(null, -1, true),
                 new BridgeNet.Verdict((byte) BridgeProtocol.COMBAT_EVENTS.indexOf("perfect_dodge"), 135.5f),
                 new BridgeNet.Verdict((byte) 0, Float.NaN),
-                new BridgeNet.Feedback(0.75f, 12, -5, Integer.MAX_VALUE));
+                new BridgeNet.Feedback(0.75f, 12, -5, Integer.MAX_VALUE),
+                new BridgeNet.LinkRequest(BridgeNet.LinkRequest.RELAY),
+                new BridgeNet.PoseTable(table),
+                new BridgeNet.Pose(pose),
+                new BridgeNet.RemoteTable(owner, table),
+                new BridgeNet.RemotePose(owner, pose));
         java.util.Set<net.minecraft.util.Identifier> ids = new java.util.HashSet<>();
         for (CustomPayload payload : payloads) {
             assert payload.getId().id().getNamespace().equals("stellar_bridge") : payload;
             ids.add(payload.getId().id());
             PacketByteBuf buf = buffer();
             codec(payload).encode(buf, payload);
-            Object back = codec(payload).decode(buf);
+            CustomPayload back = codec(payload).decode(buf);
             assert buf.readableBytes() == 0 : "Everything written is read: " + payload;
-            assert back.toString().equals(payload.toString()) : back + " != " + payload; // NaN-safe record comparison.
+            // NaN-safe, and byte arrays compare by content: the same bytes again.
+            assert java.util.Arrays.equals(bytes(encoded(back)), bytes(encoded(payload))) && back.getClass() == payload.getClass() : back + " != " + payload;
         }
-        assert ids.size() == 12 : "One channel per payload kind, hello both ways: " + ids;
+        assert ids.size() == 16 : "One channel per payload kind, hello both ways: " + ids;
         int bytes = encoded(new BridgeNet.Strike(42, BridgeNet.Strike.LIGHT, (byte) 0, null)).readableBytes();
         assert bytes == 3 : "A melee strike is 3 bytes, not " + bytes;
         for (AvatarTrail.Style style : AvatarTrail.Style.values())
@@ -56,7 +67,15 @@ public final class BridgeNetTest {
             for (int k = 0; k < 9; k++) buf.writeDouble(k); // Origin and bounds.
             buf.writeVarInt(BridgeProtocol.MAX_BOXES + 1);
         });
-        refused(BridgeNet.LinkRequest.CODEC, buf -> buf.writeByte(BridgeNet.LinkRequest.STATUS + 1));
+        refused(BridgeNet.LinkRequest.CODEC, buf -> buf.writeByte(BridgeNet.LinkRequest.RELAY + 1));
+        // Poses and tables: beyond their size bound, malformed, or a table with a name outside the token set.
+        refused(BridgeNet.Pose.CODEC, buf -> buf.writeByteArray(java.util.Arrays.copyOf(pose, NetPose.MAX_POSE + 1)));
+        refused(BridgeNet.Pose.CODEC, buf -> buf.writeByteArray(new byte[] {7, 1, 1}));
+        refused(BridgeNet.RemotePose.CODEC, buf -> buf.writeUuid(owner).writeByteArray(new byte[] {NetPose.DELTA, 1, 1, 1}));
+        refused(BridgeNet.PoseTable.CODEC, buf -> buf.writeByteArray(new byte[NetPose.MAX_TABLE + 1]));
+        refused(BridgeNet.PoseTable.CODEC, buf -> buf.writeByteArray(java.util.Arrays.copyOf(table, table.length - 1)));
+        refused(BridgeNet.RemoteTable.CODEC, buf -> buf.writeUuid(owner).writeByteArray(
+                new String(table, java.nio.charset.StandardCharsets.ISO_8859_1).replace("Mesh_Face", "Mesh Face").getBytes(java.nio.charset.StandardCharsets.ISO_8859_1)));
         refused(BridgeNet.Link.CODEC, buf -> buf.writeString("d".repeat(33)));
         refused(BridgeNet.Hello.CODEC, buf -> buf.writeVarInt(1).writeString("v".repeat(BridgeNet.NAME + 1)));
         refused(BridgeNet.Eve.CODEC, buf -> buf.writeString("e".repeat(BridgeNet.TEXT + 1), BridgeNet.TEXT + 1).writeLong(0));
@@ -77,7 +96,11 @@ public final class BridgeNetTest {
         String message = BridgeNet.mismatch(new BridgeNet.Hello(BridgeNet.PROTOCOL + 1, "9.9.9"));
         assert message != null && message.contains("protocol " + BridgeNet.PROTOCOL) && message.contains("protocol " + (BridgeNet.PROTOCOL + 1))
                 && message.contains("9.9.9") && message.contains("without the mod") : message;
-        System.out.println("Bridge network tests passed: 12 payload channels round trip, hostile sizes and values refused, protocol mismatch message");
+        // A client of protocol 1 (before remote EVEs) is refused with both protocols named.
+        assert BridgeNet.PROTOCOL == 2;
+        String older = BridgeNet.mismatch(new BridgeNet.Hello(1, "0.1.0"));
+        assert older != null && older.contains("this server runs protocol 2") && older.contains("your client protocol 1 (mod 0.1.0)") : older;
+        System.out.println("Bridge network tests passed: 16 payload channels round trip, hostile sizes and values refused, protocol mismatch message");
     }
 
     private static PacketByteBuf buffer() { return new PacketByteBuf(Unpooled.buffer()); }
@@ -89,6 +112,12 @@ public final class BridgeNetTest {
         } catch (ReflectiveOperationException missing) {
             throw new AssertionError(payload.getClass() + " has no CODEC", missing);
         }
+    }
+
+    private static byte[] bytes(PacketByteBuf buf) {
+        byte[] bytes = new byte[buf.readableBytes()];
+        buf.getBytes(buf.readerIndex(), bytes);
+        return bytes;
     }
 
     private static PacketByteBuf encoded(CustomPayload payload) {

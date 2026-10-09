@@ -239,11 +239,14 @@ public final class AvatarCombat {
             tokens = perSecond;
         }
 
-        boolean take(long nanos) {
+        boolean take(long nanos) { return take(nanos, 1); }
+
+        /** Takes amount tokens at nanos, or none when fewer are left. */
+        boolean take(long nanos, double amount) {
             if (last != Long.MIN_VALUE) tokens = Math.min(perSecond, tokens + (nanos - last) * perSecond / 1e9);
             last = nanos;
-            if (tokens < 1) return false;
-            tokens--;
+            if (tokens < amount) return false;
+            tokens -= amount;
             return true;
         }
     }

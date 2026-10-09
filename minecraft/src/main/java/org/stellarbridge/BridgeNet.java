@@ -31,7 +31,7 @@ import net.minecraft.util.math.Vec3d;
  */
 public final class BridgeNet {
     /** Raised on any payload change. hello keeps its layout in every version, so any two versions can compare. */
-    static final int PROTOCOL = 1;
+    static final int PROTOCOL = 2;
     static final int TEXT = 65536, NAME = 256; // Characters: an EVE packet (BridgeFiles' 64 KiB) and a version, dimension or message.
     private static final Set<UUID> greeted = ConcurrentHashMap.newKeySet(); // Players whose client answered hello in this protocol.
     private static String version = "unknown";
@@ -55,6 +55,10 @@ public final class BridgeNet {
         PayloadTypeRegistry.playC2S().register(Status.ID, Status.CODEC);
         PayloadTypeRegistry.playS2C().register(Verdict.ID, Verdict.CODEC);
         PayloadTypeRegistry.playS2C().register(Feedback.ID, Feedback.CODEC);
+        PayloadTypeRegistry.playC2S().register(PoseTable.ID, PoseTable.CODEC);
+        PayloadTypeRegistry.playC2S().register(Pose.ID, Pose.CODEC);
+        PayloadTypeRegistry.playS2C().register(RemoteTable.ID, RemoteTable.CODEC);
+        PayloadTypeRegistry.playS2C().register(RemotePose.ID, RemotePose.CODEC);
         ServerConfigurationConnectionEvents.CONFIGURE.register((handler, server) -> {
             if (ServerConfigurationNetworking.canSend(handler, Hello.ID)) handler.addTask(new HelloTask());
         });
@@ -134,12 +138,12 @@ public final class BridgeNet {
         @Override public Id<Hello> getId() { return ID; }
     }
 
-    /** C2S: /stellar start, stop or status, which the server checks for this player. */
+    /** C2S: /stellar start, stop or status, which the server checks for this player, or the pose relay's counts for them. */
     record LinkRequest(byte action) implements CustomPayload {
-        static final byte START = 0, STOP = 1, STATUS = 2;
+        static final byte START = 0, STOP = 1, STATUS = 2, RELAY = 3;
         static final Id<LinkRequest> ID = id("link_request");
         static final PacketCodec<PacketByteBuf, LinkRequest> CODEC = PacketCodec.of(
-                (request, buf) -> buf.writeByte(request.action), buf -> new LinkRequest(bounded(buf, STATUS + 1, "link request")));
+                (request, buf) -> buf.writeByte(request.action), buf -> new LinkRequest(bounded(buf, RELAY + 1, "link request")));
         @Override public Id<LinkRequest> getId() { return ID; }
     }
 
@@ -272,5 +276,57 @@ public final class BridgeNet {
                 (feedback, buf) -> buf.writeFloat(feedback.share).writeInt(feedback.acknowledged).writeInt(feedback.beta).writeInt(feedback.burst),
                 buf -> new Feedback(buf.readFloat(), buf.readInt(), buf.readInt(), buf.readInt()));
         @Override public Id<Feedback> getId() { return ID; }
+    }
+
+    private static byte[] table(byte[] data) {
+        try {
+            NetPose.Table.decode(data);
+            return data;
+        } catch (IllegalArgumentException hostile) {
+            throw refused("component table: " + hostile.getMessage());
+        }
+    }
+
+    private static byte[] pose(byte[] data) {
+        try {
+            NetPose.header(data);
+            return data;
+        } catch (IllegalArgumentException hostile) {
+            throw refused("pose: " + hostile.getMessage());
+        }
+    }
+
+    /** C2S, per new generation of the sender's EVE: her names-only component table (NetPose.Table), checked whole. */
+    record PoseTable(byte[] data) implements CustomPayload {
+        static final Id<PoseTable> ID = id("table");
+        static final PacketCodec<PacketByteBuf, PoseTable> CODEC = PacketCodec.of(
+                (table, buf) -> buf.writeByteArray(table.data), buf -> new PoseTable(table(buf.readByteArray(NetPose.MAX_TABLE))));
+        @Override public Id<PoseTable> getId() { return ID; }
+    }
+
+    /** C2S, 20 a second by default: one quantized pose of the sender's EVE, a keyframe or a delta (NetPose); its header checked. */
+    record Pose(byte[] data) implements CustomPayload {
+        static final Id<Pose> ID = id("pose");
+        static final PacketCodec<PacketByteBuf, Pose> CODEC = PacketCodec.of(
+                (pose, buf) -> buf.writeByteArray(pose.data), buf -> new Pose(pose(buf.readByteArray(NetPose.MAX_POSE))));
+        @Override public Id<Pose> getId() { return ID; }
+    }
+
+    /** S2C: another player's table as it came, with its owner; also when the viewer starts tracking that player. */
+    record RemoteTable(UUID owner, byte[] data) implements CustomPayload {
+        static final Id<RemoteTable> ID = id("remote_table");
+        static final PacketCodec<PacketByteBuf, RemoteTable> CODEC = PacketCodec.of(
+                (table, buf) -> buf.writeUuid(table.owner).writeByteArray(table.data),
+                buf -> new RemoteTable(buf.readUuid(), table(buf.readByteArray(NetPose.MAX_TABLE))));
+        @Override public Id<RemoteTable> getId() { return ID; }
+    }
+
+    /** S2C: another player's pose as it came, with its owner. */
+    record RemotePose(UUID owner, byte[] data) implements CustomPayload {
+        static final Id<RemotePose> ID = id("remote_pose");
+        static final PacketCodec<PacketByteBuf, RemotePose> CODEC = PacketCodec.of(
+                (pose, buf) -> buf.writeUuid(pose.owner).writeByteArray(pose.data),
+                buf -> new RemotePose(buf.readUuid(), pose(buf.readByteArray(NetPose.MAX_POSE))));
+        @Override public Id<RemotePose> getId() { return ID; }
     }
 }
