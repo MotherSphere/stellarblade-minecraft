@@ -31,6 +31,7 @@ public final class RemoteEveTest {
         clock();
         clockStep();
         recording();
+        playbackTimes();
         System.out.println("Remote EVE tests passed");
     }
 
@@ -373,6 +374,20 @@ public final class RemoteEveTest {
         refused(RemoteEves.recording(List.of(entries.get(0), entries.get(2), entries.get(1))), "time going back");
         refused(RemoteEves.recording(List.of(entries.get(0), new RemoteEves.Entry(RemoteEves.POSE, 5, new byte[NetPose.MAX_POSE + 1]))), "length");
     }
+    /**
+     * netplay's publication times keep the recorded spacing whatever frame a pose falls due on (here poses recorded 50 ms
+     * apart, played on 30 FPS frames), and a new loop goes on after the last time sent.
+     */
+    static void playbackTimes() {
+        var playback = new RemoteEves.Playback(List.of(), net.minecraft.util.math.Vec3d.ZERO, "minecraft:overworld");
+        double[] frames = {10_000, 10_067, 10_100, 10_167};
+        for (int k = 0; k < frames.length; k++) assert playback.stamp(500 + 50L * k, frames[k]) == 10_000 + 50L * k : k;
+        playback.loopFirst = -1; // As play() starts the next loop, a moment after the last pose.
+        assert playback.stamp(500, 10_160) == 10_150 + 1000 / RemoteEves.RATE && playback.stamp(550, 10_300) == 10_250;
+        playback.loopFirst = -1;
+        assert playback.stamp(500, 20_000) == 20_000 : "A loop later than an interval starts at its own time";
+    }
+
     private static void refused(byte[] data, String why) {
         try {
             RemoteEves.recording(data);

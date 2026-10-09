@@ -476,9 +476,9 @@ final class RemoteEves {
 
     /**
      * A recording sent as this player's own stream: its tables moved so her first pose stands at this player, its poses
-     * decoded and encoded again with this clock's times and one sequence across loops.
+     * decoded and encoded again with this clock's times (keeping the recorded spacing) and one sequence across loops.
      */
-    private static final class Playback {
+    static final class Playback {
         final List<Entry> entries;
         final Vec3d at;
         final String dimension;
@@ -488,6 +488,8 @@ final class RemoteEves {
         NetPose.Decoder decoder;
         int next;
         long start = System.nanoTime();
+        long loopFirst = -1, stamped; // The loop's first recorded publication (-1: none yet), the last time sent.
+        double loopBase; // This clock's time for loopFirst.
 
         Playback(List<Entry> entries, Vec3d at, String dimension) { this.entries = entries; this.at = at; this.dimension = dimension; }
 
@@ -513,13 +515,28 @@ final class RemoteEves {
                 }
                 int effectsAt = played.effectRecords() ? played.floats() - NetPose.MAX_ACTIVE * NetPose.EFFECT_FLOATS : -1;
                 byte[] data = out.encode(played, new double[] {0, 0, 0, played.units()}, pose.status(), pose.payload(), effectsAt,
-                        (long) clock());
+                        stamp(pose.publication(), clock()));
                 if (data != null) ClientPlayNetworking.send(new BridgeNet.Pose(data));
             }
             if (next == entries.size()) { // Again from the start, a moment later.
                 next = 0;
                 start = nanos + 100_000_000L;
+                loopFirst = -1;
             }
+        }
+
+        /**
+         * This clock's publication time for a recorded one, played at now: the loop's first pose at now (at least an
+         * interval after the last one sent), the others as far from it as they were recorded, so the frame a pose falls
+         * due on adds no judder to the viewer's interpolation.
+         */
+        long stamp(long recorded, double now) {
+            if (loopFirst < 0) {
+                loopFirst = recorded;
+                loopBase = Math.max(now, stamped + 1000.0 / RATE);
+            }
+            stamped = Math.round(loopBase + (recorded - loopFirst));
+            return stamped;
         }
     }
 
