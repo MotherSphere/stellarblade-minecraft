@@ -445,8 +445,14 @@ final class NetPose {
             return pose;
         }
 
-        /** A new table: the next pose needs a keyframe. */
-        void restart() { body = null; }
+        /**
+         * A new table: the next pose needs a keyframe, and may count from 1 again (a sender that reconnected, or a new
+         * netplay): a table always comes before its poses on the same connection.
+         */
+        void restart() {
+            body = null;
+            sequence = 0;
+        }
     }
 
     private static byte[] inflate(byte[] data, int offset, int max) {

@@ -231,6 +231,13 @@ public final class NetPoseTest {
         // Another table generation is dropped, and a new table needs a keyframe first.
         NetPose.Table next = new NetPose.Table(8, 0, 0, 0, 100, "minecraft:overworld", t.components(), t.fingerprints(), t.effects(), true);
         assert reordered.decode(next, NetPose.header(wire.get(21)), wire.get(21)) == null && reordered.foreign == 1;
+        // A sender that starts counting again (a reconnect, a new netplay) sends its table first: its poses decode at once.
+        reordered.restart();
+        NetPose.Encoder again = new NetPose.Encoder(10);
+        for (int n = 0; n < 3; n++) {
+            byte[] data = again.encode(t, ANCHOR, ALL, poses.get(n), effectsAt(t), 9000 + 50L * n);
+            assert reordered.decode(t, NetPose.header(data), data) != null : "pose " + n + " after a restart";
+        }
         // An encoder restart (a new table sent) and a new generation both start with a keyframe.
         chained.restart();
         assert NetPose.header(chained.encode(t, ANCHOR, ALL, poses.get(0), effectsAt(t), 5000)).keyframe();
