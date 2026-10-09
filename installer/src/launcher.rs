@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{pins, platform};
+use crate::{Guard, pins, platform};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -157,6 +157,76 @@ fn instance(dir: &Path) -> Option<Instance> {
     })
 }
 
+/// The dedicated instance's name and folder name.
+pub const INSTANCE_NAME: &str = "Stellar Bridge 1.21.1";
+
+/// Creates the dedicated instance `name` in the launcher's instance folder: Minecraft 1.21.1 with Fabric Loader at its
+/// pin, resolved and downloaded by the launcher at first launch, and an empty `minecraft/mods`. `jvm_args` (for a
+/// Flatpak Prism, the `-Dstellarbridge.*` folders inside its sandbox) go into the instance's own Java arguments.
+/// Refuses an existing folder; a failed write removes the new folder. Call it with the launcher closed.
+pub fn create_instance(
+    launcher: &Launcher,
+    name: &str,
+    jvm_args: &[String],
+    closed: Guard,
+) -> Result<Instance> {
+    if name.is_empty() || name.starts_with('.') || name.contains(['/', '\\', '\n', '\r', '\0']) {
+        bail!("Invalid instance name: {name}");
+    }
+    // QSettings reads commas as lists and Prism splits arguments on spaces: keep each argument plain.
+    if let Some(bad) = jvm_args
+        .iter()
+        .find(|a| a.is_empty() || a.contains(|c: char| c.is_whitespace() || "\"',;#\\".contains(c)))
+    {
+        bail!("Unsupported Java argument for the instance: {bad}");
+    }
+    closed()?;
+    if !launcher.instances.exists() {
+        fs::create_dir_all(&launcher.instances)?;
+    }
+    // Instance folders are often links to another disk: resolve them once.
+    let dir = fs::canonicalize(&launcher.instances)?.join(name);
+    fs::create_dir(&dir)?;
+    let written = (|| -> Result<()> {
+        let mut config = format!(
+            "[General]\nConfigVersion=1.3\nInstanceType=OneSix\nname={name}\niconKey=default\n\
+             OverrideMemory=true\nMaxMemAlloc=6000\nMinMemAlloc=512\nAutomaticJava=true\n"
+        );
+        if !jvm_args.is_empty() {
+            config += &format!("OverrideJavaArgs=true\nJvmArgs={}\n", jvm_args.join(" "));
+        }
+        fs::write(dir.join("instance.cfg"), config)?;
+        let pack = serde_json::json!({"formatVersion": 1, "components": [
+            {"uid": "net.minecraft", "version": pins::MINECRAFT, "important": true},
+            {"uid": "net.fabricmc.fabric-loader", "version": pins::FABRIC_LOADER_MIN},
+        ]});
+        fs::write(
+            dir.join("mmc-pack.json"),
+            serde_json::to_string_pretty(&pack)? + "\n",
+        )?;
+        fs::create_dir_all(dir.join("minecraft/mods"))?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        fs::remove_dir_all(&dir)?;
+        return Err(error);
+    }
+    instance(&dir).ok_or_else(|| anyhow::anyhow!("The new instance cannot be read back"))
+}
+
+/// The Java arguments that point the JAR at bridge and avatar folders other than its defaults.
+pub fn bridge_jvm_args(bridge_home: &Path) -> Vec<String> {
+    [("directory", "bridge"), ("avatar", "avatar")]
+        .iter()
+        .map(|(key, folder)| {
+            format!(
+                "-Dstellarbridge.{key}={}",
+                bridge_home.join(folder).display()
+            )
+        })
+        .collect()
+}
+
 /// A `mods` folder picked by hand for another launcher. Its loader cannot be checked.
 pub fn manual_mods(path: &Path) -> Result<PathBuf> {
     let path = platform::real_dir(path)?;
@@ -263,6 +333,37 @@ mod tests {
         let mods = picked.join("inst/a/minecraft/mods");
         assert_eq!(manual_mods(&mods).unwrap(), mods);
         assert!(manual_mods(&picked).is_err());
+    }
+
+    #[test]
+    fn dedicated_instance_is_compatible_and_never_overwrites() {
+        let root = tempfile::tempdir().unwrap();
+        let home = fs::canonicalize(root.path()).unwrap();
+        let native = home.join(".local/share/PrismLauncher");
+        write(&native.join("prismlauncher.cfg"), "InstanceDir=instances\n");
+        let launcher = &prism(&home)[0];
+        let open = || Ok(());
+        let running = || -> Result<()> { bail!("Close Prism first") };
+        assert!(create_instance(launcher, INSTANCE_NAME, &[], &running).is_err());
+        assert!(!launcher.instances.join(INSTANCE_NAME).exists());
+        let created = create_instance(launcher, INSTANCE_NAME, &[], &open).unwrap();
+        assert!(created.compatible());
+        assert_eq!(created.name, INSTANCE_NAME);
+        assert!(created.mods().is_dir());
+        assert_eq!(instances(launcher), vec![created.clone()]);
+        assert!(create_instance(launcher, INSTANCE_NAME, &[], &open).is_err());
+        let flatpak = home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher");
+        write(&flatpak.join("prismlauncher.cfg"), "");
+        let args = bridge_jvm_args(&home.join("data/stellar-blade-minecraft"));
+        let sandboxed = create_instance(&prism(&home)[1], "S", &args, &open).unwrap();
+        let config = fs::read_to_string(sandboxed.dir.join("instance.cfg")).unwrap();
+        assert!(config.contains(&format!(
+            "OverrideJavaArgs=true\nJvmArgs=-Dstellarbridge.directory={0}/bridge -Dstellarbridge.avatar={0}/avatar\n",
+            home.join("data/stellar-blade-minecraft").display()
+        )));
+        let spaced = bridge_jvm_args(Path::new("/home/a b"));
+        assert!(create_instance(&prism(&home)[1], "T", &spaced, &open).is_err());
+        assert!(create_instance(launcher, "../x", &[], &open).is_err());
     }
 
     #[test]

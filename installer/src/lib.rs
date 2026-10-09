@@ -6,6 +6,7 @@ pub mod deploy;
 pub mod detect;
 pub mod launcher;
 pub mod ledger;
+pub mod mods;
 pub mod pins;
 pub mod platform;
 pub mod safety;
