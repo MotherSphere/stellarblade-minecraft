@@ -87,6 +87,13 @@ public final class BridgeLinkTest {
             assert link.request("enter", now, 0) == null && link.answer(4_000_000_000L) == null
                     && link.answer(6_000_000_000L).contains("did not answer /stellar enter");
 
+            // A teleport out of the window ends the server's session; walking out of it, or a jump inside it, does not.
+            var patch = new net.minecraft.util.math.Box(80.5, 56, -40.5, 120.5, 80, -0.5);
+            assert BridgeServer.teleported(new Vec3d(100, 64, -20), new Vec3d(300, 64, -20), patch) : "A /tp far away";
+            assert !BridgeServer.teleported(new Vec3d(120, 64, -20), new Vec3d(121, 64, -20), patch) : "Walking out";
+            assert !BridgeServer.teleported(new Vec3d(82, 64, -20), new Vec3d(118, 64, -20), patch) : "A long jump inside the window";
+            assert !BridgeServer.teleported(null, new Vec3d(300, 64, -20), patch) : "Nothing to compare before the first tick";
+
             link.stop();
             assert !Files.exists(directory.resolve("terrain.txt")) && !Files.exists(directory.resolve("eve-mobs.txt"));
         } finally {
@@ -94,7 +101,7 @@ public final class BridgeLinkTest {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
             }
         }
-        System.out.println("Bridge link tests passed: client clock on every file, relay once, skewed server judged by its sender's clock, per-player relays isolated");
+        System.out.println("Bridge link tests passed: client clock on every file, relay once, skewed server judged by its sender's clock, per-player relays isolated, teleports out of the window");
     }
 
     private static long time(Path directory, String name) throws Exception {

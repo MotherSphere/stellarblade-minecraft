@@ -173,6 +173,7 @@ public final class BridgeServer implements ModInitializer {
                 : live != current.player || !dead && current.player.getServerWorld() != current.world
                     ? "The player respawned elsewhere or changed dimension. Use /stellar start again where you stand."
                 : !eligible(current.player) ? "The player became a spectator or mounted something. Use /stellar start again on foot."
+                : !dead && teleported(current.seen, current.player.getPos(), current.patch()) ? "The player was teleported out of the terrain window. Use /stellar start again where you stand."
                 : null;
         if (ended != null) {
             end(current, ended);
@@ -208,7 +209,17 @@ public final class BridgeServer implements ModInitializer {
             current.publishMobs();
         } catch (IllegalArgumentException exception) {
             end(current, exception.getMessage());
+        } finally {
+            current.seen = current.player.getPos();
         }
+    }
+
+    /**
+     * Whether something moved the player more than a cell since the last tick (seen, null before the first) and out of
+     * the terrain window (a /tp, a pearl): walking out, or the bridge's own moves, never count.
+     */
+    static boolean teleported(Vec3d seen, Vec3d now, Box window) {
+        return seen != null && now.squaredDistanceTo(seen) > TerrainGeometry.CELL * TerrainGeometry.CELL && !window.contains(now);
     }
 
     static void move(Entity entity, Vec3d position) {
@@ -291,6 +302,7 @@ public final class BridgeServer implements ModInitializer {
         final String id = UUID.randomUUID().toString().replace("-", "");
         final Vec3d origin;
         final PoseGate gate = new PoseGate(id);
+        Vec3d seen; // The player's position at the end of the last tick, null before the first.
         int[] centre; // The terrain window's centre cell (world); it follows EVE.
         BridgeProtocol.Box bounds; // The published window, relative to the origin.
         Vec3d feet; // EVE's feet (world) as last applied, or the origin before that.
@@ -324,6 +336,7 @@ public final class BridgeServer implements ModInitializer {
             respawned.teleport(world, origin.x, origin.y, origin.z, respawned.getYaw(), respawned.getPitch());
             // Vanilla recentres chunk loading and sending only from move packets, which the bridge cancels.
             world.getChunkManager().updatePosition(respawned);
+            seen = origin; // The bridge's own move, never a teleport.
             LOG.info("Bridge kept through a death: the respawned player returns to the anchor");
         }
 
