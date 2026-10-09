@@ -1,29 +1,28 @@
 package org.stellarbridge;
 
-import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.DoubleStream;
 import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.block.ShapeContext;
 import net.minecraft.entity.Entity;
+import net.minecraft.network.packet.CustomPayload;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.command.CommandManager;
-import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ChunkTicketType;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.ChunkPos;
@@ -36,14 +35,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The bridge's server half, loaded on dedicated servers too: the link session, the position authority, combat and item
- * effects. It must never reference client classes (ServerSafetyTest); StellarBridge is the client half.
+ * The bridge's server half, loaded on dedicated servers too: one link session per player, the position authority,
+ * combat and item effects. A session reads the eve.N packets its player's client relays and sends that client the
+ * terrain, mob walls and verdicts it writes for Stellar Blade (BridgeLink). It must never reference client classes
+ * (ServerSafetyTest); StellarBridge is the client half.
  */
 public final class BridgeServer implements ModInitializer {
     private static final Logger LOG = LoggerFactory.getLogger("stellar_bridge");
-    private static Session session; // Server thread only.
-    static volatile Control control; // Immutable publication to client and packet threads.
-    static volatile PauseBinding pauseBinding; // Independent of EVE pose freshness; never exposes Session.
+    private static final Map<UUID, Session> sessions = new HashMap<>(); // Server thread only.
+    // Immutable publications, per player, to the packet threads (move packets) and this JVM's client.
+    private static final Map<UUID, Control> controls = new ConcurrentHashMap<>();
+    static volatile PauseBinding pauseBinding; // Singleplayer host only; independent of EVE pose freshness.
     // Written by this JVM's client, read by its integrated server's damage hook; a dedicated server never sets them.
     static volatile boolean pauseOverridden; // A pause menu is open while the bridge keeps the world running.
     // Stellar Blade stopped granting the controlled run's input for AvatarView.HALT_NANOS (paused, a cutscene): EVE cannot answer.
@@ -53,157 +55,159 @@ public final class BridgeServer implements ModInitializer {
     public void onInitialize() {
         BridgeNet.register();
         AvatarItems.initialize();
-        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
-            if (environment != CommandManager.RegistrationEnvironment.INTEGRATED) return;
-            dispatcher.register(CommandManager.literal("stellar")
-                    .then(CommandManager.literal("start").executes(context -> start(context.getSource())))
-                    .then(CommandManager.literal("stop").executes(context -> stopCommand(context.getSource())))
-                    .then(CommandManager.literal("import").executes(context -> request(context.getSource(), "import")))
-                    .then(CommandManager.literal("enter").executes(context -> request(context.getSource(), "enter")))
-                    .then(CommandManager.literal("return").executes(context -> request(context.getSource(), "return")))
-                    .then(CommandManager.literal("status").executes(context -> status(context.getSource()))));
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.LinkRequest.ID, (request, context) -> {
+            ServerPlayerEntity player = context.player();
+            switch (request.action()) {
+                case BridgeNet.LinkRequest.START -> start(player);
+                case BridgeNet.LinkRequest.STOP -> {
+                    Session current = sessions.get(player.getUuid());
+                    if (current == null) error(player, "No bridge session is active.");
+                    else end(current, "Stopped by its player");
+                }
+                default -> status(player);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.Eve.ID, (eve, context) -> {
+            Session current = sessions.get(context.player().getUuid());
+            if (current != null) current.relay.receive(eve.text(), eve.sent(), System.currentTimeMillis());
         });
         ServerTickEvents.END_SERVER_TICK.register(BridgeServer::tick);
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
-            if (session != null && session.server == server) stop("World closed");
+            for (Session current : List.copyOf(sessions.values())) if (current.server == server) end(current, "World closed");
         });
         // Before vanilla saves a leaving player (Save and Quit): EVE's maximum health must never reach the save.
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
-            Session current = session;
-            if (current != null && current.player == handler.player) AvatarStats.apply(handler.player, AvatarStats.Values.BASE);
+            Session current = sessions.get(handler.player.getUuid());
+            if (current != null && current.player == handler.player) end(current, null);
         });
     }
 
-    private static int start(ServerCommandSource source) {
-        ServerPlayerEntity player = source.getPlayer();
-        MinecraftServer server = source.getServer();
-        if (!eligible(server, player) || !player.isAlive())
-            return error(source, "Use a private, non-LAN singleplayer world in creative or survival as its local owner.");
-        if (session != null) return error(source, "A bridge session is already active. Use /stellar stop first.");
-        if (!player.isOnGround() || Math.abs(player.getY() - Math.floor(player.getY())) > 0.05)
-            return error(source, "Stand on a full block floor before starting the bridge.");
-        try {
-            Path directory = Path.of(System.getProperty("stellarbridge.directory",
-                    Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
-            Session next = new Session(server, player, new BridgeFiles(directory));
-            next.publish();
-            session = next;
-            pauseBinding = new PauseBinding(server, player.getUuid(), next.world.getRegistryKey().getValue().toString());
-            source.sendFeedback(() -> Text.literal("Stellar Bridge ready: " + next.boxes.size()
+    private static void start(ServerPlayerEntity player) {
+        if (!eligible(player) || !player.isAlive())
+            error(player, "Start the bridge alive, in creative or survival, and not riding anything.");
+        else if (sessions.containsKey(player.getUuid())) error(player, "A bridge session is already active. Use /stellar stop first.");
+        else if (!player.isOnGround() || Math.abs(player.getY() - Math.floor(player.getY())) > 0.05)
+            error(player, "Stand on a full block floor before starting the bridge.");
+        else {
+            Session next;
+            try {
+                next = new Session(player.getServer(), player);
+            } catch (IllegalArgumentException refused) {
+                error(player, "Bridge start failed: " + refused.getMessage());
+                return;
+            }
+            sessions.put(player.getUuid(), next);
+            send(player, new BridgeNet.Link(next.id, next.origin, next.world.getRegistryKey().getValue().toString(), ""));
+            try {
+                next.publish();
+            } catch (IllegalArgumentException failure) {
+                end(next, "Bridge start failed: " + failure.getMessage());
+                return;
+            }
+            // The pause menu keeps a singleplayer world running only for its host (never on a LAN or dedicated server).
+            if (!next.server.isRemote() && next.server.isHost(player.getGameProfile()))
+                pauseBinding = new PauseBinding(next.server, player.getUuid(), next.world.getRegistryKey().getValue().toString());
+            player.sendMessage(Text.literal("Stellar Bridge ready: " + next.boxes.size()
                     + " collision boxes. Enter the imported patch in Stellar Blade to control this player's position."), false);
-            LOG.info("Bridge started: session={} origin={} revision={} boxes={}", next.id, next.origin, next.revision, next.boxes.size());
-            return 1;
-        } catch (IOException | IllegalArgumentException exception) {
-            return error(source, "Bridge start failed: " + exception.getMessage());
+            LOG.info("Bridge started: player={} session={} origin={} revision={} boxes={}", player.getGameProfile().getName(),
+                    next.id, next.origin, next.revision, next.boxes.size());
         }
     }
 
-    /** A singleplayer world's own server (isRemote: open to LAN, or dedicated) with its owner as the only player. */
-    private static boolean eligible(MinecraftServer server, ServerPlayerEntity player) {
-        return player != null && !server.isRemote()
-                && server.getPlayerManager().getCurrentPlayerCount() == 1 && server.isHost(player.getGameProfile())
-                && !player.isSpectator() && !player.hasVehicle();
+    /** Any player whose client completed the handshake, on foot and not a spectator. */
+    private static boolean eligible(ServerPlayerEntity player) {
+        return player != null && BridgeNet.greeted(player) && !player.isSpectator() && !player.hasVehicle();
     }
 
-    private static int stopCommand(ServerCommandSource source) {
-        if (session == null) return error(source, "No bridge session is active.");
-        if (source.getPlayer() != session.player) return error(source, "Only the local bridge owner can stop this session.");
-        stop("Stopped by the local owner");
-        return 1;
-    }
-
-    /**
-     * /stellar import, enter and return: Stellar Blade's F5, F8 and F11 through a session request (eve-request.txt), one at
-     * a time; Lua's answer is shown in chat.
-     */
-    private static int request(ServerCommandSource source, String action) {
-        Session current = session;
-        if (current == null) return error(source, "No bridge session is active. Use /stellar start first.");
-        if (source.getPlayer() != current.player) return error(source, "Only the local bridge owner can send requests to Stellar Blade.");
-        if (current.request != null) return error(source, "Waiting for Stellar Blade's answer to /stellar " + current.request.action() + ".");
-        try {
-            long seq = current.requestSeq + 1;
-            current.files.write("eve-request.txt", BridgeProtocol.encodeRequest(current.id, seq, System.currentTimeMillis(), action));
-            current.requestSeq = seq;
-            current.request = new Request(seq, action, System.nanoTime());
-            source.sendFeedback(() -> Text.literal("Sent /stellar " + action + " to Stellar Blade."), false);
-            return 1;
-        } catch (IOException | IllegalArgumentException failure) {
-            return error(source, "Request not delivered to Stellar Blade: " + failure.getMessage());
-        }
-    }
-
-    private static int status(ServerCommandSource source) {
-        Session current = session;
-        source.sendFeedback(() -> Text.literal(current == null ? "Stellar Bridge is inactive."
+    private static void status(ServerPlayerEntity player) {
+        Session current = sessions.get(player.getUuid());
+        player.sendMessage(Text.literal(current == null ? "Stellar Bridge is inactive."
                 : "Stellar Bridge: revision " + current.revision + ", " + current.boxes.size()
                     + " boxes, window around block " + Session.middle(current.centre).toShortString() + ", slowest terrain publication " + current.slowestPublish / 1_000_000 + " ms, EVE position "
-                    + (control == null ? "waiting" : "active") + "."), false);
-        return 1;
+                    + (controls.containsKey(player.getUuid()) ? "active" : "waiting") + "."), false);
     }
 
-    private static int error(ServerCommandSource source, String message) {
-        source.sendError(Text.literal(message));
-        return 0;
+    private static void error(ServerPlayerEntity player, String message) {
+        player.sendMessage(Text.literal(message).formatted(Formatting.RED), false);
     }
 
-    private static void stop(String reason) {
-        Session previous = session;
-        session = null;
-        control = null;
-        pauseBinding = null;
-        AvatarCombat.restoreTime(true);
-        AvatarStats.stopHeals();
-        NativeSceneCapture.stop();
-        if (previous == null) return;
+    /** A payload for the player's client, if it listens on that channel (a client without the mod never does). */
+    static void send(ServerPlayerEntity player, CustomPayload payload) {
+        if (ServerPlayNetworking.canSend(player, payload.getId())) ServerPlayNetworking.send(player, payload);
+    }
+
+    /** Ends a session; the reason goes to its player's chat and client, none when the player leaves. */
+    private static void end(Session previous, String reason) {
+        UUID owner = previous.player.getUuid();
+        sessions.remove(owner);
+        controls.remove(owner);
+        PauseBinding binding = pauseBinding;
+        if (binding != null && binding.owner().equals(owner)) pauseBinding = null;
+        NativeSceneCapture.Snapshot scene = NativeSceneCapture.snapshot();
+        if (scene != null && scene.owner().equals(owner)) NativeSceneCapture.stop();
+        if (sessions.isEmpty()) {
+            AvatarCombat.restoreTime(true);
+            AvatarStats.stopHeals();
+        }
         AvatarStats.apply(previous.player, AvatarStats.Values.BASE); // Minecraft's own maximum health again.
-        try { previous.files.stop(); }
-        catch (IOException exception) { LOG.warn("Could not delete terrain snapshot; its heartbeat will expire", exception); }
+        LOG.info("Bridge stopped: player={} {}", previous.player.getGameProfile().getName(), reason == null ? "left" : reason);
+        if (reason == null) return;
+        send(previous.player, new BridgeNet.Link("", Vec3d.ZERO, "", reason));
         previous.player.sendMessage(Text.literal("Stellar Bridge stopped: " + reason), false);
-        LOG.info("Bridge stopped: {}", reason);
     }
 
     private static void tick(MinecraftServer server) {
         AvatarCombat.restoreTime(false);
-        Session current = session;
-        if (current == null || current.server != server) return;
-        ServerPlayerEntity live = current.server.getPlayerManager().getPlayer(current.player.getUuid());
+        for (Session current : List.copyOf(sessions.values())) if (current.server == server) tick(current);
+    }
+
+    private static void tick(Session current) {
+        UUID owner = current.player.getUuid();
+        ServerPlayerEntity live = current.server.getPlayerManager().getPlayer(owner);
         // A death in Minecraft keeps the link and Stellar Blade's lab: the player respawned in the session's world returns
         // to the anchor. Any other replacement (another dimension, hardcore spectator, the End's exit) ends the session.
         if (live != null && live != current.player && live.isAlive() && current.player.isDead()
-                && live.getServerWorld() == current.world && eligible(current.server, live)) current.revive(live);
+                && live.getServerWorld() == current.world && eligible(live)) current.revive(live);
         boolean dead = !current.player.isAlive();
-        if (live != current.player || !eligible(current.server, current.player) || !dead && current.player.getServerWorld() != current.world) {
-            stop("The original private session is no longer available");
+        String ended = live == null ? "The player left"
+                : live != current.player || !dead && current.player.getServerWorld() != current.world
+                    ? "The player respawned elsewhere or changed dimension. Use /stellar start again where you stand."
+                : !eligible(current.player) ? "The player became a spectator or mounted something. Use /stellar start again on foot."
+                : null;
+        if (ended != null) {
+            end(current, ended);
             return;
         }
-        current.answer();
-        if (!dead) AvatarStats.apply(current.player, AvatarStats.current()); // A respawned player gets them anew.
-        AvatarStats.heal(current.player, !dead && overrides(current.player));
+        // EVE's stats and heals still come from this JVM's client, so only its own player gets them.
+        if (current.server.isHost(current.player.getGameProfile())) {
+            if (!dead) AvatarStats.apply(current.player, AvatarStats.current()); // A respawned player gets them anew.
+            AvatarStats.heal(current.player, !dead && overrides(current.player));
+        }
         try {
             if (++current.ticks % 4 == 0) current.publish();
             if (dead) { // The terrain heartbeat goes on; EVE drives nobody until the respawn.
-                control = null;
+                controls.remove(owner);
                 return;
             }
-            BridgeProtocol.Eve eve = current.gate.accept(current.files.readEve(current.id), current.revision, now());
+            long now = System.currentTimeMillis();
+            BridgeProtocol.Eve eve = current.gate.accept(current.relay.latest(), current.revision,
+                    EveRelay.clientSeconds(now, current.relay.clock()));
             if (eve == null) {
-                control = null;
+                controls.remove(owner);
                 // Once she has left the link, the window returns to the anchor, where Stellar Blade imports it again.
-                if (current.gate.away(now())) current.feet = current.origin;
+                if (current.gate.away(EveRelay.clientSeconds(now, current.relay.clock()))) current.feet = current.origin;
                 return;
             }
             Vec3d position = current.origin.add(eve.x(), eve.y(), eve.z());
-            control = new Control(current.server, current.player, current.world.getRegistryKey().getValue().toString(),
-                    position, eve.time(), System.nanoTime(), current.id, current.revision, current.origin);
+            controls.put(owner, new Control(current.player, eve.time(), System.nanoTime(), current.relay.clock()));
             move(current.player, position);
             current.feet = position; // The terrain window follows her from the next publication.
             // Vanilla recentres chunk loading and sending only from move packets, which the bridge cancels.
             current.world.getChunkManager().updatePosition(current.player);
             AvatarCombat.shove(current.player);
             current.publishMobs();
-        } catch (IOException | IllegalArgumentException exception) {
-            stop(exception.getMessage());
+        } catch (IllegalArgumentException exception) {
+            end(current, exception.getMessage());
         }
     }
 
@@ -214,57 +218,40 @@ public final class BridgeServer implements ModInitializer {
     }
 
     /**
-     * Server thread: the bridge session's player while EVE cannot answer, behind a pause menu the world keeps running
-     * through, without a live link (EVE outside the patch, stale packets), or while Stellar Blade withholds her input
-     * (its own pause or a cutscene keeps the link live).
+     * Server thread: the singleplayer host's bridged player while EVE cannot answer, behind a pause menu the world keeps
+     * running through, without a live link (EVE outside the patch, stale packets), or while Stellar Blade withholds her
+     * input (its own pause or a cutscene keeps the link live).
      */
     static boolean defenseless(ServerPlayerEntity player) {
         PauseBinding current = pauseBinding;
-        return current != null && player.getUuid().equals(current.owner) && (pauseOverridden || !overrides(player) || halted);
+        return current != null && player.getUuid().equals(current.owner) && !current.server.isRemote()
+                && (pauseOverridden || !overrides(player) || halted);
     }
 
     record PauseBinding(MinecraftServer server, UUID owner, String dimension) { }
 
     public static boolean overrides(ServerPlayerEntity player) {
-        Control current = control;
-        return live(current) && current.owner == player && !current.server.isRemote();
+        Control current = controls.get(player.getUuid());
+        return live(current) && current.owner == player;
     }
 
     /**
-     * Server thread: tells Stellar Blade the defense at an impact (eve-combat.txt), with the direction of the attack's
-     * origin when known, so EVE's own game can answer it.
+     * Server thread: tells the player's Stellar Blade the defense at an impact (a verdict its client writes to
+     * eve-combat.txt), with the direction of the attack's origin when known, so EVE's own game can answer it.
      */
-    static void combatEvent(String event, Vec3d from) {
-        Session current = session;
-        if (current == null) return;
+    static void combatEvent(ServerPlayerEntity player, String event, Vec3d from) {
+        if (!sessions.containsKey(player.getUuid())) return;
         double yaw = from == null ? Double.NaN // Unreal X, Y are Minecraft X, Z; yaw turns from +X toward +Y.
-                : Math.toDegrees(Math.atan2(from.z - current.player.getZ(), from.x - current.player.getX()));
-        try {
-            current.files.write("eve-combat.txt", BridgeProtocol.encodeCombat(current.id, ++current.combatSeq, System.currentTimeMillis(), event, yaw));
-        } catch (IOException | IllegalArgumentException failure) {
-            LOG.warn("Combat event not delivered to Stellar Blade: {}", failure.toString());
-        }
-    }
-
-    /** Server thread: the lock-on target's centre for Stellar Blade (eve-lock.txt) at a wall time, null once released. */
-    static void lockTarget(Vec3d center, long time) {
-        Session current = session;
-        if (current == null) return;
-        double[] relative = center == null ? null : new double[] {center.x - current.origin.x, center.y - current.origin.y, center.z - current.origin.z};
-        try {
-            current.files.write("eve-lock.txt", BridgeProtocol.encodeLock(current.id, ++current.lockSeq, time, relative));
-        } catch (IOException | IllegalArgumentException failure) {
-            LOG.warn("Lock-on not delivered to Stellar Blade: {}", failure.toString());
-        }
+                : Math.toDegrees(Math.atan2(from.z - player.getZ(), from.x - player.getX()));
+        send(player, new BridgeNet.Verdict((byte) BridgeProtocol.COMBAT_EVENTS.indexOf(event), (float) yaw));
     }
 
     public static void keepLocalLook(ServerPlayerEntity player, PlayerMoveC2SPacket packet) {
-        Control current = control;
-        if (current == null || !packet.changesLook()) return;
+        if (!controls.containsKey(player.getUuid()) || !packet.changesLook()) return;
         float yaw = packet.getYaw(0), pitch = packet.getPitch(0);
         if (!Float.isFinite(yaw) || !Float.isFinite(pitch)) return;
         // The packet callback can run on the connection thread; entity changes belong to the server.
-        current.server.execute(() -> {
+        player.getServer().execute(() -> {
             if (overrides(player)) {
                 player.setYaw(MathHelper.wrapDegrees(yaw));
                 player.setPitch(MathHelper.clamp(pitch, -90, 90));
@@ -272,23 +259,16 @@ public final class BridgeServer implements ModInitializer {
         });
     }
 
+    /** A fresh publication: TIME by its client's clock, applied within the last second. */
     static boolean live(Control current) {
-        return current != null && BridgeProtocol.fresh(current.packetTime, now())
+        return current != null && BridgeProtocol.fresh(current.packetTime, EveRelay.clientSeconds(System.currentTimeMillis(), current.clock))
                 && System.nanoTime() - current.updatedNanos < 1_000_000_000L;
     }
 
     private static long now() { return System.currentTimeMillis() / 1000; }
 
-    /** Immutable server publication; no live Session is exposed to the client. */
-    record Control(MinecraftServer server, ServerPlayerEntity owner, String dimension, Vec3d position, long packetTime,
-                   long updatedNanos, String session, int revision, Vec3d origin) { }
-
-    /**
-     * A session request awaiting Stellar Blade's answer. Lua takes it within 2.5 s of its millisecond TIME by a wall clock
-     * in whole seconds, so never later than 3.5 s: past ANSWER it can no longer run, and the next one may go.
-     */
-    private record Request(long seq, String action, long sentNanos) { }
-    private static final long ANSWER = 5_000_000_000L;
+    /** Immutable server publication of one bridged player; no live Session is exposed. clock as EveRelay's. */
+    record Control(ServerPlayerEntity owner, long packetTime, long updatedNanos, long clock) { }
 
     /**
      * The walls Stellar Blade gets for the entities' boxes: the MOBS nearest EVE's feet (by each box's bottom centre),
@@ -307,7 +287,7 @@ public final class BridgeServer implements ModInitializer {
         final MinecraftServer server;
         ServerPlayerEntity player; // Replaced by the respawned player after a death.
         final ServerWorld world;
-        final BridgeFiles files;
+        final EveRelay relay;
         final String id = UUID.randomUUID().toString().replace("-", "");
         final Vec3d origin;
         final PoseGate gate = new PoseGate(id);
@@ -320,15 +300,13 @@ public final class BridgeServer implements ModInitializer {
         long slowestPublish; // Nanoseconds of the slowest terrain publication (scan, merge, write) this session.
         int revision;
         int ticks;
-        long combatSeq, lockSeq, mobSeq, requestSeq;
-        Request request; // The session request awaiting Stellar Blade's answer.
-        boolean mobsListed; // The last eve-mobs.txt listed at least one entity.
+        List<BridgeProtocol.Box> mobsSent = List.of(); // The mob walls last sent to the client.
 
-        Session(MinecraftServer server, ServerPlayerEntity player, BridgeFiles files) {
+        Session(MinecraftServer server, ServerPlayerEntity player) {
             this.server = server;
             this.player = player;
             this.world = player.getServerWorld();
-            this.files = files;
+            this.relay = new EveRelay(id);
             this.origin = new Vec3d(Math.floor(player.getX()) + 0.5, Math.floor(player.getY()), Math.floor(player.getZ()) + 0.5);
             Box entry = player.getBoundingBox().offset(origin.subtract(player.getPos()));
             if (!world.isSpaceEmpty(player, entry)) throw new IllegalArgumentException("The center of the starting block must be clear");
@@ -341,28 +319,6 @@ public final class BridgeServer implements ModInitializer {
             bounds = TerrainGeometry.window(centre, origin);
         }
 
-        /** Each tick: Stellar Blade's answer to the pending session request, in chat; a request unanswered after ANSWER, once. */
-        void answer() {
-            if (request == null) return;
-            BridgeProtocol.RequestAck ack = null;
-            try {
-                String text = files.read("eve-request-ack.txt");
-                if (text != null) ack = BridgeProtocol.parseRequestAck(text);
-            } catch (IOException | IllegalArgumentException unreadable) {
-                // Malformed, foreign or being replaced: only a valid answer to this request counts.
-            }
-            if (ack != null && ack.session().equals(id) && ack.seq() == request.seq() && ack.action().equals(request.action())) {
-                player.sendMessage(Text.literal("Stellar Blade " + ack.action() + " " + ack.result() + ": " + ack.message()), false);
-                LOG.info("Session request {} {}: {}: {}", ack.seq(), ack.action(), ack.result(), ack.message());
-                request = null;
-            } else if (System.nanoTime() - request.sentNanos() > ANSWER) {
-                player.sendMessage(Text.literal("Stellar Blade did not answer /stellar " + request.action()
-                        + ". Check that it runs Lua revision 57, or use its key."), false);
-                LOG.info("Session request {} {}: no answer", request.seq(), request.action());
-                request = null;
-            }
-        }
-
         void revive(ServerPlayerEntity respawned) {
             player = respawned;
             respawned.teleport(world, origin.x, origin.y, origin.z, respawned.getYaw(), respawned.getPitch());
@@ -371,31 +327,32 @@ public final class BridgeServer implements ModInitializer {
             LOG.info("Bridge kept through a death: the respawned player returns to the anchor");
         }
 
+        /** The terrain window in the world. */
+        Box patch() {
+            return new Box(origin.x + bounds.minX(), origin.y + bounds.minY(), origin.z + bounds.minZ(),
+                    origin.x + bounds.maxX(), origin.y + bounds.maxY(), origin.z + bounds.maxZ());
+        }
+
         /**
          * Each tick EVE's position is applied: the living entities in the patch that her body shoves, nearest first and
-         * clipped to the patch, for Stellar Blade's walls (eve-mobs.txt). An empty list is written once, then nothing;
-         * Lua drops its walls when the heartbeat stops. A failure only costs the walls, never the session.
+         * clipped to the patch, for Stellar Blade's walls, sent to the client when they change (it renews eve-mobs.txt).
          */
         void publishMobs() {
-            Box patch = new Box(origin.x + bounds.minX(), origin.y + bounds.minY(), origin.z + bounds.minZ(),
-                    origin.x + bounds.maxX(), origin.y + bounds.maxY(), origin.z + bounds.maxZ());
+            Box patch = patch();
             List<BridgeProtocol.Box> mobs = mobWalls(patch, origin, player.getPos(), world.getOtherEntities(player, patch,
                     AvatarCombat.shoved(player)).stream().map(Entity::getBoundingBox).toList());
-            if (mobs.isEmpty() && !mobsListed) return;
-            try {
-                files.write("eve-mobs.txt", BridgeProtocol.encodeMobs(id, ++mobSeq, System.currentTimeMillis(), mobs));
-                mobsListed = !mobs.isEmpty();
-            } catch (IOException | IllegalArgumentException failure) {
-                LOG.warn("Mob walls not delivered to Stellar Blade: {}", failure.toString());
-            }
+            if (mobs.equals(mobsSent)) return;
+            send(player, new BridgeNet.Mobs(mobs));
+            mobsSent = mobs;
         }
 
         /**
          * Publishes the terrain window, moved to follow EVE's feet when TerrainGeometry.follow asks. A move that cannot
          * be made (unloaded chunks, too many boxes, too large a packet, the reach limit) holds the current window with an
          * action-bar warning at most every 5 s; EVE then meets its walls. A failure of the current window stops the session.
+         * The client gets each new revision and renews terrain.txt with its own clock.
          */
-        void publish() throws IOException {
+        void publish() {
             long started = System.nanoTime();
             // The window must stay loaded without the player entity: a dead player leaves the world after a second. The
             // ticket lasts 5 ticks and is renewed every 4, so it lapses by itself once the session ends. Radius 3 around
@@ -410,11 +367,11 @@ public final class BridgeServer implements ModInitializer {
                 catch (IllegalArgumentException held) { hold(held.getMessage()); }
             }
             if (next == null) next = snapshot(centre);
-            files.publish(next.text);
             long elapsed = System.nanoTime() - started;
             slowestPublish = Math.max(slowestPublish, elapsed);
             if (next.revision != revision) {
                 gate.published(next.revision, next.bounds);
+                send(player, new BridgeNet.Terrain(next.terrain));
                 LOG.info("Terrain revision={} boxes={} window={} publish={} ms", next.revision, next.boxes.size(),
                         Arrays.toString(next.centre), elapsed / 1_000_000);
             }
@@ -425,7 +382,7 @@ public final class BridgeServer implements ModInitializer {
             // Native visuals read the 9 × 9 columns around the anchor: once the window has left it and its chunks have
             // unloaded, never load them back for that (the last scene lapses within a second).
             int x = MathHelper.floor(origin.x), z = MathHelper.floor(origin.z);
-            if (world.isChunkLoaded((x - 4) >> 4, (z - 4) >> 4) && world.isChunkLoaded((x + 4) >> 4, (z - 4) >> 4)
+            if (server.isHost(player.getGameProfile()) && world.isChunkLoaded((x - 4) >> 4, (z - 4) >> 4) && world.isChunkLoaded((x + 4) >> 4, (z - 4) >> 4)
                     && world.isChunkLoaded((x - 4) >> 4, (z + 4) >> 4) && world.isChunkLoaded((x + 4) >> 4, (z + 4) >> 4))
                 NativeSceneCapture.capture(server, world, player.getUuid(), new NativeScene.Binding(id, revision,
                         world.getRegistryKey().getValue().toString(), new CaptureFrame.Position(origin.x, origin.y, origin.z)));
@@ -437,7 +394,7 @@ public final class BridgeServer implements ModInitializer {
             return new BlockPos(c[0] * TerrainGeometry.CELL + half, c[1] * TerrainGeometry.CELL + half, c[2] * TerrainGeometry.CELL + half);
         }
 
-        private record Snapshot(int[] centre, BridgeProtocol.Box bounds, List<BridgeProtocol.Box> boxes, int revision, String text) { }
+        private record Snapshot(int[] centre, BridgeProtocol.Box bounds, List<BridgeProtocol.Box> boxes, int revision, BridgeProtocol.Terrain terrain) { }
 
         /** The encoded window around cell c, without changing the session. */
         private Snapshot snapshot(int[] c) {
@@ -447,8 +404,10 @@ public final class BridgeServer implements ModInitializer {
                 throw new IllegalArgumentException("EVE is near the bridge's reach, " + (int) BridgeProtocol.MAX_REACH + " blocks from the start");
             List<BridgeProtocol.Box> next = TerrainGeometry.merge(scan(window), window, origin.x, origin.y, origin.z, cells);
             int nextRevision = revision == 0 || !next.equals(boxes) || !window.equals(bounds) ? Math.addExact(revision, 1) : revision;
-            return new Snapshot(c, window, next, nextRevision, BridgeProtocol.encodeTerrain(new BridgeProtocol.Terrain(id,
-                    nextRevision, now(), world.getRegistryKey().getValue().toString(), origin.x, origin.y, origin.z, window, next)));
+            var terrain = new BridgeProtocol.Terrain(id, nextRevision, now(), world.getRegistryKey().getValue().toString(),
+                    origin.x, origin.y, origin.z, window, next);
+            BridgeProtocol.encodeTerrain(terrain); // Refuses what the client could not write (a packet over 64 KiB).
+            return new Snapshot(c, window, next, nextRevision, terrain);
         }
 
         /**

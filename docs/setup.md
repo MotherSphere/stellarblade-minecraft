@@ -62,7 +62,7 @@ Avatar mode also needs the private avatar pack in `~/.local/share/stellar-blade-
 
 Follow the [main session sequence](../README.md#start-a-session). All bridge components start inactive.
 
-The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (dedicated, or a world opened to LAN). Modded clients must run the same [network protocol](../protocol/README.md#minecraft-network-protocol-1), else the server disconnects them with both versions named; players without the mod join as usual. The bridge link itself still needs a singleplayer world.
+The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (dedicated, or a world opened to LAN). Modded clients must run the same [network protocol](../protocol/README.md#minecraft-network-protocol-1), else the server disconnects them with both versions named; players without the mod join as usual. Each modded player can link their own Stellar Blade there with `/stellar start`, as in singleplayer; the server keeps every player's session, and each client writes its own bridge directory. Other players see EVE players as vanilla player models for now.
 
 ## Update and remove
 

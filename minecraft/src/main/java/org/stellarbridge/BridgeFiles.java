@@ -45,21 +45,27 @@ final class BridgeFiles {
         }
     }
 
-    BridgeProtocol.Eve readEve(String session) throws IOException {
+    /** The newest valid eve.N packet of the session, as Lua wrote it (the client relays this text), or null. */
+    String readEve(String session) throws IOException {
         BridgeProtocol.Eve newest = null;
+        String text = null;
         for (int slot = 0; slot < 2; slot++) {
             Path path = checked("eve." + slot);
             if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) continue;
             try (var input = Files.newInputStream(path, LinkOption.NOFOLLOW_LINKS)) {
                 byte[] bytes = input.readNBytes(MAX_BYTES + 1);
                 if (bytes.length > MAX_BYTES) continue;
-                BridgeProtocol.Eve packet = BridgeProtocol.parseEve(new String(bytes, StandardCharsets.UTF_8));
-                if (packet.session().equals(session) && (newest == null || packet.seq() > newest.seq())) newest = packet;
+                String read = new String(bytes, StandardCharsets.UTF_8);
+                BridgeProtocol.Eve packet = BridgeProtocol.parseEve(read);
+                if (packet.session().equals(session) && (newest == null || packet.seq() > newest.seq())) {
+                    newest = packet;
+                    text = read;
+                }
             } catch (IllegalArgumentException | java.nio.file.NoSuchFileException rejected) {
                 // A missing inactive slot or malformed publication never controls the player.
             }
         }
-        return newest;
+        return text;
     }
 
     /** A bounded snapshot, or null when it is missing, oversized or not a regular file. */

@@ -34,7 +34,7 @@ The lab site and Stellar Blade's streaming: F6 logs `World Composition tiles loa
 
 ## Server handshake
 
-A modded client joining a server of another network protocol is disconnected with `Stellar Bridge protocol mismatch: this server runs protocol S (mod V), your client protocol C (mod W). Install Stellar Bridge V to join, or join without the mod.` Install the server's version, or remove the mod from that client. `ServerSafetyTest` (part of `tools/check.py`) fails when a class a dedicated server loads references client code, and names the class and the reference.
+A modded client joining a server of another network protocol is disconnected with `Stellar Bridge protocol mismatch: this server runs protocol S (mod V), your client protocol C (mod W). Install Stellar Bridge V to join, or join without the mod.` Install the server's version, or remove the mod from that client. On a server without the mod, `/stellar start`, `stop` and `status` answer `This server does not run Stellar Bridge; the link needs the mod on the server too.` Minecraft logs `Bridge linked: session=S origin=O dimension=D` on the client and `Bridge started: player=P ...` and `Bridge stopped: player=P reason` on the server; a session ends with `The player respawned elsewhere or changed dimension.`, or `The player became a spectator or mounted something.` in chat, each with the way back. `ServerSafetyTest` (part of `tools/check.py`) fails when a class a dedicated server loads references client code, and names the class and the reference.
 
 ## Minecraft views
 

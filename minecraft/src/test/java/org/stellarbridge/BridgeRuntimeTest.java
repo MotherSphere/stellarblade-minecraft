@@ -54,13 +54,13 @@ public final class BridgeRuntimeTest {
             String packet = "SBMC 2 EVE\nSESSION " + SESSION + "\nSEQ 3\nTIME 100\nSTATE entered 1\nPOS 0 0 0\nEND 3\n";
             Files.writeString(directory.resolve("eve.0"), packet);
             Files.writeString(directory.resolve("eve.1"), packet.replace("SEQ 3", "SEQ 4").replace("END 3", "END 4"));
-            assert files.readEve(SESSION).seq() == 4;
+            assert BridgeProtocol.parseEve(files.readEve(SESSION)).seq() == 4;
             Files.writeString(directory.resolve("eve.1"), "partial");
-            assert files.readEve(SESSION).seq() == 3;
+            assert BridgeProtocol.parseEve(files.readEve(SESSION)).seq() == 3;
             Files.writeString(directory.resolve("eve.1"), "x".repeat(65537));
-            assert files.readEve(SESSION).seq() == 3;
+            assert BridgeProtocol.parseEve(files.readEve(SESSION)).seq() == 3;
             Files.delete(directory.resolve("eve.1")); // Stellar Blade's writer between removing a slot and renaming its replacement.
-            assert files.readEve(SESSION).seq() == 3;
+            assert BridgeProtocol.parseEve(files.readEve(SESSION)).seq() == 3;
             Files.createDirectory(directory.resolve("eve.1"));
             try { files.readEve(SESSION); throw new AssertionError("Non-regular slot accepted"); }
             catch (java.io.IOException expected) { }

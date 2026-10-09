@@ -3,8 +3,8 @@ package org.stellarbridge;
 import java.util.TreeMap;
 
 /**
- * Monotonic packet selection for one explicitly bound session, against the terrain windows it published. Server-thread
- * confined.
+ * Monotonic packet selection for one explicitly bound session, against the terrain windows it published. Confined to
+ * one thread: the server's, or the owner's client, which predicts EVE's position with the same rules.
  */
 final class PoseGate {
     /** Seconds without a packet after which Stellar Blade counts as stopped; a pause menu stays well under it. */

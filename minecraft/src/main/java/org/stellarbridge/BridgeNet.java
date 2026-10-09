@@ -26,8 +26,8 @@ import net.minecraft.util.math.Vec3d;
  * The network contract between the bridge's server and client halves (protocol/README.md): PROTOCOL, its payloads with
  * bounded codecs, and the version handshake in the configuration phase. A client without the mod never receives hello,
  * joins as a vanilla player and sees EVE players as vanilla models; a modded client of another protocol is disconnected
- * with both versions named. Timestamps in client payloads are the client's own clocks: the server compares them only with
- * other stamps from the same client, never with its own clock.
+ * with both versions named. Timestamps in client payloads are the client's own clocks and never become the server's: it
+ * compares them with other stamps from the same client, or reads an eve packet's TIME by that client's clock (EveRelay).
  */
 public final class BridgeNet {
     /** Raised on any payload change. hello keeps its layout in every version, so any two versions can compare. */
@@ -44,6 +44,7 @@ public final class BridgeNet {
                 .map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse("unknown");
         PayloadTypeRegistry.configurationS2C().register(Hello.ID, Hello.CODEC);
         PayloadTypeRegistry.configurationC2S().register(Hello.ID, Hello.CODEC);
+        PayloadTypeRegistry.playC2S().register(LinkRequest.ID, LinkRequest.CODEC);
         PayloadTypeRegistry.playS2C().register(Link.ID, Link.CODEC);
         PayloadTypeRegistry.playC2S().register(Eve.ID, Eve.CODEC);
         PayloadTypeRegistry.playS2C().register(Terrain.ID, Terrain.CODEC);
@@ -131,6 +132,15 @@ public final class BridgeNet {
                 (hello, buf) -> buf.writeVarInt(hello.protocol).writeString(hello.version, NAME),
                 buf -> new Hello(buf.readVarInt(), buf.readString(NAME)));
         @Override public Id<Hello> getId() { return ID; }
+    }
+
+    /** C2S: /stellar start, stop or status, which the server checks for this player. */
+    record LinkRequest(byte action) implements CustomPayload {
+        static final byte START = 0, STOP = 1, STATUS = 2;
+        static final Id<LinkRequest> ID = id("link_request");
+        static final PacketCodec<PacketByteBuf, LinkRequest> CODEC = PacketCodec.of(
+                (request, buf) -> buf.writeByte(request.action), buf -> new LinkRequest(bounded(buf, STATUS + 1, "link request")));
+        @Override public Id<LinkRequest> getId() { return ID; }
     }
 
     /** S2C: the player's link: the session (empty: none, with the reason in message) and its anchor. */

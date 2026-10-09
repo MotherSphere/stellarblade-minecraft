@@ -14,6 +14,8 @@ public final class BridgeNetTest {
         BridgeProtocol.Box box = new BridgeProtocol.Box(-1.5, 0, 2, 3, 4.25, 5);
         List<CustomPayload> payloads = List.of(
                 new BridgeNet.Hello(BridgeNet.PROTOCOL, "0.1.0"),
+                new BridgeNet.LinkRequest(BridgeNet.LinkRequest.START),
+                new BridgeNet.LinkRequest(BridgeNet.LinkRequest.STATUS),
                 new BridgeNet.Link("a".repeat(32), new Vec3d(10.5, 64, -3.5), "minecraft:overworld", ""),
                 new BridgeNet.Link("", Vec3d.ZERO, "", "Stand on a full block floor before starting the bridge."),
                 new BridgeNet.Eve("SBMC 2 EVE\n" + "x".repeat(1000), 1_760_000_000_123L),
@@ -39,7 +41,7 @@ public final class BridgeNetTest {
             assert buf.readableBytes() == 0 : "Everything written is read: " + payload;
             assert back.toString().equals(payload.toString()) : back + " != " + payload; // NaN-safe record comparison.
         }
-        assert ids.size() == 11 : "One channel per payload kind, hello both ways: " + ids;
+        assert ids.size() == 12 : "One channel per payload kind, hello both ways: " + ids;
         int bytes = encoded(new BridgeNet.Strike(42, BridgeNet.Strike.LIGHT, (byte) 0, null)).readableBytes();
         assert bytes == 3 : "A melee strike is 3 bytes, not " + bytes;
 
@@ -51,6 +53,7 @@ public final class BridgeNetTest {
             for (int k = 0; k < 9; k++) buf.writeDouble(k); // Origin and bounds.
             buf.writeVarInt(BridgeProtocol.MAX_BOXES + 1);
         });
+        refused(BridgeNet.LinkRequest.CODEC, buf -> buf.writeByte(BridgeNet.LinkRequest.STATUS + 1));
         refused(BridgeNet.Link.CODEC, buf -> buf.writeString("d".repeat(33)));
         refused(BridgeNet.Hello.CODEC, buf -> buf.writeVarInt(1).writeString("v".repeat(BridgeNet.NAME + 1)));
         refused(BridgeNet.Eve.CODEC, buf -> buf.writeString("e".repeat(BridgeNet.TEXT + 1), BridgeNet.TEXT + 1).writeLong(0));
@@ -71,7 +74,7 @@ public final class BridgeNetTest {
         String message = BridgeNet.mismatch(new BridgeNet.Hello(BridgeNet.PROTOCOL + 1, "9.9.9"));
         assert message != null && message.contains("protocol " + BridgeNet.PROTOCOL) && message.contains("protocol " + (BridgeNet.PROTOCOL + 1))
                 && message.contains("9.9.9") && message.contains("without the mod") : message;
-        System.out.println("Bridge network tests passed: 11 payload channels round trip, hostile sizes and values refused, protocol mismatch message");
+        System.out.println("Bridge network tests passed: 12 payload channels round trip, hostile sizes and values refused, protocol mismatch message");
     }
 
     private static PacketByteBuf buffer() { return new PacketByteBuf(Unpooled.buffer()); }

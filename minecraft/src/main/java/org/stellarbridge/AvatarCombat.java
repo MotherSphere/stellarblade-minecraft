@@ -176,14 +176,14 @@ public final class AvatarCombat {
             boolean hurt = applied(player, source, amount);
             if (hurt) {
                 counts.incrementAndGet(1 + defense.ordinal());
-                BridgeServer.combatEvent(event(defense, amount), source.getPosition());
+                BridgeServer.combatEvent(player, event(defense, amount), source.getPosition());
             }
             return hurt;
         }
         counts.incrementAndGet(1 + defense.ordinal());
         // Stellar Blade answers with its own time and effects; the action bar names the verdict.
         String name = defense.name().toLowerCase(java.util.Locale.ROOT);
-        if (defense != Defense.DODGE) BridgeServer.combatEvent(event(defense, amount), source.getPosition());
+        if (defense != Defense.DODGE) BridgeServer.combatEvent(player, event(defense, amount), source.getPosition());
         player.sendMessage(net.minecraft.text.Text.translatable("stellar_bridge.combat." + name), true);
         switch (defense) {
             case PERFECT_PARRY -> {
