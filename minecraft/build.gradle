@@ -55,6 +55,7 @@ processResources {
     avatarStreamTest: 'AvatarStreamTest',
     avatarItemsTest: 'AvatarItemsTest',
     wardrobeTest: 'WardrobeTest',
+    serverSafetyTest: 'ServerSafetyTest',
 ].each { taskName, testClass ->
     def suite = tasks.register(taskName, JavaExec) {
         dependsOn testClasses

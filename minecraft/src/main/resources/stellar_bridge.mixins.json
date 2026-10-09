@@ -2,6 +2,7 @@
   "required": true,
   "package": "org.stellarbridge.mixin",
   "compatibilityLevel": "JAVA_21",
-  "client": ["ClientPlayerMovementMixin", "AvatarPlayerMixin", "AvatarDefenseMixin", "AvatarLockMixin", "AvatarHudMixin", "ChatHudMixin", "AvatarCameraMixin", "ServerPlayerMovementMixin", "CaptureCameraMixin", "CaptureGameRendererMixin", "BridgePauseMixin", "ControlKeyboardMixin", "ControlMouseMixin", "ControlClientMixin"],
+  "mixins": ["AvatarDefenseMixin", "ServerPlayerMovementMixin"],
+  "client": ["ClientPlayerMovementMixin", "AvatarPlayerMixin", "AvatarLockMixin", "AvatarHudMixin", "ChatHudMixin", "AvatarCameraMixin", "CaptureCameraMixin", "CaptureGameRendererMixin", "BridgePauseMixin", "ControlKeyboardMixin", "ControlMouseMixin", "ControlClientMixin"],
   "injectors": { "defaultRequire": 1 }
 }
