@@ -29,6 +29,7 @@ public final class RemoteEveTest {
         lenient();
         hair();
         clock();
+        clockStep();
         recording();
         System.out.println("Remote EVE tests passed");
     }
@@ -318,6 +319,36 @@ public final class RemoteEveTest {
                     : remote.interval + " " + remote.stalls + " " + remote.floor;
         }
     }
+    /**
+     * A clock step: the sender's clock goes back 1 s after a minute (an NTP step), with transit 80 ms ±20 ms. Within a
+     * window and a second (the ring's times wait for the new publications to pass the old ones, as Eve.accept keeps them
+     * ordered) the floor takes the step and the display time falls among the received poses again, rather than running
+     * ahead of the newest for the quarter hour 1 ms a second would take.
+     */
+    static void clockStep() {
+        RemoteEves.Remote remote = new RemoteEves.Remote(UUID.randomUUID());
+        double[] times = new double[RemoteEves.RING];
+        int newest = -1, count = 0, frames = 0, late = 0;
+        double viewer = 0, previousArrival = 0, settled = 60_000 + (RemoteEves.FLOOR_WINDOW_NANOS / 1e6) + 1000;
+        for (int k = 0; k < 2400; k++) {
+            long publication = 50L * k + 3000 - (k >= 1200 ? 1000 : 0);
+            double arrival = Math.max(previousArrival, 50.0 * k + 80 + (random.nextDouble() * 40 - 20));
+            for (; viewer < arrival; viewer += 1000.0 / 144) {
+                if (count < 4 || viewer < settled) continue;
+                if (RemoteEves.displayTime(viewer, remote.floor, remote.interval) > times[newest] + 0.5 * remote.interval) late++;
+                frames++;
+            }
+            remote.accept(new NetPose.Pose(k + 1, publication, new int[] {NetPose.WORLD}, new float[10]), 100, arrival, (long) (arrival * 1e6));
+            previousArrival = arrival;
+            double time = count > 0 ? Math.max(publication, times[newest] + 0.5) : publication;
+            newest = (newest + 1) % RemoteEves.RING;
+            times[newest] = time;
+            count = Math.min(count + 1, RemoteEves.RING);
+        }
+        assert frames > 5000 && late < frames / 100 : late + " of " + frames + " frames more than half an interval past the newest pose";
+        assert remote.floor > -3000 + 1000 + 60 && remote.floor < -3000 + 1000 + 160 : remote.floor;
+    }
+
     /** A one-component pose whose world X is a publication time, so interpolation shows the time it draws. */
     private static AvatarRecording.Pose pose(double time) {
         float[] world = AvatarModelTest.IDENTITY.clone();

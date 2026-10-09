@@ -42,6 +42,9 @@ final class RemoteEves {
     static final int RING = 8;
     static final long SILENT_NANOS = 3_000_000_000L; // A remote without a pose for this long is not drawn.
     static final double INTERVAL_CAP = 1000; // Milliseconds: longer gaps (a stall) leave the interval average alone.
+    // A window whose least arrival minus publication stays STEP ms above the clock floor moves the floor there at once.
+    static final long FLOOR_WINDOW_NANOS = 5_000_000_000L;
+    static final double STEP = 250;
     static final boolean TOOLS = Boolean.getBoolean("stellarbridge.netTools");
     /** The echo: this player's own stream as a remote ECHO_NANOS late, ECHO_OFFSET blocks along +X. */
     static final UUID ECHO = new UUID(0x53424d4345484f00L, 1);
@@ -65,6 +68,8 @@ final class RemoteEves {
         double floor = Double.NaN; // Milliseconds: the least arrival minus publication, rising 1 ms a second.
         double lag, interval = 1000.0 / RATE; // The newest pose's arrival minus publication; publications apart (average).
         double newestPublication = Double.NaN;
+        double lowest = Double.POSITIVE_INFINITY; // The least lag in the window since lowestNanos.
+        long lowestNanos;
         long floorNanos, lastNanos, poses, bytes, stalls, malformed, untabled, windowNanos = System.nanoTime(), windowPoses, windowBytes;
         double rate, byteRate;
 
@@ -87,6 +92,15 @@ final class RemoteEves {
             newestPublication = pose.publication();
             lag = arrival - pose.publication();
             floor = floor(floor, lag, (nanos - floorNanos) / 1e9);
+            // A clock step (the sender's back, or this one's forward) raises every lag at once, which the floor's 1 ms a
+            // second would take hours to absorb, drawing her ahead of her newest pose meanwhile. A stall cannot move it:
+            // the window still holds the poses before the stall.
+            lowest = Math.min(lowest, lag);
+            if (nanos - lowestNanos >= FLOOR_WINDOW_NANOS) {
+                if (lowest > floor + STEP) floor = lowest;
+                lowest = Double.POSITIVE_INFINITY;
+                lowestNanos = nanos;
+            }
             floorNanos = lastNanos = nanos;
             poses++;
             this.bytes += bytes;
@@ -301,7 +315,7 @@ final class RemoteEves {
     /**
      * The clock floor after a pose whose arrival minus publication is lag, elapsedSeconds after the previous one: it drops
      * to any lower lag at once (transit plus the sender's clock offset, never negative transit) and otherwise rises 1 ms a
-     * second, so it follows clock drift both ways.
+     * second, so it follows clock drift both ways (Remote.accept also follows a clock step up within FLOOR_WINDOW_NANOS).
      */
     static double floor(double floor, double lag, double elapsedSeconds) {
         return Double.isNaN(floor) ? lag : Math.min(lag, floor + elapsedSeconds);
