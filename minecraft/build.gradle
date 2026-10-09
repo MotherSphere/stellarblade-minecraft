@@ -20,6 +20,17 @@ java {
 }
 
 tasks.withType(JavaCompile).configureEach { options.release = 21 }
+// Development runs for the one-PC multiplayer test (docs/setup.md): a local server, and a second offline client with
+// its own bridge directory, so it never overwrites the files of the instance linked to Stellar Blade.
+loom {
+    runs {
+        server { runDir 'run/server' }
+        client {
+            runDir 'run/client'
+            vmArg "-Dstellarbridge.directory=${file('run/client/bridge')}"
+        }
+    }
+}
 // Reproducible archives: a commit's JAR hash can be rebuilt and compared with an installed one.
 tasks.withType(AbstractArchiveTask).configureEach {
     preserveFileTimestamps = false
