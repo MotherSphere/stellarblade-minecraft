@@ -4,6 +4,8 @@ import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import org.joml.Matrix4d;
 import org.joml.Matrix4f;
 import org.joml.Vector3d;
@@ -32,7 +34,9 @@ import org.lwjgl.stb.STBImageWrite;
  * Stellar Blade's cloth as the adapter streams it (little-endian floats: ComponentRelativeTransform, then the simulation-space
  * particles), prints how far the drawn vertices lie from that cloth (CPU copy of the vertex shader) and, at the first time,
  * the per-frame CPU cost of the cloth path; bones with it draws her bones instead and prints their distance from the cloth.
- * tile=WxH sets each tile's pixels, as the wardrobe's preview rectangle, whose camera this is (AvatarView.studio).
+ * tile=WxH sets each tile's pixels, as the wardrobe's preview rectangle, whose camera this is (AvatarView.studio). net draws
+ * her as another player's client does, from the network form of her poses (see network), with as=MESH in place of her body
+ * mesh (driven by bone name) and hair with the HairB filter on her ponytail.
  */
 public final class AvatarRenderCheck {
     public static void main(String[] args) throws Exception {
@@ -76,7 +80,17 @@ public final class AvatarRenderCheck {
 
         AvatarRecording recording = AvatarRecording.read(poses);
         AvatarModel model = AvatarModel.load(pack, recording.components, new java.util.HashMap<>());
+        // net: another player's EVE, from the network form of the recording (see network); componentSpace bones then.
+        boolean net = java.util.List.of(args).contains("net");
+        if (net) {
+            String as = java.util.Arrays.stream(args).filter(a -> a.startsWith("as=")).map(a -> a.substring(3)).findFirst().orElse(null);
+            recording = network(recording, model, as, java.util.List.of(args).contains("hair"));
+            model = AvatarModel.load(pack, recording.components, new java.util.HashMap<>(), true);
+            if (model.parts.isEmpty() || model.parts.get(0).component() != 0) throw new IllegalArgumentException("No body to draw: " + model.skipped);
+        }
+        boolean componentSpace = net;
         String clothArgument = java.util.Arrays.stream(args).filter(a -> a.startsWith("cloth=")).findFirst().orElse(null);
+        if (net && clothArgument != null) throw new IllegalArgumentException("net draws the ponytail from bones: no cloth=");
         boolean bones = java.util.List.of(args).contains("bones");
         int clothComponent = -1, clothPart = -1;
         float[] cloth = null;
@@ -133,7 +147,7 @@ public final class AvatarRenderCheck {
             for (double t = 0; t < recording.duration(); t += 1 / 120.0) {
                 recording.sample(t, pose);
                 Matrix4d at = new Matrix4d().mul(AvatarModel.UNREAL_TO_MINECRAFT);
-                model.palettes(pose, at, renderer.palettes, false);
+                model.palettes(pose, at, renderer.palettes, componentSpace);
                 renderer.sampleTrail(pose, at, 0, 0, 0, t);
                 if (renderer.trailStrength() > 0.5) swings.append(String.format("%.2f ", t));
             }
@@ -148,11 +162,11 @@ public final class AvatarRenderCheck {
                 double now = Double.parseDouble(times[i]);
                 for (double t = Math.max(0, now - 0.3); t < now; t += 1 / 120.0) {
                     recording.sample(t, pose);
-                    model.palettes(pose, placement, renderer.palettes, false);
+                    model.palettes(pose, placement, renderer.palettes, componentSpace);
                     renderer.sampleTrail(pose, placement, eye.x, eye.y, eye.z, t);
                 }
                 recording.sample(now, pose);
-                model.palettes(pose, placement, renderer.palettes, false);
+                model.palettes(pose, placement, renderer.palettes, componentSpace);
                 renderer.sampleTrail(pose, placement, eye.x, eye.y, eye.z, now);
                 if (args.length > 5 && args[5].startsWith("fx=")) {
                     Matrix4f look = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
@@ -173,7 +187,7 @@ public final class AvatarRenderCheck {
                     GL11.glEnable(GL11.GL_SCISSOR_TEST);
                     GL11.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT);
                     GL11.glDisable(GL11.GL_SCISSOR_TEST);
-                    model.palettes(pose, placement, renderer.palettes, false);
+                    model.palettes(pose, placement, renderer.palettes, componentSpace);
                 }
                 Matrix4f view = new Matrix4f().lookAt(0, 0, 0, (float) (target.x - eye.x), (float) (target.y - eye.y), (float) (target.z - eye.z), 0, 1, 0);
                 Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(40), (float) tileWidth / tileHeight, 0.05f, 100);
@@ -225,6 +239,90 @@ public final class AvatarRenderCheck {
         System.out.println("wrote " + out);
         GLFW.glfwDestroyWindow(window);
         GLFW.glfwTerminate();
+    }
+
+    /**
+     * The recording as another player's client draws it: sampled at RemoteEves.RATE, its bones composed to component
+     * space (the stream's form), each pose through NetPose's encoder (keyframes and deltas) and decoder, then, with hair,
+     * through the HairB filter in order. as replaces the body's mesh (a viewer lacking the suit), driven by bone name.
+     */
+    static AvatarRecording network(AvatarRecording recording, AvatarModel model, String as, boolean hair) {
+        List<AvatarRecording.Component> components = new ArrayList<>();
+        for (var c : recording.components) // A recorded follower lists morphs it carries no weights for: the network table drops them.
+            components.add(new AvatarRecording.Component(c.name(), c.mesh(), c.leader(), c.bones(), c.weights() == c.morphs().length ? c.morphs() : new String[0], c.weights()));
+        NetPose.Table table = new NetPose.Table(1, 0, 0, 0, 100, "minecraft:overworld", components, new long[components.size()], List.of(), false);
+        AvatarMesh[] drivers = new AvatarMesh[components.size()];
+        for (var part : model.parts) if (part.leaderBones() == null) drivers[part.driver()] = part.mesh();
+        int[] status = new int[components.size()];
+        for (int i = 0; i < status.length; i++) {
+            var c = components.get(i);
+            status[i] = NetPose.WORLD | (c.recorded() && c.bones().length > 0 ? NetPose.BONES : 0) | (c.weights() > 0 ? NetPose.MORPHS : 0);
+        }
+        NetPose.Encoder encoder = new NetPose.Encoder(RemoteEves.KEYFRAMES);
+        NetPose.Decoder decoder = new NetPose.Decoder();
+        AvatarRecording.Pose sample = recording.emptyPose();
+        int count = (int) Math.floor(recording.duration() * RemoteEves.RATE) + 1;
+        double[] seconds = new double[count];
+        AvatarRecording.Pose[] frames = new AvatarRecording.Pose[count];
+        float[] payload = new float[table.floats()];
+        float[] space = new float[10 * AvatarMesh.MAX_BONES];
+        org.joml.Quaterniond parentRotation = new org.joml.Quaterniond(), rotation = new org.joml.Quaterniond();
+        Vector3d translation = new Vector3d();
+        for (int f = 0; f < count; f++) {
+            seconds[f] = recording.seconds[0] + (double) f / RemoteEves.RATE;
+            recording.sample((double) f / RemoteEves.RATE, sample);
+            int at = 0;
+            for (int i = 0; i < components.size(); i++) {
+                var c = components.get(i);
+                System.arraycopy(sample.world()[i], 0, payload, at, 10);
+                int bones = c.recorded() ? c.bones().length : 0;
+                for (int k = 0; k < bones; k++) {
+                    // Unreal's FTransform product, as its component space is: rotations and scales multiply, the
+                    // translation turns and scales by the parent's (a matrix product would shear the twist bones).
+                    float[] l = sample.local()[i];
+                    int parent = drivers[i] == null ? -1 : drivers[i].bones[k].parent(), q = 10 * k, r = 10 * parent;
+                    if (parent < 0) System.arraycopy(l, q, space, q, 10);
+                    else {
+                        parentRotation.set(space[r], space[r + 1], space[r + 2], space[r + 3]);
+                        parentRotation.mul(rotation.set(l[q], l[q + 1], l[q + 2], l[q + 3]), rotation).normalize();
+                        parentRotation.transform(translation.set(l[q + 4] * space[r + 7], l[q + 5] * space[r + 8], l[q + 6] * space[r + 9]));
+                        space[q] = (float) rotation.x; space[q + 1] = (float) rotation.y; space[q + 2] = (float) rotation.z; space[q + 3] = (float) rotation.w;
+                        space[q + 4] = (float) (translation.x + space[r + 4]); space[q + 5] = (float) (translation.y + space[r + 5]);
+                        space[q + 6] = (float) (translation.z + space[r + 6]);
+                        for (int e = 7; e < 10; e++) space[q + e] = l[q + e] * space[r + e];
+                    }
+                    System.arraycopy(space, q, payload, at + 10 + q, 10);
+                }
+                if (c.weights() > 0) System.arraycopy(sample.weights()[i], 0, payload, at + 10 + 10 * bones, c.weights());
+                at += 10 + 10 * bones + c.weights();
+            }
+            byte[] data = encoder.encode(table, new double[] {0, 0, 0, 100}, status, payload, -1, Math.round(seconds[f] * 1000));
+            NetPose.Pose pose = decoder.decode(table, NetPose.header(data), data);
+            float[][] world = new float[status.length][], local = new float[status.length][], weights = new float[status.length][];
+            at = 0;
+            for (int i = 0; i < components.size(); i++) {
+                var c = components.get(i);
+                int bones = c.recorded() ? c.bones().length : 0;
+                world[i] = java.util.Arrays.copyOfRange(pose.payload(), at, at + 10);
+                if (c.recorded()) {
+                    local[i] = java.util.Arrays.copyOfRange(pose.payload(), at + 10, at + 10 + 10 * bones);
+                    weights[i] = java.util.Arrays.copyOfRange(pose.payload(), at + 10 + 10 * bones, at + 10 + 10 * bones + c.weights());
+                }
+                at += 10 + 10 * bones + c.weights();
+            }
+            frames[f] = new AvatarRecording.Pose(world, local, weights, new float[status.length][]);
+        }
+        if (as != null) components.set(0, new AvatarRecording.Component(components.get(0).name(), as, null, components.get(0).bones(),
+                components.get(0).morphs(), components.get(0).weights()));
+        AvatarRecording network = new AvatarRecording(List.copyOf(components), seconds, frames);
+        if (hair) {
+            AvatarModel.HairFilter filter = AvatarModel.HairFilter.of(model, components);
+            if (filter == null) throw new IllegalArgumentException("No HairB chain to filter");
+            for (AvatarRecording.Pose frame : frames) filter.apply(frame, 1000.0 / RemoteEves.RATE);
+        }
+        System.out.printf("network: %d poses at %d Hz, %d keyframes, %d deltas, %.0f bytes a pose%n", count, RemoteEves.RATE, encoder.keys,
+                encoder.deltas, (double) encoder.bytes / count);
+        return network;
     }
 
     /** Median GPU milliseconds of a pass over 300 runs, after 30 to warm up. */

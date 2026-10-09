@@ -31,7 +31,7 @@ final class AvatarRecording {
     final double[] seconds;
     final Pose[] frames;
 
-    private AvatarRecording(List<Component> components, double[] seconds, Pose[] frames) {
+    AvatarRecording(List<Component> components, double[] seconds, Pose[] frames) {
         this.components = components;
         this.seconds = seconds;
         this.frames = frames;
