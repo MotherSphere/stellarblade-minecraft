@@ -539,11 +539,17 @@ public final class AvatarView {
         });
     }
 
-    /** Whether a remote's EVE is drawn now: built with a body, posed within SILENT_NANOS, in this dimension, in view last frame. */
+    /**
+     * Whether a remote's EVE is drawn now: built with a body, posed within SILENT_NANOS, in this dimension, and not of a
+     * player invisible to this one (an Invisibility effect, spectator mode), whom vanilla would not draw either.
+     */
     private static boolean drawable(RemoteEves.Remote remote, long nanos, String dimension) {
         Eve eve = remote.eve;
-        return eve != null && eve.posed && eve.hasBody() && eve.origin != null && nanos - remote.lastNanos <= RemoteEves.SILENT_NANOS
-                && remote.table.dimension().equals(dimension);
+        if (eve == null || !eve.posed || !eve.hasBody() || eve.origin == null || nanos - remote.lastNanos > RemoteEves.SILENT_NANOS
+                || !remote.table.dimension().equals(dimension)) return false;
+        var client = MinecraftClient.getInstance();
+        var player = remote.echo() || client.world == null ? null : client.world.getPlayerByUuid(remote.owner);
+        return player == null || client.player == null || !player.isInvisibleTo(client.player);
     }
     private static String dimension(net.minecraft.world.World world) { return world.getRegistryKey().getValue().toString(); }
 
@@ -565,6 +571,7 @@ public final class AvatarView {
                 Matrix4d placement = placement(eve.table.anchor(), eve.origin, camera);
                 float[] root = eve.root();
                 Vector3d feet = placement.transformPosition(new Vector3d(root[4], root[5], root[6])).add(camera.x, camera.y, camera.z);
+                remote.feet = new Vec3d(feet.x, feet.y, feet.z);
                 var frustum = context.frustum();
                 remote.culled = frustum != null && !frustum.isVisible(new net.minecraft.util.math.Box(feet.x - 1.5, feet.y - 0.5, feet.z - 1.5,
                         feet.x + 1.5, feet.y + 2.5, feet.z + 1.5));
@@ -1039,14 +1046,19 @@ public final class AvatarView {
 
     /**
      * Whether an EVE stands in for this entity's vanilla body: this player's (replaces), or another player's EVE drawn from
-     * this pack (built with a body, posed lately, in view last frame). Any other player keeps the vanilla model.
+     * this pack (built with a body, posed lately, in view last frame) showing her body within STANDS_IN blocks of that
+     * player. Any other player keeps the vanilla model, so poses that hide her or place her elsewhere hide no one.
      */
     public static boolean draws(Entity entity) {
         if (replaces(entity)) return true;
         if (!(entity instanceof net.minecraft.entity.player.PlayerEntity) || entity == MinecraftClient.getInstance().player) return false;
         RemoteEves.Remote remote = RemoteEves.get(entity.getUuid());
-        return remote != null && !remote.culled && drawable(remote, System.nanoTime(), dimension(entity.getWorld()));
+        return remote != null && !remote.culled && drawable(remote, System.nanoTime(), dimension(entity.getWorld())) && remote.eve.drawn[0]
+                && remote.feet != null && remote.feet.squaredDistanceTo(entity.getPos()) <= STANDS_IN * STANDS_IN;
     }
+    // Blocks between another player's entity and their EVE's feet within which she stands in for their body: her pose lags
+    // the entity by the display delay, and a sprinting player covers about 6 blocks a second.
+    static final double STANDS_IN = 8;
 
     private static String status() {
         if (replay != null) return "EVE avatar: replaying " + replay.model.parts.size() + " meshes from the pose probe recording.";

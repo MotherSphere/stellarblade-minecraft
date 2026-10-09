@@ -65,6 +65,7 @@ final class RemoteEves {
         long failed = -1; // The generation whose model this pack cannot draw: that player keeps a vanilla model.
         String failure;
         boolean drawn, near, culled; // In the last frame.
+        Vec3d feet; // Where her EVE's feet stood when last posed in view, in the world.
         double floor = Double.NaN; // Milliseconds: the least arrival minus publication, rising 1 ms a second.
         double lag, interval = 1000.0 / RATE; // The newest pose's arrival minus publication; publications apart (average).
         double newestPublication = Double.NaN;
