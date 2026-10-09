@@ -466,11 +466,30 @@ public final class NetPoseTest {
         for (NetPose.Header h : headers) if (PoseRelay.forward(h, last, true, tight, big, now)) { last = h.sequence(); sent++; }
         assert sent == 3 && tight.dropped == 2 && tight.withheld == 7 : sent + " " + tight.dropped + " " + tight.withheld;
         assert PoseRelay.forward(headers.get(10), last, true, tight, big, now + 1_000_000_000L) : "The budget refills";
-        // The sender's rate cap: RATE poses a second.
+        // The sender's caps: poses of its cached table's generation only, RATE poses and SENT bytes a second.
         PoseRelay.Sender sender = new PoseRelay.Sender();
+        assert !PoseRelay.admit(sender, headers.get(0), 5000, now) : "No table yet";
+        PoseRelay.cache(sender, t.encode());
+        assert !PoseRelay.admit(sender, new NetPose.Header(NetPose.KEY, t.generation() + 1, 1, 0, 1000, 12), 5000, now) : "Another generation";
         int taken = 0;
-        for (int k = 0; k < 50; k++) if (sender.rate.take(now)) taken++;
-        assert taken == (int) PoseRelay.RATE && sender.rate.take(now + 1_000_000_000L / 30) : taken;
+        for (int k = 0; k < 50; k++) if (PoseRelay.admit(sender, headers.get(0), 100, now)) taken++;
+        assert taken == (int) PoseRelay.RATE && PoseRelay.admit(sender, headers.get(0), 100, now + 1_000_000_000L / 30) : taken;
+        assert sender.poses == taken + 1 && sender.refused == 50 - taken + 2 : sender.poses + " " + sender.refused;
+        PoseRelay.Sender heavy = new PoseRelay.Sender();
+        PoseRelay.cache(heavy, t.encode());
+        taken = 0;
+        for (int k = 0; k < 35; k++) if (PoseRelay.admit(heavy, headers.get(0), NetPose.MAX_POSE, now)) taken++;
+        assert taken == (int) (PoseRelay.SENT / NetPose.MAX_POSE) && taken * NetPose.MAX_POSE < PoseRelay.BUDGET / 2 : taken;
+        // Tables: each goes out once, 2 a second; one over the cap waits for a later pose, and only the latest goes.
+        PoseRelay.Sender tables = new PoseRelay.Sender();
+        PoseRelay.cache(tables, t.encode());
+        assert PoseRelay.release(tables, now) && !PoseRelay.release(tables, now) : "A table goes once";
+        PoseRelay.cache(tables, t.encode());
+        assert PoseRelay.release(tables, now);
+        PoseRelay.cache(tables, t.encode());
+        PoseRelay.cache(tables, t.encode());
+        assert !PoseRelay.release(tables, now) && PoseRelay.release(tables, now + 500_000_000L) && !PoseRelay.release(tables, now + 500_000_000L)
+                && tables.tables == 4 : "Over the cap, the latest table waits";
         assert PoseRelay.BUDGET == 512 * 1024 : "512 KiB a second by default";
     }
 

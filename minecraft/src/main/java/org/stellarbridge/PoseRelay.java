@@ -14,20 +14,28 @@ import net.minecraft.server.network.ServerPlayerEntity;
  * the opaque bytes the codecs checked, to the players tracking that player whose clients listen (a client without the
  * mod or without an avatar pack does not). Interest: every pose within NEAR blocks, keyframes only beyond; a delta goes to
  * a viewer only on top of the pose it was made from, so a viewer that missed that pose (far, over its budget, newly
- * tracking) gets nothing until the next keyframe. Each sender is capped at RATE poses a second and each viewer at BUDGET
- * bytes a second. The latest table of each sender is cached for players who start tracking it. Server thread only.
+ * tracking) gets nothing until the next keyframe. Each sender is capped at RATE poses, SENT bytes and TABLES tables a
+ * second, each viewer at BUDGET bytes a second, so one client sending large or junk poses or a flood of tables cannot use
+ * up its viewers' budgets or keep their build workers busy. The latest table of each sender is cached for players who
+ * start tracking it. Server thread only.
  */
 final class PoseRelay {
-    static final double NEAR = 64, RATE = 35;
+    static final double NEAR = 64, RATE = 35, TABLES = 2;
     /** Bytes a second per viewer, -Dstellarbridge.relayBudget in KiB (512 by default: 7 remote EVEs take about 350). */
     static final double BUDGET = Math.max(16, Integer.getInteger("stellarbridge.relayBudget", 512)) * 1024.0;
     static final int OVERHEAD = 20; // Bytes a relayed payload adds: its channel, owner UUID and length.
+    /** Pose bytes a second from one sender: a quarter of a viewer's budget, 2.5 times a 20 Hz stream's 50 KB/s. */
+    static final double SENT = BUDGET / 4;
 
-    /** One sending player: the cached table and its generation, the rate cap, each viewer's last pose and the counts. */
+    /**
+     * One sending player: the cached table, its generation and whether its viewers still wait for it, the caps, each
+     * viewer's last pose and the counts.
+     */
     static final class Sender {
         byte[] table;
         long generation;
-        final AvatarCombat.Bucket rate = new AvatarCombat.Bucket(RATE);
+        boolean unsent;
+        final AvatarCombat.Bucket rate = new AvatarCombat.Bucket(RATE), volume = new AvatarCombat.Bucket(SENT), tableRate = new AvatarCombat.Bucket(TABLES);
         final Map<UUID, Long> forwarded = new HashMap<>(); // Viewer to the sequence of the last pose it got.
         long poses, bytes, refused, tables;
     }
@@ -48,12 +56,47 @@ final class PoseRelay {
     static void table(ServerPlayerEntity sender, byte[] data) {
         if (!BridgeNet.greeted(sender)) return; // Only a client of this protocol streams; poses without a table go nowhere.
         Sender s = senders.computeIfAbsent(sender.getUuid(), owner -> new Sender());
+        cache(s, data);
+        release(sender, s, System.nanoTime());
+    }
+
+    /** Caches a sender's new table, which its viewers still have to get; the new generation starts with a keyframe for everyone. */
+    static void cache(Sender s, byte[] data) {
         s.table = data;
         s.generation = ByteBuffer.wrap(data).getLong(); // A table starts with its generation (NetPose.Table.encode).
         s.tables++;
-        s.forwarded.clear(); // The new generation starts with a keyframe for everyone.
-        var out = new BridgeNet.RemoteTable(sender.getUuid(), data);
+        s.unsent = true;
+        s.forwarded.clear();
+    }
+
+    /**
+     * Whether a sender's cached table goes to its viewers at nanos: once, within TABLES a second. One over the cap waits
+     * for the sender's next pose (only its latest table goes), so a client cannot flood its viewers with outfit rebuilds.
+     */
+    static boolean release(Sender s, long nanos) {
+        if (!s.unsent || !s.tableRate.take(nanos)) return false;
+        s.unsent = false;
+        return true;
+    }
+
+    private static void release(ServerPlayerEntity sender, Sender s, long nanos) {
+        if (!release(s, nanos)) return;
+        var out = new BridgeNet.RemoteTable(sender.getUuid(), s.table);
         for (ServerPlayerEntity viewer : PlayerLookup.tracking(sender)) BridgeServer.send(viewer, out);
+    }
+
+    /**
+     * Whether a sender's pose of bytes is relayed at nanos: of its cached table's generation, within RATE poses and SENT
+     * bytes a second; counted on the sender.
+     */
+    static boolean admit(Sender s, NetPose.Header pose, int bytes, long nanos) {
+        if (pose.generation() != s.generation || !s.rate.take(nanos) || !s.volume.take(nanos, bytes)) {
+            s.refused++;
+            return false;
+        }
+        s.poses++;
+        s.bytes += bytes;
+        return true;
     }
 
     /** A sender's pose (its header checked by the codec): to each tracking viewer that should get it. */
@@ -62,12 +105,8 @@ final class PoseRelay {
         Sender s = senders.get(sender.getUuid());
         long now = System.nanoTime();
         if (s == null) return; // No table yet: no viewer could decode it.
-        if (header.generation() != s.generation || !s.rate.take(now)) {
-            s.refused++;
-            return;
-        }
-        s.poses++;
-        s.bytes += data.length;
+        release(sender, s, now); // A table held over the cap goes first.
+        if (!admit(s, header, data.length, now)) return;
         BridgeNet.RemotePose out = null;
         for (ServerPlayerEntity viewer : PlayerLookup.tracking(sender)) {
             if (!ServerPlayNetworking.canSend(viewer, BridgeNet.RemotePose.ID)) continue;
@@ -127,9 +166,9 @@ final class PoseRelay {
     static String status(ServerPlayerEntity player) {
         Sender s = senders.getOrDefault(player.getUuid(), new Sender());
         Viewer v = viewers.getOrDefault(player.getUuid(), new Viewer());
-        return String.format("Pose relay: from you %d poses (%d KB) and %d tables, %d refused (another generation or over %.0f a second);"
+        return String.format("Pose relay: from you %d poses (%d KB) and %d tables, %d refused (another generation, or over %.0f a second or %.0f KiB a second);"
                 + " to you %d poses (%d KB), %d dropped over your budget of %.0f KiB/s, %d deltas withheld (beyond %.0f blocks or after a"
-                + " missed pose); %d poses (%d KB) relayed in all.", s.poses, s.bytes / 1000, s.tables, s.refused, RATE, v.poses,
+                + " missed pose); %d poses (%d KB) relayed in all.", s.poses, s.bytes / 1000, s.tables, s.refused, RATE, SENT / 1024, v.poses,
                 v.bytes / 1000, v.dropped, BUDGET / 1024, v.withheld, NEAR, relayed, relayedBytes / 1000);
     }
 }
