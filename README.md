@@ -112,3 +112,9 @@ See [architecture](docs/architecture.md), [wire contracts](protocol/README.md) a
 The transport adapts [SkyCraft](https://github.com/chasmlol/SkyCraft)'s three-buffer ownership design. [SkyCraft PR 26](https://github.com/chasmlol/SkyCraft/pull/26) provides Linux mapping context; [2010 Rust rewrite mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) provides additional allocation-reuse and render-product examples. Engine-specific hooks are implemented and checked separately for Stellar Blade. See [third-party notices](THIRD-PARTY-NOTICES.md).
 
 No proprietary game assets are included.
+
+## License
+
+[GPL-3.0-or-later](LICENSE) © 2026 MotherSphere
+
+Stellar Blade × Minecraft is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed without any warranty; see the license for details. Code adapted from other projects keeps its own notice in [third-party notices](THIRD-PARTY-NOTICES.md).

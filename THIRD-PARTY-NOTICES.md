@@ -1,5 +1,7 @@
 # Third-party notices
 
+This repository is licensed under GPL-3.0-or-later ([LICENSE](LICENSE)). The work below is adapted or included under its own license, which stays with it.
+
 ## SkyCraft
 
 The raw frame transport adapts SkyCraft's three-buffer ownership and atomic publication design, including its producer/consumer exchange pattern. Reference implementation: `skse/src/Link.cpp`, `fabric/src/main/java/dev/skycraft/link/SkyLink.java` and `fabric/src/client/java/dev/skycraft/client/FrameExporter.java`, commit `bfcaf178524b92c2cdeb88e4ce0f13ef9ded6f32`.
