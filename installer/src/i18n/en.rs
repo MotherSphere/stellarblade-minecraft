@@ -175,6 +175,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "blocker_ue4ss_mods",
         "UE4SS's Mods folder was moved (ModsFolderPath): this release supports only the default folder.",
     ),
+    (
+        "blocker_game_files",
+        "A file where the bridge goes in the game folder is not the bridge's, or was changed (see the rows above). UE4SS 2.x, for example, also uses xinput1_3.dll. Remove or move that file; if it is the bridge's own, use Repair.",
+    ),
     ("viewer_still_possible", "The viewer role still works."),
     ("maintenance_title", "Installed pieces"),
     // Verify
@@ -219,6 +223,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     (
         "mods_missing",
         "This instance has no mods folder yet: start it once in its launcher, or pick another. ({path})",
+    ),
+    (
+        "manual_flatpak",
+        "This mods folder belongs to a Flatpak launcher, which cannot see the bridge folder. Choose the new dedicated instance instead: it carries the Java arguments that point Minecraft to the right folder.",
     ),
     ("multimc_title", "MultiMC"),
     ("multimc_placeholder", "/path/to/MultiMC"),

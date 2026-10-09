@@ -185,6 +185,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Le dossier Mods d'UE4SS a été déplacé (ModsFolderPath) : cette version ne prend en charge que le dossier par défaut.",
     ),
     (
+        "blocker_game_files",
+        "Un fichier à l'emplacement du pont dans le dossier du jeu n'est pas celui du pont, ou a été modifié (voir les lignes ci-dessus). UE4SS 2.x, par exemple, utilise aussi xinput1_3.dll. Supprimez ou déplacez ce fichier ; s'il s'agit de celui du pont, utilisez Réparer.",
+    ),
+    (
         "viewer_still_possible",
         "Le rôle de spectateur reste possible.",
     ),
@@ -231,6 +235,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     (
         "mods_missing",
         "Cette instance n'a pas encore de dossier mods : lancez-la une fois dans son launcher, ou choisissez-en une autre. ({path})",
+    ),
+    (
+        "manual_flatpak",
+        "Ce dossier mods appartient à un lanceur Flatpak, qui ne voit pas le dossier du pont. Choisissez plutôt la nouvelle instance dédiée : elle porte les arguments Java qui indiquent à Minecraft le bon dossier.",
     ),
     ("multimc_title", "MultiMC"),
     ("multimc_placeholder", "/chemin/vers/MultiMC"),

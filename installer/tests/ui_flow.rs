@@ -148,7 +148,6 @@ fn start(fake: &Fake, dry_run: bool) -> App {
     for message in sent.into_inner() {
         drive(&mut app, message);
     }
-    assert_eq!(app.screen, Screen::Welcome);
     assert!(app.found.is_some() && !app.detecting);
     app
 }
@@ -173,6 +172,11 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
     let fake = fake();
     let saves = safety::tree(&fake.saves).unwrap();
     let mut app = start(&fake, false);
+    assert_eq!(
+        app.screen,
+        Screen::Welcome,
+        "a first install starts in the wizard"
+    );
 
     // Welcome → detect: everything found, the override missing, nothing installed yet.
     drive(&mut app, Message::Start);
@@ -325,11 +329,36 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
         b"jar v1"
     );
 
+    // A reopened installer lands on the status page, and keeps the recorded role until the user picks one.
+    let mut reopened = start(&fake, false);
+    assert_eq!(
+        (reopened.screen, reopened.role),
+        (Screen::Detect, Role::Eve)
+    );
+    drive(&mut reopened, Message::Role(Role::Viewer));
+    drive(&mut reopened, Message::Rescan);
+    assert_eq!(
+        reopened.role,
+        Role::Viewer,
+        "a rescan keeps the user's role"
+    );
+
     // Uninstall waits in the games modal while Stellar Blade runs, and the window refuses to close mid-write.
     drive(&mut app, Message::Rescan);
     write(&fake.proc_root.join("4242/comm"), "SB-Win64-Shippi\n");
     drive(&mut app, Message::Begin(Action::Uninstall));
+    // The list follows the Fabric API box.
+    let fabric = instance_mods(&fake)
+        .join(pins::FABRIC_API_FILE)
+        .display()
+        .to_string();
+    let listed = |app: &App| match &app.modal {
+        Some(Modal::Confirm(Action::Uninstall, lines)) => lines.contains(&fabric),
+        other => panic!("{other:?}"),
+    };
+    assert!(!listed(&app), "kept by default");
     drive(&mut app, Message::RemoveFabric(true));
+    assert!(listed(&app));
     drive(&mut app, Message::Proceed);
     assert!(matches!(&app.modal, Some(Modal::Games(r)) if r == &[Running::StellarBlade]));
     drive(&mut app, Message::Proceed);
@@ -338,11 +367,13 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
         "locked while it runs"
     );
     fs::remove_dir_all(fake.proc_root.join("4242")).unwrap();
-    drive(&mut app, Message::GamesTick);
+    drive(&mut app, Message::Tick);
     assert!(matches!(&app.modal, Some(Modal::Games(r)) if r.is_empty()));
     app.busy = true;
     drop(app.update(Message::CloseRequested(iced::window::Id::unique())));
     assert_eq!(errors(&app).len(), 1, "close refused while busy");
+    assert!(app.close_pending, "closes once the job is done");
+    app.close_pending = false;
     app.busy = false;
     drive(&mut app, Message::Proceed);
     assert!(app.outcome.as_ref().unwrap().ok, "{:?}", app.outcome);
@@ -427,6 +458,11 @@ fn a_viewer_and_a_python_tools_install() {
     );
 
     let mut app = start(&fake, false);
+    assert_eq!(
+        app.screen,
+        Screen::Detect,
+        "something is installed: the status page"
+    );
     drive(&mut app, Message::Start);
     let found = app.found.as_ref().unwrap();
     assert!(found.installed());
@@ -465,4 +501,44 @@ fn a_viewer_and_a_python_tools_install() {
             .is_file()
     );
     assert!(mods::ownership(&instance.join("minecraft/mods")).is_ok());
+}
+
+/// A foreign xinput1_3.dll (UE4SS 2.x uses that name) shows on the detect page and blocks the EVE install there,
+/// before the hash; a Flatpak instance's mods folder typed by hand is refused; toasts go after Colony's delays.
+#[test]
+fn foreign_game_files_flatpak_folders_and_toasts() {
+    let fake = fake();
+    write(&fake.win64.join("xinput1_3.dll"), "UE4SS 2.x");
+    let mut app = start(&fake, false);
+    assert_eq!(
+        app.screen,
+        Screen::Welcome,
+        "a foreign file is not an install"
+    );
+    drive(&mut app, Message::Start);
+    let found = app.found.as_ref().unwrap();
+    assert!(!found.installed());
+    assert!(matches!(found.pieces[..], [ref p] if matches!(p.ownership, Ownership::Foreign(_))));
+    assert_eq!(app.game_blocker(), Some("blocker_game_files"));
+    assert!(!app.can_continue());
+
+    drive(&mut app, Message::Role(Role::Viewer));
+    drive(&mut app, Message::Continue);
+    assert_eq!(app.screen, Screen::Target);
+    let flatpak = fake.home.join(
+        ".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances/A/minecraft/mods",
+    );
+    fs::create_dir_all(&flatpak).unwrap();
+    drive(&mut app, Message::ManualPath(flatpak.display().to_string()));
+    drive(&mut app, Message::ToConsent);
+    assert_eq!(app.screen, Screen::Target);
+    assert!(errors(&app)[0].contains("Flatpak"), "{:?}", errors(&app));
+
+    let now = std::time::Instant::now();
+    let toast = &app.toasts[0];
+    assert!(!toast.expired(now));
+    assert!(toast.expired(now + std::time::Duration::from_secs(10)));
+    app.toasts[0].shown = now - std::time::Duration::from_secs(11);
+    drive(&mut app, Message::Tick);
+    assert!(app.toasts.is_empty());
 }

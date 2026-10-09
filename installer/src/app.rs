@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use colony_ui::preferences::{Change, StandardPreferences};
@@ -157,7 +157,7 @@ impl Found {
     pub fn installed(&self) -> bool {
         self.pieces
             .iter()
-            .any(|p| !matches!(p.ownership, Ownership::Absent))
+            .any(|p| matches!(p.ownership, Ownership::Owned | Ownership::Modified(_)))
             || self
                 .state
                 .as_ref()
@@ -197,7 +197,28 @@ pub fn detect(ctx: &Ctx) -> Found {
                 Err(error) => (Vec::new(), Some(format!("{error:#}"))),
             }
         }
-        _ => (Vec::new(), None),
+        // Nothing installed yet: still show what already sits where the game side would go.
+        None => match (&game, ue4ss.as_ref().and_then(|u| u.mods.as_ref())) {
+            (Some(game), Some(mods)) => {
+                let (mut pieces, mut error) = (Vec::new(), None);
+                for (name, ownership) in [
+                    (ops::LUA, deploy::ownership(mods)),
+                    (ops::ADAPTER, adapter::ownership(&game.win64, &ctx.pin)),
+                ] {
+                    match ownership {
+                        Ok(Ownership::Absent) => {}
+                        Ok(ownership) => pieces.push(Piece {
+                            name,
+                            ownership,
+                            current: false,
+                        }),
+                        Err(e) => error = Some(format!("{name}: {e:#}")),
+                    }
+                }
+                (pieces, error)
+            }
+            _ => (Vec::new(), None),
+        },
     };
     let flatpak = current
         .as_ref()
@@ -266,6 +287,14 @@ pub struct Toast {
     pub id: u64,
     pub text: String,
     pub error: bool,
+    pub shown: Instant,
+}
+
+impl Toast {
+    /// Colony's delays: a success goes after 5 s, an error after 10 s.
+    pub fn expired(&self, now: Instant) -> bool {
+        now.duration_since(self.shown) >= Duration::from_secs(if self.error { 10 } else { 5 })
+    }
 }
 
 /// The result shown on the done page.
@@ -306,7 +335,8 @@ pub enum Message {
     /// The confirm modal's button.
     Proceed,
     CancelModal,
-    GamesTick,
+    /// Every second while a toast shows or the games modal waits.
+    Tick,
     Step(Step),
     Log(String),
     Finished(Result<Vec<String>, String>),
@@ -460,6 +490,8 @@ pub struct App {
 
     pub screen: Screen,
     pub role: Role,
+    /// The user picked the role: a rescan no longer replaces it with the recorded one.
+    pub role_chosen: bool,
     pub found: Option<Found>,
     pub detecting: bool,
     pub hash_progress: Option<f32>,
@@ -479,6 +511,8 @@ pub struct App {
     pub action: Option<Action>,
     /// A job is writing: the window refuses to close.
     pub busy: bool,
+    /// A close was asked for while busy: the window closes when the job finishes.
+    pub close_pending: bool,
     pub steps: Vec<Step>,
     pub log: Vec<String>,
     pub outcome: Option<Outcome>,
@@ -503,6 +537,7 @@ impl App {
             expanded: HashSet::new(),
             screen: Screen::Welcome,
             role: Role::Eve,
+            role_chosen: false,
             found: None,
             detecting: true,
             hash_progress: None,
@@ -518,6 +553,7 @@ impl App {
             pending: None,
             action: None,
             busy: false,
+            close_pending: false,
             steps: Vec::new(),
             log: Vec::new(),
             outcome: None,
@@ -546,8 +582,8 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let close = window::close_requests().map(Message::CloseRequested);
-        if matches!(self.modal, Some(Modal::Games(_))) {
-            let tick = iced::time::every(Duration::from_secs(1)).map(|_| Message::GamesTick);
+        if matches!(self.modal, Some(Modal::Games(_))) || !self.toasts.is_empty() {
+            let tick = iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick);
             Subscription::batch([close, tick])
         } else {
             close
@@ -562,13 +598,21 @@ impl App {
             }
             Message::CloseRequested(_) => {
                 if self.busy {
+                    self.close_pending = true;
                     self.error(t("still_writing"));
                     Task::none()
                 } else {
                     iced::exit()
                 }
             }
-            message => self.step(message).map_or_else(Task::none, spawn),
+            message => {
+                let finished = matches!(message, Message::Finished(_));
+                let job = self.step(message);
+                if finished && self.close_pending {
+                    return iced::exit();
+                }
+                job.map_or_else(Task::none, spawn)
+            }
         }
     }
 
@@ -578,6 +622,7 @@ impl App {
             id: self.next_toast,
             text,
             error,
+            shown: Instant::now(),
         });
         if self.toasts.len() > 4 {
             self.toasts.remove(0);
@@ -619,10 +664,19 @@ impl App {
             return Some("blocker_build");
         }
         match &found.ue4ss {
-            None => Some("blocker_no_ue4ss"),
-            Some(ue4ss) if ue4ss.mods.is_none() => Some("blocker_ue4ss_mods"),
-            Some(_) => None,
+            None => return Some("blocker_no_ue4ss"),
+            Some(ue4ss) if ue4ss.mods.is_none() => return Some("blocker_ue4ss_mods"),
+            Some(_) => {}
         }
+        // An install would refuse these anyway: say so before the hash and the target choice.
+        found
+            .pieces
+            .iter()
+            .any(|p| {
+                matches!(p.name, ops::LUA | ops::ADAPTER)
+                    && matches!(p.ownership, Ownership::Foreign(_) | Ownership::Modified(_))
+            })
+            .then_some("blocker_game_files")
     }
 
     pub fn can_continue(&self) -> bool {
@@ -694,6 +748,13 @@ impl App {
             Choice::Manual => {
                 let mods = launcher::manual_mods(Path::new(self.manual_path.trim()))
                     .map_err(|e| format!("{e:#}"))?;
+                // A Flatpak launcher cannot see the native bridge folder; only the dedicated instance carries the
+                // Java arguments that point it at one it can see.
+                if fs::canonicalize(self.ctx.home.join(".var/app"))
+                    .is_ok_and(|v| mods.starts_with(v))
+                {
+                    return Err(t("manual_flatpak").into());
+                }
                 (mods, native(), None)
             }
         };
@@ -799,8 +860,17 @@ impl App {
                 Ok(lines)
             }
             Action::Uninstall => {
-                let mut lines =
-                    show(ops::owned_paths(&env, &target).map_err(|e| format!("{e:#}"))?);
+                // Fabric API stays unless the box is ticked.
+                let removed = ops::owned_paths(&env, &target)
+                    .map_err(|e| format!("{e:#}"))?
+                    .into_iter()
+                    .filter(|path| {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        self.remove_fabric
+                            || !mods::is_fabric_api(name.trim_end_matches(mods::DISABLED))
+                    })
+                    .collect();
+                let mut lines = show(removed);
                 for piece in &found.pieces {
                     if let Ownership::Foreign(r) | Ownership::Modified(r) = &piece.ownership {
                         lines.push(t_fmt(
@@ -913,6 +983,7 @@ impl App {
             Message::Start => self.screen = Screen::Detect,
             Message::Role(role) => {
                 self.role = role;
+                self.role_chosen = true;
                 self.plan = None;
             }
             Message::Back => {
@@ -959,8 +1030,8 @@ impl App {
                 self.instances = found.instances.clone();
                 self.instances.extend(loaded);
                 let recorded = found.state.as_ref().and_then(|s| s.target.as_ref());
-                if let Some(target) = recorded {
-                    // An update keeps the recorded target and role.
+                if let Some(target) = recorded.filter(|_| !self.role_chosen) {
+                    // An update keeps the recorded target and role, unless the user picked one.
                     self.role = if target.game.is_some() {
                         Role::Eve
                     } else {
@@ -968,6 +1039,10 @@ impl App {
                     };
                 }
                 let has_recorded = recorded.is_some();
+                // A returning user lands on the status page, with its maintenance actions, not in the wizard.
+                if self.found.is_none() && self.screen == Screen::Welcome && found.installed() {
+                    self.screen = Screen::Detect;
+                }
                 self.found = Some(found);
                 // A choice that no longer exists (the instance it would create now does) gives way.
                 if self.choice.is_some_and(|c| !self.choices().contains(&c)) {
@@ -1068,14 +1143,22 @@ impl App {
                     return self.launch(Action::Install);
                 }
             }
-            Message::Begin(action) => match self.confirm_lines(action) {
-                Ok(lines) => {
-                    self.remove_fabric = false;
-                    self.modal = Some(Modal::Confirm(action, lines));
+            Message::Begin(action) => {
+                self.remove_fabric = false;
+                match self.confirm_lines(action) {
+                    Ok(lines) => self.modal = Some(Modal::Confirm(action, lines)),
+                    Err(error) => self.error(error),
                 }
-                Err(error) => self.error(error),
-            },
-            Message::RemoveFabric(checked) => self.remove_fabric = checked,
+            }
+            Message::RemoveFabric(checked) => {
+                self.remove_fabric = checked;
+                if let Some(Modal::Confirm(Action::Uninstall, _)) = &self.modal {
+                    match self.confirm_lines(Action::Uninstall) {
+                        Ok(lines) => self.modal = Some(Modal::Confirm(Action::Uninstall, lines)),
+                        Err(error) => self.error(error),
+                    }
+                }
+            }
             Message::Proceed => match self.modal.clone() {
                 Some(Modal::Confirm(action, _)) => return self.launch(action),
                 // Unlocked once everything is closed; launch checks again.
@@ -1088,7 +1171,9 @@ impl App {
                 self.modal = None;
                 self.pending = None;
             }
-            Message::GamesTick => {
+            Message::Tick => {
+                let now = Instant::now();
+                self.toasts.retain(|toast| !toast.expired(now));
                 if let Some(Modal::Games(_)) = &self.modal {
                     let launchers = self.plan.as_ref().is_some_and(|(_, c, _)| c.is_some())
                         && self.pending == Some(Action::Install);
