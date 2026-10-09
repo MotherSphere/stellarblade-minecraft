@@ -29,24 +29,37 @@ import org.lwjgl.system.MemoryUtil;
  * Pack textures for AvatarRenderer. decode reads and decodes a PNG on any thread, with what the upload needs (the optional
  * texel conversion, a cut-out texture's coverage-keeping mip levels); upload creates the GL texture on the render thread.
  * Uploaded textures stay here across renderers, the least recently used beyond the budget dropped at trim, so a rebuild
- * finds the textures of the items worn before.
+ * finds the textures of the items worn before. One cache serves every EVE drawn: another player's EVE draws the textures
+ * this player's EVE already holds, and decodes the others at half resolution (a quarter of the memory), so several
+ * outfits fit the budget.
  */
 final class AvatarTextures implements AutoCloseable {
     // ponytail: one fixed budget for the stream's GL textures (an outfit with its drone, face and sword takes about 650 MB
     // with mipmaps: two fit); a VRAM query should a smaller GPU need less.
     static final long BUDGET = 1536L << 20;
 
-    /** A texture as a renderer asks for it: the pack file, the cut-out threshold (0: none) and an optional texel conversion. */
-    record Texture(String name, float cutoff, Consumer<ByteBuffer> convert) {
-        String key() { return convert == null ? name : name + "#converted"; }
+    /**
+     * A texture as a renderer asks for it: the pack file, the cut-out threshold (0: none), an optional texel conversion and
+     * whether half its resolution will do (another player's EVE).
+     */
+    record Texture(String name, float cutoff, Consumer<ByteBuffer> convert, boolean half) {
+        Texture(String name, float cutoff, Consumer<ByteBuffer> convert) { this(name, cutoff, convert, false); }
+        String key() { return (convert == null ? name : name + "#converted") + (half ? "#half" : ""); }
+        /** The same texture at full resolution, which a half one takes instead when it is uploaded already. */
+        Texture full() { return new Texture(name, cutoff, convert, false); }
     }
-    /** Decoded texels: level 0 from stb, then every further level of a cut-out texture (one level: the GPU makes them); null: no file. */
-    record Decoded(int width, int height, ByteBuffer[] levels) {
+    /**
+     * Decoded texels: level 0 (from stb unless halved), then every further level of a cut-out texture (one level: the GPU
+     * makes them); null: no file.
+     */
+    record Decoded(int width, int height, ByteBuffer[] levels, boolean stb) {
+        Decoded(int width, int height, ByteBuffer[] levels) { this(width, height, levels, true); }
         /** The GL texture's size with its mipmaps. */
         long bytes() { return levels == null ? 0 : 4L * width * height * 4 / 3; }
         void free() {
             if (levels == null) return;
-            STBImage.stbi_image_free(levels[0]);
+            if (stb) STBImage.stbi_image_free(levels[0]);
+            else MemoryUtil.memFree(levels[0]);
             for (int l = 1; l < levels.length; l++) MemoryUtil.memFree(levels[l]);
         }
     }
@@ -97,7 +110,9 @@ final class AvatarTextures implements AutoCloseable {
         return pending.isEmpty();
     }
     /** Deletes the least recently used textures outside used while the budget is exceeded. */
-    void trim(Collection<String> used) {
+    void trim(Collection<String> used) { trim(used, budget); }
+    /** The same against another budget (0: every texture outside used goes). */
+    void trim(Collection<String> used, long budget) {
         for (Iterator<Map.Entry<String, Entry>> it = uploaded.entrySet().iterator(); bytes > budget && it.hasNext(); ) {
             var entry = it.next();
             if (used.contains(entry.getKey())) continue;
@@ -122,7 +137,8 @@ final class AvatarTextures implements AutoCloseable {
      */
     Map<String, Decoded> decode(Path pack, List<Texture> wanted) throws IOException {
         Map<String, Texture> missing = new LinkedHashMap<>();
-        for (Texture texture : wanted) if (!holds(texture.key())) missing.putIfAbsent(texture.key(), texture);
+        for (Texture texture : wanted)
+            if (!holds(texture.key()) && !(texture.half() && holds(texture.full().key()))) missing.putIfAbsent(texture.key(), texture);
         Map<String, Decoded> decoded = new ConcurrentHashMap<>();
         AtomicReference<IOException> failure = new AtomicReference<>();
         missing.values().parallelStream().forEach(texture -> {
@@ -138,7 +154,7 @@ final class AvatarTextures implements AutoCloseable {
         return decoded;
     }
 
-    /** One pack texture decoded to RGBA with its levels; null levels when the file is absent. */
+    /** One pack texture decoded to RGBA with its levels (halved first when half); null levels when the file is absent. */
     static Decoded decode(Path pack, Texture texture) throws IOException {
         Path file = pack.resolve(texture.name());
         if (!file.normalize().startsWith(pack.normalize()) || !Files.isRegularFile(file)) return new Decoded(0, 0, null);
@@ -148,11 +164,21 @@ final class AvatarTextures implements AutoCloseable {
             IntBuffer width = stack.mallocInt(1), height = stack.mallocInt(1), channels = stack.mallocInt(1);
             ByteBuffer pixels = STBImage.stbi_load_from_memory(encoded, width, height, channels, 4);
             if (pixels == null) throw new IOException(file.getFileName() + ": " + STBImage.stbi_failure_reason());
+            int w = width.get(0), h = height.get(0);
+            boolean stb = true;
             try {
                 if (texture.convert() != null) texture.convert().accept(pixels);
-                return new Decoded(width.get(0), height.get(0), levels(pixels, width.get(0), height.get(0), texture.cutoff()));
+                if (texture.half() && w >= 2 && h >= 2) {
+                    ByteBuffer halved = AvatarRenderer.halve(pixels, w, h);
+                    STBImage.stbi_image_free(pixels);
+                    pixels = halved;
+                    stb = false;
+                    w /= 2;
+                    h /= 2;
+                }
+                return new Decoded(w, h, levels(pixels, w, h, texture.cutoff()), stb);
             } catch (RuntimeException failure) {
-                STBImage.stbi_image_free(pixels);
+                if (stb) STBImage.stbi_image_free(pixels); else MemoryUtil.memFree(pixels);
                 throw failure;
             }
         } finally {

@@ -89,7 +89,7 @@ final class AvatarRenderer implements AutoCloseable {
     private final Material[][] sectionMaterials;
     private final Map<String, Material> materials = new HashMap<>();
     private final AvatarTextures textures; // The pack's textures, shared with the stream's later renderers unless owned.
-    private final boolean ownsTextures;
+    private final boolean ownsTextures, half; // half: another player's EVE (AvatarTextures.Texture.half).
     private final Set<String> used = new HashSet<>(); // Keys of the textures this renderer draws.
     private int flatNormal, plainSurface, matte, black;
     final FloatBuffer[] palettes;
@@ -99,7 +99,12 @@ final class AvatarRenderer implements AutoCloseable {
     }
     /** With shared textures (null: its own), which it reads and fills; textures missing there are decoded here. */
     AvatarRenderer(AvatarModel model, Path pack, AvatarTextures shared) throws IOException {
+        this(model, pack, shared, false);
+    }
+    /** The same; half takes textures at half resolution unless shared holds them at full resolution already. */
+    AvatarRenderer(AvatarModel model, Path pack, AvatarTextures shared, boolean half) throws IOException {
         this.model = model;
+        this.half = half;
         ownsTextures = shared == null;
         textures = ownsTextures ? new AvatarTextures() : shared;
         String refusal = paletteRefusal(GL11.glGetInteger(GL31.GL_MAX_UNIFORM_BLOCK_SIZE), GL11.glGetInteger(GL31.GL_MAX_VERTEX_UNIFORM_BLOCKS),
@@ -758,18 +763,20 @@ final class AvatarRenderer implements AutoCloseable {
      * Every texture a renderer of model may ask for, as material(), the trail and the sprites ask for them, so that they can be
      * decoded beforehand off the render thread.
      */
-    static List<AvatarTextures.Texture> textures(AvatarModel model, Path pack) {
+    static List<AvatarTextures.Texture> textures(AvatarModel model, Path pack) { return textures(model, pack, false); }
+    /** The same for a renderer made with half. */
+    static List<AvatarTextures.Texture> textures(AvatarModel model, Path pack, boolean half) {
         List<AvatarTextures.Texture> wanted = new ArrayList<>();
         for (AvatarModel.Part part : model.parts) {
             for (AvatarMesh.Section section : part.mesh().sections)
                 for (String suffix : new String[] {".hair.png", ".png", ".overlay.png", ".glow.png", ".normal.png", ".surface.png", ".emissive.png", ".scatter.png"})
-                    wanted.add(new AvatarTextures.Texture(section.material() + suffix, suffix.equals(".png") ? CUTOFF : 0, null));
+                    wanted.add(new AvatarTextures.Texture(section.material() + suffix, suffix.equals(".png") ? CUTOFF : 0, null, half));
             if (Files.isRegularFile(pack.resolve(part.mesh().name + ".trail.txt"))) {
-                wanted.add(new AvatarTextures.Texture(part.mesh().name + ".trail.png", 0, null));
-                wanted.add(new AvatarTextures.Texture(part.mesh().name + ".trail.png", 0, AvatarTrail::glow));
+                wanted.add(new AvatarTextures.Texture(part.mesh().name + ".trail.png", 0, null, half));
+                wanted.add(new AvatarTextures.Texture(part.mesh().name + ".trail.png", 0, AvatarTrail::glow, half));
             }
         }
-        for (String name : AvatarSprites.textureNames()) wanted.add(new AvatarTextures.Texture(name, 0, null));
+        for (String name : AvatarSprites.textureNames()) wanted.add(new AvatarTextures.Texture(name, 0, null, half));
         return wanted;
     }
 
@@ -780,6 +787,7 @@ final class AvatarRenderer implements AutoCloseable {
     /** The same, its texels first changed in place by convert when given (a separate texture). */
     private int texture(Path pack, String name, float cutoff, java.util.function.Consumer<ByteBuffer> convert) throws IOException {
         AvatarTextures.Texture texture = new AvatarTextures.Texture(name, cutoff, convert);
+        if (half && textures.id(texture.key()) == null) texture = new AvatarTextures.Texture(name, cutoff, convert, true);
         used.add(texture.key());
         Integer known = textures.id(texture.key());
         return known != null ? known : textures.upload(texture.key(), AvatarTextures.decode(pack, texture));

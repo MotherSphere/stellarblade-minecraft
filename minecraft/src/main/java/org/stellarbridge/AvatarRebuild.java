@@ -5,7 +5,9 @@ import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 /**
- * Builds the avatar for the wanted component table on a daemon worker, off the render thread. One build runs at a time;
+ * Builds the avatar for the wanted component table on a daemon worker, off the render thread. Every EVE drawn (this
+ * player's and other players') shares that one worker, so their shared mesh cache stays single-threaded and builds queue
+ * one after another. One build per rebuild is wanted at a time;
  * wanting another table supersedes the previous one, whose result is discarded, and take hands a result over only with the
  * table it was built from, while that table is still wanted, so a model never meets another generation's table. The render
  * thread calls want, wanted and take.
@@ -17,7 +19,7 @@ final class AvatarRebuild<T> implements AutoCloseable {
 
     private final Builder<T> builder;
     private final Consumer<T> discard; // Frees a result nobody takes.
-    private final ExecutorService worker = Executors.newSingleThreadExecutor(task -> {
+    private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "EVE avatar build");
         thread.setDaemon(true);
         return thread;
@@ -36,7 +38,7 @@ final class AvatarRebuild<T> implements AutoCloseable {
         if (table == null ? wanted == null : wanted != null && wanted.generation() == table.generation()) return;
         wanted = table;
         if (ready != null) { drop(ready); ready = null; }
-        if (table != null && !closed) worker.execute(this::build);
+        if (table != null && !closed) WORKER.execute(this::build);
     }
     synchronized AvatarStream.Table wanted() { return wanted; }
 
@@ -77,7 +79,6 @@ final class AvatarRebuild<T> implements AutoCloseable {
     @Override public synchronized void close() {
         closed = true;
         wanted = null;
-        if (ready != null) { drop(ready); ready = null; }
-        worker.shutdown(); // A running build discards its result.
+        if (ready != null) { drop(ready); ready = null; } // A running build discards its result; a queued one does nothing.
     }
 }
