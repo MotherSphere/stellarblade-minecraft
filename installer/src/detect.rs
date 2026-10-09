@@ -384,6 +384,35 @@ pub fn dll_override(prefix: Option<&Path>, launch_options: &[String]) -> Overrid
     Override::Missing
 }
 
+/// The game's launch options with `xinput1_3=n,b` added, for the user to copy into Steam: other options and overrides
+/// are kept, an existing `WINEDLLOVERRIDES` gains the entry, and `%command%` is added when missing.
+pub fn launch_options_with_override(existing: &str) -> String {
+    let existing = existing.trim();
+    if existing.is_empty() {
+        return pins::LAUNCH_OPTION.to_string();
+    }
+    let mut words: Vec<String> = existing.split_whitespace().map(str::to_string).collect();
+    if let Some(word) = words
+        .iter_mut()
+        .find(|w| w.starts_with("WINEDLLOVERRIDES="))
+    {
+        let value = word["WINEDLLOVERRIDES=".len()..].trim_matches('"');
+        *word = if value.is_empty() {
+            "WINEDLLOVERRIDES=\"xinput1_3=n,b\"".to_string()
+        } else {
+            format!("WINEDLLOVERRIDES=\"{value};xinput1_3=n,b\"")
+        };
+    } else {
+        words.insert(0, "WINEDLLOVERRIDES=\"xinput1_3=n,b\"".to_string());
+    }
+    if !words.iter().any(|w| w == "%command%") {
+        // Options without %command% are arguments for the game: they follow it.
+        let at = words.iter().take_while(|w| w.contains('=')).count();
+        words.insert(at, "%command%".to_string());
+    }
+    words.join(" ")
+}
+
 /// The folder holding `bridge/` and `avatar/`: where the JAR looks by default, or for a Flatpak Prism a folder inside
 /// its sandbox that the installer passes to the JAR with `-Dstellarbridge.directory` and `-Dstellarbridge.avatar`.
 pub fn bridge_home(home: &Path, flatpak_prism: bool) -> PathBuf {
@@ -641,6 +670,25 @@ mod tests {
             dll_override(None, &["WINEDLLOVERRIDES=xinput1_3=b %command%".into()]),
             Override::Missing
         );
+    }
+
+    #[test]
+    fn launch_options_keep_what_is_there() {
+        assert_eq!(launch_options_with_override(""), pins::LAUNCH_OPTION);
+        assert_eq!(
+            launch_options_with_override("PROTON_ENABLE_WAYLAND=1 %command% -dx12"),
+            "WINEDLLOVERRIDES=\"xinput1_3=n,b\" PROTON_ENABLE_WAYLAND=1 %command% -dx12"
+        );
+        assert_eq!(
+            launch_options_with_override("WINEDLLOVERRIDES=\"dinput8=n,b\" %command%"),
+            "WINEDLLOVERRIDES=\"dinput8=n,b;xinput1_3=n,b\" %command%"
+        );
+        assert_eq!(
+            launch_options_with_override("-skipintro"),
+            "WINEDLLOVERRIDES=\"xinput1_3=n,b\" %command% -skipintro"
+        );
+        let suggested = launch_options_with_override("WINEDLLOVERRIDES=dinput8=n,b %command%");
+        assert_eq!(dll_override(None, &[suggested]), Override::LaunchOptions);
     }
 
     #[test]
