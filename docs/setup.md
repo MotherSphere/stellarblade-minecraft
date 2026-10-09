@@ -64,15 +64,16 @@ Follow the [main session sequence](../README.md#start-a-session). All bridge com
 
 ## Multiplayer
 
-The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (dedicated, or a world opened to LAN). Modded clients must run the same [network protocol](../protocol/README.md#minecraft-network-protocol-1), else the server disconnects them with both versions named; players without the mod join as usual. Each modded player runs their own Stellar Blade on their own Linux PC and links it with `/stellar start`, as in singleplayer, with EVE's save in the Great Desert, the map with the lab's remote site. The server keeps every player's session and combat, and each client writes its own bridge directory. Everyone sees EVE players as vanilla player models for now.
+The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (dedicated, or a world opened to LAN). Modded clients must run the same [network protocol](../protocol/README.md#minecraft-network-protocol), else the server disconnects them with both versions named; players without the mod join as usual. Each modded player runs their own Stellar Blade on their own Linux PC and links it with `/stellar start`, as in singleplayer, with EVE's save in the Great Desert, the map with the lab's remote site. The server keeps every player's session and combat, and each client writes its own bridge directory. Everyone sees EVE players as vanilla player models for now.
 
 What changes with others online:
 
 - There is no PvP, whatever the server's `pvp` setting: EVE's blade, drone and grenades spare players, anyone's pets and anything a player rides, other players' damage never reaches her, and an arrow she perfectly parries back never hurts another player.
 - A perfect dodge slows Minecraft's world only while the server holds one player. Otherwise Stellar Blade's own slowdown and the cold tint play for the dodger alone.
 - While EVE cannot answer (Stellar Blade paused or in a cutscene, or the link lapsed), she is spared for 2 s, then hits land unjudged. Full immunity, and the pause menu that keeps the world running, stay singleplayer only.
-- Over the internet, dodge and guard presses count when they were made, up to 150 ms of round trip (see the [protocol](../protocol/README.md#minecraft-network-protocol-1)); hits on such a player can land up to that much later.
+- Over the internet, dodge and guard presses count when they were made, up to 150 ms of round trip (see the [protocol](../protocol/README.md#minecraft-network-protocol)); hits on such a player can land up to that much later.
 - Each player places at most three Smart Mines.
+- Each EVE player's client uploads her pose stream, about 0.4 Mbit/s, and a client with an avatar pack receives about as much per EVE player within 64 blocks (0.08 Mbit/s beyond); a client without a pack receives none. The server caps what it relays to each player at 512 KiB/s, set in KiB with `-Dstellarbridge.relayBudget` on the server (see the [network pose](../protocol/README.md#network-pose)).
 
 ### Testing on one PC
 
