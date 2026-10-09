@@ -55,6 +55,12 @@ public final class BridgeServer implements ModInitializer {
         AvatarItems.initialize();
         ServerPlayNetworking.registerGlobalReceiver(BridgeNet.LinkRequest.ID, (request, context) -> {
             ServerPlayerEntity player = context.player();
+            // A custom payload skips vanilla's command spam limit, and each start scans the whole terrain window.
+            AvatarCombat.Fighter fighter = AvatarCombat.fighter(player);
+            if (!fighter.links.take(System.nanoTime())) {
+                fighter.rejected++;
+                return;
+            }
             switch (request.action()) {
                 case BridgeNet.LinkRequest.START -> start(player);
                 case BridgeNet.LinkRequest.STOP -> {

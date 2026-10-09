@@ -88,6 +88,10 @@ public final class CombatTest {
         assert !burst.admits(999, false, impact) && burst.admits(999, false, impact + 1000 * MS) : "40 strikes a second, refilled";
         for (int shot = 0; shot < AvatarCombat.SHOTS; shot++) assert burst.admits(5, true, impact) : "Shots skip the rehit: " + shot;
         assert !burst.admits(5, true, impact) : "10 shots a second";
+        // Link requests: each start scans the terrain window, and a payload skips vanilla's command spam limit.
+        var linker = new AvatarCombat.Fighter();
+        assert linker.links.take(impact) && linker.links.take(impact) && !linker.links.take(impact) && linker.links.take(impact + 500 * MS)
+                : "2 link requests a second";
 
         // Smart Mines are capped per owner: a fourth mine replaces its owner's oldest, never another owner's.
         UUID first = new UUID(0, 1), second = new UUID(0, 2);

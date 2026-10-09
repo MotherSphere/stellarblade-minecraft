@@ -110,10 +110,10 @@ public final class AvatarCombat {
     // Server validation, co-op grade (it stops bugs and desync, not a determined cheater): melee reach REACH + SLACK from
     // the player's feet (the target moved during the round trip), a target struck again after REHIT_NANOS (REHIT less a
     // tick of jitter, in real time so a slowed world refuses nothing), and per-player rates per second: strikes, drone
-    // shots, defense edges and uses of each item kind.
+    // shots, defense edges, uses of each item kind and link requests (/stellar start, stop, status).
     static final double SLACK = 1;
     static final long REHIT_NANOS = 200_000_000L;
-    static final double STRIKES = 40, SHOTS = 10, EDGES = 20, USES = 3;
+    static final double STRIKES = 40, SHOTS = 10, EDGES = 20, USES = 3, LINKS = 2;
 
     // Server thread: perfectly parried projectiles to send back once Minecraft's own deflection has run this tick.
     private static final List<Runnable> returning = new ArrayList<>();
@@ -148,9 +148,10 @@ public final class AvatarCombat {
         BridgeNet.Feedback sent; // The feedback last sent to the player's client.
         private final Map<Integer, Long> struck = new HashMap<>(); // Target entity id to its last accepted strike.
         private final Bucket strikes = new Bucket(STRIKES), shots = new Bucket(SHOTS), edges = new Bucket(EDGES);
+        final Bucket links = new Bucket(LINKS);
         private final Bucket[] uses = {new Bucket(USES), new Bucket(USES), new Bucket(USES), new Bucket(USES)};
         private final int[] counts = new int[1 + Defense.values().length]; // Strikes, then per Defense.
-        private int rejected; // Payloads validation refused.
+        int rejected; // Payloads validation refused.
 
         /** The player's status payload: stats (BASE without them), heal count and whether Stellar Blade withholds input. */
         void status(BridgeNet.Status status) {
