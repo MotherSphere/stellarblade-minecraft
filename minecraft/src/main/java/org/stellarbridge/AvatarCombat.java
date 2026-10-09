@@ -321,6 +321,9 @@ public final class AvatarCombat {
      */
     public static Boolean defend(ServerPlayerEntity player, DamageSource source, float amount) {
         if (defending || source.isIn(DamageTypeTags.BYPASSES_INVULNERABILITY)) return null;
+        // Every player's damage passes here: what an EVE player deals or causes (a perfectly parried arrow sent back, a
+        // punch) never hurts another player, bridged or not, whatever vanilla's pvp setting.
+        if (fromPlayer(source.getAttacker(), player) && BridgeServer.bridged(source.getAttacker().getUuid())) return false;
         if (BridgeServer.defenseless(player)) return false;
         if (!BridgeServer.overrides(player)) return null;
         // Stellar Blade owns EVE's position; Minecraft's collisions with it never hurt her.

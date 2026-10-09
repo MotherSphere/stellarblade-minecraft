@@ -117,11 +117,14 @@ public final class CombatTest {
         // No PvP (entities need Minecraft's bootstrap, so this reads the compiled hook): damage whose attacker is another
         // player returns before anything is judged, remembered or earned; EVE's targets exclude anyone's pet and a player's mount.
         MethodNode defend = method("defend");
-        int pvp = index(defend, "fromPlayer"), fighter = index(defend, "fighter"), judge = index(defend, "judge"), answer = index(defend, "answer");
+        int bridged = index(defend, "bridged", -1);
+        assert index(defend, "fromPlayer", -1) >= 0 && index(defend, "fromPlayer", -1) < bridged && bridged < index(defend, "defenseless", -1)
+                : "An EVE player's damage (a returned arrow) is refused for every victim, before the victim's own session counts";
+        int pvp = index(defend, "fromPlayer", bridged), fighter = index(defend, "fighter", -1), judge = index(defend, "judge", -1), answer = index(defend, "answer", -1);
         assert pvp >= 0 && pvp < fighter && fighter < judge && judge < answer : "The PvP guard comes before the player's Fighter";
         assert instanceOf(method("fromPlayer"), "net/minecraft/entity/player/PlayerEntity");
         MethodNode strikable = method("strikable");
-        assert index(strikable, "getOwnerUuid") >= 0 && index(strikable, "hasPlayerRider") >= 0 && instanceOf(strikable, "net/minecraft/entity/player/PlayerEntity");
+        assert index(strikable, "getOwnerUuid", -1) >= 0 && index(strikable, "hasPlayerRider", -1) >= 0 && instanceOf(strikable, "net/minecraft/entity/player/PlayerEntity");
         System.out.println("Combat tests passed: per-player verdicts (the creeper case), guard cooldown and hold, presses placed through the round trip, strike validation, mines per owner, the multiplayer grace, no PvP");
     }
 
@@ -133,9 +136,9 @@ public final class CombatTest {
         return node.methods.stream().filter(method -> method.name.equals(name)).findFirst().orElseThrow();
     }
 
-    /** The instruction index of the first call to a method of that name, or -1. */
-    private static int index(MethodNode method, String name) {
-        for (int k = 0; k < method.instructions.size(); k++)
+    /** The instruction index of the first call to a method of that name after from (-1: from the start), or -1. */
+    private static int index(MethodNode method, String name, int from) {
+        for (int k = from + 1; k < method.instructions.size(); k++)
             if (method.instructions.get(k) instanceof MethodInsnNode call && call.name.equals(name)) return k;
         return -1;
     }

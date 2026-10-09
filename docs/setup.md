@@ -68,7 +68,7 @@ The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (d
 
 What changes with others online:
 
-- There is no PvP, whatever the server's `pvp` setting: EVE's blade, drone and grenades spare players, anyone's pets and anything a player rides, and other players' damage never reaches her.
+- There is no PvP, whatever the server's `pvp` setting: EVE's blade, drone and grenades spare players, anyone's pets and anything a player rides, other players' damage never reaches her, and an arrow she perfectly parries back never hurts another player.
 - A perfect dodge slows Minecraft's world only while the server holds one player. Otherwise Stellar Blade's own slowdown and the cold tint play for the dodger alone.
 - While EVE cannot answer (Stellar Blade paused or in a cutscene, or the link lapsed), she is spared for 2 s, then hits land unjudged. Full immunity, and the pause menu that keeps the world running, stay singleplayer only.
 - Over the internet, dodge and guard presses count when they were made, up to 150 ms of round trip (see the [protocol](../protocol/README.md#minecraft-network-protocol-1)); hits on such a player can land up to that much later.

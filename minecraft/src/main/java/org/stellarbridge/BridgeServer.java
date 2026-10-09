@@ -263,6 +263,9 @@ public final class BridgeServer implements ModInitializer {
 
     record PauseBinding(MinecraftServer server, UUID owner, String dimension) { }
 
+    /** Server thread: whether that player has a bridge session. */
+    static boolean bridged(UUID player) { return sessions.containsKey(player); }
+
     public static boolean overrides(ServerPlayerEntity player) {
         Control current = controls.get(player.getUuid());
         return live(current) && current.owner == player;
