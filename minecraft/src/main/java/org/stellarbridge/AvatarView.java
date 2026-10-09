@@ -902,7 +902,7 @@ public final class AvatarView {
         float tickDelta = context.tickCounter().getTickDelta(false);
         Vec3d sky = context.world().getSkyColor(context.camera().getPos(), tickDelta);
         // The sun lights EVE and casts her shadow, fitted to her bones, onto the faces around her before she is drawn.
-        AvatarShadows.Light key = eased(AvatarShadows.sky(context.world(), tickDelta, LightmapTextureManager.getSkyLightCoordinates(light)));
+        AvatarShadows.Light key = eased(renderer, AvatarShadows.sky(context.world(), tickDelta, LightmapTextureManager.getSkyLightCoordinates(light)));
         boolean cast = full && MinecraftClient.getInstance().options.getEntityShadows().getValue();
         if (key.strength() > 0 || cast) {
             Vector3f toward = AvatarShadows.toward(key);
@@ -922,15 +922,16 @@ public final class AvatarView {
     private static final Vector3d LOW = new Vector3d(), HIGH = new Vector3d();
     private static final Matrix4f SHADOW = new Matrix4f();
     private static final FloatBuffer FACES = BufferUtils.createFloatBuffer(7 * 6 * 2048);
-    private static float keyStrength;
-    private static long keyNanos;
-    /** The sun with its strength eased over a quarter second: sky light steps by whole levels under trees and roofs. */
-    private static AvatarShadows.Light eased(AvatarShadows.Light target) {
+    /**
+     * The sun with its strength eased over a quarter second, for each EVE apart (on her renderer): sky light steps by whole
+     * levels under trees and roofs.
+     */
+    private static AvatarShadows.Light eased(AvatarRenderer renderer, AvatarShadows.Light target) {
         long nanos = System.nanoTime();
-        float ease = keyNanos == 0 ? 1 : (float) Math.min(1, (nanos - keyNanos) / 0.25e9);
-        keyNanos = nanos;
-        keyStrength += (target.strength() - keyStrength) * ease;
-        return new AvatarShadows.Light(target.direction(), keyStrength);
+        float ease = renderer.keyNanos == 0 ? 1 : (float) Math.min(1, (nanos - renderer.keyNanos) / 0.25e9);
+        renderer.keyNanos = nanos;
+        renderer.keyStrength += (target.strength() - renderer.keyStrength) * ease;
+        return new AvatarShadows.Light(target.direction(), renderer.keyStrength);
     }
 
     /** The lightmap's GL texture; enable() also binds it on the active unit, so that binding is restored. */

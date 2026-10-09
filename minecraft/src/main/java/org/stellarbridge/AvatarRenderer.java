@@ -93,6 +93,9 @@ final class AvatarRenderer implements AutoCloseable {
     private final Set<String> used = new HashSet<>(); // Keys of the textures this renderer draws.
     private int flatNormal, plainSurface, matte, black;
     final FloatBuffer[] palettes;
+    // The sun's key light strength as AvatarView eases it for this EVE (her own sky light), and when it last did.
+    float keyStrength;
+    long keyNanos;
 
     AvatarRenderer(AvatarModel model, Path pack) throws IOException {
         this(model, pack, null);
