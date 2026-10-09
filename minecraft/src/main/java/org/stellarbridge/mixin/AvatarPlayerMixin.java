@@ -14,20 +14,21 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(EntityRenderDispatcher.class)
 abstract class AvatarPlayerMixin {
-    // The live avatar is drawn at the bridged player position; skip the vanilla body there, except in Iris's shadow pass,
-    // where render below draws EVE's shadow instead.
+    // An EVE is drawn for this player (this player's live avatar at the bridged position, or another player's EVE from
+    // this pack): skip the vanilla body, except in Iris's shadow pass, where render below draws EVE's shadow instead.
+    // Every other player keeps the vanilla model.
     @Inject(method = "shouldRender", at = @At("HEAD"), cancellable = true)
     private <E extends Entity> void stellarAvatarReplacesPlayer(E entity, Frustum frustum, double x, double y, double z,
                                                                CallbackInfoReturnable<Boolean> info) {
-        if (AvatarView.replaces(entity)) info.setReturnValue(AvatarView.castsShadow());
+        if (AvatarView.draws(entity)) info.setReturnValue(AvatarView.castsShadow());
     }
 
     // Iris's shadow pass renders the player here, its shadow view on the stack: EVE casts the shadow instead.
     @Inject(method = "render", at = @At("HEAD"), cancellable = true)
     private <E extends Entity> void stellarAvatarShadow(E entity, double x, double y, double z, float yaw, float tickDelta,
                                                        MatrixStack matrices, VertexConsumerProvider consumers, int light, CallbackInfo info) {
-        if (!AvatarView.replaces(entity) || !AvatarView.castsShadow()) return;
+        if (!AvatarView.castsShadow() || !AvatarView.draws(entity)) return;
         info.cancel();
-        AvatarView.drawShadow(matrices.peek().getPositionMatrix());
+        AvatarView.drawShadow(entity, matrices.peek().getPositionMatrix());
     }
 }

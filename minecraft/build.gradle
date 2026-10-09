@@ -21,13 +21,15 @@ java {
 
 tasks.withType(JavaCompile).configureEach { options.release = 21 }
 // Development runs for the one-PC multiplayer test (docs/setup.md): a local server, and a second offline client with
-// its own bridge directory, so it never overwrites the files of the instance linked to Stellar Blade.
+// its own bridge directory, so it never overwrites the files of the instance linked to Stellar Blade, and the network
+// development tools.
 loom {
     runs {
         server { runDir 'run/server' }
         client {
             runDir 'run/client'
             vmArg "-Dstellarbridge.directory=${file('run/client/bridge')}"
+            vmArg '-Dstellarbridge.netTools=true' // echo, netrecord and netplay (RemoteEves).
         }
     }
 }
@@ -71,6 +73,7 @@ processResources {
     bridgeLinkTest: 'BridgeLinkTest',
     combatTest: 'CombatTest',
     netPoseTest: 'NetPoseTest',
+    remoteEveTest: 'RemoteEveTest',
 ].each { taskName, testClass ->
     def suite = tasks.register(taskName, JavaExec) {
         dependsOn testClasses
