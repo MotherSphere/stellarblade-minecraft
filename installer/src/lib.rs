@@ -1,18 +1,22 @@
-//! The installer's core, without a window: detection, the ports of `tools/deploy.py` and `tools/input_proxy.py`, the
-//! Minecraft side, the embedded payload, the operations, and the safety net around every write. Nothing here launches
-//! a game or a launcher.
+//! The installer: detection, the ports of `tools/deploy.py` and `tools/input_proxy.py`, the Minecraft side, the
+//! embedded payload, the operations and the safety net around every write, and the window over them (`app`, `ui`,
+//! `i18n`). Nothing here launches a game or a launcher.
 
 pub mod adapter;
+pub mod app;
 pub mod deploy;
 pub mod detect;
+pub mod i18n;
 pub mod launcher;
 pub mod ledger;
+pub mod log;
 pub mod mods;
 pub mod ops;
 pub mod payload;
 pub mod pins;
 pub mod platform;
 pub mod safety;
+pub mod ui;
 
 /// Who owns what sits at an install location, as both ownership manifests define it.
 #[derive(Debug, Clone, PartialEq, Eq)]

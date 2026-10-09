@@ -20,3 +20,6 @@ pub const FABRIC_API_SHA512: &str = "98c478217da19181f0e4df3ea6c2da6bdbda271c754
 
 /// Proton loads the adapter only with this override; shown for the user to copy, never written.
 pub const LAUNCH_OPTION: &str = "WINEDLLOVERRIDES=\"xinput1_3=n,b\" %command%";
+
+/// Stellar Blade's licence agreement, linked from the consent page: modding the game is the player's own risk.
+pub const SB_EULA: &str = "https://store.steampowered.com/eula/3489700_eula_0";

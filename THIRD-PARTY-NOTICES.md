@@ -8,6 +8,12 @@ The installer binary embeds Fabric API 0.116.17+1.21.1 (`fabric-api-0.116.17+1.2
 
 Source: https://github.com/FabricMC/fabric
 
+## Fonts in the installer
+
+The installer embeds the fonts of colony-ui 0.1.6 (GPL-3.0-or-later): JetBrainsMono Nerd Font (JetBrains Mono 2.304 with Nerd Fonts 3.4.0), OpenDyslexic 0.990 and Font Awesome 6 Free 6.7.2, all unmodified and under the SIL Open Font License 1.1. Their licence texts are in [installer/licenses/](installer/licenses/) and are printed by `stellar-bridge-installer --licenses`.
+
+Sources: https://github.com/JetBrains/JetBrainsMono, https://github.com/ryanoasis/nerd-fonts, https://github.com/antijingoist/opendyslexic, https://github.com/FortAwesome/Font-Awesome
+
 ## SkyCraft
 
 The raw frame transport adapts SkyCraft's three-buffer ownership and atomic publication design, including its producer/consumer exchange pattern. Reference implementation: `skse/src/Link.cpp`, `fabric/src/main/java/dev/skycraft/link/SkyLink.java` and `fabric/src/client/java/dev/skycraft/client/FrameExporter.java`, commit `bfcaf178524b92c2cdeb88e4ce0f13ef9ded6f32`.
