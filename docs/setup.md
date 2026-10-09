@@ -17,7 +17,7 @@ From the repository root, set `JAVA_HOME` to a Java 21 installation when it is n
 python tools/check.py
 ```
 
-This checks Lua syntax and lifecycle tests, Python installation tools, portable native tests, the Fabric build and the terrain and EVE text exchanged between Java and Lua. The JAR and the Windows DLL are reproducible (no archive timestamps, `/Brepro`): rebuilding a commit gives the same hashes, so an installed artifact can be checked against its commit. The Gradle wrapper pins Gradle 8.14.5, Loom 1.11.8 and Yarn 1.21.1+build.3. Host CMake output goes to `build/native-host`; Minecraft output goes to `minecraft/build`.
+This checks Lua syntax and lifecycle tests, Python installation tools, the Rust installer (formatting, build, clippy and tests, including installs by the Python tools removed by the installer and the reverse; Cargo fetches its crates on the first build), portable native tests, the Fabric build and the terrain and EVE text exchanged between Java and Lua. The JAR and the Windows DLL are reproducible (no archive timestamps, `/Brepro`): rebuilding a commit gives the same hashes, so an installed artifact can be checked against its commit. The Gradle wrapper pins Gradle 8.14.5, Loom 1.11.8 and Yarn 1.21.1+build.3. Host CMake output goes to `build/native-host`; Minecraft output goes to `minecraft/build`; installer output goes to `installer/target`.
 
 Build the Windows x64 DLL separately with an installed clang-cl/xwin Windows SDK toolchain:
 

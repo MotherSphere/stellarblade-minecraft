@@ -95,15 +95,16 @@ In avatar mode, Minecraft's pause menu (Escape) has an **EVE's equipment** row u
 | `native/tests/`, `native/fixtures/` | Portable checks and isolated Windows test hosts |
 | `protocol/` | Shared wire contract and fixtures |
 | `tools/`, `tools/tests/` | Offline checks and owned-installation tools |
+| `installer/` | Stellar Bridge, the Rust installer (in progress; [its README](installer/README.md)) |
 | `docs/` | Setup, architecture and diagnostic reference |
 
-Run all offline checks from the repository root with Java 21, Lua, Python, CMake and a C++17 compiler available:
+Run all offline checks from the repository root with Java 21, Lua, Python, CMake, a C++17 compiler and a Rust toolchain (1.90 or newer, with clippy and rustfmt) available:
 
 ```sh
 python tools/check.py
 ```
 
-Use `--only lua`, `--only python`, `--only native` or `--only minecraft` for one component. The runner builds artifacts without installing them or launching games.
+Use `--only lua`, `--only python`, `--only installer`, `--only native` or `--only minecraft` for one component. The runner builds artifacts without installing them or launching games.
 
 See [architecture](docs/architecture.md), [wire contracts](protocol/README.md) and [diagnostics](docs/diagnostics.md). The separate terrain renderer inside Stellar Blade is a diagnostic, not the main gameplay route.
 

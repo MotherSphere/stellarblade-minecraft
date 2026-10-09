@@ -45,7 +45,7 @@ def windows(toolchain, wine):
 
 
 def main():
-    components = ('lua', 'python', 'native', 'minecraft', 'windows')
+    components = ('lua', 'python', 'installer', 'native', 'minecraft', 'windows')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--only', choices=components, help='Run one component instead of the complete check')
     parser.add_argument('--windows-toolchain', default=os.environ.get('STELLAR_WINDOWS_TOOLCHAIN'),
@@ -70,6 +70,13 @@ def main():
                 run(['lua', path.relative_to(ROOT)], quiet=True)
         elif component == 'python':
             run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tools/tests', '-p', 'test_*.py'])
+        elif component == 'installer':
+            # Its tests also run tools/deploy.py and tools/input_proxy.py against the Rust port on fake trees.
+            installer = ROOT / 'installer'
+            run(['cargo', 'fmt', '--check'], cwd=installer)
+            run(['cargo', 'build', '--locked'], cwd=installer)
+            run(['cargo', 'clippy', '--locked', '--all-targets', '--', '-D', 'warnings'], cwd=installer)
+            run(['cargo', 'test', '--locked'], cwd=installer)
         elif component == 'native':
             build = ROOT / 'build/native-host'
             run(['cmake', '-S', 'native', '-B', build, '-DCMAKE_BUILD_TYPE=Release'])
