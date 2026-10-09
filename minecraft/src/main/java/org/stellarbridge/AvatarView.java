@@ -383,13 +383,10 @@ public final class AvatarView {
             Vec3d camera = context.camera().getPos();
             var link = StellarBridge.renderingContext();
             Matrix4d placement;
+            boolean firstPerson = false;
             if (current.anchored && link != null) {
                 placement = anchored(current, link, camera);
-                // In first person the camera is inside EVE's head, as Minecraft hides its own player there; her shots leave her eyes.
-                if (MinecraftClient.getInstance().options.getPerspective().isFirstPerson()) {
-                    current.gun.update(current.stream.shots(), true, () -> null);
-                    return;
-                }
+                firstPerson = MinecraftClient.getInstance().options.getPerspective().isFirstPerson();
             } else {
                 float[] root = current.pose.world()[current.model.parts.get(0).component()];
                 if (current.relativeOrigin == null) current.relativeOrigin = new Vector3d(root[4], root[5], root[6]);
@@ -406,8 +403,16 @@ public final class AvatarView {
                     effects.put(effect.name(), placement.transformPosition(new Vector3d(effect.x(), effect.y(), effect.z())).add(camera.x, camera.y, camera.z));
             }
             long nanos = System.nanoTime();
-            if (!current.renderer.effects(effects, new Vector3d(camera.x, camera.y, camera.z), context.camera().getRotation(), nanos / 1e9))
-                current.particles.spawn(current.effects, placement, camera, nanos);
+            boolean sprites = current.renderer.effects(effects, new Vector3d(camera.x, camera.y, camera.z), context.camera().getRotation(), nanos / 1e9);
+            if (firstPerson) {
+                // The camera is inside EVE's head, as Minecraft hides its own player there: she is not drawn, but her blade
+                // still strikes from her pose and her shots leave her eyes.
+                current.renderer.sampleTrail(current.pose, placement, camera.x, camera.y, camera.z, nanos / 1e9);
+                current.blade.update(current.renderer, current.effects, nanos / 1e9);
+                current.gun.update(current.stream.shots(), true, () -> null);
+                return;
+            }
+            if (!sprites) current.particles.spawn(current.effects, placement, camera, nanos);
             // At the bridged position EVE is the player: she flashes red when hurt, her blade and her drone's shots strike entities.
             var player = MinecraftClient.getInstance().player;
             boolean bridged = current.anchored && link != null && player != null;
