@@ -85,10 +85,14 @@ public final class BridgeServer implements ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             for (Session current : List.copyOf(sessions.values())) if (current.server == server) end(current, "World closed");
         });
-        // Before vanilla saves a leaving player (Save and Quit): EVE's maximum health must never reach the save.
+        // Before vanilla saves a leaving player (Save and Quit): EVE's maximum health must never reach the save. A player
+        // respawned this tick is not adopted yet, so the session ends on the entity that leaves and is saved.
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             Session current = sessions.get(handler.player.getUuid());
-            if (current != null && current.player == handler.player) end(current, null);
+            if (current != null) {
+                current.player = handler.player;
+                end(current, null);
+            }
             AvatarCombat.forget(handler.player.getUuid());
         });
     }
