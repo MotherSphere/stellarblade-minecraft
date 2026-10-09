@@ -52,7 +52,7 @@ public final class AvatarView {
     private record Replay(ClientWorld world, AvatarRecording recording, AvatarModel model, AvatarRenderer renderer,
                           AvatarRecording.Pose pose, Vec3d anchor, Vector3d origin, long started) { }
 
-    // A rebuild uploads its decoded textures for up to UPLOAD_NANOS a frame; meshes stay cached up to MESH_BUDGET bytes.
+    // Rebuilds upload their decoded textures for up to UPLOAD_NANOS a frame in all; meshes stay cached up to MESH_BUDGET bytes.
     // ponytail: a frame uploads at least one whole texture (up to about 25 ms for a 2048² one through the driver's copy) and the
     // install frame creates the renderer's mesh buffers (about 20 ms for a full outfit); banded uploads or mesh buffers cached
     // like the textures if those frames show.
@@ -145,7 +145,7 @@ public final class AvatarView {
             }
         }
 
-        /** Each frame: takes a finished build, uploads its textures for at most UPLOAD_NANOS, then installs it. */
+        /** Each frame: takes a finished build, uploads its textures within the frame's UPLOAD_NANOS, then installs it. */
         void rebuild() throws IOException {
             if (uploading == null) {
                 AvatarRebuild.Built<Prepared> built = rebuild.take();
@@ -154,7 +154,9 @@ public final class AvatarView {
                     throw built.failure() instanceof IOException failure ? failure : new IOException(built.failure().getMessage(), built.failure());
                 uploading = built;
             }
-            if (!TEXTURES.upload(uploading.result().textures(), UPLOAD_NANOS)) return;
+            Map<String, AvatarTextures.Decoded> pending = uploading.result().textures();
+            long left = uploadUntil - System.nanoTime(); // Shared by every EVE uploading this frame.
+            if (!pending.isEmpty() && (left <= 0 || !TEXTURES.upload(pending, left))) return;
             AvatarRebuild.Built<Prepared> built = uploading;
             uploading = null;
             install(built.table(), built.result());
@@ -236,7 +238,24 @@ public final class AvatarView {
         /** Whether the newest model draws a body (its first part is the table's first component): else no vanilla body hides. */
         boolean hasBody() { return model != null && !model.parts.isEmpty() && model.parts.get(0).component() == 0; }
         float[] root() { return pose.world()[model.parts.get(0).component()]; }
-        java.util.Set<String> textureKeys() { return renderer == null ? java.util.Set.of() : renderer.textureKeys(); }
+        /**
+         * The texture keys to keep: its renderer's and, while a build uploads, every one its next renderer may take from the
+         * cache (the build skipped decoding those the cache held).
+         */
+        java.util.Set<String> textureKeys() {
+            java.util.Set<String> keys = new java.util.HashSet<>(renderer == null ? java.util.Set.of() : renderer.textureKeys());
+            if (uploading != null)
+                for (AvatarTextures.Texture texture : AvatarRenderer.textures(uploading.result().model(), pack, remote)) {
+                    keys.add(texture.key());
+                    keys.add(texture.full().key());
+                }
+            return keys;
+        }
+        /** Whether a build of another table than the installed one is under way, on the build worker or uploading. */
+        boolean building() {
+            AvatarStream.Table wanted = rebuild.wanted();
+            return uploading != null || wanted != null && (table == null || wanted.generation() != table.generation());
+        }
 
         @Override public void close() {
             rebuild.close();
@@ -247,6 +266,19 @@ public final class AvatarView {
             model = null;
             posed = false;
         }
+    }
+
+    /**
+     * After an EVE went: every texture no EVE uses goes, unless a build is under way, which may count on the cache holding
+     * textures it skipped; then only those beyond the budget go. ponytail: an install's trim over the budget can still drop
+     * a texture a build on the worker skipped, which its renderer then decodes on the render thread; pin the skipped keys
+     * in the build's result if that hitch shows.
+     */
+    static void releaseTextures() {
+        boolean building = live != null && live.eve.building();
+        for (RemoteEves.Remote remote : RemoteEves.remotes()) building |= remote.eve != null && remote.eve.building();
+        if (building) TEXTURES.trim(texturesInUse());
+        else TEXTURES.trim(texturesInUse(), 0);
     }
 
     /** The texture keys of every EVE drawn, which a trim of the shared textures keeps. */
@@ -577,10 +609,19 @@ public final class AvatarView {
         }
     }
 
-    /** Once per Minecraft frame before the camera: newest pose, then the displayed pose shared by camera and drawing. */
+    /**
+     * Once per Minecraft frame before the camera: newest pose, then the displayed pose shared by camera and drawing; this
+     * player's EVE first, then the others, all sharing one texture upload budget.
+     */
     public static void beginFrame() {
         long nanos = System.nanoTime();
+        uploadUntil = nanos + UPLOAD_NANOS;
+        beginLive(nanos);
         frameRemotes(nanos);
+    }
+    private static long uploadUntil; // This frame's texture uploads stop at this System.nanoTime.
+
+    private static void beginLive(long nanos) {
         Live current = live;
         if (current == null) return;
         if (MinecraftClient.getInstance().world != current.world) { stopLive("the world changed"); return; }
@@ -1088,7 +1129,7 @@ public final class AvatarView {
         }
         String summary = liveStatus(current);
         current.eve.close();
-        TEXTURES.trim(texturesInUse(), 0); // Only other players' EVEs keep theirs.
+        releaseTextures(); // Only other players' EVEs keep theirs.
         current.stream.stop();
         unreaped.add(current.stream);
         reap();

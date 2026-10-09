@@ -354,7 +354,7 @@ final class RemoteEves {
     private static void reset() {
         for (Remote remote : remotes.values()) if (remote.eve != null) remote.eve.close();
         remotes.clear();
-        AvatarView.TEXTURES.trim(AvatarView.texturesInUse(), 0);
+        AvatarView.releaseTextures();
         encoder = new NetPose.Encoder(KEYFRAMES);
         sent = null;
         sentKey = pendingKey = refusedKey = null;
