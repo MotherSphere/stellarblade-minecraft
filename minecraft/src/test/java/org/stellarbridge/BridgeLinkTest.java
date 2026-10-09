@@ -66,6 +66,8 @@ public final class BridgeLinkTest {
             // Mob walls, verdicts and the lock-on target carry this PC's clock in milliseconds.
             link.mobs(List.of(box), now + 100);
             assert time(directory, "eve-mobs.txt") == now + 100 && Files.readString(directory.resolve("eve-mobs.txt")).contains("COUNT 1\n");
+            link.tick(now + 150);
+            assert time(directory, "eve-mobs.txt") == now + 150 : "Walls renewed every tick: 4 ticks at a slowdown's rate outlast Lua's lease";
             link.verdict(BridgeProtocol.COMBAT_EVENTS.indexOf("parry"), 90, now + 200);
             String combat = Files.readString(directory.resolve("eve-combat.txt"));
             assert time(directory, "eve-combat.txt") == now + 200 && combat.contains("EVENT parry 90.0\n") : combat;

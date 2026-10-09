@@ -59,7 +59,8 @@ final class BridgeLink {
 
     /**
      * Each client tick at wall milliseconds now: EVE's position from the newest eve.N, judged as the server's gate judges
-     * it, then the heartbeats every 4 ticks (terrain, mob walls while listed). Returns that packet's text when the server
+     * it, then the heartbeats: terrain every 4 ticks, mob walls while listed every tick. Clients tick at the world's rate,
+     * so 4 ticks of a perfect dodge's slowdown outlast Lua's 0.6 s wall lease. Returns that packet's text when the server
      * has not had it yet, else null.
      */
     String tick(long now) throws IOException {
@@ -69,10 +70,8 @@ final class BridgeLink {
         if (packet != null) relayed = packet;
         BridgeProtocol.Eve eve = gate.accept(packet, revision(), now / 1000);
         position = eve == null ? null : origin.add(eve.x(), eve.y(), eve.z());
-        if (++ticks % 4 == 0) {
-            if (terrain != null) writeTerrain(now);
-            if (!mobs.isEmpty()) writeMobs(now);
-        }
+        if (++ticks % 4 == 0 && terrain != null) writeTerrain(now);
+        if (!mobs.isEmpty()) writeMobs(now);
         return relay;
     }
 
