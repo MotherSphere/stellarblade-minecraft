@@ -154,7 +154,10 @@ final class AvatarTextures implements AutoCloseable {
         return decoded;
     }
 
-    /** One pack texture decoded to RGBA with its levels (halved first when half); null levels when the file is absent. */
+    /**
+     * One pack texture decoded to RGBA with its levels (halved first when half, a cut-out one keeping the share of texels
+     * at or above its cutoff, as its mip levels do); null levels when the file is absent.
+     */
     static Decoded decode(Path pack, Texture texture) throws IOException {
         Path file = pack.resolve(texture.name());
         if (!file.normalize().startsWith(pack.normalize()) || !Files.isRegularFile(file)) return new Decoded(0, 0, null);
@@ -169,12 +172,15 @@ final class AvatarTextures implements AutoCloseable {
             try {
                 if (texture.convert() != null) texture.convert().accept(pixels);
                 if (texture.half() && w >= 2 && h >= 2) {
+                    int threshold = Math.round(texture.cutoff() * 255);
+                    double coverage = texture.cutoff() > 0 ? AvatarRenderer.coverage(pixels, w * h, 1, threshold) : 1;
                     ByteBuffer halved = AvatarRenderer.halve(pixels, w, h);
                     STBImage.stbi_image_free(pixels);
                     pixels = halved;
                     stb = false;
                     w /= 2;
                     h /= 2;
+                    if (coverage > 0 && coverage < 1) AvatarRenderer.preserve(pixels, w * h, threshold, coverage); // Thin strands stay.
                 }
                 return new Decoded(w, h, levels(pixels, w, h, texture.cutoff()), stb);
             } catch (RuntimeException failure) {

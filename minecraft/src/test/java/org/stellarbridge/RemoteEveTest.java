@@ -112,6 +112,17 @@ public final class RemoteEveTest {
             textures.keep("Skin.png", 1, 128); // This player's EVE holds it at full resolution.
             assert textures.decode(pack, List.of(half)).isEmpty() : "The full texture serves";
             textures.close();
+            // A cut-out texture of 1-texel strands (every 4th column, alpha 220) keeps its strands at half resolution, as wide
+            // as a texel there (box-filtered to alpha 110 alone, below the cutoff, they would all vanish).
+            ByteBuffer strands = org.lwjgl.BufferUtils.createByteBuffer(4 * 64 * 64);
+            for (int i = 0; i < 64 * 64; i++) strands.put((byte) 90).put((byte) 60).put((byte) 30).put((byte) (i % 4 == 0 ? 220 : 0));
+            assert org.lwjgl.stb.STBImageWrite.stbi_write_png(pack.resolve("Hair.png").toString(), 64, 64, 4, strands.flip(), 256);
+            for (boolean halved : new boolean[] {false, true}) {
+                AvatarTextures.Decoded hair = AvatarTextures.decode(pack, new AvatarTextures.Texture("Hair.png", 0.5f, null, halved));
+                double coverage = AvatarRenderer.coverage(hair.levels()[0], hair.width() * hair.height(), 1, 128);
+                assert hair.width() == (halved ? 32 : 64) && Math.abs(coverage - (halved ? 0.5 : 0.25)) < 0.02 : halved + " " + coverage;
+                hair.free();
+            }
         } finally {
             try (var files = java.nio.file.Files.list(pack)) { for (var file : files.toList()) java.nio.file.Files.delete(file); }
             java.nio.file.Files.delete(pack);
