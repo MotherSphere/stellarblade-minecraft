@@ -883,14 +883,18 @@ public final class AvatarView {
         return 1;
     }
 
-    /** Draws a posed EVE; without full (another player's, far away) no trail and no shadow cast on the blocks. */
+    /**
+     * Draws a posed EVE; without full (another player's, far away) no shadow cast on the blocks. The trail samples either
+     * way: a far EVE's samples have no strength (renderRemotes gives her no effects), so a ribbon she swung before going
+     * far ages out instead of hanging where she was.
+     */
     private static void draw(WorldRenderContext context, AvatarModel model, AvatarRenderer renderer, AvatarRecording.Pose pose,
                              Matrix4d placement, Vec3d camera, boolean full) {
         float[] root = pose.world()[model.parts.get(0).component()];
         Vector3d feet = placement.transformPosition(new Vector3d(root[4], root[5], root[6])).add(camera.x, camera.y, camera.z);
         int light = WorldRenderer.getLightmapCoordinates(context.world(), BlockPos.ofFloored(feet.x, feet.y + 1, feet.z));
         Matrix4f projectionView = new Matrix4f(context.projectionMatrix()).mul(context.positionMatrix());
-        if (full) renderer.sampleTrail(pose, placement, camera.x, camera.y, camera.z, System.nanoTime() / 1e9);
+        renderer.sampleTrail(pose, placement, camera.x, camera.y, camera.z, System.nanoTime() / 1e9);
         if (ShaderPacks.active()) {
             // A shader pack resolves the frame from its own buffers: only Minecraft's programs, which it replaces, reach them.
             renderer.drawEntity(context.positionMatrix(), context.projectionMatrix(), lightmap(context.lightmapTextureManager()), overlay(),
