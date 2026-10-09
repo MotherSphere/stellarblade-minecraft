@@ -1,5 +1,6 @@
-//! The installer's core, without a window: detection, the ports of `tools/deploy.py` and `tools/input_proxy.py`, and
-//! the safety net around every write. Nothing here launches a game or a launcher.
+//! The installer's core, without a window: detection, the ports of `tools/deploy.py` and `tools/input_proxy.py`, the
+//! Minecraft side, the embedded payload, the operations, and the safety net around every write. Nothing here launches
+//! a game or a launcher.
 
 pub mod adapter;
 pub mod deploy;
@@ -7,6 +8,7 @@ pub mod detect;
 pub mod launcher;
 pub mod ledger;
 pub mod mods;
+pub mod ops;
 pub mod payload;
 pub mod pins;
 pub mod platform;

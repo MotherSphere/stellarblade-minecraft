@@ -11,6 +11,8 @@ use crate::safety;
 /// The program name: `Colony/Stellar Bridge/` folders.
 pub const PROGRAM: &str = "Stellar Bridge";
 
+pub const STATE: &str = "state.json";
+
 pub fn data_dir() -> Result<PathBuf> {
     Ok(colony_ui::paths::data_dir(PROGRAM)?)
 }
@@ -34,13 +36,11 @@ pub struct State {
     /// The installer release that wrote it.
     pub release: String,
     pub lua_revision: Option<u32>,
-    /// The UE4SS Mods folder holding the Lua mod.
-    pub mods_dir: Option<PathBuf>,
-    /// The executable beside which the adapter sits.
-    pub game_exe: Option<PathBuf>,
-    /// The Minecraft `mods` folder holding the JAR.
-    pub minecraft_mods: Option<PathBuf>,
-    pub bridge_dir: Option<PathBuf>,
+    /// Where the pieces went.
+    pub target: Option<crate::ops::Target>,
+    /// A Prism instance this installer created. It is never deleted: it holds the user's worlds.
+    pub created_instance: Option<PathBuf>,
+    /// The verified copy of the Stellar Blade saves made at the first install.
     pub save_backup: Option<PathBuf>,
     /// The kept previous set (`previous/<release>`), for rollback.
     pub previous: Option<PathBuf>,

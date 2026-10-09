@@ -44,8 +44,27 @@ def windows(toolchain, wine):
             run([wine, path, *extra], cwd=scratch, env=env, quiet=True)
 
 
+def installer(crate):
+    """Format, build, lint and test the installer. Its tests also run tools/deploy.py and tools/input_proxy.py against
+    the Rust port on fake trees. When the JAR and the Windows DLL are built, the payload is staged from them and
+    embedded, so the tests also check and install the real pieces (on fake trees)."""
+    with tempfile.TemporaryDirectory(prefix='stellar-payload-') as scratch:
+        env = dict(os.environ)
+        staged = Path(scratch) / 'payload'
+        result = subprocess.run([sys.executable, ROOT / 'tools/payload.py', staged], text=True, capture_output=True)
+        if result.returncode == 0:
+            env['SBMC_PAYLOAD'] = str(staged)
+        else:
+            print('installer: building without a payload: ' + (result.stderr or result.stdout).strip(), flush=True)
+        run(['cargo', 'fmt', '--check'], cwd=crate)
+        run(['cargo', 'build', '--locked'], cwd=crate, env=env)
+        run(['cargo', 'clippy', '--locked', '--all-targets', '--', '-D', 'warnings'], cwd=crate, env=env)
+        run(['cargo', 'test', '--locked'], cwd=crate, env=env)
+
+
 def main():
-    components = ('lua', 'python', 'installer', 'native', 'minecraft', 'windows')
+    # The installer comes last: it embeds the JAR and DLL the steps before it build.
+    components = ('lua', 'python', 'native', 'minecraft', 'windows', 'installer')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--only', choices=components, help='Run one component instead of the complete check')
     parser.add_argument('--windows-toolchain', default=os.environ.get('STELLAR_WINDOWS_TOOLCHAIN'),
@@ -71,12 +90,7 @@ def main():
         elif component == 'python':
             run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tools/tests', '-p', 'test_*.py'])
         elif component == 'installer':
-            # Its tests also run tools/deploy.py and tools/input_proxy.py against the Rust port on fake trees.
-            installer = ROOT / 'installer'
-            run(['cargo', 'fmt', '--check'], cwd=installer)
-            run(['cargo', 'build', '--locked'], cwd=installer)
-            run(['cargo', 'clippy', '--locked', '--all-targets', '--', '-D', 'warnings'], cwd=installer)
-            run(['cargo', 'test', '--locked'], cwd=installer)
+            installer(ROOT / 'installer')
         elif component == 'native':
             build = ROOT / 'build/native-host'
             run(['cmake', '-S', 'native', '-B', build, '-DCMAKE_BUILD_TYPE=Release'])

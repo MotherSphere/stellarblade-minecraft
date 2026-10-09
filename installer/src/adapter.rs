@@ -93,8 +93,7 @@ pub fn install(exe: &Path, dll: &[u8], bridge: &Path, pin: &str, closed: Guard) 
         bail!("Unsupported Stellar Blade executable; input remains uninstalled");
     }
     check_dll(dll)?;
-    let bridge = platform::private_dir(bridge)?;
-    let directory = platform::game_path(&bridge)? + "\n";
+    let directory = directory_file(bridge)?;
     for entry in fs::read_dir(&destination)? {
         let name = entry?.file_name().to_string_lossy().to_lowercase();
         if [DLL, CONFIG, MANIFEST].contains(&name.as_str()) {
@@ -104,7 +103,7 @@ pub fn install(exe: &Path, dll: &[u8], bridge: &Path, pin: &str, closed: Guard) 
             );
         }
     }
-    let outputs = [(CONFIG, directory.as_bytes()), (DLL, dll)];
+    let outputs = [(CONFIG, directory.as_slice()), (DLL, dll)];
     let manifest = Manifest {
         owner: OWNER.into(),
         version: 1,
@@ -139,6 +138,50 @@ pub fn install(exe: &Path, dll: &[u8], bridge: &Path, pin: &str, closed: Guard) 
     Ok(destination.join(MANIFEST))
 }
 
+/// The directory file's content: the bridge directory as the game sees it.
+pub fn directory_file(bridge: &Path) -> Result<Vec<u8>> {
+    Ok((platform::game_path(&platform::private_dir(bridge)?)? + "\n").into_bytes())
+}
+
+/// The adapter's manifest in `win64`, when it is ours and was made for the executable `pin`.
+pub fn manifest(win64: &Path, pin: &str) -> Result<Manifest> {
+    let Ok(path) = platform::real_file(&win64.join(MANIFEST)) else {
+        bail!("Input adapter ownership is not recognized");
+    };
+    let data = fs::read(&path)?;
+    if data.len() > 4096 {
+        bail!("Invalid input ownership manifest");
+    }
+    match serde_json::from_slice::<Manifest>(&data) {
+        Ok(manifest)
+            if manifest.owner == OWNER
+                && manifest.version == 1
+                && manifest.executable == pin
+                && manifest.files.keys().map(String::as_str).eq([CONFIG, DLL]) =>
+        {
+            Ok(manifest)
+        }
+        _ => bail!("Input adapter ownership is not recognized"),
+    }
+}
+
+/// The listed files whose content is missing or differs, with the sha256 the manifest expects. A listed path that is
+/// not a regular file cannot be repaired.
+pub fn drifted(win64: &Path, pin: &str) -> Result<Vec<(String, String)>> {
+    let mut drift = Vec::new();
+    for (name, expected) in manifest(win64, pin)?.files {
+        let path = win64.join(&name);
+        match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => drift.push((name, expected)),
+            Err(e) => return Err(e.into()),
+            Ok(m) if !m.is_file() => bail!("Refusing a non-regular file: {}", path.display()),
+            Ok(_) if sha256_file(&path, &mut |_| {})? != expected => drift.push((name, expected)),
+            Ok(_) => {}
+        }
+    }
+    Ok(drift)
+}
+
 /// Who owns the adapter files in the executable's folder `win64`, for an install made against `pin`.
 pub fn ownership(win64: &Path, pin: &str) -> Result<Ownership> {
     let manifest_path = win64.join(MANIFEST);
@@ -154,40 +197,15 @@ pub fn ownership(win64: &Path, pin: &str) -> Result<Ownership> {
         }
         return Ok(Ownership::Absent);
     }
-    let unrecognized = || {
-        Ok(Ownership::Modified(
-            "Input adapter ownership is not recognized".into(),
-        ))
-    };
-    let Ok(manifest_path) = platform::real_file(&manifest_path) else {
-        return unrecognized();
-    };
-    let data = fs::read(&manifest_path)?;
-    if data.len() > 4096 {
-        return Ok(Ownership::Modified(
-            "Invalid input ownership manifest".into(),
-        ));
-    }
-    let Ok(manifest) = serde_json::from_slice::<Manifest>(&data) else {
-        return unrecognized();
-    };
-    if manifest.owner != OWNER
-        || manifest.version != 1
-        || manifest.executable != pin
-        || manifest.files.keys().map(String::as_str).ne([CONFIG, DLL])
-    {
-        return unrecognized();
-    }
-    for (name, expected) in &manifest.files {
-        let same = platform::real_file(&win64.join(name))
-            .is_ok_and(|path| sha256_file(&path, &mut |_| {}).is_ok_and(|d| d == *expected));
-        if !same {
-            return Ok(Ownership::Modified(format!(
-                "Refusing modified input adapter content: {name}"
-            )));
-        }
-    }
-    Ok(Ownership::Owned)
+    Ok(match drifted(win64, pin) {
+        Ok(drift) => match drift.first() {
+            None => Ownership::Owned,
+            Some((name, _)) => {
+                Ownership::Modified(format!("Refusing modified input adapter content: {name}"))
+            }
+        },
+        Err(error) => Ownership::Modified(error.to_string()),
+    })
 }
 
 /// Removes the adapter only when every file matches its manifest: the DLL first, then its directory file, then the

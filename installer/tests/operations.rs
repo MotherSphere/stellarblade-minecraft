@@ -1,0 +1,562 @@
+//! The operations end to end on a fake home: a Steam library with Stellar Blade, UE4SS, other loaders, a Proton prefix
+//! and saves, and a Prism with a dedicated instance created by the installer. Detection builds the target; nothing
+//! outside the temporary folder is read or written.
+
+use sbmc_installer::detect;
+use sbmc_installer::ledger::{self, Status};
+use sbmc_installer::ops::{self, Env, Game, Target};
+use sbmc_installer::payload::Payload;
+use sbmc_installer::{Ownership, adapter, deploy, launcher, mods, pins, safety};
+use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::rc::Rc;
+
+fn write(path: &Path, data: impl AsRef<[u8]>) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, data).unwrap();
+}
+
+struct World {
+    _root: tempfile::TempDir,
+    home: PathBuf,
+    target: Target,
+    data: PathBuf,
+    pin: String,
+    running: Rc<Cell<bool>>,
+    guard: Box<dyn Fn() -> anyhow::Result<()>>,
+}
+
+impl World {
+    fn env(&self) -> Env<'_> {
+        Env {
+            data: self.data.clone(),
+            closed: &*self.guard,
+            pin: &self.pin,
+        }
+    }
+
+    fn game(&self) -> &Game {
+        self.target.game.as_ref().unwrap()
+    }
+
+    fn win64(&self) -> PathBuf {
+        self.game().exe.parent().unwrap().to_path_buf()
+    }
+
+    /// Every file under the fake home except the installer's own data, by path: what "nothing changed" means.
+    fn files(&self) -> BTreeMap<String, String> {
+        let mut all = safety::tree(&self.home).unwrap();
+        all.retain(|path, _| !path.starts_with("data/"));
+        all
+    }
+}
+
+fn world() -> World {
+    let root = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(root.path()).unwrap();
+    let steam = home.join(".local/share/Steam");
+    let library = home.join("Games/SteamLibrary");
+    write(
+        &steam.join("steamapps/libraryfolders.vdf"),
+        format!(
+            "\"libraryfolders\" {{ \"0\" {{ \"path\" \"{}\" }} \"1\" {{ \"path\" \"{}\" }} }}",
+            steam.display(),
+            library.display()
+        ),
+    );
+    write(
+        &library.join("steamapps/appmanifest_3489700.acf"),
+        "\"AppState\" { \"installdir\" \"StellarBlade\" \"buildid\" \"24463856\" \"StateFlags\" \"4\" }",
+    );
+    let win64 = library.join("steamapps/common/StellarBlade/SB/Binaries/Win64");
+    write(&win64.join(adapter::EXE), "test executable");
+    write(&win64.join("dwmapi.dll"), "UE4SS loader");
+    write(&win64.join("dinput8.dll"), "Xion loader");
+    write(&win64.join("ue4ss/UE4SS.dll"), "UE4SS");
+    write(&win64.join("ue4ss/UE4SS-settings.ini"), "[General]\n");
+    write(&win64.join("ue4ss/Mods/mods.txt"), "OtherMod : 1\n");
+    write(&win64.join("ue4ss/Mods/OtherMod/Scripts/main.lua"), "other");
+    let prefix = library.join("steamapps/compatdata/3489700/pfx");
+    write(&prefix.join("user.reg"), "WINE REGISTRY Version 2\n");
+    let saves = prefix.join("drive_c/users/steamuser/AppData/Local/SB/Saved/SaveGames");
+    write(
+        &saves.join("76561190000000000/StellarBladeSave00.sav"),
+        "save",
+    );
+    write(
+        &home.join(".local/share/PrismLauncher/prismlauncher.cfg"),
+        "InstanceDir=instances\n",
+    );
+
+    let found = detect::game(&detect::steam(&home)).unwrap();
+    assert!(found.build_supported());
+    let ue4ss = detect::ue4ss(&found.win64).unwrap();
+    let prism = &launcher::prism(&home)[0];
+    let instance =
+        launcher::create_instance(prism, launcher::INSTANCE_NAME, &[], &|| Ok(())).unwrap();
+    write(&instance.game.join("options.txt"), "fov:0.5\n");
+    write(&instance.mods().join("sodium.jar"), "sodium");
+    let target = Target {
+        game: Some(Game {
+            saves: found.saves(),
+            exe: found.exe.clone(),
+            ue4ss: ue4ss.dir,
+            mods: ue4ss.mods.unwrap(),
+            prefix: found.prefix.clone(),
+        }),
+        minecraft_mods: instance.mods(),
+        bridge: detect::bridge_home(&home, false).join("bridge"),
+    };
+    let running = Rc::new(Cell::new(false));
+    World {
+        _root: root,
+        data: home.join("data/Colony/Stellar Bridge"),
+        pin: safety::sha256_hex(b"test executable"),
+        home,
+        target,
+        guard: Box::new({
+            let running = running.clone();
+            move || {
+                if running.get() {
+                    anyhow::bail!("Close Stellar Blade first")
+                }
+                Ok(())
+            }
+        }),
+        running,
+    }
+}
+
+fn payload(version: u32) -> Payload {
+    Payload {
+        release: format!("0.{version}.0+test"),
+        lua_revision: Some(50 + version),
+        lua: BTreeMap::from([
+            (
+                "Scripts/main.lua".into(),
+                format!("print('Loaded revision {}; v{version}')\n", 50 + version).into_bytes(),
+            ),
+            ("Scripts/bridge.lua".into(), b"return {}\n".to_vec()),
+            ("enabled.txt".into(), Vec::new()),
+        ]),
+        dll: [adapter::test_dll(), version.to_le_bytes().to_vec()].concat(),
+        jar: (
+            "stellar-bridge-0.1.0.jar".into(),
+            format!("jar v{version}").into_bytes(),
+        ),
+        fabric_api: b"fabric api".to_vec(),
+        licenses: BTreeMap::new(),
+    }
+}
+
+fn all_current(world: &World, payload: &Payload) -> bool {
+    let pieces = ops::verify(&world.env(), &world.target, payload).unwrap();
+    assert_eq!(pieces.len(), 3);
+    pieces.iter().all(|p| p.current)
+}
+
+fn state(world: &World) -> ledger::State {
+    ledger::load(&world.data.join(ledger::STATE)).unwrap()
+}
+
+#[test]
+fn install_update_rollback_and_uninstall() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    let saves = w.game().saves.clone().unwrap();
+    let saves_before = safety::tree(&saves).unwrap();
+
+    let installed = ops::install(&w.env(), &w.target, &v1).unwrap();
+    assert_eq!(
+        (installed.status, installed.release.as_str()),
+        (Status::Installed, "0.1.0+test")
+    );
+    assert!(all_current(&w, &v1));
+    assert_eq!(
+        fs::read(w.target.minecraft_mods.join(pins::FABRIC_API_FILE)).unwrap(),
+        b"fabric api"
+    );
+    let bridge = fs::metadata(&w.target.bridge).unwrap();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&bridge.permissions()) & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::read_to_string(w.win64().join(adapter::CONFIG)).unwrap(),
+        format!("Z:{}\n", w.target.bridge.display())
+    );
+    let backup = installed.save_backup.clone().unwrap();
+    assert_eq!(safety::tree(&backup).unwrap(), saves_before);
+    assert_eq!(installed.previous, None);
+
+    // The same release again changes nothing, not even the previous set.
+    let files = w.files();
+    assert_eq!(
+        ops::install(&w.env(), &w.target, &v1).unwrap().previous,
+        None
+    );
+    assert_eq!(w.files(), files);
+
+    let updated = ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+    let previous = updated.previous.clone().unwrap();
+    assert!(previous.ends_with("previous/0.1.0+test"));
+    let kept = Payload::from_previous(&previous, &w.pin).unwrap();
+    assert_eq!(
+        (&kept.lua, &kept.dll, &kept.jar),
+        (&v1.lua, &v1.dll, &v1.jar)
+    );
+    assert_eq!(
+        updated.save_backup,
+        Some(backup.clone()),
+        "one save backup, at the first install"
+    );
+
+    let rolled = ops::rollback(&w.env(), &w.target).unwrap();
+    assert_eq!(rolled.release, "0.1.0+test");
+    assert!(all_current(&w, &v1));
+    assert!(rolled.previous.unwrap().ends_with("previous/0.2.0+test"));
+
+    let refusals = ops::uninstall(&w.env(), &w.target, true).unwrap();
+    assert_eq!(refusals, Vec::<String>::new());
+    assert_eq!(state(&w).status, Status::Removed);
+    let mut names: Vec<_> = fs::read_dir(&w.target.minecraft_mods)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["sodium.jar"]);
+    assert!(!w.game().mods.join(deploy::MOD_NAME).exists());
+    assert!(!w.win64().join(adapter::DLL).exists());
+    assert_eq!(
+        fs::read(w.win64().join("dinput8.dll")).unwrap(),
+        b"Xion loader"
+    );
+    assert!(backup.is_dir(), "save backups stay");
+    assert!(
+        w.target
+            .minecraft_mods
+            .parent()
+            .unwrap()
+            .join("options.txt")
+            .exists(),
+        "the instance stays"
+    );
+    assert_eq!(safety::tree(&saves).unwrap(), saves_before);
+}
+
+#[test]
+fn refusals_happen_before_any_write() {
+    let w = world();
+    let v1 = payload(1);
+    let untouched = |w: &World, files: &BTreeMap<String, String>| {
+        assert_eq!(&w.files(), files);
+        assert!(!w.data.join(ledger::STATE).exists());
+    };
+    let files = w.files();
+
+    w.running.set(true);
+    let error = ops::install(&w.env(), &w.target, &v1).unwrap_err();
+    assert!(
+        error.to_string().contains("Close Stellar Blade"),
+        "{error:#}"
+    );
+    untouched(&w, &files);
+    w.running.set(false);
+
+    let other = Env {
+        pin: &"0".repeat(64),
+        ..w.env()
+    };
+    let error = ops::install(&other, &w.target, &v1).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Unsupported Stellar Blade executable"),
+        "{error:#}"
+    );
+    untouched(&w, &files);
+
+    let foreign_jar = w.target.minecraft_mods.join("stellar-bridge-0.0.9.jar");
+    fs::write(&foreign_jar, "by hand").unwrap();
+    let files = w.files();
+    assert!(ops::install(&w.env(), &w.target, &v1).is_err());
+    untouched(&w, &files);
+    fs::remove_file(&foreign_jar).unwrap();
+
+    let foreign_dll = w.win64().join("XInput1_3.dll");
+    fs::write(&foreign_dll, "UE4SS 2.x").unwrap();
+    let files = w.files();
+    let error = ops::install(&w.env(), &w.target, &v1).unwrap_err();
+    assert!(error.to_string().starts_with(ops::ADAPTER), "{error:#}");
+    untouched(&w, &files);
+    fs::remove_file(&foreign_dll).unwrap();
+
+    // A changed owned file stops an update, and an uninstall removes everything else.
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let script = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&script, "edited by hand").unwrap();
+    let files = w.files();
+    let error = ops::install(&w.env(), &w.target, &payload(2)).unwrap_err();
+    assert!(error.to_string().starts_with(ops::LUA), "{error:#}");
+    assert_eq!(w.files(), files);
+    w.running.set(true);
+    assert!(ops::uninstall(&w.env(), &w.target, false).is_err());
+    assert_eq!(w.files(), files);
+    w.running.set(false);
+    let refusals = ops::uninstall(&w.env(), &w.target, false).unwrap();
+    assert_eq!(refusals.len(), 1);
+    assert!(
+        refusals[0].starts_with("Lua mod: Refusing modified"),
+        "{refusals:?}"
+    );
+    assert_eq!(fs::read_to_string(&script).unwrap(), "edited by hand");
+    assert!(!w.win64().join(adapter::DLL).exists());
+    assert!(
+        w.target.minecraft_mods.join(pins::FABRIC_API_FILE).exists(),
+        "kept for other mods"
+    );
+    assert_eq!(
+        state(&w).status,
+        Status::Installed,
+        "not removed while a piece remains"
+    );
+}
+
+#[test]
+fn repair_puts_back_only_listed_files() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let lua = w.game().mods.join(deploy::MOD_NAME);
+    let jar = w.target.minecraft_mods.join(&v1.jar.0);
+    fs::remove_file(lua.join("enabled.txt")).unwrap();
+    fs::write(w.win64().join(adapter::DLL), "damaged").unwrap();
+    fs::write(&jar, "damaged").unwrap();
+    assert!(!all_current(&w, &v1));
+
+    // Another release cannot repair: its files are not what the manifests record.
+    let files = w.files();
+    let error = ops::repair(&w.env(), &w.target, &payload(2)).unwrap_err();
+    assert!(error.to_string().contains("run the update"), "{error:#}");
+    assert_eq!(w.files(), files);
+    // Nor can anything with an unlisted file: no file is written, the drifted ones included.
+    fs::write(lua.join("Scripts/notes.lua"), "mine").unwrap();
+    let files = w.files();
+    assert!(ops::repair(&w.env(), &w.target, &v1).is_err());
+    assert_eq!(w.files(), files);
+    fs::remove_file(lua.join("Scripts/notes.lua")).unwrap();
+    w.running.set(true);
+    assert!(ops::repair(&w.env(), &w.target, &v1).is_err());
+    w.running.set(false);
+
+    let mut repaired = ops::repair(&w.env(), &w.target, &v1).unwrap();
+    repaired.sort();
+    let mut expected = vec![lua.join("enabled.txt"), w.win64().join(adapter::DLL), jar];
+    expected.sort();
+    assert_eq!(repaired, expected);
+    assert!(all_current(&w, &v1));
+    assert_eq!(
+        ops::repair(&w.env(), &w.target, &v1).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+}
+
+#[test]
+fn a_failed_update_puts_the_previous_set_back() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let files = w.files();
+    // The adapter step refuses this DLL after the JAR and the Lua mod were already replaced.
+    let broken = Payload {
+        dll: b"not a DLL".to_vec(),
+        ..payload(2)
+    };
+    let error = ops::install(&w.env(), &w.target, &broken).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("previous state was restored"),
+        "{error:#}"
+    );
+    assert!(all_current(&w, &v1));
+    assert_eq!(w.files(), files);
+    assert_eq!(
+        (state(&w).status, state(&w).release),
+        (Status::Installed, "0.1.0+test".into())
+    );
+
+    // A game started midway also blocks the restore: the replaced set waits in previous/ and the state says so.
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() > 4 {
+            anyhow::bail!("Stellar Blade started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    let error = ops::install(&env, &w.target, &payload(2)).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("could not be restored"),
+        "{error:#}"
+    );
+    assert_eq!(state(&w).status, Status::InProgress);
+    let previous = state(&w).previous.unwrap();
+    assert_eq!(
+        Payload::from_previous(&previous, &w.pin).unwrap().jar,
+        v1.jar
+    );
+    // Once the game is closed, rolling back finishes the job.
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
+
+#[test]
+fn a_viewer_gets_the_minecraft_side_only() {
+    let w = world();
+    let viewer = Target {
+        game: None,
+        ..w.target.clone()
+    };
+    fs::write(
+        w.target
+            .minecraft_mods
+            .join("fabric-api-0.116.18+1.21.1.jar"),
+        "theirs",
+    )
+    .unwrap();
+    let v1 = payload(1);
+    ops::install(&w.env(), &viewer, &v1).unwrap();
+    let pieces = ops::verify(&w.env(), &viewer, &v1).unwrap();
+    assert_eq!(pieces.len(), 1);
+    assert!(pieces[0].current);
+    assert_eq!(
+        mods::manifest(&viewer.minecraft_mods).unwrap().files.len(),
+        1,
+        "their Fabric API is kept"
+    );
+    assert!(!w.target.bridge.exists());
+    assert!(!w.game().mods.join(deploy::MOD_NAME).exists());
+    assert_eq!(state(&w).save_backup, None);
+    assert_eq!(
+        ops::uninstall(&w.env(), &viewer, true).unwrap(),
+        Vec::<String>::new()
+    );
+    assert!(
+        w.target
+            .minecraft_mods
+            .join("fabric-api-0.116.18+1.21.1.jar")
+            .exists()
+    );
+}
+
+/// The Python tools' Lua mod and adapter are an owned set to the installer: it updates them, keeps them in previous/,
+/// and after the uninstall the Python tools install again.
+#[test]
+fn python_installs_are_updated_and_kept() {
+    let w = world();
+    let v1 = payload(1);
+    let tools = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("tools");
+    let lab = w.home.join("repo");
+    write(
+        &lab.join("tools/deploy.py"),
+        fs::read(tools.join("deploy.py")).unwrap(),
+    );
+    for (relative, bytes) in &v1.lua {
+        write(
+            &lab.join("stellar/Mods")
+                .join(deploy::MOD_NAME)
+                .join(relative),
+            bytes,
+        );
+    }
+    fs::create_dir_all(&w.target.bridge).unwrap();
+    fs::set_permissions(
+        &w.target.bridge,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let python = |command: &str| {
+        let mut run = Command::new("python3");
+        run.arg(lab.join("tools/deploy.py"))
+            .args([command, "--mods-dir"])
+            .arg(&w.game().mods);
+        if command == "install" {
+            run.arg("--bridge-dir").arg(&w.target.bridge);
+        }
+        run.stdout(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(python("install"));
+    adapter::install(&w.game().exe, &v1.dll, &w.target.bridge, &w.pin, &|| Ok(())).unwrap();
+
+    // A failed update puts the Python tools' set back as it was; the Rust manifest differs only in formatting.
+    let without_manifest = |w: &World| {
+        let mut files = w.files();
+        files.retain(|path, _| !path.ends_with(deploy::MANIFEST));
+        (files, deploy::manifest(&w.game().mods).unwrap())
+    };
+    let before = without_manifest(&w);
+    let broken = Payload {
+        dll: b"not a DLL".to_vec(),
+        ..payload(2)
+    };
+    let error = ops::install(&w.env(), &w.target, &broken).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("previous state was restored"),
+        "{error:#}"
+    );
+    assert_eq!(without_manifest(&w), before);
+
+    let state = ops::install(&w.env(), &w.target, &payload(2)).unwrap();
+    let previous = state.previous.unwrap();
+    assert!(previous.ends_with("previous/untracked"));
+    assert_eq!(deploy::ownership(&previous).unwrap(), Ownership::Owned);
+    let error = ops::rollback(&w.env(), &w.target).unwrap_err();
+    assert!(error.to_string().contains("no bridge JAR"), "{error:#}");
+    assert!(
+        ops::uninstall(&w.env(), &w.target, true)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(python("install"));
+    assert!(python("remove"));
+}
+
+/// With `SBMC_PAYLOAD` set (as `tools/check.py` builds it when the JAR and DLL exist), the real pieces install,
+/// verify and uninstall on the fake home.
+#[test]
+fn the_embedded_payload_installs_when_present() {
+    let Some(embedded) = Payload::embedded().unwrap() else {
+        return;
+    };
+    let w = world();
+    ops::install(&w.env(), &w.target, &embedded).unwrap();
+    assert!(all_current(&w, &embedded));
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    assert_eq!(fs::read(main).unwrap(), embedded.lua["Scripts/main.lua"]);
+    assert!(
+        ops::uninstall(&w.env(), &w.target, true)
+            .unwrap()
+            .is_empty()
+    );
+}

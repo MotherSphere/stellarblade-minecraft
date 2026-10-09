@@ -88,6 +88,16 @@ pub fn read_tree(root: &Path) -> Result<Tree> {
         .collect()
 }
 
+/// The machine-specific `bridge_config.lua` pointing the mod at the private directory `bridge` through Proton's `Z:`.
+pub fn config(bridge: &Path) -> Result<Vec<u8>> {
+    let path = platform::game_path(&platform::private_dir(bridge)?)?;
+    Ok(format!(
+        "return {{directory={},scale=100}}\n",
+        platform::lua_quote(&path)
+    )
+    .into_bytes())
+}
+
 /// Installs the Lua mod into `mods_dir/StellarCollisionProbe`, which must not exist. With `bridge`, writes the
 /// machine-specific `bridge_config.lua` that points the mod at that private directory through Proton's `Z:`.
 /// `enabled.txt` comes last, after every script and the manifest; any failure removes the new folder.
@@ -125,17 +135,11 @@ pub fn install(
     let configuration = match bridge {
         None => None,
         Some(bridge) => {
-            let path = platform::game_path(&platform::private_dir(bridge)?)?;
+            let configuration = config(bridge)?;
             if source.contains_key(CONFIG) {
                 bail!("Source must not include machine-specific bridge_config.lua");
             }
-            Some(
-                format!(
-                    "return {{directory={},scale=100}}\n",
-                    platform::lua_quote(&path)
-                )
-                .into_bytes(),
-            )
+            Some(configuration)
         }
     };
     if !fs::symlink_metadata(mods_dir).is_ok_and(|m| m.is_dir()) {
@@ -212,6 +216,34 @@ pub fn ownership(mods_dir: &Path) -> Result<Ownership> {
             destination.display()
         ))
     })
+}
+
+/// The installed mod's manifest, when it parses as ours.
+pub fn manifest(mods_dir: &Path) -> Result<Manifest> {
+    let path = platform::real_file(&mods_dir.join(MOD_NAME).join(MANIFEST))?;
+    match serde_json::from_slice::<Manifest>(&fs::read(path)?) {
+        Ok(manifest) if manifest.owner == MOD_NAME && manifest.version == 1 => Ok(manifest),
+        _ => bail!("Lua ownership manifest is not recognized"),
+    }
+}
+
+/// The listed files whose content is missing or differs, with the sha256 the manifest expects. Unlisted files, changed
+/// folders and symbolic links cannot be repaired.
+pub fn drifted(mods_dir: &Path) -> Result<Vec<(String, String)>> {
+    let manifest = manifest(mods_dir)?;
+    let (mut files, directories) = inventory(&mods_dir.join(MOD_NAME))?;
+    files.remove(MANIFEST);
+    if directories != manifest.directories {
+        bail!("Refusing changed Lua mod folders");
+    }
+    if let Some(extra) = files.keys().find(|f| !manifest.files.contains_key(*f)) {
+        bail!("Refusing an unlisted Lua mod file: {extra}");
+    }
+    Ok(manifest
+        .files
+        .into_iter()
+        .filter(|(relative, expected)| files.get(relative) != Some(expected))
+        .collect())
 }
 
 /// Removes the Lua mod only when it is exactly what its manifest records; any other content is refused, never forced.
