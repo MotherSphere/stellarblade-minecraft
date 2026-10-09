@@ -15,7 +15,7 @@ import net.minecraft.world.RaycastContext;
 import org.joml.Matrix4d;
 import org.joml.Vector3d;
 
-/** EVE's blade and drone on the client, which sees her live pose; each hit goes to AvatarCombat.strike on the server. */
+/** EVE's blade and drone on the client, which sees her live pose; each hit goes to the server as a strike payload. */
 final class AvatarWeapons {
     private AvatarWeapons() { }
 
@@ -42,15 +42,13 @@ final class AvatarWeapons {
             struck.values().removeIf(time -> seconds - time > AvatarCombat.REHIT);
             if (known && renderer.trailStrength() > 0.5) {
                 boolean charged = seconds < chargedUntil;
-                float amount = AvatarCombat.damage(style, charged);
-                double push = AvatarCombat.knockback(style, charged);
                 Box sweep = new Box(new Vec3d(hilt.x, hilt.y, hilt.z), new Vec3d(tip.x, tip.y, tip.z))
                         .union(new Box(new Vec3d(lastHilt.x, lastHilt.y, lastHilt.z), new Vec3d(lastTip.x, lastTip.y, lastTip.z)))
                         .expand(AvatarCombat.BLADE_RADIUS);
                 for (Entity entity : client.world.getOtherEntities(client.player, sweep, e -> AvatarCombat.strikable(e, client.player))) {
                     if (struck.containsKey(entity.getId()) || !AvatarCombat.sweeps(entity.getBoundingBox().expand(AvatarCombat.BLADE_RADIUS), lastHilt, lastTip, hilt, tip)) continue;
                     struck.put(entity.getId(), seconds);
-                    StellarBridge.strike(entity.getId(), amount, push, charged, charged && chargeStruck.add(entity.getId()), false);
+                    StellarBridge.strike(entity.getId(), style, charged, charged && chargeStruck.add(entity.getId()), null);
                 }
             }
             lastHilt.set(hilt);
@@ -118,7 +116,7 @@ final class AvatarWeapons {
             if (hit >= 0) {
                 Box box = boxes.get(hit);
                 end = box.contains(eyes) ? eyes : box.raycast(eyes, end).orElse(end);
-                StellarBridge.strike(entities.get(hit).getId(), AvatarCombat.SHOT, 0, false, false, true);
+                StellarBridge.strike(entities.get(hit).getId(), null, false, false, end);
                 hits++;
             }
             trace(client, muzzle == null ? eyes : muzzle.at(), end);

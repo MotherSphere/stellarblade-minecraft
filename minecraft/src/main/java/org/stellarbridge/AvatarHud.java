@@ -143,7 +143,7 @@ public final class AvatarHud {
         int[] burst = gauges == null || !(gauges[4] > 0) ? null : cubes(gauges[2], gauges[3], BURST_CUBES);
         float[] shield = shield(actor), tachy = tachy(actor);
         int blocks = shield == null ? 0 : (int) shield[0];
-        int[] fit = layout(w, g, hpColumns(AvatarStats.current().maxHp()), widest(beta == null ? 0 : beta[0], burst == null ? 0 : burst[0], blocks));
+        int[] fit = layout(w, g, hpColumns(StellarBridge.stats().maxHp()), widest(beta == null ? 0 : beta[0], burst == null ? 0 : burst[0], blocks));
         width = w; height = h; scale = g; panel = fit[0]; columns = fit[1];
         lift = chatBottom(panel, g) - CHAT;
         float f = (float) panel / g;

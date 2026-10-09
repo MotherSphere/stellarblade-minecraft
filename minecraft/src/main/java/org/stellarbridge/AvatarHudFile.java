@@ -1,17 +1,17 @@
 package org.stellarbridge;
 
 import java.io.IOException;
-import java.util.UUID;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.server.MinecraftServer;
 
-/** The client half of AvatarItems: Lua's HUD file read each client tick while EVE replaces the player. */
+/** The client half of AvatarItems: Lua's HUD file read each client tick while EVE replaces the player; each new use goes to the server. */
 final class AvatarHudFile {
     private static BridgeFiles files; // Render thread, from here to state.
     private static AvatarItems.Hud latest; // The link's newest fresh publication while EVE replaces the player.
     private static int[] seen; // Its uses as last read, for that session.
     private static String session, state = "missing";
+    private static final int[] sent = new int[AvatarItems.USES.length]; // Uses sent to the server, per kind.
 
     private AvatarHudFile() { }
 
@@ -34,15 +34,10 @@ final class AvatarHudFile {
         if (!link.session().equals(session)) { session = link.session(); seen = null; }
         int[] steps = AvatarItems.used(seen, hud.uses());
         seen = hud.uses();
-        MinecraftServer server = client.getServer();
-        UUID owner = link.owner();
-        for (int k = 0; server != null && k < steps.length; k++)
+        for (int k = 0; ClientPlayNetworking.canSend(BridgeNet.ItemUse.ID) && k < steps.length; k++)
             for (int n = 0; n < steps[k]; n++) {
-                int kind = k;
-                server.execute(() -> {
-                    var player = server.getPlayerManager().getPlayer(owner);
-                    if (player != null && BridgeServer.overrides(player)) AvatarItems.use(player, kind);
-                });
+                ClientPlayNetworking.send(new BridgeNet.ItemUse((byte) k));
+                sent[k]++;
             }
     }
 
@@ -50,5 +45,5 @@ final class AvatarHudFile {
     static AvatarItems.Hud latest() { return latest; }
 
     /** Render thread. */
-    static String status() { return AvatarItems.status(state); }
+    static String status() { return AvatarItems.status(state, sent); }
 }

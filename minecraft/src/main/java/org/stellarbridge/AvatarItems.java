@@ -3,7 +3,6 @@ package org.stellarbridge;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.regex.Pattern;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
@@ -28,8 +27,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Stellar Blade's HUD item slots and item uses, from Lua's HUD file (eve-hud.0/.1, SBMC_HUD 1). The render thread reads
  * it each client tick while EVE replaces the player (AvatarHudFile), keeps it for AvatarHud's heal, util, ammo and dash
- * slots, and hands each new use of a combat consumable to the server thread, which applies its effect around the player
- * and advances Smart Mines each tick. Stellar Blade decides every use; Minecraft converts it.
+ * slots, and sends each new use of a combat consumable to the server (BridgeNet.ItemUse), which applies its effect around
+ * the player and advances Smart Mines each tick. Stellar Blade decides every use; Minecraft converts it.
  */
 final class AvatarItems {
     record Slot(String kind, int count, int max, float cooldown, boolean usable) { }
@@ -42,8 +41,8 @@ final class AvatarItems {
     static final long FRESH_MS = 2500; // Lua's wall clock has whole seconds.
     static final int SHOCK = 0, PULSE = 1, MINE = 2, SONIC = 3;
     static final String[] USES = {"shock", "pulse", "mine", "sonic"};
-    // Stellar Blade's 325 cm at 100 Unreal units a block; Smart Mines: at most 3, half a block ahead, a monster within 2
-    // blocks arms one and it goes off 10 ticks later, sparks every 10 ticks, gone after a minute.
+    // Stellar Blade's 325 cm at 100 Unreal units a block; Smart Mines: at most 3 per owner, half a block ahead, a monster
+    // within 2 blocks arms one and it goes off 10 ticks later, sparks every 10 ticks, gone after a minute.
     static final double RADIUS = 3.25, PUSH = 1, ARM = 2, AHEAD = 0.5;
     static final int MINES = 3, MINE_LIFE = 1200, MINE_FUSE = 10, SPARKS = 10, LOGGED = 20;
     private static final String KIND = "(tumbler|potion|lingering|field|shock|pulse|mine|sonic|pump|other)", COUNT = "(\\d{1,4})",
@@ -55,11 +54,10 @@ final class AvatarItems {
             + "DASH (?:none|" + SHARE + ")\n"
             + "USES " + USE + " " + USE + " " + USE + " " + USE + "\nEND (\\d{1,18})\n");
 
-    private static final AtomicIntegerArray converted = new AtomicIntegerArray(USES.length); // Server thread writes.
-    private static final List<Mine> mines = new ArrayList<>(); // Server thread, as logged.
+    private static final List<Mine> mines = new ArrayList<>(); // Server thread, oldest first, as logged.
     private static int logged;
 
-    private static final class Mine {
+    static final class Mine {
         final ServerWorld world;
         final Vec3d at;
         final UUID owner;
@@ -107,6 +105,13 @@ final class AvatarItems {
         return steps;
     }
 
+    /** Places a mine; its owner's oldest goes beyond MINES, other owners' mines stay. */
+    static void place(List<Mine> mines, Mine mine) {
+        if (mines.stream().filter(other -> other.owner.equals(mine.owner)).count() >= MINES)
+            mines.remove(mines.stream().filter(other -> other.owner.equals(mine.owner)).findFirst().orElseThrow());
+        mines.add(mine);
+    }
+
     /** Server side: Smart Mines each tick. AvatarHudFile reads the HUD file on the client. */
     static void initialize() {
         ServerTickEvents.END_SERVER_TICK.register(AvatarItems::tick);
@@ -143,10 +148,8 @@ final class AvatarItems {
     static void use(ServerPlayerEntity player, int kind) {
         ServerWorld world = player.getServerWorld();
         Vec3d at = player.getPos();
-        converted.incrementAndGet(kind);
         if (kind == MINE) {
-            if (mines.size() >= MINES) mines.removeFirst();
-            mines.add(new Mine(world, at.add(Vec3d.fromPolar(0, player.getYaw()).multiply(AHEAD)), player.getUuid()));
+            place(mines, new Mine(world, at.add(Vec3d.fromPolar(0, player.getYaw()).multiply(AHEAD)), player.getUuid()));
             world.playSound(null, at.x, at.y, at.z, SoundEvents.BLOCK_TRIPWIRE_ATTACH, player.getSoundCategory(), 1, 1);
             return;
         }
@@ -183,7 +186,7 @@ final class AvatarItems {
                     e -> e instanceof Monster && e.isAlive() && e.squaredDistanceTo(at) <= ARM * ARM).isEmpty()) mine.armed = mine.age;
             if (mine.armed < 0 || mine.age - mine.armed < MINE_FUSE) return false;
             List<Entity> struck = near(owner, mine.world, at);
-            float amount = AvatarCombat.STRONG * AvatarStats.current().strikes();
+            float amount = AvatarCombat.STRONG * AvatarCombat.fighter(owner).stats.strikes();
             for (Entity entity : struck) {
                 entity.timeUntilRegen = 0;
                 if (entity.damage(owner.getDamageSources().playerAttack(owner), amount))
@@ -206,9 +209,9 @@ final class AvatarItems {
         if (logged++ < LOGGED) LoggerFactory.getLogger("stellar_bridge").info("EVE item: {}, {} entities", USES[kind], entities);
     }
 
-    /** Any thread, with the HUD file's state. */
-    static String status(String state) {
-        return String.format(" Items: HUD file %s; uses converted: shock %d, pulse %d, mine %d, sonic %d.", state,
-                converted.get(SHOCK), converted.get(PULSE), converted.get(MINE), converted.get(SONIC));
+    /** With the HUD file's state and the uses the client sent, per kind. */
+    static String status(String state, int[] sent) {
+        return String.format(" Items: HUD file %s; uses sent: shock %d, pulse %d, mine %d, sonic %d.", state,
+                sent[SHOCK], sent[PULSE], sent[MINE], sent[SONIC]);
     }
 }

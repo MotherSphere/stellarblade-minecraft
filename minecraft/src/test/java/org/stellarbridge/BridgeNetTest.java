@@ -26,8 +26,8 @@ public final class BridgeNetTest {
                 new BridgeNet.Strike(7, BridgeNet.Strike.SHOT, (byte) 0, new Vec3d(1.25, 65.5, -30)),
                 new BridgeNet.Defense(BridgeNet.Defense.GUARD_DOWN, -5_000_000_000L, 123_456_789L),
                 new BridgeNet.ItemUse((byte) AvatarItems.SONIC),
-                new BridgeNet.Status(new AvatarStats.Values(4000, 3, 900, 25, 1.5f, 0.1f, 0.2f, -0.3f), 0xFFFFFFFFL),
-                new BridgeNet.Status(null, -1),
+                new BridgeNet.Status(new AvatarStats.Values(4000, 3, 900, 25, 1.5f, 0.1f, 0.2f, -0.3f), 0xFFFFFFFFL, false),
+                new BridgeNet.Status(null, -1, true),
                 new BridgeNet.Verdict((byte) BridgeProtocol.COMBAT_EVENTS.indexOf("perfect_dodge"), 135.5f),
                 new BridgeNet.Verdict((byte) 0, Float.NaN),
                 new BridgeNet.Feedback(0.75f, 12, -5, Integer.MAX_VALUE));
@@ -44,6 +44,9 @@ public final class BridgeNetTest {
         assert ids.size() == 12 : "One channel per payload kind, hello both ways: " + ids;
         int bytes = encoded(new BridgeNet.Strike(42, BridgeNet.Strike.LIGHT, (byte) 0, null)).readableBytes();
         assert bytes == 3 : "A melee strike is 3 bytes, not " + bytes;
+        for (AvatarTrail.Style style : AvatarTrail.Style.values())
+            assert new BridgeNet.Strike(1, BridgeNet.Strike.style(style), (byte) 0, null).trail() == style : "The style byte round trips: " + style;
+        assert BridgeNet.Strike.style(null) == BridgeNet.Strike.SWING && new BridgeNet.Strike(1, BridgeNet.Strike.SWING, (byte) 0, null).trail() == null;
 
         // Hostile values never decode: counts, lengths, enums and flags beyond their bounds, non-finite stats.
         refused(BridgeNet.Mobs.CODEC, buf -> writeBoxes(buf, BridgeProtocol.MOBS + 1, box));

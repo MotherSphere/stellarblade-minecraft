@@ -12,7 +12,7 @@ import net.minecraft.util.Identifier;
  * 450 is the strike table's); her critical rate and damage roll on each strike; and each hit she takes is reduced as
  * Stellar Blade reduces it, by her melee or ranged damage reduction, her final HP damage reduction and her shield's 17.5 %
  * a shield block (her shield full: Stellar Blade's own damage never reaches her), before Minecraft applies its armor once.
- * The render thread publishes, the server thread applies.
+ * The player's client sends them (BridgeNet.Status), the server thread applies them to that player.
  */
 final class AvatarStats {
     // Stellar Blade's CharacterTable row Player: MaxHP 2000, PhysicAttackPower 450, DamageReductionPerShieldBock 0.175.
@@ -41,16 +41,6 @@ final class AvatarStats {
         private static float reduction(float rate) { return Math.clamp(rate, 0, MAX_REDUCTION); }
     }
 
-    private static volatile Values published;
-
-    /** Render thread, each frame: AvatarStream.stats() while EVE replaces the bridged player, else null. */
-    static void publish(float[] stats) { published = Values.of(stats); }
-    /** Any thread: the latest stats, or BASE without them. */
-    static Values current() {
-        Values stats = published;
-        return stats == null ? Values.BASE : stats;
-    }
-
     /**
      * Server thread: the stats' maximum health on the player (BASE removes the modifier), its health keeping its share of
      * the maximum. Only a changed value touches the player, and is logged.
@@ -72,45 +62,44 @@ final class AvatarStats {
 
     /**
      * Stellar Blade's heals as Minecraft's: the adapter mirrors the player's health share into Stellar Blade's HP, so the
-     * game accepts and spends its own heals, and counts the HP they add. The render thread reports that count (-1: none),
-     * the server heals the same share of the player's maximum health and publishes the share after it with the count it
-     * applied, and the adapter writes nothing more until that acknowledgement arrives.
+     * game accepts and spends its own heals, and counts the HP they add. The client reports that count (-1: none), the
+     * server heals the same share of the player's maximum health and sends the share after it with the count it applied
+     * (BridgeNet.Feedback), and the adapter writes nothing more until that acknowledgement arrives.
      */
     record Mirror(float share, int acknowledged) { static final Mirror OFF = new Mirror(0, 0); }
     static final long MAX_HEAL_STEP = 100000; // A larger step of the count is not a heal: adopted, not applied.
-    private static volatile long reported = -1;
-    private static volatile Mirror mirror = Mirror.OFF;
-    private static long applied = -1; // Server thread: the count last applied, -1 before a baseline.
 
-    /** Render thread: AvatarStream.healed() each controlled frame, -1 once the stream stops. */
-    static void reportHeals(long counter) { reported = counter; }
-    /** Any thread: the health word's share and acknowledged count. */
-    static Mirror mirror() { return mirror; }
+    /** One player's heal conversion, on the server thread: the count their client reported, the count applied, the mirror. */
+    static final class Heals {
+        long reported = -1; // The adapter's count from the player's status payload, -1 for none.
+        long applied = -1; // The count last applied, -1 before a baseline.
+        Mirror mirror = Mirror.OFF;
+    }
 
     /** Server thread, each tick: the heals counted since the last tick, applied while active (EVE drives the living player). */
-    static void heal(ServerPlayerEntity player, boolean active) {
+    static void heal(ServerPlayerEntity player, Heals heals, Values stats, boolean active) {
         boolean alive = player.isAlive();
-        long points = due(active, alive);
-        if (points > 0) player.heal(healthFor(points, current().maxHp(), player.getMaxHealth()));
-        if (applied >= 0) mirror = new Mirror(active && alive ? Math.clamp(player.getHealth() / player.getMaxHealth(), 0f, 1f) : 0, (int) applied);
+        long points = due(heals, active, alive);
+        if (points > 0) player.heal(healthFor(points, stats.maxHp(), player.getMaxHealth()));
+        if (heals.applied >= 0) heals.mirror = new Mirror(active && alive ? Math.clamp(player.getHealth() / player.getMaxHealth(), 0f, 1f) : 0, (int) heals.applied);
     }
     /**
-     * Server thread: the heal points of the reported count to apply now. Taken (the count becomes the one applied) while
-     * active or once the player is dead; while the player lives undriven (a lapsed link) they wait unacknowledged, so the
-     * adapter keeps Stellar Blade's healed HP, unwritten, until Minecraft applies them.
+     * The heal points of the reported count to apply now. Taken (the count becomes the one applied) while active or once
+     * the player is dead; while the player lives undriven (a lapsed link) they wait unacknowledged, so the adapter keeps
+     * Stellar Blade's healed HP, unwritten, until Minecraft applies them.
      */
-    static long due(boolean active, boolean alive) {
-        long counter = reported;
-        if (counter < 0) stopHeals();
+    static long due(Heals heals, boolean active, boolean alive) {
+        long counter = heals.reported;
+        if (counter < 0) stopHeals(heals);
         if (counter < 0 || !active && alive) return 0;
-        long points = heals(applied, counter);
-        applied = counter;
+        long points = heals(heals.applied, counter);
+        heals.applied = counter;
         return alive ? points : 0;
     }
-    /** Server thread: forgets the count, so the next one is a baseline. */
-    static void stopHeals() {
-        applied = -1;
-        mirror = Mirror.OFF;
+    /** Forgets the count, so the next one is a baseline. */
+    static void stopHeals(Heals heals) {
+        heals.applied = -1;
+        heals.mirror = Mirror.OFF;
     }
 
     /** Heal points from the count applied (-1: none, a baseline) to counter, as u32 counts; a step above MAX_HEAL_STEP gives none. */

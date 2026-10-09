@@ -46,10 +46,8 @@ public final class BridgeServer implements ModInitializer {
     // Immutable publications, per player, to the packet threads (move packets) and this JVM's client.
     private static final Map<UUID, Control> controls = new ConcurrentHashMap<>();
     static volatile PauseBinding pauseBinding; // Singleplayer host only; independent of EVE pose freshness.
-    // Written by this JVM's client, read by its integrated server's damage hook; a dedicated server never sets them.
+    // Written by this JVM's client, read by its integrated server's damage hook; a dedicated server never sets it.
     static volatile boolean pauseOverridden; // A pause menu is open while the bridge keeps the world running.
-    // Stellar Blade stopped granting the controlled run's input for AvatarView.HALT_NANOS (paused, a cutscene): EVE cannot answer.
-    static volatile boolean halted;
 
     @Override
     public void onInitialize() {
@@ -71,6 +69,12 @@ public final class BridgeServer implements ModInitializer {
             Session current = sessions.get(context.player().getUuid());
             if (current != null) current.relay.receive(eve.text(), eve.sent(), System.currentTimeMillis());
         });
+        // Combat from each player's client, judged against that player's own Fighter.
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.Strike.ID, (strike, context) -> AvatarCombat.strike(context.player(), strike));
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.Defense.ID, (defense, context) -> AvatarCombat.press(context.player(), defense));
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.ItemUse.ID, (use, context) -> AvatarCombat.use(context.player(), use.kind()));
+        ServerPlayNetworking.registerGlobalReceiver(BridgeNet.Status.ID, (status, context) -> AvatarCombat.fighter(context.player()).status(status));
+        ServerTickEvents.START_SERVER_TICK.register(AvatarCombat::judgeHeld);
         ServerTickEvents.END_SERVER_TICK.register(BridgeServer::tick);
         ServerLifecycleEvents.SERVER_STOPPING.register(server -> {
             for (Session current : List.copyOf(sessions.values())) if (current.server == server) end(current, "World closed");
@@ -79,6 +83,7 @@ public final class BridgeServer implements ModInitializer {
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
             Session current = sessions.get(handler.player.getUuid());
             if (current != null && current.player == handler.player) end(current, null);
+            AvatarCombat.forget(handler.player.getUuid());
         });
     }
 
@@ -124,7 +129,7 @@ public final class BridgeServer implements ModInitializer {
         player.sendMessage(Text.literal(current == null ? "Stellar Bridge is inactive."
                 : "Stellar Bridge: revision " + current.revision + ", " + current.boxes.size()
                     + " boxes, window around block " + Session.middle(current.centre).toShortString() + ", slowest terrain publication " + current.slowestPublish / 1_000_000 + " ms, EVE position "
-                    + (controls.containsKey(player.getUuid()) ? "active" : "waiting") + "."), false);
+                    + (controls.containsKey(player.getUuid()) ? "active" : "waiting") + "." + AvatarCombat.status(AvatarCombat.fighter(player))), false);
     }
 
     private static void error(ServerPlayerEntity player, String message) {
@@ -145,10 +150,8 @@ public final class BridgeServer implements ModInitializer {
         if (binding != null && binding.owner().equals(owner)) pauseBinding = null;
         NativeSceneCapture.Snapshot scene = NativeSceneCapture.snapshot();
         if (scene != null && scene.owner().equals(owner)) NativeSceneCapture.stop();
-        if (sessions.isEmpty()) {
-            AvatarCombat.restoreTime(true);
-            AvatarStats.stopHeals();
-        }
+        if (sessions.isEmpty()) AvatarCombat.restoreTime(true);
+        AvatarStats.stopHeals(AvatarCombat.fighter(previous.player).heals);
         AvatarStats.apply(previous.player, AvatarStats.Values.BASE); // Minecraft's own maximum health again.
         LOG.info("Bridge stopped: player={} {}", previous.player.getGameProfile().getName(), reason == null ? "left" : reason);
         if (reason == null) return;
@@ -179,11 +182,16 @@ public final class BridgeServer implements ModInitializer {
             end(current, ended);
             return;
         }
-        // EVE's stats and heals still come from this JVM's client, so only its own player gets them.
-        if (current.server.isHost(current.player.getGameProfile())) {
-            if (!dead) AvatarStats.apply(current.player, AvatarStats.current()); // A respawned player gets them anew.
-            AvatarStats.heal(current.player, !dead && overrides(current.player));
+        // EVE's stats and heals from the player's client; health share, heal count and gauge points back when they change.
+        AvatarCombat.Fighter fighter = AvatarCombat.fighter(current.player);
+        if (!dead) AvatarStats.apply(current.player, fighter.stats); // A respawned player gets them anew.
+        AvatarStats.heal(current.player, fighter.heals, fighter.stats, !dead && overrides(current.player));
+        var feedback = new BridgeNet.Feedback(fighter.heals.mirror.share(), fighter.heals.mirror.acknowledged(), fighter.beta, fighter.burst);
+        if (!feedback.equals(fighter.sent)) {
+            send(current.player, feedback);
+            fighter.sent = feedback;
         }
+        defenseless(current.player); // The multiplayer grace starts when EVE falls silent, hit or not.
         try {
             if (++current.ticks % 4 == 0) current.publish();
             if (dead) { // The terrain heartbeat goes on; EVE drives nobody until the respawn.
@@ -229,14 +237,18 @@ public final class BridgeServer implements ModInitializer {
     }
 
     /**
-     * Server thread: the singleplayer host's bridged player while EVE cannot answer, behind a pause menu the world keeps
-     * running through, without a live link (EVE outside the patch, stale packets), or while Stellar Blade withholds her
-     * input (its own pause or a cutscene keeps the link live).
+     * Server thread: a bridged player whose EVE cannot answer a hit, behind a pause menu the world keeps running through,
+     * without a live link (EVE outside the patch, stale packets), or while Stellar Blade withholds her input (its own
+     * pause or a cutscene keeps the link live). The singleplayer host is spared for as long as that lasts; in multiplayer
+     * a player is spared for AvatarCombat.GRACE of it, as vanilla never protects an idle player for long.
      */
     static boolean defenseless(ServerPlayerEntity player) {
+        if (!sessions.containsKey(player.getUuid())) return false;
+        AvatarCombat.Fighter fighter = AvatarCombat.fighter(player);
+        boolean silent = !overrides(player) || fighter.halted;
         PauseBinding current = pauseBinding;
-        return current != null && player.getUuid().equals(current.owner) && !current.server.isRemote()
-                && (pauseOverridden || !overrides(player) || halted);
+        if (current != null && player.getUuid().equals(current.owner) && !current.server.isRemote()) return pauseOverridden || silent;
+        return fighter.graced(silent, System.nanoTime());
     }
 
     record PauseBinding(MinecraftServer server, UUID owner, String dimension) { }

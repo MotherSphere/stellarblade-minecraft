@@ -259,16 +259,20 @@ public final class AvatarStreamTest {
         assert AvatarStats.heals(0, 100000) == 100000 && AvatarStats.heals(0, 100001) == 0 : "The largest heal step";
         assert AvatarStats.healthFor(1200, 2000, 20) == 12f && AvatarStats.healthFor(1, 0, 20) == 20f;
         // Each tick takes the reported count while EVE drives the player; a lapsed link leaves it waiting, unacknowledged.
-        AvatarStats.reportHeals(1000);
-        assert AvatarStats.due(true, true) == 0 : "A first count is a baseline";
-        AvatarStats.reportHeals(2200);
-        assert AvatarStats.due(false, true) == 0 && AvatarStats.due(true, true) == 1200 : "A heal waits out a lapsed link";
-        AvatarStats.reportHeals(2500);
-        assert AvatarStats.due(false, false) == 0 && AvatarStats.due(true, true) == 0 : "Death takes the heals";
-        AvatarStats.reportHeals(-1);
-        AvatarStats.due(true, true);
-        AvatarStats.reportHeals(3000);
-        assert AvatarStats.due(true, true) == 0 : "A stopped stream forgets the count: the next one is a baseline";
+        var healed = new AvatarStats.Heals();
+        healed.reported = 1000;
+        assert AvatarStats.due(healed, true, true) == 0 : "A first count is a baseline";
+        healed.reported = 2200;
+        assert AvatarStats.due(healed, false, true) == 0 && AvatarStats.due(healed, true, true) == 1200 : "A heal waits out a lapsed link";
+        healed.reported = 2500;
+        assert AvatarStats.due(healed, false, false) == 0 && AvatarStats.due(healed, true, true) == 0 : "Death takes the heals";
+        healed.reported = -1;
+        AvatarStats.due(healed, true, true);
+        healed.reported = 3000;
+        assert AvatarStats.due(healed, true, true) == 0 : "A stopped stream forgets the count: the next one is a baseline";
+        var other = new AvatarStats.Heals();
+        other.reported = 5000;
+        assert AvatarStats.due(other, true, true) == 0 && healed.applied == 3000 : "Each player's count is their own baseline";
         // Stellar Blade's stats as Minecraft's: her base is vanilla's, upgrades scale health and strikes, reductions multiply.
         var base = AvatarStats.Values.of(new float[] {2000, 2, 450, 5, 1.5f, 0, 0, 0});
         assert base.health() == 1 && base.strikes() == 1 && Math.abs(base.taken(false) - 0.65f) < 1e-6 : "Two shield blocks take 35 %";

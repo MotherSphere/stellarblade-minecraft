@@ -46,7 +46,7 @@ public final class AvatarView {
     private static Live live;
     private static final List<AvatarStream> unreaped = new ArrayList<>();
     // Stellar Blade stopped granting this run's forwarded input for HALT_NANOS (paused, a cutscene): EVE cannot answer.
-    // Written on the render thread into BridgeServer.halted, read by the server thread's damage hook.
+    // Sent to the server with the player's status (StellarBridge.halted), read by its damage hook.
     static final long HALT_NANOS = 400_000_000L; // Longer than Lua's 200 ms permit renewal.
 
     private record Replay(ClientWorld world, AvatarRecording recording, AvatarModel model, AvatarRenderer renderer,
@@ -144,10 +144,10 @@ public final class AvatarView {
                                 .then(ClientCommandManager.literal("auto").executes(context -> shading(context.getSource(), false)))
                                 .then(ClientCommandManager.literal("entity").executes(context -> shading(context.getSource(), true))))));
         WorldRenderEvents.AFTER_ENTITIES.register(AvatarView::render);
-        // While a perfect dodge slows Minecraft's world, a cold tint shows it.
+        // For a perfect dodge's slow motion (Minecraft's world's while alone on the server, else Stellar Blade's), a cold tint.
         net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((context, tick) -> {
             var client = MinecraftClient.getInstance();
-            if (client.world != null && AvatarCombat.slowMotion() && replaces(client.player))
+            if (client.world != null && StellarBridge.slowMotion() && replaces(client.player))
                 context.fill(0, 0, context.getScaledWindowWidth(), context.getScaledWindowHeight(), 0x302050A0);
         });
         ClientTickEvents.END_CLIENT_TICK.register(client -> tick());
@@ -317,7 +317,7 @@ public final class AvatarView {
                         if (entry.getKey().endsWith("/Opacity")) current.glow = Math.max(current.glow, entry.getValue()[0]);
                     current.lookApplied = sample.lookApplied();
                     if (sample.inputGranted() || !current.controlled || current.rotation == null) current.grantedNanos = nanos;
-                    BridgeServer.halted = nanos - current.grantedNanos > HALT_NANOS;
+                    StellarBridge.halted(nanos - current.grantedNanos > HALT_NANOS);
                     var player = MinecraftClient.getInstance().player;
                     if (current.controlled && current.rotation != null && player != null) {
                         double gap = Math.abs(Math.IEEEremainder(player.getYaw() + 90 - current.rotation[1], 360));
@@ -352,7 +352,7 @@ public final class AvatarView {
             // Her stats while she is the bridged player; a frame the adapter could not read them keeps the last ones.
             float[] stats = current.stream.stats();
             if (stats != null) current.stats = stats;
-            AvatarStats.publish(current.anchored ? current.stats : null);
+            StellarBridge.stats(current.anchored ? current.stats : null);
             if (current.controlled) {
                 var player = MinecraftClient.getInstance().player;
                 // A locked target turns Minecraft's camera first; Stellar Blade's follows it. Without the link no EVE aims.
@@ -361,10 +361,10 @@ public final class AvatarView {
                 // Minecraft's yaw keeps counting turns; the adapter takes one turn. Its health and gains words go first, so
                 // the camera's fresh time covers them.
                 if (player != null) {
-                    AvatarStats.reportHeals(current.stream.healed()); // An unanchored frame keeps the count: heals wait.
-                    var health = current.anchored ? AvatarStats.mirror() : AvatarStats.Mirror.OFF;
-                    int[] earned = AvatarCombat.earned();
-                    current.stream.feedback(health.share(), health.acknowledged(), earned[0], earned[1]);
+                    StellarBridge.heals(current.stream.healed()); // An unanchored frame keeps the count: heals wait.
+                    var feedback = StellarBridge.feedback();
+                    current.stream.feedback(current.anchored ? feedback.share() : 0, current.anchored ? feedback.acknowledged() : 0,
+                            feedback.beta(), feedback.burst());
                     current.stream.look(-player.getPitch(), (float) Math.IEEEremainder(player.getYaw() + 90.0, 360), System.currentTimeMillis());
                 }
                 ControlBridge.avatarFrame();
@@ -759,7 +759,7 @@ public final class AvatarView {
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
                 + clothStatus(current) + AvatarHudFile.status() + AvatarHud.status()
-                + hiddenStatus(current) + AvatarCombat.status() + current.gun.status(current.stream.shots())
+                + hiddenStatus(current) + current.gun.status(current.stream.shots())
                 + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
                 + AvatarStats.status(current.stats) + reportStatus(current.stream.report())
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
@@ -815,9 +815,9 @@ public final class AvatarView {
         Live current = live;
         if (current == null) return;
         live = null;
-        BridgeServer.halted = false;
-        AvatarStats.publish(null);
-        AvatarStats.reportHeals(-1);
+        StellarBridge.halted(false);
+        StellarBridge.stats(null);
+        StellarBridge.heals(-1);
         AvatarLock.release();
         if (current.controlled) {
             current.stream.lookOff();

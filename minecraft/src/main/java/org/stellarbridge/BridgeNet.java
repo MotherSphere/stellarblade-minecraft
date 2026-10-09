@@ -194,6 +194,10 @@ public final class BridgeNet {
         static final byte SWING = 0, LIGHT = 1, STRONG = 2, THRUST = 3, SHOT = 4;
         static final byte CHARGED = 1, FIRST = 2, QUIET = 4;
         static final Id<Strike> ID = id("strike");
+        /** The style byte of a blade strike in a trail style (null: the swing heuristic). */
+        static byte style(AvatarTrail.Style style) { return style == null ? SWING : (byte) (LIGHT + style.ordinal()); }
+        /** A blade strike's trail style (null: the swing heuristic); not for a shot. */
+        AvatarTrail.Style trail() { return style == SWING ? null : AvatarTrail.Style.values()[style - LIGHT]; }
         static final PacketCodec<PacketByteBuf, Strike> CODEC = PacketCodec.of((strike, buf) -> {
             buf.writeVarInt(strike.entity).writeByte(strike.style).writeByte(strike.flags);
             if (strike.style == SHOT) buf.writeDouble(strike.hit.x).writeDouble(strike.hit.y).writeDouble(strike.hit.z);
@@ -227,15 +231,18 @@ public final class BridgeNet {
         @Override public Id<ItemUse> getId() { return ID; }
     }
 
-    /** C2S, on change: EVE's stats (null without them) and the adapter's heal count (-1: none, else a u32). */
-    record Status(AvatarStats.Values stats, long heals) implements CustomPayload {
+    /**
+     * C2S, on change: EVE's stats (null without them), the adapter's heal count (-1: none, else a u32), and whether
+     * Stellar Blade withholds her input (paused, a cutscene), so she cannot answer a hit.
+     */
+    record Status(AvatarStats.Values stats, long heals, boolean halted) implements CustomPayload {
         static final Id<Status> ID = id("status");
         static final PacketCodec<PacketByteBuf, Status> CODEC = PacketCodec.of((status, buf) -> {
             var s = status.stats;
             buf.writeBoolean(s != null);
             if (s != null) for (float v : new float[] {s.maxHp(), s.shieldBlocks(), s.attack(), s.critPercent(), s.critRate(),
                     s.melee(), s.ranged(), s.finalHp()}) buf.writeFloat(v);
-            buf.writeLong(status.heals);
+            buf.writeLong(status.heals).writeBoolean(status.halted);
         }, buf -> {
             float[] s = null;
             if (buf.readBoolean()) {
@@ -244,7 +251,7 @@ public final class BridgeNet {
             }
             long heals = buf.readLong();
             if (heals < -1 || heals > 0xFFFFFFFFL) throw refused("heal count " + heals);
-            return new Status(AvatarStats.Values.of(s), heals);
+            return new Status(AvatarStats.Values.of(s), heals, buf.readBoolean());
         });
         @Override public Id<Status> getId() { return ID; }
     }

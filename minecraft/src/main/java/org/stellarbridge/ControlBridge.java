@@ -89,7 +89,7 @@ public final class ControlBridge {
     static void stop() {
         avatar = false;
         AvatarLock.release();
-        AvatarCombat.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false);
+        StellarBridge.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false);
         if (state != null) {
             state.stop();
             publish();
@@ -104,7 +104,7 @@ public final class ControlBridge {
     public static void suspend() {
         if (state == null) return;
         rememberHeld();
-        AvatarCombat.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false);
+        StellarBridge.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false);
         state.neutral("release physical controls before resuming");
         lookX = lookY = 0;
         publish();
@@ -273,7 +273,7 @@ public final class ControlBridge {
         catch (IOException | IllegalArgumentException error) { state.unavailable("native input acknowledgement unavailable"); }
         boolean allowed = windowOwned() && frameReady();
         state.eligibility(allowed, allReleased, now, nanos);
-        if (!state.active()) AvatarCombat.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false); // No stale guard or dodge.
+        if (!state.active()) StellarBridge.inputs(Long.MIN_VALUE, Long.MIN_VALUE, false); // No stale guard or dodge.
         if (state.active()) apply(now);
         publish();
         lookX = lookY = 0;
@@ -294,7 +294,7 @@ public final class ControlBridge {
         int mask = build ? 0 : buttons(held, heldSince, nanos);
         if (avatar && held[LOCK] && !held[EXTRA_R3]) mask &= ~R3; // Stellar Blade's own lock-on would recenter its camera.
         // The dodge and guard keys' latest presses, for Minecraft's damage to meet at the impact.
-        if (!build) AvatarCombat.inputs(heldSince[DODGE], heldSince[GUARD], held[GUARD]);
+        if (!build) StellarBridge.inputs(heldSince[DODGE], heldSince[GUARD], held[GUARD]);
         for (int bit : SENT) state.button(bit, (mask & bit) != 0, time);
     }
 

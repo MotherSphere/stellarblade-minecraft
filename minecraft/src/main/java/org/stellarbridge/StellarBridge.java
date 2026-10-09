@@ -24,6 +24,17 @@ import org.slf4j.LoggerFactory;
 public final class StellarBridge implements ClientModInitializer {
     private static final Logger LOG = LoggerFactory.getLogger("stellar_bridge");
     private static BridgeLink link; // Client thread only: this player's link, from the server's link payload.
+    // Client thread (Minecraft renders on it): EVE's stats and heal count as last read, whether Stellar Blade withholds her
+    // input, the status last sent, the server's feedback, the tint's end after a perfect dodge, and the presses last sent.
+    private static AvatarStats.Values stats;
+    private static long heals = -1;
+    private static boolean halted;
+    private static BridgeNet.Status sentStatus;
+    private static final BridgeNet.Feedback NO_FEEDBACK = new BridgeNet.Feedback(0, 0, 0, 0);
+    private static BridgeNet.Feedback feedback = NO_FEEDBACK;
+    private static long tintUntil = System.nanoTime();
+    private static long dodgeSent = Long.MIN_VALUE, guardSent = Long.MIN_VALUE;
+    private static boolean guardHeld;
 
     @Override
     public void onInitializeClient() {
@@ -66,7 +77,10 @@ public final class StellarBridge implements ClientModInitializer {
             try { current.mobs(payload.boxes(), System.currentTimeMillis()); }
             catch (IOException | IllegalArgumentException failure) { LOG.warn("Mob walls not delivered to Stellar Blade: {}", failure.toString()); }
         });
+        ClientPlayNetworking.registerGlobalReceiver(BridgeNet.Feedback.ID, (payload, context) -> feedback = payload);
         ClientPlayNetworking.registerGlobalReceiver(BridgeNet.Verdict.ID, (payload, context) -> {
+            // A perfect dodge's cold tint, as long as the slow motion it brings when the player is alone on the server.
+            if (payload.event() == BridgeProtocol.COMBAT_EVENTS.indexOf("perfect_dodge")) tintUntil = System.nanoTime() + AvatarCombat.SLOW_NANOS;
             BridgeLink current = link;
             if (current == null) return;
             try { current.verdict(payload.event(), payload.yaw(), System.currentTimeMillis()); }
@@ -74,14 +88,24 @@ public final class StellarBridge implements ClientModInitializer {
         });
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             BridgeServer.pauseBinding = null;
+            sentStatus = null; // The next server gets the status anew, and counts gauge points from zero.
+            feedback = NO_FEEDBACK;
             end();
         });
         ClientTickEvents.START_CLIENT_TICK.register(StellarBridge::tick);
         LOG.info("Stellar Bridge loaded; use /stellar start in a world or on a server with the mod");
     }
 
-    /** Each client tick: Stellar Blade's answer to a request, the relay of a new eve.N packet, then the predicted position. */
+    /**
+     * Each client tick: EVE's status when it changed, Stellar Blade's answer to a request, the relay of a new eve.N packet,
+     * then the predicted position.
+     */
     private static void tick(MinecraftClient client) {
+        var status = new BridgeNet.Status(stats, heals, halted);
+        if (!status.equals(sentStatus) && ClientPlayNetworking.canSend(BridgeNet.Status.ID)) {
+            ClientPlayNetworking.send(status);
+            sentStatus = status;
+        }
         BridgeLink current = link;
         if (current == null) return;
         String answer = current.answer(System.nanoTime());
@@ -196,19 +220,53 @@ public final class StellarBridge implements ClientModInitializer {
     }
 
     /**
-     * EVE's blade or drone (shot) struck an entity the client saw: Minecraft damages it as the bridged player's attack, on
-     * this JVM's integrated server thread (singleplayer and a LAN host, until strikes travel as payloads).
+     * Render thread: EVE's blade (in a trail style, null for the swing heuristic) or her drone (shot: the point it hit)
+     * struck an entity the client saw; the server validates it and computes the damage.
      */
-    static void strike(int entityId, float amount, double knockback, boolean charged, boolean first, boolean shot) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        IntegratedServer server = client.getServer();
-        if (server == null || client.player == null) return;
-        UUID owner = client.player.getUuid();
-        server.execute(() -> {
-            var player = server.getPlayerManager().getPlayer(owner);
-            if (player != null && BridgeServer.overrides(player)) AvatarCombat.strike(player, entityId, amount, knockback, charged, first, shot);
-        });
+    static void strike(int entityId, AvatarTrail.Style style, boolean charged, boolean first, Vec3d shot) {
+        if (!ClientPlayNetworking.canSend(BridgeNet.Strike.ID)) return;
+        int flags = (charged ? BridgeNet.Strike.CHARGED : 0) | (first ? BridgeNet.Strike.FIRST : 0)
+                | (AvatarCombat.quiet(System.nanoTime()) ? BridgeNet.Strike.QUIET : 0);
+        ClientPlayNetworking.send(new BridgeNet.Strike(entityId, shot == null ? BridgeNet.Strike.style(style) : BridgeNet.Strike.SHOT, (byte) flags, shot));
     }
+
+    /**
+     * Render thread, while EVE's keys drive Stellar Blade (MIN_VALUE presses and a released guard otherwise): the dodge and
+     * guard keys' latest presses (System.nanoTime) and whether the guard is held. Each new press and the guard's release
+     * go to the server as defense edges, stamped when they happened, so it can place them before their arrival.
+     */
+    static void inputs(long dodgePressed, long guardPressed, boolean guardDown) {
+        if (dodgePressed != Long.MIN_VALUE && dodgePressed != dodgeSent) {
+            dodgeSent = dodgePressed;
+            defense(BridgeNet.Defense.DODGE, dodgePressed);
+        }
+        if (guardPressed != Long.MIN_VALUE && guardPressed != guardSent) {
+            guardSent = guardPressed;
+            guardHeld = true;
+            defense(BridgeNet.Defense.GUARD_DOWN, guardPressed);
+        }
+        if (guardHeld && !guardDown) {
+            guardHeld = false;
+            defense(BridgeNet.Defense.GUARD_UP, System.nanoTime());
+        }
+    }
+
+    private static void defense(byte edge, long at) {
+        if (ClientPlayNetworking.canSend(BridgeNet.Defense.ID)) ClientPlayNetworking.send(new BridgeNet.Defense(edge, at, System.nanoTime()));
+    }
+
+    /** Render thread: EVE's stats while she is the bridged player (null otherwise), sent with the next status. */
+    static void stats(float[] values) { stats = AvatarStats.Values.of(values); }
+    /** Render thread: the adapter's heal count (-1 once the stream stops), sent with the next status. */
+    static void heals(long counter) { heals = counter; }
+    /** Render thread: whether Stellar Blade withholds EVE's input (paused, a cutscene), sent with the next status. */
+    static void halted(boolean withheld) { halted = withheld; }
+    /** Render thread: EVE's stats as last read, BASE without them. */
+    static AvatarStats.Values stats() { return stats == null ? AvatarStats.Values.BASE : stats; }
+    /** Render thread: the server's latest health share, heal acknowledgement and gauge points for the adapter. */
+    static BridgeNet.Feedback feedback() { return feedback; }
+    /** Render thread: whether a perfect dodge's tint shows. */
+    static boolean slowMotion() { return System.nanoTime() - tintUntil < 0; }
 
     record RenderingContext(String session, int revision, CaptureFrame.Position origin, String dimension, UUID owner) { }
 }
