@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.joml.Matrix4d;
+import org.joml.Quaterniond;
 import org.joml.Vector3d;
 
 /** Binds recorded EVE components to pack meshes and turns one pose into per-bone skinning matrices. */
@@ -23,9 +24,15 @@ final class AvatarModel {
 
     /**
      * A drawn component: its mesh, for leader-pose followers the leader bone for each mesh bone (-1: reference pose),
-     * and for each mesh morph the component's recorded weight index (-1: weight stays zero).
+     * and for each mesh morph the component's recorded weight index (-1: weight stays zero). bind (a part driven by name,
+     * lenient): for each mesh bone, the bone whose skinning it takes, itself or its nearest ancestor the driver has, so a
+     * bone of another suit's skeleton follows that ancestor rigidly instead of keeping the reference pose; -1: none.
      */
-    record Part(int component, AvatarMesh mesh, int driver, int[] leaderBones, int[] morphWeights) { }
+    record Part(int component, AvatarMesh mesh, int driver, int[] leaderBones, int[] morphWeights, int[] bind) {
+        Part(int component, AvatarMesh mesh, int driver, int[] leaderBones, int[] morphWeights) {
+            this(component, mesh, driver, leaderBones, morphWeights, null);
+        }
+    }
 
     final List<Part> parts;
     final List<String> skipped;
@@ -36,6 +43,14 @@ final class AvatarModel {
 
     /** Components come from a pose recording or a stream table; recorded ones carry their bone names. */
     AvatarModel(List<AvatarRecording.Component> components, Map<String, AvatarMesh> meshes) {
+        this(components, meshes, false);
+    }
+    /**
+     * lenient (another player's EVE drawn from this pack): a recorded component whose bones differ from its mesh's (a
+     * substituted or stale mesh) drives it by bone name, as followers are driven; mesh bones it lacks keep their reference
+     * pose, and a mesh sharing no bone with it is skipped. Such a part needs component-space bones (the stream's).
+     */
+    AvatarModel(List<AvatarRecording.Component> components, Map<String, AvatarMesh> meshes, boolean lenient) {
         List<Part> parts = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
         componentSpace = new Matrix4d[components.size()][];
@@ -49,8 +64,15 @@ final class AvatarModel {
             if (c.recorded()) {
                 String[] names = Arrays.stream(mesh.bones).map(AvatarMesh.Bone::name).toArray(String[]::new);
                 if (!Arrays.equals(names, c.bones())) {
+                    int[] map = lenient ? byName(mesh, c.bones()) : null;
+                    if (map != null && Arrays.stream(map).anyMatch(k -> k >= 0)) {
+                        int[] bind = new int[map.length];
+                        for (int k = 0; k < map.length; k++) bind[k] = map[k] >= 0 || mesh.bones[k].parent() < 0 ? k : bind[mesh.bones[k].parent()];
+                        parts.add(new Part(i, mesh, i, map, morphSources(mesh, c), bind));
+                        continue;
+                    }
                     // The drone is optional: another skin's skeleton leaves it out; EVE's own parts must match.
-                    if (!c.name().startsWith(AvatarStream.OPTIONAL)) throw new IllegalArgumentException(c.name() + ": recorded bones differ from " + mesh.name);
+                    if (!lenient && !c.name().startsWith(AvatarStream.OPTIONAL)) throw new IllegalArgumentException(c.name() + ": recorded bones differ from " + mesh.name);
                     skipped.add(c.name() + " (bones differ from " + mesh.name + ")");
                     continue;
                 }
@@ -65,17 +87,13 @@ final class AvatarModel {
                 skipped.add(c.name() + " (leader " + c.leader() + " not drawable)");
                 continue;
             }
-            Map<String, Integer> byName = new HashMap<>();
-            for (int k = 0; k < leaderMesh.bones.length; k++) byName.put(leaderMesh.bones[k].name(), k);
-            int[] map = new int[mesh.bones.length];
-            for (int k = 0; k < map.length; k++) map[k] = byName.getOrDefault(mesh.bones[k].name(), -1);
-            parts.add(new Part(i, mesh, leader, map, morphSources(mesh, c)));
+            parts.add(new Part(i, mesh, leader, byName(mesh, components.get(leader).bones()), morphSources(mesh, c)));
         }
         for (Part part : parts) {
-            AvatarMesh driver = meshes.get(components.get(part.driver).mesh());
+            int bones = components.get(part.driver).bones().length; // The driver's streamed (or recorded) bones.
             if (componentSpace[part.driver] == null) {
-                componentSpace[part.driver] = new Matrix4d[driver.bones.length];
-                for (int k = 0; k < driver.bones.length; k++) componentSpace[part.driver][k] = new Matrix4d();
+                componentSpace[part.driver] = new Matrix4d[bones];
+                for (int k = 0; k < bones; k++) componentSpace[part.driver][k] = new Matrix4d();
             }
         }
         this.parts = List.copyOf(parts);
@@ -83,6 +101,15 @@ final class AvatarModel {
         morphWeights = new float[parts.size()][];
         cloth = new float[parts.size()][];
         for (int p = 0; p < parts.size(); p++) morphWeights[p] = new float[parts.get(p).mesh.morphs.length];
+    }
+
+    /** For each mesh bone, the index of the driver bone of the same name, or -1. */
+    private static int[] byName(AvatarMesh mesh, String[] driverBones) {
+        Map<String, Integer> index = new HashMap<>();
+        for (int k = 0; k < driverBones.length; k++) index.put(driverBones[k], k);
+        int[] map = new int[mesh.bones.length];
+        for (int k = 0; k < map.length; k++) map[k] = index.getOrDefault(mesh.bones[k].name(), -1);
+        return map;
     }
 
     /** Recorded weights are in the component's MORPHS order; map them to mesh morphs by name. */
@@ -97,6 +124,10 @@ final class AvatarModel {
 
     /** Loads the pack meshes the components name; cache keeps meshes already read for a later table. */
     static AvatarModel load(Path pack, List<AvatarRecording.Component> components, Map<String, AvatarMesh> cache) throws IOException {
+        return load(pack, components, cache, false);
+    }
+    /** The same, lenient as the constructor's. */
+    static AvatarModel load(Path pack, List<AvatarRecording.Component> components, Map<String, AvatarMesh> cache, boolean lenient) throws IOException {
         Map<String, AvatarMesh> meshes = new HashMap<>();
         for (AvatarRecording.Component c : components) {
             Path file = pack.resolve(c.mesh() + ".sbav");
@@ -106,7 +137,7 @@ final class AvatarModel {
             if (mesh != null) meshes.put(c.mesh(), mesh);
         }
         try {
-            return new AvatarModel(components, meshes);
+            return new AvatarModel(components, meshes, lenient);
         } catch (IllegalArgumentException failure) {
             throw new IOException(failure.getMessage(), failure);
         }
@@ -139,12 +170,12 @@ final class AvatarModel {
         for (int c = 0; c < componentSpace.length; c++) {
             Matrix4d[] cs = componentSpace[c];
             if (cs == null) continue;
-            AvatarMesh mesh = driverMesh(c);
+            AvatarMesh mesh = componentSpaceBones ? null : driverMesh(c);
             float[] local = pose.local()[c];
             for (int k = 0; k < cs.length; k++) {
                 AvatarMesh.transform(local, k * AvatarRecording.TRANSFORM, cs[k]);
-                int parent = mesh.bones[k].parent();
-                if (parent >= 0 && !componentSpaceBones) cs[parent].mul(cs[k], cs[k]);
+                int parent = mesh == null ? -1 : mesh.bones[k].parent();
+                if (parent >= 0) cs[parent].mul(cs[k], cs[k]);
             }
         }
         for (int p = 0; p < parts.size(); p++) {
@@ -157,9 +188,9 @@ final class AvatarModel {
             Matrix4d[] cs = componentSpace[part.driver];
             cloth[p] = pose.cloth()[part.component];
             for (int k = 0; k < part.mesh.bones.length; k++) {
-                int source = part.leaderBones == null ? k : part.leaderBones[k];
+                int b = part.bind == null ? k : part.bind[k], source = part.leaderBones == null ? k : part.leaderBones[b];
                 if (cloth[p] != null) bone.set(world);
-                else if (source >= 0) world.mul(cs[source], bone).mul(part.mesh.inverseReference[k]);
+                else if (source >= 0) world.mul(cs[source], bone).mul(part.mesh.inverseReference[b]);
                 else bone.set(world); // A follower bone absent from the leader keeps its reference pose.
                 for (int row = 0; row < 3; row++)
                     target.put((float) bone.get(0, row)).put((float) bone.get(1, row)).put((float) bone.get(2, row)).put((float) bone.get(3, row));
@@ -181,5 +212,109 @@ final class AvatarModel {
     private AvatarMesh driverMesh(int component) {
         for (Part part : parts) if (part.driver == component && part.leaderBones == null) return part.mesh;
         throw new IllegalStateException("Driver component without its own mesh");
+    }
+
+    /**
+     * Calms another player's ponytail, drawn from bones (research 2026-10-08, ponytail wobble, option C): Stellar Blade's
+     * Ab-TL-HairB01..09 chain twists and zig-zags from frame to frame. Per received pose, the chain's joints in head space
+     * take a 1-2-1 average along the chain, then an exponential average over time (EMA, 0.5 per 60 Hz frame whatever the
+     * pose rate, as validated); each bone's rotation is then
+     * rebuilt as its bind rotation under its filtered parent, aimed (bone -Y) at the next filtered joint, so it carries no
+     * twist of its own. Measured on the 15 s probe recording: joint bend 35 to 16 degrees, velocity reversals 25 to 8 %,
+     * at about one pose of extra tail lag. ponytail: no alpha clamp on the tail; remotes rarely extrapolate (drawn 1.5
+     * intervals back).
+     */
+    static final class HairFilter {
+        static final String HEAD = "Bip001-Head", CHAIN = "Ab-TL-HairB0";
+        static final int LENGTH = 9;
+        static final double EMA = 0.5, FRAME = 1000.0 / 60; // The EMA's weight per FRAME milliseconds.
+        private final int component, head;
+        private final int[] chain = new int[LENGTH]; // Bone indices in the component's streamed bones.
+        private final Quaterniond[] bind = new Quaterniond[LENGTH]; // Each chain bone's bind rotation in its parent.
+        private final Vector3d[] smoothed = new Vector3d[LENGTH]; // Head-space joints after the filter, null before a pose.
+        private final Vector3d[] joints = new Vector3d[LENGTH], spatial = new Vector3d[LENGTH];
+        private final Quaterniond headRotation = new Quaterniond(), inverse = new Quaterniond(), parent = new Quaterniond(),
+                rotation = new Quaterniond(), aim = new Quaterniond();
+        private final Vector3d axis = new Vector3d(), toward = new Vector3d(), headAt = new Vector3d();
+
+        private HairFilter(int component, int head, int[] chain, Quaterniond[] bind) {
+            this.component = component;
+            this.head = head;
+            System.arraycopy(chain, 0, this.chain, 0, LENGTH);
+            System.arraycopy(bind, 0, this.bind, 0, LENGTH);
+            for (int k = 0; k < LENGTH; k++) { joints[k] = new Vector3d(); spatial[k] = new Vector3d(); }
+        }
+
+        /**
+         * The filter for a model's tail: the first recorded component streaming the head and the whole chain, with the
+         * bind rotations of a drawn mesh holding that chain under the head; null when there is none.
+         */
+        static HairFilter of(AvatarModel model, List<AvatarRecording.Component> components) {
+            for (int c = 0; c < components.size(); c++) {
+                String[] bones = components.get(c).bones();
+                if (bones == null) continue;
+                List<String> names = Arrays.asList(bones);
+                int head = names.indexOf(HEAD);
+                int[] chain = new int[LENGTH];
+                for (int k = 0; k < LENGTH; k++) chain[k] = names.indexOf(CHAIN + (k + 1));
+                if (head < 0 || Arrays.stream(chain).anyMatch(k -> k < 0)) continue;
+                for (Part part : model.parts) {
+                    if (part.driver != c) continue;
+                    Quaterniond[] bind = bind(part.mesh);
+                    if (bind != null) return new HairFilter(c, head, chain, bind);
+                }
+            }
+            return null;
+        }
+        private static Quaterniond[] bind(AvatarMesh mesh) {
+            Map<String, Integer> index = new HashMap<>();
+            for (int k = 0; k < mesh.bones.length; k++) index.put(mesh.bones[k].name(), k);
+            Quaterniond[] bind = new Quaterniond[LENGTH];
+            Integer previous = index.get(HEAD);
+            for (int k = 0; k < LENGTH; k++) {
+                Integer bone = index.get(CHAIN + (k + 1));
+                if (previous == null || bone == null || mesh.bones[bone].parent() != previous) return null;
+                float[] r = mesh.bones[bone].reference();
+                bind[k] = new Quaterniond(r[0], r[1], r[2], r[3]).normalize();
+                previous = bone;
+            }
+            return bind;
+        }
+
+        /** Filters one decoded pose's chain in place (component-space bones of the stream), elapsed ms after the previous one. */
+        void apply(AvatarRecording.Pose pose, double elapsed) {
+            double weight = 1 - Math.pow(1 - EMA, Math.max(0, elapsed) / FRAME);
+            float[] local = pose.local()[component];
+            if (local == null) return;
+            int h = head * AvatarRecording.TRANSFORM;
+            headRotation.set(local[h], local[h + 1], local[h + 2], local[h + 3]).normalize();
+            headRotation.invert(inverse);
+            headAt.set(local[h + 4], local[h + 5], local[h + 6]);
+            for (int k = 0; k < LENGTH; k++) {
+                int at = chain[k] * AvatarRecording.TRANSFORM;
+                inverse.transform(joints[k].set(local[at + 4], local[at + 5], local[at + 6]).sub(headAt));
+            }
+            for (int k = 0; k < LENGTH; k++) {
+                if (k == 0 || k == LENGTH - 1) spatial[k].set(joints[k]);
+                else spatial[k].set(joints[k]).mul(0.5).fma(0.25, joints[k - 1]).fma(0.25, joints[k + 1]);
+                if (smoothed[k] == null) smoothed[k] = new Vector3d(spatial[k]);
+                else smoothed[k].lerp(spatial[k], weight);
+            }
+            parent.set(headRotation);
+            for (int k = 0; k < LENGTH; k++) {
+                parent.mul(bind[k], rotation);
+                if (k + 1 < LENGTH) {
+                    rotation.transform(axis.set(0, -1, 0));
+                    headRotation.transform(toward.set(smoothed[k + 1]).sub(smoothed[k]));
+                    if (toward.lengthSquared() > 1e-6) rotation.premul(aim.rotationTo(axis, toward.normalize()));
+                }
+                rotation.normalize();
+                int at = chain[k] * AvatarRecording.TRANSFORM;
+                headRotation.transform(toward.set(smoothed[k])).add(headAt);
+                local[at] = (float) rotation.x; local[at + 1] = (float) rotation.y; local[at + 2] = (float) rotation.z; local[at + 3] = (float) rotation.w;
+                local[at + 4] = (float) toward.x; local[at + 5] = (float) toward.y; local[at + 6] = (float) toward.z;
+                parent.set(rotation);
+            }
+        }
     }
 }
