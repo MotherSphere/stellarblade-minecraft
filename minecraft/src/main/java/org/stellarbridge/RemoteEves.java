@@ -584,7 +584,7 @@ final class RemoteEves {
             if (eve == null) text.append(r.failure == null ? "; vanilla model." : "; vanilla model: " + r.failure + ".");
             else if (eve.model == null) text.append("; vanilla model while her outfit builds.");
             else text.append(String.format("; %s, %d meshes%s, %d poses drawn, %d incomplete, %d frames past the newest pose.",
-                    !r.drawn ? r.culled ? "out of view" : "not drawn" : r.near ? "drawn in full" : "drawn far (no face, shadow or effects)",
+                    !r.drawn ? r.culled ? "out of view" : "not drawn" : r.near ? "drawn in full" : "drawn far (no face morphs, cast shadow, trail or effects)",
                     eve.model.parts.size(), eve.note.isEmpty() ? "" : " (" + eve.note + ")", eve.poses, eve.incomplete, eve.extrapolated));
         }
         return text.toString();
