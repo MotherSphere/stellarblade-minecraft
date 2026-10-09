@@ -70,6 +70,7 @@ processResources {
     bridgeNetTest: 'BridgeNetTest',
     bridgeLinkTest: 'BridgeLinkTest',
     combatTest: 'CombatTest',
+    netPoseTest: 'NetPoseTest',
 ].each { taskName, testClass ->
     def suite = tasks.register(taskName, JavaExec) {
         dependsOn testClasses
