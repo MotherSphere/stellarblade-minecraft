@@ -2,6 +2,12 @@
 
 This repository is licensed under GPL-3.0-or-later ([LICENSE](LICENSE)). The work below is adapted or included under its own license, which stays with it.
 
+## Fabric API
+
+The installer binary embeds Fabric API 0.116.17+1.21.1 (`fabric-api-0.116.17+1.21.1.jar`, unmodified, SHA-512 `98c47821…57a8`) and installs it into a Minecraft `mods` folder that has none. Fabric API is licensed under the Apache License 2.0; its full text ships inside the JAR as `LICENSE-fabric-api`, is embedded in the installer with it, and is printed by `stellar-bridge-installer --licenses`. The Fabric API JAR has no NOTICE file.
+
+Source: https://github.com/FabricMC/fabric
+
 ## SkyCraft
 
 The raw frame transport adapts SkyCraft's three-buffer ownership and atomic publication design, including its producer/consumer exchange pattern. Reference implementation: `skse/src/Link.cpp`, `fabric/src/main/java/dev/skycraft/link/SkyLink.java` and `fabric/src/client/java/dev/skycraft/client/FrameExporter.java`, commit `bfcaf178524b92c2cdeb88e4ce0f13ef9ded6f32`.

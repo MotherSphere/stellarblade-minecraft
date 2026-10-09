@@ -34,6 +34,17 @@ The avatar's GPU paths are checked offline, outside `tools/check.py` (they need 
 
 `python tools/check.py --only windows --windows-toolchain /absolute/path/to/clang-cl-msvc.cmake --wine /path/to/wine` builds both Windows trees (`build/native-windows` and `build/native-windows-fixture`) and runs every Windows check under that Wine or Proton binary in a throwaway prefix and working directory. With `STELLAR_WINDOWS_TOOLCHAIN` and `STELLAR_WINE` set, the complete `python tools/check.py` includes it; otherwise it reports `SKIP windows`.
 
+### Installer payload
+
+The installer carries the bridge pieces in its binary: the Lua mod from `stellar/Mods/StellarCollisionProbe`, `build/native-windows/xinput1_3.dll`, `minecraft/build/libs/stellar-bridge-0.1.0.jar` and Fabric API 0.116.17+1.21.1 with its licence, taken from the Gradle cache where Loom put it for the Minecraft build. After a complete check (so the JAR and the DLL match the commit), stage and embed them:
+
+```sh
+python tools/payload.py /path/to/new/payload
+SBMC_PAYLOAD=/path/to/new/payload cargo build --release --locked --manifest-path installer/Cargo.toml
+```
+
+`tools/payload.py` checks Fabric API against its pinned SHA-512 (or takes `--fabric-api /path/to/the.jar`), refuses a machine-specific `bridge_config.lua`, and writes `payload.json` with every file's SHA-256 and the release name (`<installer version>+<commit>`, with `.dirty` when tracked files differ from the commit). The installer checks every file against that list, the Fabric API pin and the adapter's PE header when it loads its payload; `stellar-bridge-installer --version` names the release it carries. Refresh the payload the same way after any change to the Lua mod, the JAR or the DLL. Without `SBMC_PAYLOAD` the installer builds without a payload and installs nothing.
+
 ## Install
 
 Close both games before changing Lua, JAR or DLL files. Keep existing UE4SS/Xion loaders, other mods, launch options and DLL overrides. Update the three bridge components together.

@@ -12,7 +12,7 @@ use crate::{Guard, Ownership, platform};
 
 pub const MOD_NAME: &str = "StellarCollisionProbe";
 pub const MANIFEST: &str = ".deployment.json";
-const CONFIG: &str = "Scripts/bridge_config.lua";
+pub const CONFIG: &str = "Scripts/bridge_config.lua";
 const ENABLED: &str = "enabled.txt";
 
 /// The Lua tree to install: file bytes by '/'-joined relative path.
