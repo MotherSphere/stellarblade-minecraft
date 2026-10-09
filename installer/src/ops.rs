@@ -369,6 +369,8 @@ fn gates(target: &Target, env: &Env) -> Result<()> {
     }
     if let Some(game) = &target.game {
         platform::real_dir(&game.mods)?;
+        // Checked here, not first when the Lua mod is written: by then the owned pieces would be gone.
+        platform::bridge_ready(&target.bridge)?;
         if sha256_file(&platform::real_file(&game.exe)?, &mut |_| {})? != env.pin {
             bail!(
                 "Unsupported Stellar Blade executable: wait for a bridge release that supports this game version"

@@ -581,3 +581,30 @@ fn the_embedded_payload_installs_when_present() {
             .is_empty()
     );
 }
+
+/// A bridge folder that is no longer private, or would be created behind a link, stops an update before the owned
+/// pieces are removed: nothing is left half installed.
+#[test]
+fn an_unusable_bridge_folder_is_refused_before_any_write() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    fs::set_permissions(&w.target.bridge, fs::Permissions::from_mode(0o755)).unwrap();
+    let files = w.files();
+    let error = ops::install(&w.env(), &w.target, &v2).unwrap_err();
+    assert!(error.to_string().contains("mode 0700"), "{error:#}");
+    assert_eq!(w.files(), files);
+    assert_eq!(state(&w).status, Status::Installed);
+
+    let fresh = world();
+    let home = fresh.target.bridge.parent().unwrap();
+    let elsewhere = fresh.home.join("other disk");
+    fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, home).unwrap();
+    let files = fresh.files();
+    let error = ops::install(&fresh.env(), &fresh.target, &v1).unwrap_err();
+    assert!(error.to_string().contains("without symlinks"), "{error:#}");
+    assert_eq!(fresh.files(), files);
+    assert!(!fresh.data.join(ledger::STATE).exists());
+}

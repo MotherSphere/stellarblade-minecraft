@@ -97,6 +97,28 @@ pub fn private_dir(path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Checks the bridge directory before anything is written: an existing one must already be private
+/// ([`private_dir`]), and a missing one must be creatable as one, under real directories only.
+pub fn bridge_ready(path: &Path) -> Result<()> {
+    game_path(path)?;
+    if fs::symlink_metadata(path).is_ok() {
+        private_dir(path)?;
+        return Ok(());
+    }
+    if !path.is_absolute() {
+        bail!("The bridge directory must be absolute: {}", path.display());
+    }
+    // The nearest existing ancestor, a symbolic link included, must be a real directory.
+    match path
+        .ancestors()
+        .skip(1)
+        .find(|a| fs::symlink_metadata(a).is_ok())
+    {
+        Some(ancestor) => real_dir(ancestor).map(drop),
+        None => bail!("No existing folder above {}", path.display()),
+    }
+}
+
 /// How Steam was installed: Flatpak and Snap Steam run Proton in their own sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SteamKind {
@@ -158,6 +180,14 @@ mod tests {
         assert!(private_dir(&alias).is_err());
         assert!(private_dir(Path::new("relative")).is_err());
         assert!(game_path(Path::new("/a\nb")).is_err());
+        assert!(bridge_ready(&alias).is_err());
+        assert!(
+            bridge_ready(&alias.join("new")).is_err(),
+            "created behind a link"
+        );
+        assert!(bridge_ready(&canonical.join("new/bridge")).is_ok());
+        fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(bridge_ready(&canonical).is_err());
     }
 
     #[test]
