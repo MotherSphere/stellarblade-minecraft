@@ -384,6 +384,37 @@ pub fn dll_override(prefix: Option<&Path>, launch_options: &[String]) -> Overrid
     Override::Missing
 }
 
+/// Launch options split into words as Steam's shell would, a quoted span (quotes kept) staying in one word.
+fn shell_words(options: &str) -> Vec<String> {
+    let (mut words, mut word, mut quote) = (Vec::new(), String::new(), None);
+    for c in options.chars() {
+        match quote {
+            None if c.is_whitespace() => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                continue;
+            }
+            None if c == '"' || c == '\'' => quote = Some(c),
+            Some(q) if c == q => quote = None,
+            _ => {}
+        }
+        word.push(c);
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// `NAME=value` with a shell variable name: an environment assignment, unlike a game argument such as `-ResX=1920`.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 /// The game's launch options with `xinput1_3=n,b` added, for the user to copy into Steam: other options and overrides
 /// are kept, an existing `WINEDLLOVERRIDES` gains the entry, and `%command%` is added when missing.
 pub fn launch_options_with_override(existing: &str) -> String {
@@ -391,12 +422,12 @@ pub fn launch_options_with_override(existing: &str) -> String {
     if existing.is_empty() {
         return pins::LAUNCH_OPTION.to_string();
     }
-    let mut words: Vec<String> = existing.split_whitespace().map(str::to_string).collect();
+    let mut words = shell_words(existing);
     if let Some(word) = words
         .iter_mut()
         .find(|w| w.starts_with("WINEDLLOVERRIDES="))
     {
-        let value = word["WINEDLLOVERRIDES=".len()..].trim_matches('"');
+        let value = word["WINEDLLOVERRIDES=".len()..].trim_matches(['"', '\'']);
         *word = if value.is_empty() {
             "WINEDLLOVERRIDES=\"xinput1_3=n,b\"".to_string()
         } else {
@@ -407,7 +438,7 @@ pub fn launch_options_with_override(existing: &str) -> String {
     }
     if !words.iter().any(|w| w == "%command%") {
         // Options without %command% are arguments for the game: they follow it.
-        let at = words.iter().take_while(|w| w.contains('=')).count();
+        let at = words.iter().take_while(|w| is_assignment(w)).count();
         words.insert(at, "%command%".to_string());
     }
     words.join(" ")
@@ -686,6 +717,14 @@ mod tests {
         assert_eq!(
             launch_options_with_override("-skipintro"),
             "WINEDLLOVERRIDES=\"xinput1_3=n,b\" %command% -skipintro"
+        );
+        assert_eq!(
+            launch_options_with_override("-ResX=1920 -ResY=1080"),
+            "WINEDLLOVERRIDES=\"xinput1_3=n,b\" %command% -ResX=1920 -ResY=1080"
+        );
+        assert_eq!(
+            launch_options_with_override("MANGOHUD_CONFIG=\"fps, gpu\" -ResX=1920"),
+            "WINEDLLOVERRIDES=\"xinput1_3=n,b\" MANGOHUD_CONFIG=\"fps, gpu\" %command% -ResX=1920"
         );
         let suggested = launch_options_with_override("WINEDLLOVERRIDES=dinput8=n,b %command%");
         assert_eq!(dll_override(None, &[suggested]), Override::LaunchOptions);
