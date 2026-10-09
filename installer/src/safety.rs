@@ -247,7 +247,9 @@ impl Protected {
         if let Some(mods) = &self.mods {
             file(mods.join("mods.txt"))?;
             file(mods.join("mods.json"))?;
-            listings.push(listing(mods, &|name| name == crate::deploy::MOD_NAME)?);
+            listings.push(listing(mods, &|name| {
+                name == crate::deploy::MOD_NAME || name == crate::deploy::STAGING
+            })?);
         }
         if let Some(prefix) = &self.prefix {
             for name in ["user.reg", "system.reg", "userdef.reg"] {

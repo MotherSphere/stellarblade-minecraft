@@ -13,6 +13,8 @@ use crate::{Guard, Ownership, platform};
 pub const MOD_NAME: &str = "StellarCollisionProbe";
 pub const MANIFEST: &str = ".deployment.json";
 pub const CONFIG: &str = "Scripts/bridge_config.lua";
+/// Where [`install`] builds the mod before renaming it into place; only this installer creates it.
+pub const STAGING: &str = ".StellarCollisionProbe.partial";
 const ENABLED: &str = "enabled.txt";
 
 /// The Lua tree to install: file bytes by '/'-joined relative path.
@@ -100,7 +102,9 @@ pub fn config(bridge: &Path) -> Result<Vec<u8>> {
 
 /// Installs the Lua mod into `mods_dir/StellarCollisionProbe`, which must not exist. With `bridge`, writes the
 /// machine-specific `bridge_config.lua` that points the mod at that private directory through Proton's `Z:`.
-/// `enabled.txt` comes last, after every script and the manifest; any failure removes the new folder.
+/// The complete tree, `enabled.txt` last, is built in [`STAGING`] and then renamed into place, so a killed run never
+/// leaves a mod folder without its manifest; any failure removes the staging folder, and the next run removes a
+/// leftover one.
 pub fn install(
     mods_dir: &Path,
     source: &Tree,
@@ -149,20 +153,27 @@ pub fn install(
         );
     }
     let destination = mods_dir.join(MOD_NAME);
-    fs::create_dir(&destination)?;
+    if fs::symlink_metadata(&destination).is_ok() {
+        bail!("Refusing to replace {}", destination.display());
+    }
+    let staging = mods_dir.join(STAGING);
+    if fs::symlink_metadata(&staging).is_ok() {
+        fs::remove_dir_all(&staging)?;
+    }
+    fs::create_dir(&staging)?;
     let written = (|| -> Result<()> {
         for relative in &directories {
-            fs::create_dir(destination.join(relative))?;
+            fs::create_dir(staging.join(relative))?;
         }
         let mut files = BTreeMap::new();
         for (relative, bytes) in source {
             if relative != ENABLED {
-                fs::write(destination.join(relative), bytes)?;
+                fs::write(staging.join(relative), bytes)?;
             }
             files.insert(relative.clone(), sha256_hex(bytes));
         }
         if let Some(configuration) = &configuration {
-            fs::write(destination.join(CONFIG), configuration)?;
+            fs::write(staging.join(CONFIG), configuration)?;
             files.insert(CONFIG.into(), sha256_hex(configuration));
         }
         let directories = directories
@@ -170,13 +181,14 @@ pub fn install(
             .map(|d| slash(d))
             .collect::<Result<_>>()?;
         let manifest = serde_json::to_string_pretty(&Manifest::of(files, directories))? + "\n";
-        fs::write(destination.join(MANIFEST), manifest)?;
+        fs::write(staging.join(MANIFEST), manifest)?;
         closed()?;
-        fs::write(destination.join(ENABLED), &source[ENABLED])?;
+        fs::write(staging.join(ENABLED), &source[ENABLED])?;
+        fs::rename(&staging, &destination)?;
         Ok(())
     })();
     if let Err(error) = written {
-        fs::remove_dir_all(&destination)?;
+        fs::remove_dir_all(&staging)?;
         return Err(error);
     }
     Ok(destination)
@@ -346,7 +358,13 @@ mod tests {
         };
         assert!(install(&mods, &source(), None, &starts_midway).is_err());
         assert!(!mods.join(MOD_NAME).exists());
+        assert!(!mods.join(STAGING).exists());
+        // A run killed while writing left its staging folder: the next one starts clean.
+        fs::create_dir_all(mods.join(STAGING).join("Scripts")).unwrap();
+        fs::write(mods.join(STAGING).join("Scripts/main.lua"), "half").unwrap();
         install(&mods, &source(), None, &open).unwrap();
+        assert!(!mods.join(STAGING).exists());
+        assert_eq!(ownership(&mods).unwrap(), Ownership::Owned);
         assert!(remove(&mods, &running).is_err());
         assert!(mods.join(MOD_NAME).exists());
     }
