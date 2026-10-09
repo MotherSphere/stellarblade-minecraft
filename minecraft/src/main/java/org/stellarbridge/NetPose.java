@@ -33,6 +33,7 @@ final class NetPose {
     /** Component status bits, as AvatarStream's; CLOTH never travels (remote ponytails follow bones). */
     static final int WORLD = 1, BONES = 2, MORPHS = 4, HIDDEN = 8;
     static final byte KEY = 0, DELTA = 1;
+    static final int EMPTY = 0xFF; // An effect slot without an effect (MAX_EFFECTS stays below it).
     private static final long MAX = 9007199254740991L; // Generations, sequences and times, as AvatarStream bounds them.
     // Fixed-point steps: bone translations 1/32 cm, scales 1/4096, morph weights 1/16384, effect positions 1/8 cm; a
     // rotation is the smallest three of its unit quaternion, 15 bits each, with the largest's index in 2 bits.
@@ -218,8 +219,10 @@ final class NetPose {
     /**
      * The quantized body of one stream sample: status (u8 each, CLOTH dropped), per component its world transform
      * (translation relative to anchor as 3 f32, rotation, scale) when WORLD, its bones when BONES, its weights when
-     * MORPHS, then the active effects (asset index, position relative to the first component in 1/8 cm; one beyond
-     * reach is left out). payload has the stream table's layout; effectsAt is its first effect record, or -1.
+     * MORPHS, then the effect slots: with effect records and a world transform on the first component, all MAX_ACTIVE of
+     * them, each an asset index (EMPTY for none) and a position relative to the first component in 1/8 cm (an effect
+     * beyond reach is left out), so an effect starting or ending keeps the body's length and the delta chain. payload has
+     * the stream table's layout; effectsAt is its first effect record, or -1.
      */
     static byte[] body(Table t, double[] anchor, int[] status, float[] payload, int effectsAt) {
         ByteBuffer out = ByteBuffer.allocate(maxBody(t));
@@ -246,25 +249,23 @@ final class NetPose {
                 for (int w = 0, p = at + 10 + 10 * bones; w < c.weights(); w++) out.putShort(fixed(payload[p + w], WEIGHT));
             at += 10 + 10 * bones + c.weights();
         }
-        int countAt = out.position(), count = 0;
-        out.put((byte) 0);
-        if (t.effectRecords && effectsAt >= 0 && (status[0] & WORLD) != 0) {
-            for (int r = 0, p = effectsAt; r < MAX_ACTIVE; r++, p += EFFECT_FLOATS) {
-                int index = Math.round(payload[p]);
-                if (index < 0 || index >= t.effects.size()) continue;
-                double[] offset = new double[3];
-                boolean reach = true;
-                for (int k = 0; k < 3; k++) {
-                    offset[k] = Math.rint((payload[p + 5 + k] - payload[4 + k]) * EFFECT);
-                    reach &= Math.abs(offset[k]) <= Short.MAX_VALUE;
-                }
-                if (!reach) continue;
-                out.put((byte) index);
-                for (double v : offset) out.putShort((short) v);
-                count++;
+        boolean slots = t.effectRecords && (status[0] & WORLD) != 0;
+        out.put((byte) (slots ? MAX_ACTIVE : 0));
+        for (int r = 0, p = effectsAt; slots && r < MAX_ACTIVE; r++, p += EFFECT_FLOATS) {
+            int index = effectsAt < 0 ? -1 : Math.round(payload[p]);
+            double[] offset = new double[3];
+            boolean reach = true;
+            for (int k = 0; index >= 0 && k < 3; k++) {
+                offset[k] = Math.rint((payload[p + 5 + k] - payload[4 + k]) * EFFECT);
+                reach &= Math.abs(offset[k]) <= Short.MAX_VALUE;
             }
+            if (index < 0 || index >= t.effects.size() || !reach) {
+                index = EMPTY;
+                offset = new double[3];
+            }
+            out.put((byte) index);
+            for (double v : offset) out.putShort((short) v);
         }
-        out.put(countAt, (byte) count);
         return java.util.Arrays.copyOf(out.array(), out.position());
     }
 
@@ -306,7 +307,7 @@ final class NetPose {
                 at += 10 + 10 * bones + c.weights();
             }
             int count = Byte.toUnsignedInt(in.get());
-            require(count <= MAX_ACTIVE && (t.effectRecords || count == 0) && (count == 0 || (status[0] & WORLD) != 0), count + " active effects");
+            require(count == (t.effectRecords && (status[0] & WORLD) != 0 ? MAX_ACTIVE : 0), count + " effect slots");
             if (t.effectRecords) {
                 for (int r = 0, p = at; r < MAX_ACTIVE; r++, p += EFFECT_FLOATS) {
                     payload[p] = -1;
@@ -314,9 +315,11 @@ final class NetPose {
                 }
                 for (int r = 0, p = at; r < count; r++, p += EFFECT_FLOATS) {
                     int index = Byte.toUnsignedInt(in.get());
-                    require(index < t.effects.size(), "effect index " + index);
+                    require(index < t.effects.size() || index == EMPTY, "effect index " + index);
+                    short[] offset = {in.getShort(), in.getShort(), in.getShort()};
+                    if (index == EMPTY) continue;
                     payload[p] = index;
-                    for (int k = 0; k < 3; k++) payload[p + 5 + k] = (float) (payload[4 + k] + in.getShort() / EFFECT);
+                    for (int k = 0; k < 3; k++) payload[p + 5 + k] = (float) (payload[4 + k] + offset[k] / EFFECT);
                 }
             }
             require(!in.hasRemaining(), "trailing pose bytes");

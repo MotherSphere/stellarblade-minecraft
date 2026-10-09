@@ -243,6 +243,17 @@ public final class NetPoseTest {
         assert NetPose.header(chained.encode(t, ANCHOR, ALL, poses.get(0), effectsAt(t), 5000)).keyframe();
         assert !NetPose.header(chained.encode(t, ANCHOR, ALL, poses.get(1), effectsAt(t), 5050)).keyframe();
         assert NetPose.header(chained.encode(next, ANCHOR, ALL, poses.get(2), effectsAt(t), 5100)).keyframe();
+        // Effects starting and ending keep the layout: the chain goes on (a keyframe every 10 poses only).
+        NetPose.Encoder effects = new NetPose.Encoder(10);
+        int keyframes = 0;
+        for (int n = 0; n < 40; n++) {
+            float[] p = poses.get(n % poses.size()).clone();
+            int e = effectsAt(t);
+            for (int r = 0; r < NetPose.MAX_ACTIVE; r++) p[e + r * NetPose.EFFECT_FLOATS] = -1;
+            for (int r = 0; r < n % 4; r++) effect(p, e + r * NetPose.EFFECT_FLOATS, r % 3, 100);
+            if (NetPose.header(effects.encode(t, ANCHOR, ALL, p, e, 7000 + 50L * n)).keyframe()) keyframes++;
+        }
+        assert keyframes == 4 : keyframes + " keyframes in 40 poses whose effects come and go";
         // A change of status changes the layout: a keyframe too.
         assert NetPose.header(chained.encode(next, ANCHOR, new int[] {NetPose.WORLD | NetPose.BONES, 0, 0, 0}, poses.get(3), effectsAt(t), 5150)).keyframe();
     }
@@ -302,7 +313,8 @@ public final class NetPoseTest {
         tampered.accept(b -> b[0] = 5); // Component count.
         tampered.accept(b -> b[1] |= 16); // The CLOTH bit.
         tampered.accept(b -> b[b.length - 7] = 3); // The last effect's asset index, beyond the 3 assets.
-        tampered.accept(b -> b[b.length - 22] = 9); // The effect count, beyond MAX_ACTIVE.
+        tampered.accept(b -> b[b.length - 1 - NetPose.MAX_ACTIVE * 7] = 9); // The effect slot count, other than MAX_ACTIVE.
+        tampered.accept(b -> b[b.length - 1 - NetPose.MAX_ACTIVE * 7] = 0);
         tampered.accept(b -> { b[5] = (byte) 0x7f; b[6] = (byte) 0xc0; b[7] = 0; b[8] = 0; }); // A NaN world translation.
         refusedPose(t, wire(NetPose.KEY, 7, 1, 0, 1, Arrays.copyOf(body, body.length - 1), true)); // Truncated.
         refusedPose(t, wire(NetPose.KEY, 7, 1, 0, 1, Arrays.copyOf(body, body.length + 1), true)); // Trailing.
