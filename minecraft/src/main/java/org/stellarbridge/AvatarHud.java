@@ -147,7 +147,7 @@ public final class AvatarHud {
         width = w; height = h; scale = g; panel = fit[0]; columns = fit[1];
         lift = chatBottom(panel, g) - CHAT;
         float f = (float) panel / g;
-        AvatarItems.Hud hud = AvatarItems.latest();
+        AvatarItems.Hud hud = AvatarHudFile.latest();
         AvatarItems.Slot heal = hud == null ? null : hud.heal(), util = hud == null ? null : hud.util();
         boolean cup = heal != null && heal.kind().equals("tumbler");
         var matrices = context.getMatrices();

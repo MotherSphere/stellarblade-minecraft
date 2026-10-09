@@ -3,7 +3,7 @@ package org.stellarbridge.mixin;
 import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.server.network.ServerPlayNetworkHandler;
 import net.minecraft.server.network.ServerPlayerEntity;
-import org.stellarbridge.StellarBridge;
+import org.stellarbridge.BridgeServer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -16,8 +16,8 @@ abstract class ServerPlayerMovementMixin {
 
     @Inject(method = "onPlayerMove", at = @At("HEAD"), cancellable = true)
     private void stellarBridgeMovement(PlayerMoveC2SPacket packet, CallbackInfo callback) {
-        if (StellarBridge.overrides(player)) {
-            StellarBridge.keepLocalLook(player, packet);
+        if (BridgeServer.overrides(player)) {
+            BridgeServer.keepLocalLook(player, packet);
             callback.cancel();
         }
     }

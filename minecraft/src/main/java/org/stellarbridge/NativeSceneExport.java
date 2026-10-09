@@ -2,11 +2,9 @@ package org.stellarbridge;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -21,21 +19,15 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.resource.ResourceManager;
 import net.minecraft.resource.ResourceType;
-import net.minecraft.server.integrated.IntegratedServer;
-import net.minecraft.server.world.ServerWorld;
-import net.minecraft.state.property.Properties;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import org.slf4j.LoggerFactory;
 
-/** Server block snapshots, client resource/tint preparation, and one bounded file worker. */
+/** Client resource/tint preparation of NativeSceneCapture's server block snapshots, and one bounded file worker. */
 final class NativeSceneExport {
-    private record Snapshot(IntegratedServer server, UUID owner, NativeScene.Binding binding,
-                            List<NativeScene.Cell> cells, String error, long updatedNanos) { }
     private record Plan(NativeScene.Binding binding, List<NativeScene.Face> faces, Map<String, byte[]> resources) { }
     private record Desired(Plan plan, long updatedNanos) { }
-    private static volatile Snapshot snapshot;
     private static volatile Desired desired;
     private static final Object publicationGate = new Object();
     private static final Map<String, byte[]> resources = new HashMap<>(); // Client only; refreshed on resource reload.
@@ -78,33 +70,8 @@ final class NativeSceneExport {
         });
     }
 
-    /** Called only by the integrated server, after publishing this collision revision. */
-    static void capture(IntegratedServer server, ServerWorld world, UUID owner, NativeScene.Binding binding) {
-        List<NativeScene.Cell> cells = new ArrayList<>();
-        String error = null;
-        int ox = (int) Math.floor(binding.origin().x()), oy = (int) binding.origin().y(), oz = (int) Math.floor(binding.origin().z());
-        scan: for (int x = -4; x <= 4; x++) {
-            for (int y = -2; y <= 3; y++) {
-                for (int z = -4; z <= 4; z++) {
-                    BlockPos position = new BlockPos(ox + x, oy + y, oz + z);
-                    var state = world.getBlockState(position);
-                    if (state.isAir()) continue;
-                    String material = state.isOf(Blocks.STONE) ? "stone" : state.isOf(Blocks.DIRT) ? "dirt"
-                            : state.isOf(Blocks.WHITE_WOOL) ? "white_wool" : state.isOf(Blocks.BEDROCK) ? "bedrock"
-                            : state.isOf(Blocks.GRASS_BLOCK) && !state.get(Properties.SNOWY) ? "grass_block" : null;
-                    if (material == null) {
-                        error = "Unsupported native scene block at " + position.toShortString() + ": " + state;
-                        break scan;
-                    }
-                    cells.add(new NativeScene.Cell(x, y, z, material));
-                }
-            }
-        }
-        snapshot = new Snapshot(server, owner, binding, List.copyOf(cells), error, System.nanoTime());
-    }
-
     static void stop() {
-        snapshot = null;
+        NativeSceneCapture.stop();
         offer(null);
     }
 
@@ -122,24 +89,24 @@ final class NativeSceneExport {
 
     private static void tick(MinecraftClient client) {
         if (++ticks % 4 != 0) return;
-        Snapshot current = snapshot;
-        if (current == null || System.nanoTime() - current.updatedNanos > 1_000_000_000L || client.world == null
-                || client.player == null || client.getServer() != current.server || !client.player.getUuid().equals(current.owner)
-                || !client.world.getRegistryKey().getValue().toString().equals(current.binding.dimension())) {
+        NativeSceneCapture.Snapshot current = NativeSceneCapture.snapshot();
+        if (current == null || System.nanoTime() - current.updatedNanos() > 1_000_000_000L || client.world == null
+                || client.player == null || client.getServer() != current.server() || !client.player.getUuid().equals(current.owner())
+                || !client.world.getRegistryKey().getValue().toString().equals(current.binding().dimension())) {
             offer(null);
             prepared = null;
             return;
         }
-        if (!current.binding.session().equals(boundSession)) {
-            boundSession = current.binding.session();
+        if (!current.binding().session().equals(boundSession)) {
+            boundSession = current.binding().session();
             boundWorld = client.world;
         }
         try {
             if (boundWorld != client.world) throw new IOException("Native scene client world changed; restart the bridge");
-            if (current.error != null) throw new IOException(current.error);
-            int ox = (int) Math.floor(current.binding.origin().x()), oy = (int) current.binding.origin().y(), oz = (int) Math.floor(current.binding.origin().z());
+            if (current.error() != null) throw new IOException(current.error());
+            int ox = (int) Math.floor(current.binding().origin().x()), oy = (int) current.binding().origin().y(), oz = (int) Math.floor(current.binding().origin().z());
             // Block colors are world-dependent; the worker receives only the resolved RGB values.
-            var faces = NativeScene.faces(current.cells, cell -> client.getBlockColors().getColor(Blocks.GRASS_BLOCK.getDefaultState(),
+            var faces = NativeScene.faces(current.cells(), cell -> client.getBlockColors().getColor(Blocks.GRASS_BLOCK.getDefaultState(),
                     client.world, new BlockPos(ox + cell.x(), oy + cell.y(), oz + cell.z()), 0));
             Map<String, byte[]> selected = new HashMap<>();
             for (var face : faces) {
@@ -147,9 +114,9 @@ final class NativeSceneExport {
                 if (face.texture().overlay() != null)
                     selected.put(face.texture().overlay(), resource(client, face.texture().overlay()));
             }
-            Plan next = new Plan(current.binding, faces, Map.copyOf(selected));
+            Plan next = new Plan(current.binding(), faces, Map.copyOf(selected));
             if (!next.equals(prepared)) prepared = next;
-            if (snapshot != current) return; // Do not publish a client preparation across a server binding change.
+            if (NativeSceneCapture.snapshot() != current) return; // Do not publish a client preparation across a server binding change.
             offer(prepared);
             report(client, failure.get());
         } catch (IOException | RuntimeException problem) {
@@ -185,10 +152,10 @@ final class NativeSceneExport {
                 // Encoding and bulk writes have finished. Only the atomic descriptor rename shares this gate.
                 synchronized (publicationGate) {
                     Desired latest = desired;
-                    Snapshot server = snapshot;
-                    if (latest != null && latest.plan == plan && server != null && server.binding.equals(plan.binding)
+                    NativeSceneCapture.Snapshot server = NativeSceneCapture.snapshot();
+                    if (latest != null && latest.plan == plan && server != null && server.binding().equals(plan.binding)
                             && System.nanoTime() - latest.updatedNanos <= 1_000_000_000L
-                            && System.nanoTime() - server.updatedNanos <= 1_000_000_000L) publication.commit();
+                            && System.nanoTime() - server.updatedNanos() <= 1_000_000_000L) publication.commit();
                 }
             }
             failure.set(null);

@@ -46,8 +46,7 @@ public final class AvatarView {
     private static Live live;
     private static final List<AvatarStream> unreaped = new ArrayList<>();
     // Stellar Blade stopped granting this run's forwarded input for HALT_NANOS (paused, a cutscene): EVE cannot answer.
-    // Written on the render thread, read by the server thread's damage hook.
-    private static volatile boolean halted;
+    // Written on the render thread into BridgeServer.halted, read by the server thread's damage hook.
     static final long HALT_NANOS = 400_000_000L; // Longer than Lua's 200 ms permit renewal.
 
     private record Replay(ClientWorld world, AvatarRecording recording, AvatarModel model, AvatarRenderer renderer,
@@ -101,8 +100,8 @@ public final class AvatarView {
         float[] stats; // EVE's latest streamed stats, or null.
         List<AvatarStream.Effect> effects = List.of(); // The game's active effects on EVE in the newest sample.
         final AvatarEffects particles = new AvatarEffects();
-        final AvatarCombat.Blade blade = new AvatarCombat.Blade();
-        final AvatarCombat.Gun gun = new AvatarCombat.Gun();
+        final AvatarWeapons.Blade blade = new AvatarWeapons.Blade();
+        final AvatarWeapons.Gun gun = new AvatarWeapons.Gun();
         long effectSamples; // Samples with at least one active effect.
         final AvatarStream.ClothWatch cloth = new AvatarStream.ClothWatch(); // Whether Stellar Blade's cloth moves, for the whole run.
         long clothPoses; // Poses drawing Stellar Blade's cloth.
@@ -318,7 +317,7 @@ public final class AvatarView {
                         if (entry.getKey().endsWith("/Opacity")) current.glow = Math.max(current.glow, entry.getValue()[0]);
                     current.lookApplied = sample.lookApplied();
                     if (sample.inputGranted() || !current.controlled || current.rotation == null) current.grantedNanos = nanos;
-                    halted = nanos - current.grantedNanos > HALT_NANOS;
+                    BridgeServer.halted = nanos - current.grantedNanos > HALT_NANOS;
                     var player = MinecraftClient.getInstance().player;
                     if (current.controlled && current.rotation != null && player != null) {
                         double gap = Math.abs(Math.IEEEremainder(player.getYaw() + 90 - current.rotation[1], 360));
@@ -416,7 +415,7 @@ public final class AvatarView {
             draw(context, current.model, current.renderer, current.pose, placement, camera);
             if (bridged) current.blade.update(current.renderer, current.effects, nanos / 1e9);
             current.gun.update(current.stream.shots(), bridged,
-                    () -> AvatarCombat.muzzle(current.model, current.table.components(), current.drawn, current.pose, placement, camera));
+                    () -> AvatarWeapons.muzzle(current.model, current.table.components(), current.drawn, current.pose, placement, camera));
         } catch (RuntimeException failure) {
             stopLive(failure.getMessage());
             LoggerFactory.getLogger("stellar_bridge").error("EVE live avatar stopped", failure);
@@ -713,8 +712,6 @@ public final class AvatarView {
         return current != null && current.controlled && current.stream.run.equals(run) && current.anchored && current.posed
                 && current.table.session().equals(session) && nanos - current.lastPoseNanos <= 500_000_000L;
     }
-    /** Any thread: Stellar Blade has not granted the controlled run's input for a while (paused, a cutscene). */
-    static boolean halted() { return halted; }
     /** Whether the adapter turns Stellar Blade's camera toward Minecraft's through look input. */
     static boolean lookApplied() {
         Live current = live;
@@ -761,7 +758,7 @@ public final class AvatarView {
                         : String.format(" %d streamed material parameters; highest glow opacity %.2f.", current.table.parameters().size(), current.glow))
                 + (current.table == null || !current.table.effectRecords() ? " Effects not streamed."
                         : String.format(" %d known effects; effects active in %d poses.", current.table.effects().size(), current.effectSamples))
-                + clothStatus(current) + AvatarItems.status() + AvatarHud.status()
+                + clothStatus(current) + AvatarHudFile.status() + AvatarHud.status()
                 + hiddenStatus(current) + AvatarCombat.status() + current.gun.status(current.stream.shots())
                 + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
                 + AvatarStats.status(current.stats) + reportStatus(current.stream.report())
@@ -818,7 +815,7 @@ public final class AvatarView {
         Live current = live;
         if (current == null) return;
         live = null;
-        halted = false;
+        BridgeServer.halted = false;
         AvatarStats.publish(null);
         AvatarStats.reportHeals(-1);
         AvatarLock.release();

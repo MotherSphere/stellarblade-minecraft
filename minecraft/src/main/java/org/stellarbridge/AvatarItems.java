@@ -1,15 +1,12 @@
 package org.stellarbridge;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.regex.Pattern;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.component.type.PotionContentsComponent;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
@@ -30,9 +27,9 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Stellar Blade's HUD item slots and item uses, from Lua's HUD file (eve-hud.0/.1, SBMC_HUD 1). The render thread reads
- * it each client tick while EVE replaces the player, keeps it for AvatarHud's heal, util, ammo and dash slots, and
- * hands each new use of a combat consumable to the server thread, which applies its effect around the player and
- * advances Smart Mines each tick. Stellar Blade decides every use; Minecraft converts it.
+ * it each client tick while EVE replaces the player (AvatarHudFile), keeps it for AvatarHud's heal, util, ammo and dash
+ * slots, and hands each new use of a combat consumable to the server thread, which applies its effect around the player
+ * and advances Smart Mines each tick. Stellar Blade decides every use; Minecraft converts it.
  */
 final class AvatarItems {
     record Slot(String kind, int count, int max, float cooldown, boolean usable) { }
@@ -58,10 +55,6 @@ final class AvatarItems {
             + "DASH (?:none|" + SHARE + ")\n"
             + "USES " + USE + " " + USE + " " + USE + " " + USE + "\nEND (\\d{1,18})\n");
 
-    private static BridgeFiles files; // Render thread, from here to state.
-    private static Hud latest; // The link's newest fresh publication while EVE replaces the player.
-    private static int[] seen; // Its uses as last read, for that session.
-    private static String session, state = "missing";
     private static final AtomicIntegerArray converted = new AtomicIntegerArray(USES.length); // Server thread writes.
     private static final List<Mine> mines = new ArrayList<>(); // Server thread, as logged.
     private static int logged;
@@ -114,43 +107,11 @@ final class AvatarItems {
         return steps;
     }
 
+    /** Server side: Smart Mines each tick. AvatarHudFile reads the HUD file on the client. */
     static void initialize() {
-        ClientTickEvents.END_CLIENT_TICK.register(AvatarItems::read);
         ServerTickEvents.END_SERVER_TICK.register(AvatarItems::tick);
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> mines.clear()); // No tick drops them after the last one; they hold its world.
     }
-
-    private static void read(MinecraftClient client) {
-        var link = StellarBridge.renderingContext();
-        if (link == null || !AvatarView.replaces(client.player)) { latest = null; seen = null; state = "missing"; return; }
-        Hud hud = null;
-        try {
-            if (files == null) files = new BridgeFiles(AvatarView.bridgeDirectory());
-            hud = select(files.read("eve-hud.0"), files.read("eve-hud.1"), link.session());
-        } catch (IOException unreadable) {
-            // As missing: the slots hide.
-        }
-        boolean current = hud != null && fresh(hud.time(), System.currentTimeMillis());
-        state = hud == null ? "missing" : current ? "fresh" : "stale";
-        latest = current ? hud : null;
-        if (!current) return;
-        if (!link.session().equals(session)) { session = link.session(); seen = null; }
-        int[] steps = used(seen, hud.uses());
-        seen = hud.uses();
-        MinecraftServer server = client.getServer();
-        UUID owner = link.owner();
-        for (int k = 0; server != null && k < steps.length; k++)
-            for (int n = 0; n < steps[k]; n++) {
-                int kind = k;
-                server.execute(() -> {
-                    var player = server.getPlayerManager().getPlayer(owner);
-                    if (player != null && StellarBridge.overrides(player)) use(player, kind);
-                });
-            }
-    }
-
-    /** Render thread: the newest fresh publication while EVE replaces the player, or null. */
-    static Hud latest() { return latest; }
 
     /** A vanilla item standing in for Stellar Blade's icon of an item kind or bullet alias. */
     static ItemStack icon(String name) {
@@ -215,7 +176,7 @@ final class AvatarItems {
     private static void tick(MinecraftServer server) {
         mines.removeIf(mine -> {
             ServerPlayerEntity owner = server.getPlayerManager().getPlayer(mine.owner);
-            if (owner == null || owner.getServerWorld() != mine.world || !StellarBridge.overrides(owner) || ++mine.age > MINE_LIFE) return true;
+            if (owner == null || owner.getServerWorld() != mine.world || !BridgeServer.overrides(owner) || ++mine.age > MINE_LIFE) return true;
             Vec3d at = mine.at;
             if (mine.age % SPARKS == 0) mine.world.spawnParticles(ParticleTypes.ELECTRIC_SPARK, at.x, at.y + 0.1, at.z, 3, 0.1, 0.05, 0.1, 0);
             if (mine.armed < 0 && !mine.world.getOtherEntities(null, Box.of(at, 2 * ARM, 2 * ARM, 2 * ARM),
@@ -245,8 +206,8 @@ final class AvatarItems {
         if (logged++ < LOGGED) LoggerFactory.getLogger("stellar_bridge").info("EVE item: {}, {} entities", USES[kind], entities);
     }
 
-    /** Render thread. */
-    static String status() {
+    /** Any thread, with the HUD file's state. */
+    static String status(String state) {
         return String.format(" Items: HUD file %s; uses converted: shock %d, pulse %d, mine %d, sonic %d.", state,
                 converted.get(SHOCK), converted.get(PULSE), converted.get(MINE), converted.get(SONIC));
     }

@@ -121,7 +121,7 @@ public final class ControlHooksTest {
         // EVE's body moves living entities out with the pinned collision-checked move, each tick after her position.
         ClassNode entity = read("net/minecraft/entity/Entity");
         assert hasMethod(entity, "move", "(Lnet/minecraft/entity/MovementType;Lnet/minecraft/util/math/Vec3d;)V") && hasMethod(entity, "setOnGround", "(Z)V");
-        assert calls(read("org/stellarbridge/StellarBridge"), "tick", "org/stellarbridge/AvatarCombat", "shove", "(Lnet/minecraft/server/network/ServerPlayerEntity;)V") == 1;
+        assert calls(read("org/stellarbridge/BridgeServer"), "tick", "org/stellarbridge/AvatarCombat", "shove", "(Lnet/minecraft/server/network/ServerPlayerEntity;)V") == 1;
         // Stellar Blade's HUD replaces the pinned health bar, moves the armor row down into it and lifts the chat: the
         // chat's 40 in its render and both click tests, not getWidth's.
         ClassNode hud = read("net/minecraft/client/gui/hud/InGameHud"), chat = read("net/minecraft/client/gui/hud/ChatHud");

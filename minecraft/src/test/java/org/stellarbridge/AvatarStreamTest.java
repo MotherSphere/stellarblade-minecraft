@@ -162,10 +162,10 @@ public final class AvatarStreamTest {
         var origin = new net.minecraft.util.math.Vec3d(1, 64, 1);
         var around = new java.util.ArrayList<net.minecraft.util.math.Box>();
         for (int i = 9; i >= 1; i--) around.add(new net.minecraft.util.math.Box(1 + i * 0.3, 64, 0.7, 1.6 + i * 0.3, 65.95, 1.3));
-        var walls = StellarBridge.mobWalls(patch, origin, origin, around);
+        var walls = BridgeServer.mobWalls(patch, origin, origin, around);
         assert walls.size() == 8 && Math.abs(walls.get(0).minX() - 0.3) < 1e-9 && walls.get(0).minY() == 0
                 && Math.abs(walls.get(7).minX() - 2.4) < 1e-9 : "The eight nearest, nearest first, relative to the origin";
-        walls = StellarBridge.mobWalls(patch, origin, origin, java.util.List.of(new net.minecraft.util.math.Box(5, 64, 1, 6, 66, 2),
+        walls = BridgeServer.mobWalls(patch, origin, origin, java.util.List.of(new net.minecraft.util.math.Box(5, 64, 1, 6, 66, 2),
                 new net.minecraft.util.math.Box(5.495, 64, 3, 6, 66, 4)));
         assert walls.size() == 1 && walls.get(0).maxX() == 4.5 : "Clipped to the patch; a sliver past its edge is dropped";
         // Stellar Blade's HUD: a bar's lit columns, a gauge's cubes and quarters.
@@ -490,12 +490,12 @@ public final class AvatarStreamTest {
                     shooter.palettes(shooterPose, placement, new FloatBuffer[] {FloatBuffer.allocate(24), FloatBuffer.allocate(24)}, true);
                     var camera = new net.minecraft.util.math.Vec3d(10, 20, 30);
                     // The socket (0.163, -11.05, 0.133) on the bone 100 units below the component, both turned 90 degrees about X.
-                    var fromDrone = AvatarCombat.muzzle(shooter, shooting.components(), new boolean[] {true, true}, shooterPose, placement, camera);
+                    var fromDrone = AvatarWeapons.muzzle(shooter, shooting.components(), new boolean[] {true, true}, shooterPose, placement, camera);
                     assert fromDrone.from().equals("drone") && fromDrone.at().distanceTo(new net.minecraft.util.math.Vec3d(11.00163, 22.8895, 30.99867)) < 1e-4
                             : fromDrone;
-                    var fromHand = AvatarCombat.muzzle(shooter, shooting.components(), new boolean[] {true, false}, shooterPose, placement, camera);
+                    var fromHand = AvatarWeapons.muzzle(shooter, shooting.components(), new boolean[] {true, false}, shooterPose, placement, camera);
                     assert fromHand.from().equals("hand") && fromHand.at().distanceTo(new net.minecraft.util.math.Vec3d(11, 23, 31)) < 1e-4 : fromHand;
-                    assert AvatarCombat.muzzle(model, twoBones.components(), new boolean[] {true}, pose, placement, camera) == null
+                    assert AvatarWeapons.muzzle(model, twoBones.components(), new boolean[] {true}, pose, placement, camera) == null
                             : "Neither a drone nor her right hand: from her eyes";
                     // A part is drawn again only after two consecutive poses showed it.
                     boolean[] drawnNow = new boolean[2];
