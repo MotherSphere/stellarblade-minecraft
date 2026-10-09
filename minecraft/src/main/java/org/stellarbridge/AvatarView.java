@@ -133,6 +133,12 @@ public final class AvatarView {
          * the placement changed, else built off the render thread.
          */
         void want(AvatarStream.Table wanted, Vec3d at) {
+            // The same generation again (another player's table resent on tracking, a relink): only the placement moved,
+            // so the build uploading goes on; AvatarRebuild would not build it twice.
+            if (uploading != null && uploading.table().generation() == wanted.generation()) {
+                wantedOrigin = at;
+                return;
+            }
             if (uploading != null) { uploading.result().free(); uploading = null; } // Superseded.
             wantedNanos = System.nanoTime();
             if (table != null && sameComposition(table.components(), wanted.components())) {

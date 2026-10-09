@@ -22,8 +22,9 @@ import org.joml.Vector3d;
 public final class RemoteEveTest {
     private static final Random random = new Random(11);
 
-    public static void main(String[] args) throws java.io.IOException {
+    public static void main(String[] args) throws Exception {
         substitution();
+        resentTable();
         halfTextures();
         lenient();
         hair();
@@ -62,6 +63,29 @@ public final class RemoteEveTest {
             var a = drawn.get(i);
             var b = components.get(i);
             assert a.name().equals(b.name()) && Arrays.equals(a.bones(), b.bones()) && a.weights() == b.weights() && java.util.Objects.equals(a.leader(), b.leader());
+        }
+    }
+
+    /**
+     * Another player's table sent again while her outfit uploads (the server's replay when this player tracks her again,
+     * a relink): the upload goes on, placed at the new origin, rather than being dropped with no build left to replace it.
+     */
+    static void resentTable() throws InterruptedException {
+        NetPose.Table table = new NetPose.Table(2, 0, 64, 0, 100, "minecraft:overworld", List.of(recorded("CharacterMesh0", "Body", "Root")),
+                new long[1], List.of(), false);
+        AvatarView.Eve eve = new AvatarView.Eve(java.nio.file.Path.of("."), true, RemoteEves.RING, RemoteEves.INTERVAL_CAP,
+                wanted -> new AvatarView.Prepared(null, new java.util.HashMap<>(), ""));
+        try {
+            eve.want(RemoteEves.stream(table), new net.minecraft.util.math.Vec3d(0, 64, 0));
+            AvatarRebuild.Built<AvatarView.Prepared> built = null;
+            for (long end = System.nanoTime() + 5_000_000_000L; built == null && System.nanoTime() < end; Thread.sleep(1)) built = eve.rebuild.take();
+            assert built != null && built.failure() == null : "The build finished";
+            eve.uploading = built; // As Eve.rebuild takes it, its textures to upload over the next frames.
+            var moved = new net.minecraft.util.math.Vec3d(5, 64, 0);
+            eve.want(RemoteEves.stream(table), moved);
+            assert eve.uploading == built && eve.wantedOrigin == moved && eve.building() : "The same generation keeps its upload";
+        } finally {
+            eve.close();
         }
     }
 
