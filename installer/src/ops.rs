@@ -53,6 +53,29 @@ pub struct Env<'a> {
     pub closed: Guard<'a>,
     /// The Stellar Blade executable this release supports: [`pins::SB_EXE_SHA256`] outside tests.
     pub pin: &'a str,
+    /// Told when each step starts, for the window's step list and log.
+    pub step: &'a dyn Fn(Step),
+}
+
+/// The steps an operation goes through, in order; each one is reported when it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Games closed, executable pin, ownership, protected-file snapshot.
+    Checks,
+    SaveBackup,
+    KeepPrevious,
+    /// Removing the owned pieces being replaced or uninstalled.
+    Remove,
+    /// The bridge JAR and Fabric API.
+    Minecraft,
+    LuaMod,
+    Adapter,
+    /// Rewriting drifted owned files.
+    Repair,
+    Verify,
+    /// A failure: putting the previous state back.
+    Restore,
+    Record,
 }
 
 pub const JAR: &str = "Bridge JAR";
@@ -217,11 +240,12 @@ impl Guarded {
     }
 }
 
-/// Paths of every owned piece, to keep in `previous/` before they are replaced.
-fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
+/// Paths of every owned piece: what an update keeps in `previous/` before replacing it, and what an uninstall removes.
+pub fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mods_dir = &target.minecraft_mods;
-    if mods::ownership(mods_dir)? == Ownership::Owned {
+    // A dedicated instance about to be created has no mods folder yet.
+    if mods_dir.is_dir() && mods::ownership(mods_dir)? == Ownership::Owned {
         paths.push(mods_dir.join(mods::MANIFEST));
         paths.extend(
             mods::manifest(mods_dir)?
@@ -294,6 +318,7 @@ fn ensure_bridge(bridge: &Path, closed: Guard) -> Result<()> {
 /// Writes every piece `payload` carries: Fabric API and the JAR, then the Lua mod, then the adapter.
 fn put(env: &Env, target: &Target, payload: &Payload) -> Result<()> {
     if !payload.jar.1.is_empty() {
+        (env.step)(Step::Minecraft);
         mods::install(
             &target.minecraft_mods,
             (&payload.jar.0, &payload.jar.1),
@@ -302,11 +327,13 @@ fn put(env: &Env, target: &Target, payload: &Payload) -> Result<()> {
         )?;
     }
     if let Some(game) = &target.game {
+        (env.step)(Step::LuaMod);
         ensure_bridge(&target.bridge, env.closed)?;
         if !payload.lua.is_empty() {
             deploy::install(&game.mods, &payload.lua, Some(&target.bridge), env.closed)?;
         }
         if !payload.dll.is_empty() {
+            (env.step)(Step::Adapter);
             adapter::install(&game.exe, &payload.dll, &target.bridge, env.pin, env.closed)?;
         }
     }
@@ -315,6 +342,7 @@ fn put(env: &Env, target: &Target, payload: &Payload) -> Result<()> {
 
 /// Every piece current, protected files and saves unchanged.
 fn check(env: &Env, target: &Target, payload: &Payload, guarded: &Guarded) -> Result<()> {
+    (env.step)(Step::Verify);
     if let Some(piece) = verify(env, target, payload)?
         .into_iter()
         .find(|p| !p.current)
@@ -331,6 +359,7 @@ fn check(env: &Env, target: &Target, payload: &Payload, guarded: &Guarded) -> Re
 
 /// The checks every operation runs before its first write.
 fn gates(target: &Target, env: &Env) -> Result<()> {
+    (env.step)(Step::Checks);
     (env.closed)()?;
     if !target.minecraft_mods.is_dir() {
         bail!(
@@ -389,21 +418,25 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             saves,
             state.save_backup.as_ref().is_some_and(|b| b.is_dir()),
         ) {
+            (env.step)(Step::SaveBackup);
             state.save_backup = Some(safety::backup_saves(saves, &env.data.join("save-backups"))?);
             ledger::save(&path, &state)?;
         }
         let owned = owned_paths(env, target)?;
         let mut previous = None;
         if !owned.is_empty() {
+            (env.step)(Step::KeepPrevious);
             let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
             previous = Some(ledger::keep_previous(&env.data, &old_release, &items)?);
             state.previous = previous.clone();
             ledger::save(&path, &state)?;
         }
+        (env.step)(Step::Remove);
         let done = remove_owned(env, target, false)
             .and_then(|_| put(env, target, payload))
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
+            (env.step)(Step::Restore);
             let restored = remove_owned(env, target, false).and_then(|refusals| {
                 if !refusals.is_empty() {
                     bail!(refusals.join("; "));
@@ -429,12 +462,81 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             });
         }
     }
+    (env.step)(Step::Record);
     state.status = Status::Installed;
     state.target = Some(target.clone());
     state.release = payload.release.clone();
     state.lua_revision = payload.lua_revision;
     ledger::save(&path, &state)?;
     Ok(state)
+}
+
+/// What [`install`] would do on `target`, without writing anything: shown before the user consents, and all a dry run
+/// does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Files and folders created or replaced, in the order they are written; empty when the release is in place.
+    pub writes: Vec<PathBuf>,
+    /// Owned files the install replaces, kept in `previous/` first.
+    pub replaced: Vec<PathBuf>,
+    /// Copies made before the first write.
+    pub backups: Vec<PathBuf>,
+}
+
+pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
+    let mods_dir = &target.minecraft_mods;
+    let exists = mods_dir.is_dir();
+    if exists && verify(env, target, payload)?.iter().all(|p| p.current) {
+        return Ok(Plan::default());
+    }
+    let mut plan = Plan::default();
+    if !payload.jar.1.is_empty() {
+        plan.writes.push(mods_dir.join(mods::MANIFEST));
+        // Fabric API comes with the JAR unless the folder has one the installer did not add.
+        let listed = mods::manifest(mods_dir)
+            .map(|m| m.files)
+            .unwrap_or_default();
+        let mut foreign_fabric = false;
+        if exists {
+            for entry in fs::read_dir(mods_dir)? {
+                let name = entry?.file_name().to_string_lossy().into_owned();
+                foreign_fabric |= mods::is_fabric_api(&name) && !listed.contains_key(&name);
+            }
+        }
+        if !foreign_fabric {
+            plan.writes.push(mods_dir.join(pins::FABRIC_API_FILE));
+        }
+        plan.writes.push(mods_dir.join(&payload.jar.0));
+    }
+    if let Some(game) = &target.game {
+        if !target.bridge.exists() {
+            plan.writes.push(target.bridge.clone());
+        }
+        if !payload.lua.is_empty() {
+            plan.writes.push(game.mods.join(deploy::MOD_NAME));
+        }
+        if !payload.dll.is_empty() {
+            plan.writes.extend(
+                [adapter::CONFIG, adapter::MANIFEST, adapter::DLL].map(|n| game.win64().join(n)),
+            );
+        }
+    }
+    plan.writes.push(state_path(env));
+    plan.replaced = owned_paths(env, target)?;
+    let state = ledger::load(&state_path(env)).unwrap_or_default();
+    if !plan.replaced.is_empty() {
+        let release = if state.release.is_empty() {
+            "untracked"
+        } else {
+            &state.release
+        };
+        plan.backups.push(env.data.join("previous").join(release));
+    }
+    let saves = target.game.as_ref().and_then(|g| g.saves.as_ref());
+    if saves.is_some() && !state.save_backup.is_some_and(|b| b.is_dir()) {
+        plan.backups.push(env.data.join("save-backups"));
+    }
+    Ok(plan)
 }
 
 /// Rolls back to the set kept in `previous/` by the last install, through the same checks; the replaced set becomes
@@ -455,6 +557,34 @@ pub fn rollback(env: &Env, target: &Target) -> Result<State> {
 pub fn repair(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<PathBuf>> {
     gates(target, env)?;
     let guarded = Guarded::take(target, own_jars(target, Some(payload))?)?;
+    let plan = repair_plan(env, target, payload)?;
+    (env.step)(Step::Repair);
+    for (path, bytes) in &plan {
+        (env.closed)()?;
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        mods::write_atomic(path.parent().unwrap_or(Path::new("")), &name, bytes)?;
+    }
+    (env.step)(Step::Verify);
+    for piece in verify(env, target, payload)? {
+        if !matches!(piece.ownership, Ownership::Owned | Ownership::Absent) {
+            bail!(
+                "{} is still not as installed: {:?}",
+                piece.name,
+                piece.ownership
+            );
+        }
+    }
+    guarded.unchanged(target)?;
+    Ok(plan.into_iter().map(|(path, _)| path).collect())
+}
+
+/// What [`repair`] would write: each drifted owned file with the content its manifest records, activating files last.
+/// Refuses, without writing, what a repair cannot fix.
+pub fn repair_plan(
+    env: &Env,
+    target: &Target,
+    payload: &Payload,
+) -> Result<Vec<(PathBuf, Vec<u8>)>> {
     let mut plan: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut add = |dir: &Path,
                    ownership: Ownership,
@@ -519,31 +649,19 @@ pub fn repair(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<PathB
         name == "enabled.txt" || name == adapter::DLL || mods::is_bridge_jar(&name)
     };
     plan.sort_by_key(|(path, _)| activates(path));
-    for (path, bytes) in &plan {
-        (env.closed)()?;
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        mods::write_atomic(path.parent().unwrap_or(Path::new("")), &name, bytes)?;
-    }
-    for piece in verify(env, target, payload)? {
-        if !matches!(piece.ownership, Ownership::Owned | Ownership::Absent) {
-            bail!(
-                "{} is still not as installed: {:?}",
-                piece.name,
-                piece.ownership
-            );
-        }
-    }
-    guarded.unchanged(target)?;
-    Ok(plan.into_iter().map(|(path, _)| path).collect())
+    Ok(plan)
 }
 
 /// Removes every owned piece. Foreign or modified pieces are never forced: they are returned as refusals, verbatim.
 /// Fabric API goes too only with `remove_fabric` (other mods may need it); a created instance, the pack, the save
 /// backups and `state.json` stay.
 pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Vec<String>> {
+    (env.step)(Step::Checks);
     (env.closed)()?;
     let guarded = Guarded::take(target, own_jars(target, None)?)?;
+    (env.step)(Step::Remove);
     let refusals = remove_owned(env, target, !remove_fabric)?;
+    (env.step)(Step::Verify);
     guarded.unchanged(target)?;
     let path = state_path(env);
     if let Some(mut state) = ledger::load(&path)

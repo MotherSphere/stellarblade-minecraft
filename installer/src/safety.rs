@@ -128,12 +128,22 @@ pub fn running(processes: &[platform::Process], launchers: bool) -> Vec<Running>
     found
 }
 
+/// What runs now among the processes under `proc_root` (`/proc` outside tests).
+pub fn running_at(proc_root: &Path, launchers: bool) -> Result<Vec<Running>> {
+    let processes = platform::processes(proc_root)
+        .context("Cannot list processes to check that the games are closed")?;
+    Ok(running(&processes, launchers))
+}
+
 /// Refuses while Stellar Blade or Minecraft runs, and the launchers too when `launchers` is set. Call it right before
 /// every write.
 pub fn games_closed(launchers: bool) -> Result<()> {
-    let processes = platform::processes(Path::new("/proc"))
-        .context("Cannot list processes to check that the games are closed")?;
-    let found = running(&processes, launchers);
+    closed_at(Path::new("/proc"), launchers)
+}
+
+/// [`games_closed`] with the process list read under `proc_root`.
+pub fn closed_at(proc_root: &Path, launchers: bool) -> Result<()> {
+    let found = running_at(proc_root, launchers)?;
     if found.is_empty() {
         return Ok(());
     }

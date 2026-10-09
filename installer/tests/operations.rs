@@ -35,6 +35,7 @@ impl World {
             data: self.data.clone(),
             closed: &*self.guard,
             pin: &self.pin,
+            step: &|_| {},
         }
     }
 
@@ -199,6 +200,26 @@ fn install_update_rollback_and_uninstall() {
         None
     );
     assert_eq!(w.files(), files);
+    assert_eq!(
+        ops::plan(&w.env(), &w.target, &v1).unwrap(),
+        ops::Plan::default()
+    );
+    let plan = ops::plan(&w.env(), &w.target, &payload(2)).unwrap();
+    assert_eq!(w.files(), files, "a plan writes nothing");
+    assert!(plan.writes.contains(&w.win64().join(adapter::DLL)));
+    assert!(
+        plan.replaced
+            .contains(&w.game().mods.join(deploy::MOD_NAME))
+    );
+    assert!(
+        plan.backups
+            .iter()
+            .any(|b| b.ends_with("previous/0.1.0+test"))
+    );
+    assert!(
+        !plan.backups.iter().any(|b| b.ends_with("save-backups")),
+        "one save backup only"
+    );
 
     let updated = ops::install(&w.env(), &w.target, &v2).unwrap();
     assert!(all_current(&w, &v2));

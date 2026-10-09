@@ -18,7 +18,8 @@ include!(concat!(env!("OUT_DIR"), "/payload.rs"));
 pub const INDEX: &str = "payload.json";
 const FABRIC_LICENSE: &str = "licenses/LICENSE-fabric-api";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The default is an empty set: verifying against it reports ownership only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Payload {
     /// `<installer version>+<commit>`, or the folder name of a previous set.
     pub release: String,
