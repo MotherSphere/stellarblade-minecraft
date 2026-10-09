@@ -2,9 +2,33 @@
 
 `stellar-bridge-installer` installs, updates and removes the bridge on Linux with Stellar Blade under Proton and Minecraft in Prism or MultiMC: the UE4SS Lua mod, the XInput adapter, the bridge JAR and Fabric API. It is a Colony program (iced 0.14 and colony-ui 0.1.6), licensed GPL-3.0-or-later like the rest of the repository.
 
-**Status: in progress.** The core is here: detection, the embedded payload and every operation (install, update, repair, roll back, uninstall, verify) with its safety net, tested end to end on fake trees. The window (welcome, detect, verify, choose an instance, install, done) comes next. Until then, install with the Python tools ([setup](../docs/setup.md#install)); the binary answers only `--version`, `--licenses` and `--help`.
+**Status: G1.** It covers today's setup, Stellar Blade under Proton and Minecraft in Prism or MultiMC on Linux. It installs, updates, repairs, rolls back and uninstalls through a window. It writes nothing until you have seen the list of files and agreed. The avatar pack is detected but not built (G2), and Windows comes later (G3, G4).
 
-## What the core does
+## Using it
+
+Run `stellar-bridge-installer` with Stellar Blade and Minecraft closed. Use `--dry-run` to see every plan without writing anything; a dry run does not even create the installer's data folder. The window follows these pages:
+
+1. **Welcome.** Pick the language (French or English, taken from `LANG` the first time) and the role: an **EVE player**, with Stellar Blade and Minecraft on this PC, or a **viewer**, with Minecraft only (the JAR and Fabric API). It says what changes and what is never touched.
+2. **Detect.** This is also the status page. It shows Steam and its libraries, Stellar Blade and its build, the Proton tool (an untested one gets a warning), the prefix, UE4SS (a known or untested build, and its `Mods` folder), the `xinput1_3` override, the Minecraft instances, each installed piece (owned, from another release, foreign or modified), the avatar pack (missing, stale or fresh) and the installer's record. An interrupted run is flagged here. **Repair**, **Roll back** and **Uninstall** are here too, once something is installed.
+3. **Verify.** It hashes `SB-Win64-Shipping.exe` (about 360 MB) against the pin. On a mismatch the Stellar Blade side stays off, and the viewer role still works.
+4. **Minecraft.** Choose the instance used last time, a new dedicated `Stellar Bridge 1.21.1` instance in Prism (native or Flatpak), an existing Prism or MultiMC instance with Minecraft 1.21.1 and Fabric Loader 0.19.5 or newer (type the MultiMC folder to load its instances), or a `mods` folder for any other launcher. A foreign or modified piece stops it here, before anything is written, even the new instance.
+5. **Review.** It lists every path it will write, the owned files it replaces (kept first in `previous/`), the backups it makes (one verified copy of the saves at the first install) and what it never touches, with a link to Stellar Blade's licence agreement. Tick the box, then click **Install**.
+6. **Close the games.** If Stellar Blade or Minecraft is running (or Prism, when it creates the instance), a modal lists what is running and checks again every second. **Continue** unlocks once everything is closed. The operation itself checks again before every write.
+7. **Installing.** Each step is ticked as it starts: checks, save backup, keep previous, remove, the bridge JAR and Fabric API, the bridge folder and Lua mod, the adapter, verify, record. The steps are logged too. The window refuses to close while files are being written.
+8. **Done.** It shows the result. If no `xinput1_3` override was found, it shows the Steam launch options to copy, with your current options kept. Then come the pack state, the first commands and the log path.
+
+Repair, roll back and uninstall each ask for confirmation in a modal that lists what they will change. Uninstall shows refusals word for word and never forces them. It removes Fabric API only if the installer added it and you tick the box. It keeps the created instance, the pack, the save backups and `state.json`. Errors appear as toasts. Every string is in English and French, and a test checks that both tables have the same keys and that every key the window uses exists.
+
+| What | Where |
+|---|---|
+| `state.json`, `previous/<release>/`, `save-backups/` | `~/.local/share/Colony/Stellar Bridge/` |
+| Preferences (theme, sizes, dyslexia font, reduced motion, language) | `~/.config/Colony/Stellar Bridge/preferences.json` |
+| Log (one run, truncated at each start, also on stderr) | `~/.cache/Colony/Stellar Bridge/stellar-bridge.log` |
+| Bridge and avatar folders | `~/.local/share/stellar-blade-minecraft/{bridge,avatar}`, or inside the Flatpak Prism sandbox for its dedicated instance |
+
+The default theme is colony-ui's Stellar Blade EVE palette. The program's name opens the Preferences page.
+
+## Modules
 
 | Module | Role |
 |---|---|
@@ -18,11 +42,17 @@
 | `safety` | Games closed (`/proc`, failing closed), protected-file snapshots, save tree hashes and a verified save backup |
 | `ledger` | `state.json`, the previous owned set for rollback, under `~/.local/share/Colony/Stellar Bridge/` |
 | `platform` | The Proton `Z:` path, the private bridge directory check, the process list, Steam root candidates |
+| `app` | The window's state machine; detection, hashing and every operation run as jobs on a worker thread |
+| `ui` | The pages, drawn with iced 0.14 and colony-ui 0.1.6 (identity button, Preferences page, toasts), plus the error toast, buttons, status rows and the modal |
+| `i18n` | English and French strings, one file per locale, falling back to colony-ui's shared labels |
+| `log` | The log file and stderr |
 | `pins` | The Stellar Blade build and executable pin, known UE4SS builds, Minecraft and Fabric versions |
 
 The manifests are compared parsed, as the Python tools compare them, so an install made by either tool is removed by the other; `tests/cross_tool.rs` checks both directions and the shared refusals on fake trees.
 
 ## Operations
+
+Each operation reports its steps to the window and runs the games-closed check before every write. The review page and `--dry-run` show `ops::plan`, which reads only.
 
 - **Install / update.** The same operation. Before the first write it checks that the games are closed, that the executable matches the pin, and that no piece is foreign or modified. It records "in progress" in `state.json`, makes a verified copy of the Stellar Blade saves at the first install, keeps the owned set it replaces in `previous/<release>/` (about 1 MB, never the avatar pack), then writes Fabric API and the JAR, the Lua mod and the adapter and verifies them against the payload, the protected files and the saves. On a failure it removes what it wrote and reinstalls the kept set. Installing the release already in place changes nothing.
 - **Repair.** Puts back owned files that changed or went missing, only when their content is exactly what the manifests record. Unlisted or foreign files stop it before anything is written; a different release needs the update.
@@ -44,6 +74,15 @@ A Lua mod and adapter installed by the Python tools count as owned and are updat
 
 ## Build and check
 
-From the repository root, `python tools/check.py --only installer` runs `cargo fmt --check`, `cargo build --locked`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` in this folder, with the payload staged from the current JAR and DLL when both are built; the complete `python tools/check.py` builds them first. The tests use temporary fake trees only and need `python3`.
+From the repository root, `python tools/check.py --only installer` runs `cargo fmt --check`, `cargo build --locked`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` in this folder. The payload is staged from the current JAR and DLL when both are built, and the complete `python tools/check.py` builds them first. The tests use temporary fake trees only and need `python3`. `tests/ui_flow.rs` walks the window's state machine through every page on a fake home: it creates a dedicated instance, installs, and goes through the games modal, repair, update, roll back and uninstall. It also checks that a dry run leaves the tree byte for byte as it was, and that an install by the Python tools is detected and uninstalled.
+
+A release binary with the payload, after a complete check on a committed tree:
+
+```sh
+python tools/payload.py /path/to/new/payload
+SBMC_PAYLOAD=/path/to/new/payload cargo build --release --locked --manifest-path installer/Cargo.toml
+```
+
+The binary is `installer/target/release/stellar-bridge-installer`. It embeds colony-ui's fonts, under the SIL Open Font License 1.1 (texts in `licenses/`, printed by `--licenses`).
 
 The declared minimum Rust is 1.90, the floor of the resolved dependency tree (ordered-float through wgpu). Check it after dependency changes with `cargo +1.90 check --locked --all-targets`.

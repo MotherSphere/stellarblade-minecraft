@@ -8,7 +8,7 @@ The prototype supports a bounded terrain/collision link, keyboard/mouse forwardi
 
 ## Start a session
 
-First follow [setup and build instructions](docs/setup.md). Use a private creative or survival test world and a backed-up Stellar Blade save in a clear outdoor location. Avatar mode runs with Fast, Fancy or Fabulous graphics; Iris shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris.
+First follow [setup and build instructions](docs/setup.md), or install with the [Stellar Bridge installer](docs/setup.md#installer). Use a private creative or survival test world and a backed-up Stellar Blade save in a clear outdoor location. Avatar mode runs with Fast, Fancy or Fabulous graphics; Iris shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris.
 
 1. In Minecraft, stand on a full block and run `/stellar start`.
 2. With EVE loaded in Stellar Blade, import collision, then enter the elevated lab: either run **`/stellar import`**, then **`/stellar enter`** in Minecraft (Stellar Blade's answer appears in chat; its window is never touched), or press **F5**, then **F8** in Stellar Blade. In the Great Desert (`E05_GreatDesert_P`) the lab is built far away, at an empty corner of the map about 10.6 km from its origin (-7.5 km on both Unreal X and Y), where Stellar Blade unloads its whole world except the sky, as after a fast travel: no enemies, no ground or walls of its own, nothing to stream while she walks. On other maps the lab is built above EVE and must be clear of existing level geometry: about 40.5 m square, from 4 m to about 30 m above her starting position. Either way it moves with the terrain window (see below).
@@ -95,7 +95,7 @@ In avatar mode, Minecraft's pause menu (Escape) has an **EVE's equipment** row u
 | `native/tests/`, `native/fixtures/` | Portable checks and isolated Windows test hosts |
 | `protocol/` | Shared wire contract and fixtures |
 | `tools/`, `tools/tests/` | Offline checks and owned-installation tools |
-| `installer/` | Stellar Bridge, the Rust installer (in progress; [its README](installer/README.md)) |
+| `installer/` | Stellar Bridge, the Rust installer for Linux ([its README](installer/README.md)) |
 | `docs/` | Setup, architecture and diagnostic reference |
 
 Run all offline checks from the repository root with Java 21, Lua, Python, CMake, a C++17 compiler and a Rust toolchain (1.90 or newer, with clippy and rustfmt) available:

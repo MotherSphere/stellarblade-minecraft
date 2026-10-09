@@ -45,9 +45,20 @@ SBMC_PAYLOAD=/path/to/new/payload cargo build --release --locked --manifest-path
 
 `tools/payload.py` checks Fabric API against its pinned SHA-512 (or takes `--fabric-api /path/to/the.jar`), refuses a machine-specific `bridge_config.lua`, and writes `payload.json` with every file's SHA-256 and the release name (`<installer version>+<commit>`, with `.dirty` when tracked files differ from the commit). The installer checks every file against that list, the Fabric API pin and the adapter's PE header when it loads its payload; `stellar-bridge-installer --version` names the release it carries. Refresh the payload the same way after any change to the Lua mod, the JAR or the DLL. Without `SBMC_PAYLOAD` the installer builds without a payload and installs nothing.
 
+## Installer
+
+Stellar Bridge (`installer/`) installs, updates, repairs, rolls back and removes the three bridge components, plus Fabric API, through a window. It is built with its payload as described above, or taken from a release. Close Stellar Blade and Minecraft, then run:
+
+```sh
+installer/target/release/stellar-bridge-installer            # the window
+installer/target/release/stellar-bridge-installer --dry-run  # every plan, nothing written
+```
+
+It detects Steam, Stellar Blade and its Proton prefix, UE4SS, the `xinput1_3` override, Prism (native or Flatpak) and its instances, and an existing install, including one made by the Python tools below. It checks the game executable against the pin. Then it installs into a new dedicated `Stellar Bridge 1.21.1` Prism instance, an existing Minecraft 1.21.1 instance with Fabric Loader 0.19.5 or newer (Prism or MultiMC), or a `mods` folder you type. Before writing, it lists every path it will write, the owned files it replaces and the backups it makes. Every write waits until the games are closed. It makes one verified copy of the Stellar Blade saves at the first install, and keeps the replaced set (about 1 MB, never the avatar pack) for **Roll back**. It verifies the result and records it in `~/.local/share/Colony/Stellar Bridge/state.json`. It never writes the DLL override, Steam settings or the Proton registry: when no override is found, it shows the launch options to paste into Steam. A Lua mod and adapter installed by the Python tools are owned and get updated or removed. A bridge JAR copied by hand has no ownership manifest: the installer refuses to replace it, and uninstall leaves it and says so, so remove it by hand. The log is `~/.cache/Colony/Stellar Bridge/stellar-bridge.log`. See [the installer's README](../installer/README.md) for each page and operation.
+
 ## Install
 
-Close both games before changing Lua, JAR or DLL files. Keep existing UE4SS/Xion loaders, other mods, launch options and DLL overrides. Update the three bridge components together.
+The manual way, with the repository's Python tools. Close both games before changing Lua, JAR or DLL files. Keep existing UE4SS/Xion loaders, other mods, launch options and DLL overrides. Update the three bridge components together.
 
 Copy `minecraft/build/libs/stellar-bridge-0.1.0.jar` and the matching Fabric API JAR into the test instance's `minecraft/mods/` directory, replacing only the previous bridge JAR.
 
@@ -114,7 +125,7 @@ Grouped test for the remote EVEs:
 
 ## Update and remove
 
-With both games closed, remove the unchanged owned installation before installing a replacement:
+The installer updates in place (keeping the replaced set for **Roll back**) and uninstalls from its detect page. With the Python tools, close both games and remove the unchanged owned installation before installing a replacement:
 
 ```sh
 python tools/deploy.py remove \
