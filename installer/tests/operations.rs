@@ -608,3 +608,55 @@ fn an_unusable_bridge_folder_is_refused_before_any_write() {
     assert_eq!(fresh.files(), files);
     assert!(!fresh.data.join(ledger::STATE).exists());
 }
+
+/// Prism's mod updater replaces the Fabric API the installer added, and Prism's Disable renames the bridge JAR: the
+/// install stays owned, repair never adds a second Fabric API, and uninstall removes what is ours.
+#[test]
+fn prism_mod_updates_and_disables_are_handled() {
+    let w = world();
+    let viewer = Target {
+        game: None,
+        ..w.target.clone()
+    };
+    let v1 = payload(1);
+    ops::install(&w.env(), &viewer, &v1).unwrap();
+    let mods_dir = &viewer.minecraft_mods;
+    fs::remove_file(mods_dir.join(pins::FABRIC_API_FILE)).unwrap();
+    fs::write(mods_dir.join("fabric-api-0.116.18+1.21.1.jar"), "newer").unwrap();
+    fs::rename(
+        mods_dir.join(&v1.jar.0),
+        mods_dir.join(format!("{}.disabled", v1.jar.0)),
+    )
+    .unwrap();
+    let pieces = ops::verify(&w.env(), &viewer, &v1).unwrap();
+    assert_eq!(pieces[0].ownership, Ownership::Owned);
+    assert_eq!(
+        ops::repair(&w.env(), &viewer, &v1).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    assert!(!mods_dir.join(pins::FABRIC_API_FILE).exists());
+    assert!(ops::uninstall(&w.env(), &viewer, true).unwrap().is_empty());
+    let mut names: Vec<_> = fs::read_dir(mods_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["fabric-api-0.116.18+1.21.1.jar", "sodium.jar"]);
+    assert_eq!(state(&w).status, Status::Removed);
+}
+
+/// The user deleted the instance in Prism: uninstall still removes the game side and records the removal.
+#[test]
+fn uninstall_after_the_instance_was_deleted() {
+    let w = world();
+    ops::install(&w.env(), &w.target, &payload(1)).unwrap();
+    fs::remove_dir_all(w.target.minecraft_mods.parent().unwrap().parent().unwrap()).unwrap();
+    assert!(
+        ops::uninstall(&w.env(), &w.target, false)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!w.game().mods.join(deploy::MOD_NAME).exists());
+    assert!(!w.win64().join(adapter::DLL).exists());
+    assert_eq!(state(&w).status, Status::Removed);
+}

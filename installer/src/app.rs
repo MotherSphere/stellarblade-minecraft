@@ -184,7 +184,7 @@ pub fn detect(ctx: &Ctx) -> Found {
         .and_then(|s| s.target.clone())
         .or_else(|| found_target(ctx, game.as_ref(), ue4ss.as_ref(), &instances));
     let (pieces, pieces_error) = match &current {
-        Some(target) if target.minecraft_mods.is_dir() => {
+        Some(target) => {
             let env = ops::Env {
                 data: ctx.data.clone(),
                 closed: &|| Ok(()),

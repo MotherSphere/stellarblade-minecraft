@@ -152,11 +152,10 @@ impl Payload {
         let (mut jar, mut fabric_api) = ((String::new(), Vec::new()), Vec::new());
         match mods::ownership(dir)? {
             Ownership::Owned => {
-                let listed = mods::manifest(dir)?.files;
-                for name in listed.keys() {
-                    let bytes = fs::read(dir.join(name))?;
-                    if mods::is_bridge_jar(name) {
-                        jar = (name.clone(), bytes);
+                for (name, path) in mods::present(dir)? {
+                    let bytes = fs::read(path)?;
+                    if mods::is_bridge_jar(&name) {
+                        jar = (name, bytes);
                     } else {
                         fabric_api = bytes;
                     }

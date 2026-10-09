@@ -77,32 +77,85 @@ pub fn manifest(mods: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
-/// The listed files whose content is missing or differs, with the sha256 the manifest expects. A listed path that is
-/// not a regular file, or a bridge JAR the manifest does not list, cannot be repaired.
-pub fn drifted(mods: &Path) -> Result<Vec<(String, String)>> {
+/// Prism and MultiMC disable a mod by adding this to its name.
+pub const DISABLED: &str = ".disabled";
+
+/// Where a listed file is.
+enum Listed {
+    /// Unchanged, under its name or disabled.
+    Present(PathBuf),
+    Missing,
+    Changed,
+}
+
+fn find(mods: &Path, name: &str, expected: &str) -> Result<Listed> {
+    for path in [mods.join(name), mods.join(format!("{name}{DISABLED}"))] {
+        match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+            Ok(m) if !m.is_file() => bail!("Refusing a non-regular file: {}", path.display()),
+            Ok(_) if sha256_file(&path, &mut |_| {})? == expected => {
+                return Ok(Listed::Present(path));
+            }
+            Ok(_) => return Ok(Listed::Changed),
+        }
+    }
+    Ok(Listed::Missing)
+}
+
+/// Every listed file with its expected sha256 and where it is. A bridge JAR the manifest does not list is refused.
+fn listed(mods: &Path) -> Result<Vec<(String, String, Listed)>> {
     let manifest = manifest(mods)?;
-    if let Some(name) = names(mods)?
-        .into_iter()
-        .find(|n| is_bridge_jar(n) && !manifest.files.contains_key(n))
+    let names = names(mods)?;
+    if let Some(name) = names
+        .iter()
+        .find(|n| is_bridge_jar(n) && !manifest.files.contains_key(*n))
     {
         bail!("Refusing a bridge JAR this installer did not install: {name}");
     }
-    let mut drift = Vec::new();
+    let mut found = Vec::new();
     for (name, expected) in manifest.files {
-        let path = mods.join(&name);
-        match fs::symlink_metadata(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => drift.push((name, expected)),
-            Err(e) => return Err(e.into()),
-            Ok(m) if !m.is_file() => bail!("Refusing a non-regular file: {}", path.display()),
-            Ok(_) if sha256_file(&path, &mut |_| {})? != expected => drift.push((name, expected)),
-            Ok(_) => {}
-        }
+        let state = match find(mods, &name, &expected)? {
+            // Prism's updater replaced the Fabric API we added: never put a second one back.
+            Listed::Missing if is_fabric_api(&name) && names.iter().any(|n| is_fabric_api(n)) => {
+                continue;
+            }
+            state => state,
+        };
+        found.push((name, expected, state));
     }
-    Ok(drift)
+    Ok(found)
+}
+
+/// The listed files whose content is missing or differs, with the sha256 the manifest expects. A disabled copy counts
+/// as present, a Fabric API replaced by a newer one is no longer wanted, and a listed path that is not a regular file,
+/// or a bridge JAR the manifest does not list, cannot be repaired.
+pub fn drifted(mods: &Path) -> Result<Vec<(String, String)>> {
+    Ok(listed(mods)?
+        .into_iter()
+        .filter(|(_, _, state)| !matches!(state, Listed::Present(_)))
+        .map(|(name, expected, _)| (name, expected))
+        .collect())
+}
+
+/// The listed files that are there, unchanged, by name with their actual path (which may be the disabled one).
+pub fn present(mods: &Path) -> Result<Vec<(String, PathBuf)>> {
+    Ok(listed(mods)?
+        .into_iter()
+        .filter_map(|(name, _, state)| match state {
+            Listed::Present(path) => Some((name, path)),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Who owns the bridge files in `mods`. A bridge JAR without our manifest is foreign: it is never replaced or removed.
+/// Listed files that went missing leave the rest owned; only changed content makes it modified. A folder that does
+/// not exist (a deleted instance) holds nothing.
 pub fn ownership(mods: &Path) -> Result<Ownership> {
+    if fs::symlink_metadata(mods).is_err() {
+        return Ok(Ownership::Absent);
+    }
     let path = mods.join(MANIFEST);
     if !path.exists() && !path.is_symlink() {
         return Ok(match names(mods)?.into_iter().find(|n| is_bridge_jar(n)) {
@@ -113,16 +166,22 @@ pub fn ownership(mods: &Path) -> Result<Ownership> {
             None => Ownership::Absent,
         });
     }
-    Ok(match drifted(mods) {
-        Ok(drift) if drift.is_empty() => Ownership::Owned,
-        Ok(drift) => Ownership::Modified(format!(
-            "Refusing modified bridge files: {}",
-            drift
+    Ok(match listed(mods) {
+        Ok(found) => {
+            let changed: Vec<&str> = found
                 .iter()
-                .map(|(n, _)| n.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
+                .filter(|(_, _, state)| matches!(state, Listed::Changed))
+                .map(|(name, _, _)| name.as_str())
+                .collect();
+            if changed.is_empty() {
+                Ownership::Owned
+            } else {
+                Ownership::Modified(format!(
+                    "Refusing modified bridge files: {}",
+                    changed.join(", ")
+                ))
+            }
+        }
         Err(error) => Ownership::Modified(error.to_string()),
     })
 }
@@ -213,8 +272,8 @@ pub fn install(
     Ok(mods.join(MANIFEST))
 }
 
-/// Removes the listed files when every one is unchanged: the bridge JAR first, then Fabric API unless `keep_fabric`
-/// (it is then left to the user, as if they had added it), then the manifest.
+/// Removes the listed files when none changed: the bridge JAR first (or its disabled copy), then Fabric API unless
+/// `keep_fabric` (it is then left to the user, as if they had added it), then the manifest. Missing files are skipped.
 pub fn remove(mods: &Path, keep_fabric: bool, closed: Guard) -> Result<()> {
     let mods = folder(mods)?;
     closed()?;
@@ -223,11 +282,11 @@ pub fn remove(mods: &Path, keep_fabric: bool, closed: Guard) -> Result<()> {
         Ownership::Absent => bail!("No bridge JAR to remove in {}", mods.display()),
         Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal),
     }
-    let mut names: Vec<String> = manifest(&mods)?.files.into_keys().collect();
-    names.sort_by_key(|n| !is_bridge_jar(n));
-    for name in names {
+    let mut found = present(&mods)?;
+    found.sort_by_key(|(name, _)| !is_bridge_jar(name));
+    for (name, path) in found {
         if is_bridge_jar(&name) || !keep_fabric {
-            fs::remove_file(mods.join(&name))?;
+            fs::remove_file(path)?;
         }
     }
     fs::remove_file(mods.join(MANIFEST))?;
@@ -311,6 +370,43 @@ mod tests {
         fs::write(mods.join(MANIFEST), claim).unwrap();
         assert!(remove(&mods, false, &open).is_err(), "never another mod");
         assert!(mods.join("sodium.jar").exists());
+    }
+
+    #[test]
+    fn prism_updates_and_disables_stay_removable() {
+        let (_root, mods) = mods();
+        install(&mods, JAR, b"fabric", &open).unwrap();
+        // Prism's updater swaps the Fabric API we added for a newer one.
+        fs::remove_file(mods.join(pins::FABRIC_API_FILE)).unwrap();
+        fs::write(mods.join("fabric-api-0.116.18+1.21.1.jar"), "newer").unwrap();
+        assert_eq!(ownership(&mods).unwrap(), Ownership::Owned);
+        assert_eq!(
+            drifted(&mods).unwrap(),
+            Vec::new(),
+            "never a second Fabric API"
+        );
+        // Prism's Disable renames the bridge JAR.
+        let disabled = mods.join(format!("{}{DISABLED}", JAR.0));
+        fs::rename(mods.join(JAR.0), &disabled).unwrap();
+        assert_eq!(ownership(&mods).unwrap(), Ownership::Owned);
+        assert_eq!(drifted(&mods).unwrap(), Vec::new());
+        assert_eq!(present(&mods).unwrap(), vec![(JAR.0.to_string(), disabled)]);
+        remove(&mods, false, &open).unwrap();
+        assert_eq!(
+            names(&mods).unwrap(),
+            vec!["fabric-api-0.116.18+1.21.1.jar", "sodium.jar"]
+        );
+
+        // A missing bridge JAR is repairable; a removed Fabric API with no other one comes back too.
+        fs::remove_file(mods.join("fabric-api-0.116.18+1.21.1.jar")).unwrap();
+        install(&mods, JAR, b"fabric", &open).unwrap();
+        fs::remove_file(mods.join(JAR.0)).unwrap();
+        fs::remove_file(mods.join(pins::FABRIC_API_FILE)).unwrap();
+        assert_eq!(ownership(&mods).unwrap(), Ownership::Owned);
+        assert_eq!(drifted(&mods).unwrap().len(), 2);
+        remove(&mods, false, &open).unwrap();
+        assert_eq!(names(&mods).unwrap(), vec!["sodium.jar"]);
+        assert_eq!(ownership(&mods.join("deleted")).unwrap(), Ownership::Absent);
     }
 
     #[test]

@@ -107,7 +107,7 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
     let current = if payload.jar.1.is_empty() {
         absent(&ownership)
     } else {
-        ownership == Ownership::Owned && {
+        ownership == Ownership::Owned && mods::drifted(&target.minecraft_mods)?.is_empty() && {
             let listed = mods::manifest(&target.minecraft_mods)?.files;
             let fabric = sha256_hex(&payload.fabric_api);
             listed.get(&payload.jar.0) == Some(&sha256_hex(&payload.jar.1))
@@ -190,7 +190,10 @@ fn protected(target: &Target, own_jars: Vec<String>) -> Protected {
 fn own_jars(target: &Target, payload: Option<&Payload>) -> Result<Vec<String>> {
     let mut own = vec![mods::MANIFEST.to_string()];
     if let Ok(manifest) = mods::manifest(&target.minecraft_mods) {
-        own.extend(manifest.files.into_keys());
+        for name in manifest.files.into_keys() {
+            own.push(format!("{name}{}", mods::DISABLED));
+            own.push(name);
+        }
     }
     if let Some(payload) = payload {
         own.push(payload.jar.0.clone());
@@ -244,15 +247,10 @@ impl Guarded {
 pub fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mods_dir = &target.minecraft_mods;
-    // A dedicated instance about to be created has no mods folder yet.
-    if mods_dir.is_dir() && mods::ownership(mods_dir)? == Ownership::Owned {
+    // A dedicated instance about to be created, or a deleted one, has no mods folder: nothing is owned there.
+    if mods::ownership(mods_dir)? == Ownership::Owned {
         paths.push(mods_dir.join(mods::MANIFEST));
-        paths.extend(
-            mods::manifest(mods_dir)?
-                .files
-                .keys()
-                .map(|n| mods_dir.join(n)),
-        );
+        paths.extend(mods::present(mods_dir)?.into_iter().map(|(_, path)| path));
     }
     if let Some(game) = &target.game {
         if deploy::ownership(&game.mods)? == Ownership::Owned {
