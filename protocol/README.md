@@ -97,6 +97,29 @@ The adapter answers each request it took by replacing [`eve-wardrobe.txt`](fixtu
 
 Minecraft writes the request from its wardrobe screen, which opens only while EVE replaces the player, with the session of its entered link and one SEQ counter for the whole Minecraft run, and waits for the answer of that SESSION and SEQ for 5 seconds; it also refuses an `ITEM` line outside the seven wardrobe categories, and a `refused` reason other than those above (a fault's stage among the ten named, its code exactly 8 lowercase hex digits). `/stellar stop` deletes the request and keeps the answer.
 
+## Minecraft network protocol 1
+
+The bridge's server and client halves talk through Fabric payloads on `stellar_bridge:` channels, versioned by one integer, `BridgeNet.PROTOCOL` (1), raised on any payload change. Nothing from Stellar Blade crosses the network: no file above travels as is, and each client writes its own bridge directory with its own clock.
+
+Handshake, in the configuration phase: when the client can receive `hello`, the server sends `hello` (varint protocol, mod version of at most 256 characters) as a configuration task and waits for the client's `hello` back with its own; another protocol disconnects the client with both protocols and versions named. `hello` keeps this layout in every protocol. A client without the mod, or with it but facing a server without it, joins as usual: no `hello` is sent, and EVE players look like vanilla players to it.
+
+Play payloads, registered on both sides (doubles and floats as IEEE, integers big-endian, varints as Minecraft's; a decoder refuses any count, length, enum or flag beyond its bound, and non-finite stats):
+
+| Payload | Direction | Content |
+|---|---|---|
+| `link` | S2C | session (32 hex, empty for none), origin (3 doubles), dimension, message (the reason when refused or ended) |
+| `eve` | C2S | an `eve.N` packet as Lua wrote it (at most 65536 characters), the client's wall clock at sending (Unix milliseconds) |
+| `terrain` | S2C | a terrain snapshot without TIME: session, revision, dimension, origin, bounds and at most 1024 boxes (6 doubles each); the client stamps TIME |
+| `mobs` | S2C | at most 8 mob wall boxes relative to the origin |
+| `strike` | C2S | varint entity id, style byte (swing 0, light 1, strong 2, thrust 3, shot 4), flags (charged 1, first 2, quiet 4), and for a shot the hit point (3 doubles); the server computes the damage |
+| `defense` | C2S | edge byte (dodge 0, guard down 1, guard up 2), when it happened and when it was sent, both on the client's monotonic nanosecond clock |
+| `item` | C2S | kind byte (shock 0, pulse 1, mine 2, sonic 3) |
+| `status` | C2S | EVE's 8 stats as floats (or none) and the adapter's heal count (-1 for none, else a u32) |
+| `verdict` | S2C | combat event byte (the index in `perfect_dodge`, `perfect_parry`, `parry`, `guard`, `guard_strong`, `hit`, `hit_strong`) and the attacker's yaw (NaN for none) |
+| `feedback` | S2C | health share and heal count applied, Beta and Burst earned (cumulative, wrapping) |
+
+A server compares a client's timestamps only with that client's other timestamps, never with its own clock. Protocol 1 registers these payloads; the link still runs in a singleplayer world, where both halves share one JVM. See [BridgeNet.java](../minecraft/src/main/java/org/stellarbridge/BridgeNet.java).
+
 ## Text publication and legacy captures
 
 Java publishes text with atomic replacement. Lua uses alternating slots where Windows cannot rename over an existing destination. Control permits retire the old slot under a unique owned name before publishing; cleanup failure retains ownership for retry. A missing/stale permit neutralizes input.

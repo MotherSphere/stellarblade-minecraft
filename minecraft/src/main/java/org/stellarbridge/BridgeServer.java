@@ -51,6 +51,7 @@ public final class BridgeServer implements ModInitializer {
 
     @Override
     public void onInitialize() {
+        BridgeNet.register();
         AvatarItems.initialize();
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
             if (environment != CommandManager.RegistrationEnvironment.INTEGRATED) return;

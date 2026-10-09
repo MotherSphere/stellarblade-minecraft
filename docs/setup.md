@@ -62,6 +62,8 @@ Avatar mode also needs the private avatar pack in `~/.local/share/stellar-blade-
 
 Follow the [main session sequence](../README.md#start-a-session). All bridge components start inactive.
 
+The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (dedicated, or a world opened to LAN). Modded clients must run the same [network protocol](../protocol/README.md#minecraft-network-protocol-1), else the server disconnects them with both versions named; players without the mod join as usual. The bridge link itself still needs a singleplayer world.
+
 ## Update and remove
 
 With both games closed, remove the unchanged owned installation before installing a replacement:

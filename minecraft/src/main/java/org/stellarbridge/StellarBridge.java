@@ -6,6 +6,7 @@ import java.util.UUID;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationNetworking;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -34,6 +35,9 @@ public final class StellarBridge implements ClientModInitializer {
         AvatarView.initialize();
         AvatarHudFile.initialize();
         NativeSceneExport.initialize();
+        // The handshake: a modded server's hello gets this client's protocol and version back; the server judges them.
+        ClientConfigurationNetworking.registerGlobalReceiver(BridgeNet.Hello.ID, (hello, context) ->
+                context.responseSender().sendPacket(new BridgeNet.Hello(BridgeNet.PROTOCOL, BridgeNet.version())));
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> BridgeServer.pauseBinding = null);
         ClientTickEvents.START_CLIENT_TICK.register(client -> {
             BridgeServer.Control current = BridgeServer.control;

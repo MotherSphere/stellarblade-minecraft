@@ -32,6 +32,10 @@ The terrain window: Minecraft logs `Terrain revision=N boxes=B window=[x, y, z] 
 
 The lab site and Stellar Blade's streaming: F6 logs `World Composition tiles loaded: L of N; streaming follows the camera` (or `pinned at (X,Y)`), the tiles Stellar Blade has loaded, read from its World Composition; `World Composition tiles unavailable: ...` on a level without it. The Great Desert has 151: about 110 are loaded around EVE's usual area, and about 1 (the sky) once she has entered the lab at its remote site. F5 there ends with ` Lab at the remote site -750000 -750000.`, or ` Lab above EVE: streaming pin unavailable: ...` when Stellar Blade did not accept the streaming pin the return needs, in which case the lab is built above EVE as on other maps. On other maps F8 pins streaming at EVE's start and adds ` Streaming not pinned: ...` if that failed (harmless: Stellar Blade then streams around its camera as before). Returning from the site, F11 or `/stellar return` first answers `Waiting for Stellar Blade to stream the return point.` (Lua logs it once more, then nothing while it waits), then Lua logs `Returned after waiting T s for the return point to stream and removed ...`. T does not count time Stellar Blade spent paused, when it streams nothing; ` (one forced load)` after `stream` means the ground was still missing after 10 s and Lua forced one blocking load before returning her.
 
+## Server handshake
+
+A modded client joining a server of another network protocol is disconnected with `Stellar Bridge protocol mismatch: this server runs protocol S (mod V), your client protocol C (mod W). Install Stellar Bridge V to join, or join without the mod.` Install the server's version, or remove the mod from that client. `ServerSafetyTest` (part of `tools/check.py`) fails when a class a dedicated server loads references client code, and names the class and the reference.
+
 ## Minecraft views
 
 - `/stellarpreview load` shows a still on a checkerboard; `/stellarpreview off` closes it.
