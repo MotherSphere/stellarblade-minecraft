@@ -7,7 +7,7 @@
 - A game-compatible UE4SS installation with `LoopInGameThreadWithDelay`. The development baseline is v3.0.1 Beta #0 (`08a0733`). Stock or newer loaders are not assumed interchangeable.
 - Proton baseline: `proton-cachyos-11.0-20261005-slr-x86_64_v3`. Other versions require validation.
 
-Use a separate private creative or survival Minecraft world without LAN players, vehicles or player effects. Fluids in the terrain window become walls. In survival, EVE can die: use `keepInventory` or an empty inventory there. Avatar mode runs with any graphics mode; Iris (with Sodium) shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris. Back up Stellar Blade saves outside the game before using the lab. The prototype does not suppress autosaves.
+Use a separate private creative or survival Minecraft world, or a server of friends ([multiplayer](#multiplayer)), without vehicles or player effects. Fluids in the terrain window become walls. In survival, EVE can die: use `keepInventory` or an empty inventory there. Avatar mode runs with any graphics mode; Iris (with Sodium) shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris. Back up Stellar Blade saves outside the game before using the lab. The prototype does not suppress autosaves.
 
 ## Build and check
 
@@ -62,7 +62,28 @@ Avatar mode also needs the private avatar pack in `~/.local/share/stellar-blade-
 
 Follow the [main session sequence](../README.md#start-a-session). All bridge components start inactive.
 
-The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (dedicated, or a world opened to LAN). Modded clients must run the same [network protocol](../protocol/README.md#minecraft-network-protocol-1), else the server disconnects them with both versions named; players without the mod join as usual. Each modded player can link their own Stellar Blade there with `/stellar start`, as in singleplayer; the server keeps every player's session, and each client writes its own bridge directory. Other players see EVE players as vanilla player models for now.
+## Multiplayer
+
+The same JAR, with the matching Fabric API JAR, also loads on a Fabric server (dedicated, or a world opened to LAN). Modded clients must run the same [network protocol](../protocol/README.md#minecraft-network-protocol-1), else the server disconnects them with both versions named; players without the mod join as usual. Each modded player runs their own Stellar Blade on their own Linux PC and links it with `/stellar start`, as in singleplayer, with EVE's save in the Great Desert, the map with the lab's remote site. The server keeps every player's session and combat, and each client writes its own bridge directory. Everyone sees EVE players as vanilla player models for now.
+
+What changes with others online:
+
+- There is no PvP, whatever the server's `pvp` setting: EVE's blade, drone and grenades spare players, anyone's pets and anything a player rides, and other players' damage never reaches her.
+- A perfect dodge slows Minecraft's world only while the server holds one player. Otherwise Stellar Blade's own slowdown and the cold tint play for the dodger alone.
+- While EVE cannot answer (Stellar Blade paused or in a cutscene, or the link lapsed), she is spared for 2 s, then hits land unjudged. Full immunity, and the pause menu that keeps the world running, stay singleplayer only.
+- Over the internet, dodge and guard presses count when they were made, up to 150 ms of round trip (see the [protocol](../protocol/README.md#minecraft-network-protocol-1)); hits on such a player can land up to that much later.
+- Each player places at most three Smart Mines.
+
+### Testing on one PC
+
+Two Stellar Blades cannot run on one PC, so a one-PC test pairs one EVE player with a vanilla-controlled second player:
+
+1. **Server.** Start a local Fabric 1.21.1 server with Fabric API 0.116.17+1.21.1 and the bridge JAR from `minecraft/build/libs/` in its `mods` folder (or Loom's `runServer` in `minecraft/`). Accepting Mojang's EULA in its `eula.txt` is yours to do. In `server.properties`, set `online-mode=false`, `server-ip=127.0.0.1` and `view-distance=6`.
+2. **Instance A.** The Prism instance linked to Stellar Blade, with the default bridge directory, kept in focus for Stellar Blade's input. Join `127.0.0.1` and play as in singleplayer.
+3. **Instance B.** A copy of A with an offline account, `pauseOnLostFocus:false` in its `options.txt`, and JVM arguments `-Dstellarbridge.directory=<a directory of its own> -Dstellarbridge.avatar=<the pack>`. Without its own directory, B would overwrite A's `terrain.txt` and session files. B never runs `/stellar start`. Run it at render distance 6 and 30 FPS without shaders, since memory is tight with both games open.
+4. **Instance C** (optional). Vanilla Minecraft 1.21.1 without Fabric, which joins as an unmodded player.
+
+`/stellar status` on A reports the session and its combat counts, including the payloads the server refused.
 
 ## Update and remove
 
