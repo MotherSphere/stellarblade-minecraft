@@ -382,11 +382,44 @@ fn state_path(env: &Env) -> PathBuf {
     env.data.join(ledger::STATE)
 }
 
+/// Refuses a target that would leave the recorded install's owned pieces behind, where no later run would look.
+fn left_behind(env: &Env, target: &Target) -> Result<()> {
+    let Some(old) = ledger::load(&state_path(env)).and_then(|s| s.target) else {
+        return Ok(());
+    };
+    let owned = |ownership: Result<Ownership>| matches!(ownership, Ok(Ownership::Owned));
+    let same = |a: &Path, b: &Path| {
+        a == b || fs::canonicalize(a).is_ok_and(|a| fs::canonicalize(b).is_ok_and(|b| a == b))
+    };
+    let mut left = Vec::new();
+    if !same(&old.minecraft_mods, &target.minecraft_mods)
+        && owned(mods::ownership(&old.minecraft_mods))
+    {
+        left.push(old.minecraft_mods.display().to_string());
+    }
+    if let (Some(game), None) = (&old.game, &target.game) {
+        if owned(deploy::ownership(&game.mods)) {
+            left.push(game.mods.join(deploy::MOD_NAME).display().to_string());
+        }
+        if owned(adapter::ownership(&game.win64(), env.pin)) {
+            left.push(game.win64().join(adapter::DLL).display().to_string());
+        }
+    }
+    if !left.is_empty() {
+        bail!(
+            "The bridge is still installed in {}: uninstall it there first, then install here",
+            left.join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// Installs `payload` on `target`, replacing an owned older install (an update). Foreign or modified pieces stop it
 /// before anything changes. Records "in progress" first, makes the first-install save backup, keeps the replaced set in
 /// `previous/`, then writes and verifies; on any failure it removes what it wrote and puts the kept set back.
 pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     gates(target, env)?;
+    left_behind(env, target)?;
     if payload.jar.1.is_empty() {
         bail!("{} has no bridge JAR to install", payload.release);
     }
@@ -484,6 +517,7 @@ pub struct Plan {
 }
 
 pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
+    left_behind(env, target)?;
     let mods_dir = &target.minecraft_mods;
     let exists = mods_dir.is_dir();
     if exists && verify(env, target, payload)?.iter().all(|p| p.current) {

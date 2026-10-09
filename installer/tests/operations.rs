@@ -660,3 +660,42 @@ fn uninstall_after_the_instance_was_deleted() {
     assert!(!w.win64().join(adapter::DLL).exists());
     assert_eq!(state(&w).status, Status::Removed);
 }
+
+/// Installing into another instance while the recorded one still holds the bridge would leave it there, forgotten:
+/// it is refused before any write, and allowed once the first is uninstalled.
+#[test]
+fn moving_to_another_instance_needs_an_uninstall_first() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let other_mods = w.home.join("instances/Other/minecraft/mods");
+    fs::create_dir_all(&other_mods).unwrap();
+    let other = Target {
+        minecraft_mods: other_mods.clone(),
+        ..w.target.clone()
+    };
+    let files = w.files();
+    let error = ops::plan(&w.env(), &other, &v1).unwrap_err();
+    assert!(
+        error.to_string().contains("uninstall it there first"),
+        "{error:#}"
+    );
+    assert!(ops::install(&w.env(), &other, &v1).is_err());
+    assert_eq!(w.files(), files);
+    // A viewer install would forget the game side the same way.
+    let viewer = Target {
+        game: None,
+        ..w.target.clone()
+    };
+    assert!(ops::install(&w.env(), &viewer, &v1).is_err());
+    assert_eq!(w.files(), files);
+
+    assert!(
+        ops::uninstall(&w.env(), &w.target, true)
+            .unwrap()
+            .is_empty()
+    );
+    ops::install(&w.env(), &other, &v1).unwrap();
+    assert_eq!(mods::ownership(&other_mods).unwrap(), Ownership::Owned);
+    assert_eq!(state(&w).target.unwrap().minecraft_mods, other_mods);
+}
