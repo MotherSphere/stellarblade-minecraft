@@ -351,7 +351,7 @@ public final class AvatarCombat {
                 || source.getSource() instanceof PersistentProjectileEntity arrow && arrow.getPierceLevel() > 0;
         long now = System.nanoTime(), allowance = allowance(player);
         Defense defense = fighter.judge(now, unguardable);
-        if ((defense == Defense.HIT || defense == Defense.GUARD) && allowance >= HOLD_FROM) {
+        if (holds(defense, allowance)) {
             // A press made before this impact as the player saw it may still be on its way: judged once it could have come.
             fighter.judged(origin.getId(), tick, null);
             fighter.held.add(new Fighter.Held(source, amount, now, allowance, unguardable, origin.getId()));
@@ -359,6 +359,11 @@ public final class AvatarCombat {
         }
         fighter.judged(origin.getId(), tick, defense);
         return answer(player, fighter, source, amount, defense);
+    }
+
+    /** Whether a verdict no press answers yet (a hit or a held guard) waits for the allowance: from HOLD_FROM. */
+    static boolean holds(Defense defense, long allowance) {
+        return (defense == Defense.HIT || defense == Defense.GUARD) && allowance >= HOLD_FROM;
     }
 
     /** Whether damage with this attacker (a projectile's owner) comes from another player. */
@@ -424,7 +429,7 @@ public final class AvatarCombat {
             case PERFECT_DODGE -> {
                 // Alone on the server, Minecraft's world slows. With others online only Stellar Blade's own slowdown and
                 // the dodger's tint play (BridgeNet.Verdict); ponytail: a slow bubble around the dodger would slow her mobs only.
-                if (player.getServer().getCurrentPlayerCount() == 1) slow(player.getServer());
+                if (slowsWorld(player.getServer().getCurrentPlayerCount())) slow(player.getServer());
                 sound(player, SoundEvents.ENTITY_ILLUSIONER_MIRROR_MOVE, 1.2f);
                 return false;
             }
@@ -435,6 +440,9 @@ public final class AvatarCombat {
             }
         }
     }
+
+    /** Whether a perfect dodge slows Minecraft's world with this many players online: only alone. */
+    static boolean slowsWorld(int players) { return players == 1; }
 
     /** Minecraft's own damage, from inside the hook, after EVE's Stellar Blade damage reductions. */
     private static boolean applied(ServerPlayerEntity player, Fighter fighter, DamageSource source, float amount) {
@@ -543,8 +551,11 @@ public final class AvatarCombat {
     static boolean strikable(Entity entity, PlayerEntity player) {
         return entity instanceof LivingEntity && entity != player && !(entity instanceof PlayerEntity)
                 && !(entity instanceof ArmorStandEntity) && entity.isAlive() && entity.isAttackable()
-                && !(entity instanceof Tameable pet && pet.getOwnerUuid() != null) && !entity.hasPlayerRider();
+                && !spared(entity instanceof Tameable pet ? pet.getOwnerUuid() : null, entity.hasPlayerRider());
     }
+
+    /** Whether EVE spares an entity with this pet owner (null: no one's pet) and a player riding it or not. */
+    static boolean spared(UUID petOwner, boolean playerRider) { return petOwner != null || playerRider; }
 
     /**
      * Server thread: a strike from the player's client, on an entity it saw EVE's blade or drone hit. Refused (counted)

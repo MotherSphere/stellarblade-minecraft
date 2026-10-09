@@ -80,8 +80,11 @@ public final class CombatTest {
         assert AvatarCombat.placed(impact, impact + 1, 0, 0, true) == Long.MIN_VALUE : "A press from the future";
         assert AvatarCombat.placed(impact, client, client + AvatarCombat.MAX_WAIT + 1, 0, false) == Long.MIN_VALUE
                 && AvatarCombat.placed(impact, client, client - 1, 0, false) == Long.MIN_VALUE : "A client wait out of bounds";
-        // Held hits wait from HOLD_FROM: a LAN's few milliseconds judge at once.
-        assert AvatarCombat.allowance(2) < AvatarCombat.HOLD_FROM && AvatarCombat.allowance(40) >= AvatarCombat.HOLD_FROM;
+        // Held hits wait from HOLD_FROM: a LAN's few milliseconds judge at once; a verdict a press already gave never waits.
+        assert AvatarCombat.holds(AvatarCombat.Defense.HIT, AvatarCombat.allowance(20)) && AvatarCombat.holds(AvatarCombat.Defense.GUARD, AvatarCombat.allowance(40))
+                && !AvatarCombat.holds(AvatarCombat.Defense.HIT, AvatarCombat.allowance(2)) && !AvatarCombat.holds(AvatarCombat.Defense.PARRY, AvatarCombat.allowance(100));
+        // A perfect dodge slows the world only for a player alone on the server (others get Stellar Blade's slowdown and a tint).
+        assert AvatarCombat.slowsWorld(1) && !AvatarCombat.slowsWorld(2);
 
         // Strike validation: reach with a block of slack, rates per second, the rehit per target.
         assert AvatarCombat.reaches(36, false) && !AvatarCombat.reaches(36.01, false) : "Melee reach is 6 blocks";
@@ -99,6 +102,8 @@ public final class CombatTest {
         var linker = new AvatarCombat.Fighter();
         assert linker.links.take(impact) && linker.links.take(impact) && !linker.links.take(impact) && linker.links.take(impact + 500 * MS)
                 : "2 link requests a second";
+        assert methods("BridgeServer", "lambda$onInitialize$").anyMatch(lambda -> index(lambda, "take", -1) >= 0
+                && index(lambda, "take", -1) < index(lambda, "start", -1)) : "The link request receiver takes from the bucket before a start";
 
         // Smart Mines are capped per owner: a fourth mine replaces its owner's oldest, never another owner's.
         UUID first = new UUID(0, 1), second = new UUID(0, 2);
@@ -113,6 +118,13 @@ public final class CombatTest {
         var silent = new AvatarCombat.Fighter();
         assert silent.graced(true, impact) && silent.graced(true, impact + AvatarCombat.GRACE - 1) && !silent.graced(true, impact + AvatarCombat.GRACE);
         assert !silent.graced(false, impact + 3000 * MS) && silent.graced(true, impact + 4000 * MS);
+        // The singleplayer host is spared as long as EVE is silent or a pause menu runs the world; anyone else for GRACE.
+        var spared = new AvatarCombat.Fighter();
+        assert BridgeServer.defenseless(true, false, true, spared, impact) && BridgeServer.defenseless(true, false, true, spared, impact + 10 * AvatarCombat.GRACE)
+                && BridgeServer.defenseless(true, true, false, spared, impact) && !BridgeServer.defenseless(true, false, false, spared, impact) : "The host's immunity lasts";
+        var guest = new AvatarCombat.Fighter();
+        assert BridgeServer.defenseless(false, true, true, guest, impact) && !BridgeServer.defenseless(false, true, true, guest, impact + AvatarCombat.GRACE)
+                && !BridgeServer.defenseless(false, true, false, guest, impact) : "Another player's pause menu spares nobody; a silence only for GRACE";
 
         // No PvP (entities need Minecraft's bootstrap, so this reads the compiled hook): damage whose attacker is another
         // player returns before anything is judged, remembered or earned; EVE's targets exclude anyone's pet and a player's mount.
@@ -124,16 +136,26 @@ public final class CombatTest {
         assert pvp >= 0 && pvp < fighter && fighter < judge && judge < answer : "The PvP guard comes before the player's Fighter";
         assert instanceOf(method("fromPlayer"), "net/minecraft/entity/player/PlayerEntity");
         MethodNode strikable = method("strikable");
-        assert index(strikable, "getOwnerUuid", -1) >= 0 && index(strikable, "hasPlayerRider", -1) >= 0 && instanceOf(strikable, "net/minecraft/entity/player/PlayerEntity");
+        assert index(strikable, "getOwnerUuid", -1) >= 0 && index(strikable, "hasPlayerRider", -1) >= 0 && index(strikable, "spared", -1) >= 0
+                && instanceOf(strikable, "net/minecraft/entity/player/PlayerEntity");
+        assert AvatarCombat.spared(new UUID(0, 9), false) && AvatarCombat.spared(null, true) && !AvatarCombat.spared(null, false)
+                : "Anyone's pet and a player's mount are spared";
+        // The shove never moves another player: their own client or Stellar Blade owns their position.
+        assert methods("AvatarCombat", "lambda$shove$").anyMatch(lambda -> instanceOf(lambda, "net/minecraft/entity/player/PlayerEntity")) : "The shove skips players";
         System.out.println("Combat tests passed: per-player verdicts (the creeper case), guard cooldown and hold, presses placed through the round trip, strike validation, mines per owner, the multiplayer grace, no PvP");
     }
 
     private static MethodNode method(String name) throws Exception {
+        return methods("AvatarCombat", name).filter(method -> method.name.equals(name)).findFirst().orElseThrow();
+    }
+
+    /** A bridge class's compiled methods whose name starts with prefix. */
+    private static java.util.stream.Stream<MethodNode> methods(String type, String prefix) throws Exception {
         ClassNode node = new ClassNode();
-        try (var in = CombatTest.class.getClassLoader().getResourceAsStream("org/stellarbridge/AvatarCombat.class")) {
+        try (var in = CombatTest.class.getClassLoader().getResourceAsStream("org/stellarbridge/" + type + ".class")) {
             new ClassReader(in).accept(node, 0);
         }
-        return node.methods.stream().filter(method -> method.name.equals(name)).findFirst().orElseThrow();
+        return node.methods.stream().filter(method -> method.name.startsWith(prefix));
     }
 
     /** The instruction index of the first call to a method of that name after from (-1: from the start), or -1. */

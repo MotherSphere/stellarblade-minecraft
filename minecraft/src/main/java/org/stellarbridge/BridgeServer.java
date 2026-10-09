@@ -255,10 +255,14 @@ public final class BridgeServer implements ModInitializer {
     static boolean defenseless(ServerPlayerEntity player) {
         if (!sessions.containsKey(player.getUuid())) return false;
         AvatarCombat.Fighter fighter = AvatarCombat.fighter(player);
-        boolean silent = !overrides(player) || fighter.halted;
         PauseBinding current = pauseBinding;
-        if (current != null && player.getUuid().equals(current.owner) && !current.server.isRemote()) return pauseOverridden || silent;
-        return fighter.graced(silent, System.nanoTime());
+        boolean host = current != null && player.getUuid().equals(current.owner) && !current.server.isRemote();
+        return defenseless(host, pauseOverridden, !overrides(player) || fighter.halted, fighter, System.nanoTime());
+    }
+
+    /** The decision above at now: the singleplayer host while paused or silent, anyone else for GRACE of a silence. */
+    static boolean defenseless(boolean host, boolean paused, boolean silent, AvatarCombat.Fighter fighter, long now) {
+        return host ? paused || silent : fighter.graced(silent, now);
     }
 
     record PauseBinding(MinecraftServer server, UUID owner, String dimension) { }
