@@ -699,3 +699,66 @@ fn moving_to_another_instance_needs_an_uninstall_first() {
     assert_eq!(mods::ownership(&other_mods).unwrap(), Ownership::Owned);
     assert_eq!(state(&w).target.unwrap().minecraft_mods, other_mods);
 }
+
+/// Something else changing a protected file while the installer writes fails the install: the check after writing
+/// compares the protected files with the snapshot taken before.
+#[test]
+fn a_protected_file_changed_midway_fails_the_install() {
+    let w = world();
+    let options = w
+        .target
+        .minecraft_mods
+        .parent()
+        .unwrap()
+        .join("options.txt");
+    let calls = Cell::new(0);
+    let meddles = || {
+        calls.set(calls.get() + 1);
+        if calls.get() == 3 {
+            fs::write(&options, "fov:1.0\n").unwrap();
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &meddles,
+        ..w.env()
+    };
+    let error = ops::install(&env, &w.target, &payload(1)).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Protected files changed"),
+        "{error:#}"
+    );
+    assert_ne!(state(&w).status, Status::Installed);
+}
+
+/// A game started during a repair stops it before the next file.
+#[test]
+fn a_game_started_during_a_repair_stops_it() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let script = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/bridge.lua");
+    let jar = w.target.minecraft_mods.join(&v1.jar.0);
+    fs::write(&script, "damaged").unwrap();
+    fs::write(&jar, "damaged").unwrap();
+    // The checks, then the script, then the JAR (activating files come last).
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() >= 3 {
+            anyhow::bail!("Stellar Blade started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    assert!(ops::repair(&env, &w.target, &v1).is_err());
+    assert_eq!(fs::read(&script).unwrap(), v1.lua["Scripts/bridge.lua"]);
+    assert_eq!(fs::read(&jar).unwrap(), b"damaged");
+}
