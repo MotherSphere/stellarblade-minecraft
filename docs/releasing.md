@@ -6,7 +6,7 @@ Releases go through [Release Please](https://github.com/googleapis/release-pleas
 
 1. **Conventional commits on `minecraft-main-renderer`.** Every commit that reaches the default branch, directly or through a merged pull request, uses a conventional subject (`feat:`, `fix:`, `docs:`...).
 2. **The release pull request.** After each push, `.github/workflows/release-please.yml` opens or updates one pull request, `chore(minecraft-main-renderer): release X.Y.Z`. It adds the new `CHANGELOG.md` section (each line links its commit) and sets the version in `minecraft/build.gradle`, `installer/Cargo.toml` and `installer/Cargo.lock`. Review it like any other pull request; leave the versions to it.
-3. **Merge.** Merging it tags `vX.Y.Z` and creates the GitHub release. The workflow holds the release as a draft at once, builds every asset from the tag through `.github/workflows/ci.yml` (all checks included), attaches them with `SHA256SUMS`, checks that each one is attached, and only then publishes it.
+3. **Merge.** Merging it makes Release Please create the tag `vX.Y.Z` and the release as a draft. The workflow builds every asset from the tag through `.github/workflows/ci.yml` (all checks included), attaches them with `SHA256SUMS`, checks that each one is attached, and only then publishes it.
 
 | Commit type | Changelog section | Version bump below 1.0 |
 |---|---|---|

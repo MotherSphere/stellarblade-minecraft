@@ -1,6 +1,7 @@
 # Release Please keeps a release pull request open from the conventional commits on minecraft-main-renderer.
-# Merging it tags vX.Y.Z and creates the GitHub release; this workflow holds that release as a draft, builds the
-# assets from the tag through ci.yml, attaches them with SHA256SUMS and only then publishes it.
+# Merging it tags vX.Y.Z and creates the GitHub release as a draft (release-please-config.json sets draft and
+# force-tag-creation, so the tag exists at once and the next run finds this release). This workflow then builds the
+# assets from the tag through ci.yml, attaches them with SHA256SUMS and only then publishes the release.
 #
 # A release created with GITHUB_TOKEN fires no release event, so the build is chained here with needs: rather than
 # triggered by one. release-please reports release_created once only: if a build or publish fails, re-running the
@@ -39,13 +40,6 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # release-please publishes the release, and moves "latest" to it, before any asset exists.
-      - name: Hold the release as a draft until its assets are attached
-        if: steps.release.outputs.release_created == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.release.outputs.tag_name }}
-        run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=true
 
   build:
     needs: release-please
