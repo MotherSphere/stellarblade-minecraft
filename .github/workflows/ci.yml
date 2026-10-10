@@ -1,0 +1,133 @@
+# The offline checks on hosted runners, and the release build when release-please.yml calls it with a tag.
+# The Windows job builds xinput1_3.dll natively and runs its portable tests; the Linux job runs tools/check.py with
+# that DLL in place, so the installer's tests embed and install the real pieces on fake trees. tools/check.py's
+# windows component (clang-cl/xwin plus Wine or Proton) stays local.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+    inputs:
+      ref:
+        description: Release tag to build; also builds the installer with its payload and stages the release assets
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.ref && format('release-build-{0}', inputs.ref) || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ !inputs.ref }}
+
+defaults:
+  run:
+    # Bash on Windows too: a multi-line pwsh step does not stop at a failing native command.
+    shell: bash
+
+jobs:
+  windows:
+    name: Windows DLL
+    # Pinned like ubuntu-22.04: a new image changes the toolset that builds the shipped DLL, so a move is a commit.
+    runs-on: windows-2025
+    steps:
+      # The protocol fixtures the tests read must keep their committed line endings.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # Visual Studio's ClangCL toolset: the compiler family of the local clang-cl/xwin build, with the SDK the
+      # image already has, so nothing is downloaded and no licence is accepted here.
+      - name: Build
+        run: |
+          cmake -S native -B build/native-windows -A x64 -T ClangCL
+          cmake --build build/native-windows --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build/native-windows -C Release --output-on-failure
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-dll
+          path: build/native-windows/Release/xinput1_3.dll
+          if-no-files-found: error
+          retention-days: 3
+
+  linux:
+    name: Linux checks and installer
+    needs: windows
+    # Ubuntu 22.04 for glibc 2.35: the release installer runs on that glibc or newer.
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ inputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # tools/payload.py needs tomllib (Python 3.11+); the image's own Python is 3.10.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Install Lua 5.4 and Rust
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends lua5.4
+          lua -v && command -v luac
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: installer
+      # Where tools/payload.py and the installer's tests look for the DLL.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-dll
+          path: build/native-windows
+      - name: Check
+        run: python3 tools/check.py
+
+      # Release only, from here on.
+      - name: Check the tag against the version files
+        if: inputs.ref
+        run: |
+          version=${TAG#v}
+          grep -qx "version = \"$version\" # x-release-please-version" installer/Cargo.toml &&
+            grep -qx "version = '$version' // x-release-please-version" minecraft/build.gradle ||
+            { echo "::error::$TAG does not match installer/Cargo.toml and minecraft/build.gradle"; exit 1; }
+      - name: Build the installer with its payload
+        if: inputs.ref
+        run: |
+          python3 tools/payload.py "$PWD/build/payload"
+          SBMC_PAYLOAD="$PWD/build/payload" cargo build --release --locked --manifest-path installer/Cargo.toml
+      # --version loads the payload: every file's sha256, the Fabric API pin and the DLL's PE header.
+      - name: Smoke test
+        if: inputs.ref
+        run: |
+          out=$(installer/target/release/stellar-bridge-installer --version)
+          echo "$out"
+          expected="stellar-bridge-installer ${TAG#v} (bridge ${TAG#v}+$(git rev-parse --short=7 HEAD), Lua revision"
+          [[ $out == "$expected"* ]] || { echo "::error::expected '$expected ...'"; exit 1; }
+      - name: Stage the release assets
+        if: inputs.ref
+        run: |
+          version=${TAG#v}
+          mkdir build/release
+          cp installer/target/release/stellar-bridge-installer build/release/stellar-bridge-installer-linux-x86_64
+          cp "minecraft/build/libs/stellar-bridge-$version.jar" build/native-windows/xinput1_3.dll build/release/
+          git archive --format=zip --prefix=StellarCollisionProbe/ --mtime="$(git log -1 --format=%cI)" \
+            -o "build/release/StellarCollisionProbe-$version.zip" HEAD:stellar/Mods/StellarCollisionProbe
+          ls -l build/release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.ref
+        with:
+          name: release-assets
+          path: build/release/
+          if-no-files-found: error
+          retention-days: 3

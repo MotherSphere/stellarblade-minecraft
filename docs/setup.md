@@ -17,7 +17,7 @@ Run all offline checks from the repository root with Java 21, Lua, Python, CMake
 python tools/check.py
 ```
 
-This checks Lua syntax and lifecycle tests, Python installation tools, portable native tests, the Fabric build, the terrain and EVE text exchanged between Java and Lua, and last the Rust installer (formatting, build, clippy and tests, including installs by the Python tools removed by the installer and the reverse; Cargo fetches its crates on the first build). When the JAR and the Windows DLL are built, the installer step embeds them with the Lua mod and Fabric API, and its tests install those real pieces on fake trees. The JAR and the Windows DLL are reproducible (no archive timestamps, `/Brepro`): rebuilding a commit gives the same hashes, so an installed artifact can be checked against its commit. The Gradle wrapper pins Gradle 8.14.5, Loom 1.11.8 and Yarn 1.21.1+build.3. Host CMake output goes to `build/native-host`; Minecraft output goes to `minecraft/build`; installer output goes to `installer/target`. Use `--only lua`, `--only python`, `--only installer`, `--only native` or `--only minecraft` for one component. The runner builds artifacts without installing them or launching games.
+This checks Lua syntax and lifecycle tests, Python installation tools, portable native tests, the Fabric build, the terrain and EVE text exchanged between Java and Lua, and last the Rust installer (formatting, build, clippy and tests, including installs by the Python tools removed by the installer and the reverse; Cargo fetches its crates on the first build). When the JAR and the Windows DLL are built, the installer step embeds them with the Lua mod and Fabric API, and its tests install those real pieces on fake trees. The JAR and the Windows DLL are reproducible (no archive timestamps, `/Brepro`): rebuilding a commit gives the same hashes, so an installed artifact can be checked against its commit. The Gradle wrapper pins Gradle 8.14.5, Loom 1.11.8 and Yarn 1.21.1+build.3. Host CMake output goes to `build/native-host`; Minecraft output goes to `minecraft/build`; installer output goes to `installer/target`. Use `--only lua`, `--only python`, `--only installer`, `--only native` or `--only minecraft` for one component. The runner builds artifacts without installing them or launching games. CI runs the same check on every pull request, except the `windows` component, and builds the releases ([releases and CI](releasing.md)).
 
 Build the Windows x64 DLL separately with an installed clang-cl/xwin Windows SDK toolchain:
 
@@ -36,7 +36,7 @@ The avatar's GPU paths are checked offline, outside `tools/check.py` (they need 
 
 ### Installer payload
 
-The installer carries the bridge pieces in its binary: the Lua mod from `stellar/Mods/StellarCollisionProbe`, `build/native-windows/xinput1_3.dll`, `minecraft/build/libs/stellar-bridge-0.1.0.jar` and Fabric API 0.116.17+1.21.1 with its licence, taken from the Gradle cache where Loom put it for the Minecraft build. After a complete check (so the JAR and the DLL match the commit), stage and embed them:
+The installer carries the bridge pieces in its binary: the Lua mod from `stellar/Mods/StellarCollisionProbe`, `build/native-windows/xinput1_3.dll`, `minecraft/build/libs/stellar-bridge-<version>.jar` and Fabric API 0.116.17+1.21.1 with its licence, taken from the Gradle cache where Loom put it for the Minecraft build. After a complete check (so the JAR and the DLL match the commit), stage and embed them:
 
 ```sh
 python tools/payload.py /path/to/new/payload
@@ -60,7 +60,7 @@ It detects Steam, Stellar Blade and its Proton prefix, UE4SS, the `xinput1_3` ov
 
 The manual way, with the repository's Python tools. Close both games before changing Lua, JAR or DLL files. Keep existing UE4SS/Xion loaders, other mods, launch options and DLL overrides. Update the three bridge components together.
 
-Copy `minecraft/build/libs/stellar-bridge-0.1.0.jar` and the matching Fabric API JAR into the test instance's `minecraft/mods/` directory, replacing only the previous bridge JAR.
+Copy `minecraft/build/libs/stellar-bridge-<version>.jar` and the matching Fabric API JAR into the test instance's `minecraft/mods/` directory, replacing only the previous bridge JAR.
 
 Prepare the shared directory and install the Lua mod:
 

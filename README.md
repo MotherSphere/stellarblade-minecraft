@@ -27,6 +27,7 @@ Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world a
 |---|---|
 | [Playing](docs/playing.md) | Sessions, the terrain window, controls, combat and EVE's equipment |
 | [Setup](docs/setup.md) | Supported versions, builds, the installer, the manual install, updates and removal |
+| [Releases and CI](docs/releasing.md) | Release Please, the release assets and their checksums, and what CI checks |
 | [Multiplayer](docs/multiplayer.md) | Servers, what changes with others online, bandwidth and the one-PC test |
 | [Architecture](docs/architecture.md) | How the pieces fit, rendering, input, server and client halves, repository layout |
 | [Diagnostics](docs/diagnostics.md) | Diagnostic commands, logs, the avatar pack and performance |
