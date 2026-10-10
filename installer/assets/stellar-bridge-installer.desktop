@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Stellar Bridge
+GenericName=Bridge installer
+GenericName[fr]=Installateur du pont
+Comment=Install, update and remove the Stellar Blade x Minecraft bridge
+Comment[fr]=Installer, mettre à jour et retirer le pont Stellar Blade x Minecraft
+Exec=stellar-bridge-installer
+Icon=stellar-bridge-installer
+Terminal=false
+StartupNotify=true
+StartupWMClass=stellar-bridge-installer
+Categories=Game;
+Keywords=stellar;blade;minecraft;bridge;installer;

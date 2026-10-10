@@ -38,7 +38,7 @@ inline std::optional<Metadata> parse_metadata(std::string_view text) {
   Metadata result;
   auto header = lines.field("SBMC_FRAME", 3);
   uint64_t timestamp, width, height, n;
-  if (header.empty() || header[0] != "5" ||
+  if (header.empty() || header[0] != "6" ||
       !frame_id(header[1], timestamp, result.counter) ||
       !number(header[2], result.time) || timestamp != result.time)
     return {};
@@ -82,7 +82,7 @@ inline std::optional<Metadata> parse_metadata(std::string_view text) {
       return {};
   auto color = lines.field("COLOR", 2);
   if (color.empty() || color[0] != "raw" || !number(color[1], n) ||
-      n != width * height * 4 || !lines.literal("MASK none 0"))
+      n != width * height * 4 || !lines.literal("MASK depth 0"))
     return {};
   auto depth = lines.field("DEPTH", 2);
   if (depth.empty() || depth[0] != "raw" || !number(depth[1], n) ||

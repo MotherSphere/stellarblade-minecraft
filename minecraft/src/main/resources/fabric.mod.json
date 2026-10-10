@@ -4,8 +4,9 @@
   "version": "${version}",
   "name": "Stellar Bridge",
   "description": "A bounded local collision and position bridge for Stellar Blade experiments.",
-  "environment": "client",
-  "entrypoints": { "client": ["org.stellarbridge.StellarBridge"] },
+  "license": "GPL-3.0-or-later",
+  "environment": "*",
+  "entrypoints": { "main": ["org.stellarbridge.BridgeServer"], "client": ["org.stellarbridge.StellarBridge"] },
   "mixins": ["stellar_bridge.mixins.json"],
   "depends": {
     "fabricloader": ">=0.19.5",

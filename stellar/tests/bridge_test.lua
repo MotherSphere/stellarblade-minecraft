@@ -15,6 +15,9 @@ function lifecycle.restore()
     if return_fails then return false,'floor retained' end
     state='idle'; return true,'returned'
 end
+local steps=0
+local step_message
+function lifecycle.step() steps=steps+1; return true,step_message end
 function lifecycle.status() return state end
 function lifecycle.pose()
     if state=='idle' then return nil end
@@ -23,14 +26,16 @@ end
 local function write(text)
     local f=assert(io.open(path..'/terrain.txt','wb')); assert(f:write(text)); assert(f:close())
 end
-local function terrain(seq,time)
-    return string.format('SBMC 1 TERRAIN\nSESSION %s\nSEQ %d\nTIME %d\nWORLD minecraft:overworld 0.5 64 0.5\nBOUNDS -4.5 -2 -4.5 4.5 4 4.5\nCOUNT 1\nBOX -4.5 -1 -4.5 4.5 0 4.5\nEND %d\n',session,seq,time,seq)
+local function terrain(seq,time,bounds)
+    return string.format('SBMC 3 TERRAIN\nSESSION %s\nSEQ %d\nTIME %d\nWORLD minecraft:overworld 0.5 64 0.5\nBOUNDS %s\nCOUNT 1\nBOX 0 1 0 9 2 9\nEND %d\n',
+        session,seq,time,bounds or '-4.5 -2 -4.5 4.5 4 4.5',seq)
 end
 local function read(name)
     local f=io.open(path..'/'..name,'rb'); if not f then return nil end
     local text=f:read('*a'); f:close(); return text
 end
-local bridge=Bridge.new(lifecycle,path,function()end,function()return now end)
+local logged={}
+local bridge=Bridge.new(lifecycle,path,function(message) logged[#logged+1]=message end,function()return now end)
 assert(type(bridge.binding)=='function','Fresh visual binding is missing')
 assert(bridge.binding()==nil)
 assert(bridge.pose()==nil,'inactive bridge cannot attach a rendering frame to a session')
@@ -56,13 +61,24 @@ end
 assert(state=='entered' and ack==2,'healthy deferred edits must retain the scene and previous terrain ack')
 assert(bridge.binding().ack==2,'Rendering binding must use the actually imported collision revision')
 deferred=false
+-- The window follows EVE: new bounds within the same session, dimension and origin are an update, not a relink.
+write(terrain(4,now,'11.5 -2 -4.5 20.5 4 4.5')); bridge.tick(bridge.read())
+assert(state=='entered' and ack==4 and bridge.binding().bounds[1]==11.5,'a moved window is forwarded as an update')
+bridge.step(); assert(steps==1,'each frame continues the terrain import')
+step_message='Terrain import waiting: new geometry intersects EVE.'
+bridge.step(); bridge.tick(bridge.read()); bridge.step(); step_message=nil
+local waits=0
+for _,message in ipairs(logged) do if message==step_message or message:find('import waiting',1,true) then waits=waits+1 end end
+assert(steps==3 and waits==1,'a waiting import is logged once, not once per heartbeat')
 now=now+6; return_fails=true
 bridge.tick(bridge.read()); assert(state=='entered','failed return retains supporting scene')
 assert(bridge.pose()==nil,'a stopping bridge must not authorize new linked rendering frames')
 assert(bridge.binding()==nil,'Stopping or expired terrain cannot authorize native visuals')
+bridge.step(); assert(steps==3,'a stopping bridge imports nothing more')
 local slots=(read('eve.0') or '')..(read('eve.1') or '')
-assert(slots:find('STATE idle 2',1,true),'expired bridge must stop Minecraft pose authority even if return fails')
+assert(slots:find('STATE idle 4',1,true),'expired bridge must stop Minecraft pose authority even if return fails')
 return_fails=false; bridge.tick(bridge.read()); assert(state=='idle')
+assert(logged[#logged]=='returned','a retried return logs how it ended')
 local Protocol=require('bridge_protocol')
 local old_sequence=math.max(Protocol.parse_eve(read('eve.0')).seq,Protocol.parse_eve(read('eve.1')).seq)
 -- A recreated bridge simulates a game restart with the same Minecraft session.

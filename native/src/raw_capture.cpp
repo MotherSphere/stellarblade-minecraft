@@ -24,8 +24,21 @@ struct PlaneTiming {
   uint64_t wall = 0, microseconds = 0;
   bool success = false;
 };
-std::array<PlaneTiming, 36> timings{};
+struct Summary {
+  uint64_t count = 0, total = 0, maximum = 0;
+  void add(uint64_t value) {
+    ++count;
+    total += value;
+    maximum = std::max(maximum, value);
+  }
+};
+// Per-plane rows cover the first 12 generations; summaries cover the whole RUN.
+std::array<PlaneTiming, 24> timings{};
 size_t timing_count = 0;
+std::array<Summary, 3> plane_costs{};
+Summary arrival_gaps, publication_periods;
+uint64_t generation_counter = 0, generation_arrival = 0, last_publication = 0,
+         last_report = 0;
 std::string timing_run;
 bool timing_dirty = false;
 uint64_t qpc_frequency() {
@@ -37,10 +50,49 @@ uint64_t qpc_frequency() {
   }();
   return frequency;
 }
-std::string timing_report() {
-  if (!timing_dirty || !timing_count)
+uint64_t microseconds(LARGE_INTEGER ticks) {
+  auto value = static_cast<uint64_t>(ticks.QuadPart), frequency = qpc_frequency();
+  return (value / frequency) * 1000000 + (value % frequency) * 1000000 / frequency;
+}
+void reset_timing(const std::string &run) {
+  timing_run = run;
+  timing_count = 0;
+  plane_costs = {};
+  arrival_gaps = publication_periods = {};
+  generation_counter = generation_arrival = last_publication = 0;
+  timing_dirty = false;
+}
+void record_timing(const Metadata &metadata, int kind, uint64_t wall,
+                   uint64_t begin, uint64_t end, bool copied) {
+  if (metadata.counter <= 12 && timing_count < timings.size()) {
+    auto &row = timings[timing_count++];
+    std::copy(metadata.id.begin(), metadata.id.end(), row.id.begin());
+    row.id[metadata.id.size()] = 0;
+    row.kind = kind;
+    row.wall = wall;
+    row.microseconds = end - begin;
+    row.success = copied;
+  }
+  plane_costs[kind].add(end - begin);
+  // The arrival gap is the engine readback between one generation's planes.
+  if (metadata.counter != generation_counter) {
+    generation_counter = metadata.counter;
+    generation_arrival = begin;
+  } else
+    arrival_gaps.add(begin - generation_arrival);
+  if (copied && !producer.pending()) {
+    if (last_publication)
+      publication_periods.add(end - last_publication);
+    last_publication = end;
+  }
+  timing_dirty = true;
+}
+std::string timing_report(uint64_t tick) {
+  // Diagnostic file I/O is bounded to one rewrite per second.
+  if (!timing_dirty || tick - last_report < 1000)
     return {};
-  std::string text = "SBMC_RAW_TIMINGS 1\nRUN " + timing_run + "\n";
+  last_report = tick;
+  std::string text = "SBMC_RAW_TIMINGS 2\nRUN " + timing_run + "\n";
   for (size_t i = 0; i < timing_count; ++i) {
     const auto &row = timings[i];
     text += "PLANE " + std::string(row.id.data()) + " " +
@@ -48,6 +100,15 @@ std::string timing_report() {
             std::to_string(row.microseconds) + " " + (row.success ? "1" : "0") +
             "\n";
   }
+  auto summary = [&](const std::string &name, const Summary &value) {
+    text += name + " " + std::to_string(value.count) + " " +
+            std::to_string(value.count ? value.total / value.count : 0) + " " +
+            std::to_string(value.maximum) + "\n";
+  };
+  summary("COST 0", plane_costs[0]);
+  summary("COST 2", plane_costs[2]);
+  summary("GAP", arrival_gaps);
+  summary("PERIOD", publication_periods);
   text += "END " + std::to_string(timing_count) + "\n";
   timing_dirty = false;
   return text;
@@ -202,26 +263,14 @@ bool run_task(void *task) {
           return false;
         }
         LARGE_INTEGER begin{}, end{};
-        bool measured = metadata->counter <= 12 &&
-                        timing_count < timings.size() && qpc_frequency() != 0;
-        uint64_t wall = measured ? wall_ms() : 0;
-        measured = measured && QueryPerformanceCounter(&begin);
+        bool timed = qpc_frequency() != 0 && QueryPerformanceCounter(&begin);
+        uint64_t wall = wall_ms();
         bool copied = producer.plane(job->kind, plane->data, plane->bytes,
                                      metadata->width, metadata->height);
-        if (measured && QueryPerformanceCounter(&end) &&
-            end.QuadPart >= begin.QuadPart) {
-          auto &row = timings[timing_count++];
-          std::copy(metadata->id.begin(), metadata->id.end(), row.id.begin());
-          row.id[metadata->id.size()] = 0;
-          row.kind = job->kind;
-          row.wall = wall;
-          uint64_t delta = static_cast<uint64_t>(end.QuadPart - begin.QuadPart);
-          auto frequency = qpc_frequency();
-          row.microseconds = (delta / frequency) * 1000000 +
-                             (delta % frequency) * 1000000 / frequency;
-          row.success = copied;
-          timing_dirty = true;
-        }
+        if (timed && QueryPerformanceCounter(&end) &&
+            end.QuadPart >= begin.QuadPart)
+          record_timing(*metadata, job->kind, wall, microseconds(begin),
+                        microseconds(end), copied);
         if (!copied)
           fail(2);
         return copied;
@@ -381,9 +430,7 @@ void update_capture_request(std::string_view bytes, uint64_t now_ms) {
     if (known_run(request->run) || owned_runs.size() >= maximum_runs)
       return;
     owned_runs.push_back(request->run);
-    timing_run = request->run;
-    timing_count = 0;
-    timing_dirty = false;
+    reset_timing(request->run);
     current = request;
     request_observed = mono;
     stopped = false;
@@ -410,10 +457,10 @@ void poll_raw_capture(std::string_view bytes, uint64_t now_ms) {
   } catch (...) {
     fail(3);
   }
-  // Diagnostics are bounded to the first 12 frames. File I/O never runs in an
-  // image callback or while holding the producer lock, and failure is optional.
+  // File I/O never runs in an image callback or while holding the producer
+  // lock, and failure is optional.
   try {
-    auto report = timing_report();
+    auto report = timing_report(GetTickCount64());
     lock.unlock();
     write_timing_report(report);
   } catch (...) {

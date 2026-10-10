@@ -180,8 +180,9 @@ function Capture.raw_metadata(id,epoch,camera,link,width,height,run)
     assert(type(run)=='string' and #run==32 and run:match('^[0-9a-f]+$'),'Invalid raw capture run.')
     assert(link,'Raw capture requires a terrain link.')
     local bytes=width*height*4
-    return frame_metadata(id,epoch,camera,check_link(link),{{file='raw',size=bytes},{file='none',size=0},
-        {file='raw',size=bytes}},width,height,5,run)
+    -- Frame-v6: no coverage plane; native derives coverage from depth.
+    return frame_metadata(id,epoch,camera,check_link(link),{{file='raw',size=bytes},{file='depth',size=0},
+        {file='raw',size=bytes}},width,height,6,run)
 end
 Capture.publish_metadata=publish
 -- Logger timestamps bracket each optional HD stage, including failed calls.

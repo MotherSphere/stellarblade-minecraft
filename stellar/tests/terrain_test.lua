@@ -8,23 +8,51 @@ local function check(name, run)
 end
 local function backend()
     local b = {live={},next_id=0,pawn_id=1,world_id=2,
-        position={X=10,Y=20,Z=100},moves=0,events={}}
+        position={X=10,Y=20,Z=100},moves=0,events={},clock=0,spawn_cost=0,configure_cost=0,park_cost=0,spawns=0}
+    function b.time() return b.clock end
     function b.snapshot()
-        return {pawn_id=b.pawn_id,world_id=b.world_id,
+        return {pawn_id=b.pawn_id,world_id=b.world_id,site=b.site,
             position={X=b.position.X,Y=b.position.Y,Z=b.position.Z},
             rotation={Pitch=0,Yaw=0,Roll=0},half_height=90,radius=35}
     end
+    -- Stellar Blade's streaming pin (b.pin), its ground under the return point, its pause and its autosave switch.
+    b.ground,b.autosave_on,b.flushes=true,true,0
+    function b.stream_at(position,if_unpinned)
+        if if_unpinned and b.pin then return end
+        if b.fail_pin and (position or b.pin) then error('pin refused') end -- Clearing an unset pin writes nothing.
+        b.pin=position and {X=position.X,Y=position.Y,Z=position.Z} or nil
+    end
+    function b.paused() return b.pause==true end
+    function b.ground_at(position,half_height)
+        assert(position.X==10 and position.Y==20 and position.Z==100 and half_height==90,'the trace starts at EVE\'s start')
+        return b.ground
+    end
+    function b.flush_streaming() b.flushes=b.flushes+1 end
+    function b.autosave(enabled) local old=b.autosave_on; b.autosave_on=enabled; return old end
     function b.spawn(spec)
+        b.clock=b.clock+b.spawn_cost -- Seconds each spawn takes, for the frame budget.
         b.next_id=b.next_id+1
         if b.fail_spawn==b.next_id then error('spawn failed') end
         local a={id=b.next_id,spec=spec}
         b.live[a.id]=a
+        b.spawns=b.spawns+1
         b.events[#b.events+1]={'spawn',a.id}
         return a
     end
+    -- A new or parked actor takes its spec's place, size and collision; b.inside counts any made solid around EVE.
     function b.configure(a,spec)
+        b.clock=b.clock+b.configure_cost
+        b.events[#b.events+1]={'configure',a.id}
+        assert(b.live[a.id],'TriggerBox has no BoxComponent.')
         if b.fail_configure==a.id then error('configure failed') end
-        a.visible=spec.visuals_visible~=false
+        if Terrain.overlaps(spec,b.position,35,90) then b.inside=(b.inside or 0)+1 end
+        a.spec,a.solid,a.visible=spec,true,spec.visuals_visible~=false
+    end
+    function b.park(a)
+        b.clock=b.clock+b.park_cost
+        if b.fail_park==a.id then error('park failed') end
+        a.solid,a.visible=false,false
+        b.events[#b.events+1]={'park',a.id}
     end
     function b.set_visual_visible(a,visible)
         if b.fail_visibility==a.id then error('visibility failed') end
@@ -149,18 +177,44 @@ check('partial entry and failed return retain support until a successful return'
     assert(t.restore()); assert(b.position.Z==100 and b.count()==0)
 end)
 
-check('updates build replacement support before deleting the previous floor',function()
+check('updates build replacement support before retiring the previous floor',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b)
     b.events={}
-    assert(t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
-    assert(not b.live[old.id] and t.pose().ack==2)
-    local old_destroy,new_spawn
+    assert(t.update(packet(2,{{-4.5,-1,-4.5,0.5,0,4.5},{0.5,-1,-4.5,4.5,0,4.5}})))
+    assert(not old.solid and not old.visible and t.pose().ack==2,'the old floor is parked without collision')
+    local old_park,new_spawn
     for i,event in ipairs(b.events) do
-        if event[1]=='spawn' then new_spawn=i end
-        if event[1]=='destroy' and event[2]==old.id then old_destroy=i end
+        if event[1]=='configure' then new_spawn=i end
+        if event[1]=='park' and event[2]==old.id then old_park=i end
     end
-    assert(new_spawn and old_destroy and new_spawn<old_destroy)
+    assert(new_spawn and old_park and new_spawn<old_park)
+    assert(t.restore()); assert(b.count()==0,'return destroys the parked floor too')
+end)
+
+check('updates rebuild only the boxes that changed',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet(1,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}}))); assert(t.enter())
+    local floor=imported(b); local count=b.count()
+    b.events={}
+    local ok,message=t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{-3,0,-3,-2,1,-2}}))
+    assert(ok and message:find('1 boxes added, 1 removed, 1 kept',1,true),message)
+    assert(#b.events==3 and b.events[1][1]=='spawn' and b.events[3][1]=='park','one spawn, then one removal')
+    assert(b.live[floor.id] and b.count()==count+1 and t.pose().ack==2,'the unchanged floor keeps its actor')
+    assert(t.update(packet(3,{{-4.5,-1,-4.5,4.5,0,4.5},{-3,0,-3,-2,1,-2}})))
+    assert(#b.events==3 and t.pose().ack==3,'a revision without geometry changes touches no actor')
+    assert(t.restore())
+end)
+
+check('a deeper patch raises the lab so its floor stays clear of the start',function()
+    local b=backend(); local t=Terrain.new(b)
+    local p=packet(1,{{-16.5,-4,-16.5,16.5,-3,16.5}}); p.bounds={-16.5,-4,-16.5,16.5,8,16.5}
+    assert(t.create(p))
+    local floor
+    for _,spec in ipairs(t.shapes()) do if spec.role=='lab-floor' then floor=spec end end
+    assert(floor.center.Z+floor.extent.Z>=100+400 and floor.center.Z+floor.extent.Z<=100+403,'lab floor 4 m above the start')
+    assert(imported(b).spec.center.Z==900-350,'Minecraft y maps from the raised anchor')
+    assert(t.enter()); assert(b.position.Z==900+95)
     assert(t.restore())
 end)
 
@@ -181,42 +235,54 @@ end)
 check('failed update rolls back new actors while preserving the live patch',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
-    b.fail_configure=b.next_id+2
+    b.fail_configure=b.next_id+1
     assert(not t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
     assert(b.count()==count and b.live[old.id] and t.status()=='entered' and t.pose().ack==1)
     b.fail_configure=nil
     assert(t.update(packet(2))); assert(t.restore())
 end)
 
+check('a failure on the second new box also removes the first',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter()); local count=b.count()
+    local boxes={{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3},{-3,0,-3,-2,1,-2}}
+    b.fail_configure=b.next_id+2
+    assert(not t.update(packet(2,boxes)))
+    assert(b.count()==count and t.status()=='entered' and t.pose().ack==1)
+    b.fail_configure=nil
+    assert(t.update(packet(2,boxes))); assert(b.count()==count+2 and t.pose().ack==2)
+    assert(t.restore())
+end)
+
 check('failed update cleanup retains every actor and blocks further mutation',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
     b.fail_configure=b.next_id+1; b.fail_destroy=b.next_id+1
-    assert(not t.update(packet(2)))
+    assert(not t.update(packet(2,{{-4.5,-1,-4.5,4.5,0,4.5},{2,0,2,3,1,3}})))
     assert(b.count()==count+1 and b.live[old.id] and t.status()=='cleanup-required')
     assert(not t.enter() and not t.update(packet(3)))
     assert(t.pose().state=='idle')
     b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0 and b.position.Z==100)
 end)
 
-check('old actor deletion failure retains the new supporting floor until return',function()
+check('old actor parking failure retains the new supporting floor until return',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local old=imported(b); local count=b.count()
-    b.fail_destroy=old.id
-    assert(not t.update(packet(2))); assert(b.count()==count+1)
-    assert(t.status()=='cleanup-required' and t.pose().ack==1)
-    b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0)
+    b.fail_park=old.id
+    assert(not t.update(packet(2,{{-4.5,-1.5,-4.5,4.5,0,4.5}}))); assert(b.count()==count+1)
+    assert(t.status()=='cleanup-required' and t.pose().ack==1 and old.solid)
+    assert(not t.update(packet(3)),'nothing reuses or moves an actor before the return')
+    assert(t.restore()); assert(b.count()==0)
 end)
 
 check('context and anchor changes cannot move EVE or mutate existing terrain',function()
     local b=backend(); local t=Terrain.new(b)
     assert(t.create(packet())); assert(t.enter()); local count=b.count(); local moves=b.moves
-    for _,field in ipairs({'session','dimension','origin','bounds'}) do
+    for _,field in ipairs({'session','dimension','origin'}) do
         local p=packet(2)
         if field=='session' then p.session=string.rep('a',32)
         elseif field=='dimension' then p.dimension='minecraft:the_nether'
-        elseif field=='origin' then p.origin.x=1.5
-        else p.bounds[1]=-3.5 end
+        else p.origin.x=1.5 end
         assert(not t.update(p)); assert(b.count()==count and b.moves==moves)
     end
     b.world_id=3
@@ -233,6 +299,420 @@ check('old revisions and missing guard actors cannot enter or change the terrain
     assert(t.update(packet(2))); assert(b.count()==count)
     for id,a in pairs(b.live) do if a.spec.role=='lab-floor' then b.live[id]=nil end end
     assert(not t.enter()); assert(b.moves==0)
+    assert(t.restore())
+end)
+
+-- The window follows EVE: Minecraft moves its bounds within the same anchor.
+local function moved(seq,boxes,bounds)
+    local p=packet(seq,boxes); p.bounds=bounds; return p
+end
+local function roles(t,role)
+    local found={}
+    for _,spec in ipairs(t.shapes()) do if spec.role==role then found[#found+1]=spec end end
+    return found
+end
+check('a window move places the new guards and terrain before parking the old ones',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    local old={}
+    for id in pairs(b.live) do old[id]=true end
+    b.events={}
+    local ok,message=t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5}))
+    assert(ok and message:find('1 boxes added, 1 removed, 0 kept',1,true) and message:find('window moved',1,true),message)
+    local first_park
+    for i,event in ipairs(b.events) do
+        if event[1]=='park' then first_park=first_park or i else assert(not first_park,'a placement after a removal') end
+    end
+    assert(b.spawns==14 and first_park==15 and #b.events==21,'six guards and the new floor, then the old floor and the six old guards')
+    for id in pairs(old) do assert(not b.live[id].solid and not b.live[id].visible,'every old actor is parked') end
+    assert(t.pose().ack==2 and t.status()=='entered')
+    local walls=roles(t,'lab-wall')
+    assert(#walls==4 and #roles(t,'lab-floor')==1 and #roles(t,'lab-ceiling')==1)
+    local xs={}
+    for _,wall in ipairs(walls) do xs[#xs+1]=wall.center.X-wall.extent.X end
+    table.sort(xs)
+    assert(xs[1]==10+(-2.5-0.25)*100 and xs[4]==10+6.5*100,'the side walls stand at the new bounds')
+    assert(t.restore()); assert(b.count()==0)
+end)
+
+check('after a window moved away from the anchor, F11 then F5 relinks once the window is back at the anchor',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    b.position.X=b.position.X+8*100 -- She walked 8 blocks east.
+    local far={4.5,-2,-4.5,12.5,4,4.5}
+    local ok,message=t.update(moved(2,{{4.5,-1,-4.5,12.5,0,4.5}},far))
+    assert(ok and message:find('window moved',1,true) and t.pose().ack==2,message)
+    assert(t.restore()); assert(b.count()==0)
+    ok,message=t.create(moved(2,{{4.5,-1,-4.5,12.5,0,4.5}},far))
+    assert(not ok and message:find('anchor must fit',1,true),'The far window cannot hold the anchor: '..tostring(message))
+    assert(t.create(packet(3)),'Minecraft brought the window back to the anchor')
+    assert(t.enter() and t.status()=='entered'); assert(t.restore())
+end)
+
+check('a window move is deferred while EVE is outside the new window or a new guard would intersect her',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    local count=b.count(); b.events={}
+    local ok,message=t.update(moved(2,{{11.5,-1,-4.5,20.5,0,4.5}},{11.5,-2,-4.5,20.5,4,4.5}))
+    assert(not ok and message:find('EVE is outside the new window',1,true),message)
+    ok,message=t.update(moved(2,{{-0.2,-1,-4.5,8.8,0,4.5}},{-0.2,-2,-4.5,8.8,4,4.5}))
+    assert(not ok and message:find('a new guard intersects EVE',1,true),message)
+    assert(#b.events==0 and b.count()==count and t.pose().ack==1 and t.status()=='entered')
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5})),'the move is retried with a later packet')
+    assert(t.pose().ack==2)
+    assert(t.restore())
+end)
+
+check('a failed guard spawn rolls the window move back',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    local count,floor=b.count(),imported(b)
+    b.fail_configure=b.next_id+3
+    assert(not t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5})))
+    assert(b.count()==count and b.live[floor.id] and t.status()=='entered' and t.pose().ack==1)
+    assert(#roles(t,'lab-wall')==4,'only the applied window keeps its guards')
+    b.fail_configure=nil
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},{-2.5,-2,-4.5,6.5,4,4.5})))
+    assert(t.pose().ack==2 and b.count()==2*count,'the new window in use, the old one parked')
+    assert(t.restore()); assert(b.count()==0)
+end)
+
+-- Ten small boxes away from EVE (the floor stays): b.spawn_cost 1.5 ms imports three per 4 ms frame.
+local function scattered()
+    local boxes={{-4.5,-1,-4.5,4.5,0,4.5}}
+    for i=1,10 do boxes[#boxes+1]={-4.5+i*0.5,1,2,-4.25+i*0.5,2,3} end
+    return boxes
+end
+check('a large revision imports a few boxes per frame and keeps the applied revision until it is complete',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    local count=b.count(); b.spawn_cost=0.0015
+    local ok,message=t.update(packet(2,scattered()))
+    assert(ok and message=='Importing Minecraft collision revision 2: 7 boxes left.',message)
+    assert(t.pose().ack==1 and b.count()==count+3)
+    ok,message=t.update(packet(2,scattered()))
+    assert(ok and message=='Importing Minecraft collision revision 2: 7 boxes left.' and b.count()==count+3,
+        'a heartbeat of the importing revision changes nothing')
+    ok,message=t.step(); assert(ok and message==nil and b.count()==count+6 and t.pose().ack==1)
+    assert(t.step())
+    ok,message=t.step()
+    assert(ok and message:find('revision 2: 10 boxes added, 0 removed, 1 kept',1,true)
+        and message:find('over 4 frames; reused 0, spawned 10, slowest op 1.5 ms',1,true),message)
+    assert(t.pose().ack==2 and b.count()==count+10)
+    ok,message=t.step(); assert(ok and message==nil,'nothing left to import')
+    assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a newer revision during an import keeps what is already spawned',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.spawn_cost=0.0015
+    assert(t.update(packet(2,scattered())))
+    local spawned={}
+    for id,a in pairs(b.live) do if a.spec.role=='minecraft' then spawned[id]=a end end
+    local boxes=scattered(); table.remove(boxes,3); boxes[#boxes+1]={2,1,2,3,2,3}
+    b.events={}
+    assert(t.update(packet(3,boxes)))
+    for id in pairs(spawned) do assert(b.live[id],'spawned boxes stay until the import ends') end
+    local done
+    for _=1,5 do
+        local ok,message=t.step(); assert(ok)
+        if message then done=message; break end
+    end
+    assert(done and done:find('revision 3: 8 boxes added, 1 removed, 3 kept',1,true),done)
+    local parked=0
+    for _,event in ipairs(b.events) do if event[1]=='park' then parked=parked+1 end end
+    assert(parked==1 and t.pose().ack==3 and b.count()==6+#boxes+1,'only the dropped box goes, once')
+    assert(t.restore())
+end)
+
+check('a queued box EVE walked into waits until she leaves',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.spawn_cost=0.0015
+    local boxes=scattered(); boxes[#boxes+1]={2,0,-1,3,1,0}
+    assert(t.update(packet(2,boxes)))
+    local count=b.count()
+    b.position={X=260,Y=-30,Z=795} -- Minecraft (2.5, 0.05, -0.5): inside the last queued box.
+    local ok,message
+    for _=1,3 do ok,message=t.step() end
+    assert(ok and message:find('waiting',1,true) and b.count()==count+7 and t.pose().ack==1,message)
+    ok,message=t.step(); assert(ok and message:find('waiting',1,true) and b.count()==count+7)
+    b.position={X=10,Y=20,Z=795}
+    ok,message=t.step()
+    assert(ok and message:find('revision 2: 11 boxes added',1,true) and t.pose().ack==2,message)
+    assert(t.restore())
+end)
+
+check('a window moved back during its import drops the new guards at once',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.spawn_cost=0.0015
+    local boxes=scattered(); boxes[1]={-2.5,-1,-4.5,6.5,0,4.5}
+    assert(t.update(moved(2,boxes,{-2.5,-2,-4.5,6.5,4,4.5})))
+    assert(#roles(t,'lab-wall')==8 and t.pose().ack==1,'both windows are guarded while the move imports')
+    b.park_cost=0.003
+    local ok,done=t.update(packet(3,scattered()))
+    assert(ok and #roles(t,'lab-wall')==4,'the applied window keeps only its own guards')
+    -- The dropped guards are parked and placed again as boxes at no spawn cost, so the rest fits this frame.
+    assert(done:find('revision 3: 8 boxes added',1,true) and done:find('reused 6, spawned 2',1,true)
+        and done:find('in 24 ms over 1 frames',1,true) -- The six guards' parks, two spawns, one box parked.
+        and not done:find('window moved',1,true) and t.pose().ack==3,done)
+    assert(t.restore()); assert(b.count()==0)
+end)
+
+-- The pool: the first window move spawns the second guard set; later moves place parked actors instead.
+local EAST={-2.5,-2,-4.5,6.5,4,4.5}
+local function solid(b)
+    local ids={}
+    for id,a in pairs(b.live) do if a.solid then ids[id]=true end end
+    return ids
+end
+-- Exactly the terrain's shapes have a solid actor; parked actors have none.
+local function consistent(b,t)
+    local shapes,n={},0
+    for _,spec in ipairs(t.shapes()) do shapes[spec]=true end
+    for _,a in pairs(b.live) do if a.solid then n=n+1; assert(shapes[a.spec],'a solid actor outside the terrain') end end
+    assert(n==#t.shapes(),'a terrain shape without its actor')
+end
+check('after one window move, moves alternate the two guard sets and reuse retired boxes without spawning',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    local home=solid(b)
+    local ok,message=t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))
+    assert(ok and message:find('reused 0, spawned 7',1,true),message)
+    local east=solid(b); consistent(b,t)
+    b.spawn_cost=0.0015; b.events={} -- Spawning would take frames; placing parked actors does not.
+    ok,message=t.update(packet(3))
+    assert(ok and message:find('1 boxes added, 1 removed, 0 kept',1,true) and message:find('over 1 frames; reused 7, spawned 0',1,true)
+        and message:find('window moved',1,true),message)
+    local kinds={}
+    for i,event in ipairs(b.events) do kinds[i]=event[1] end
+    assert(table.concat(kinds,' ')==string.rep('configure ',7)..string.rep('park ',6)..'park',
+        'the guards, then the box, from the pool; then the old window parked')
+    local now=solid(b); consistent(b,t)
+    for id in pairs(home) do assert(now[id],'the first guard set and floor hold EVE again') end
+    for id in pairs(east) do assert(not now[id] and not b.live[id].visible,'the second set is parked and hidden') end
+    assert(t.set_visuals_visible(true))
+    for id in pairs(east) do assert(not b.live[id].visible,'parked visuals stay hidden') end
+    ok,message=t.update(moved(4,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))
+    assert(ok and message:find('reused 7, spawned 0',1,true),message)
+    now=solid(b); consistent(b,t)
+    for id in pairs(east) do assert(now[id],'the second set is back') end
+    assert(b.spawns==14 and b.count()==14 and b.inside==nil)
+    b.events={}
+    assert(t.restore()); assert(b.count()==0 and #b.events==14,'return destroys both guard sets, the terrain and the pool once each')
+end)
+
+check('a parked actor is placed only where a new one could be, never around EVE',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.events={}
+    local ok,message=t.update(moved(3,{{-2.5,-1,-4.5,6.5,0,4.5},{-1,0,-1,1,1,1}},EAST))
+    assert(not ok and message:find('new geometry intersects EVE',1,true),message)
+    ok,message=t.update(moved(3,{{-0.2,-1,-4.5,8.8,0,4.5}},{-0.2,-2,-4.5,8.8,4,4.5}))
+    assert(not ok and message:find('a new guard intersects EVE',1,true),message)
+    b.position.X=b.position.X-1000 -- She stepped out of both windows.
+    ok,message=t.update(packet(3))
+    assert(not ok and message:find('EVE is outside the new window',1,true),message)
+    assert(#b.events==0 and b.inside==nil and t.pose().ack==2,'a deferred revision touches no parked actor')
+    consistent(b,t); assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a parked actor that fails its setup rolls the move back like a new one',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    local applied=solid(b)
+    b.fail_configure=1 -- The first parked actor placed again: the first guard set's floor.
+    local ok,message=t.update(packet(3))
+    assert(not ok and message:find('previous terrain retained',1,true),message)
+    assert(not b.live[1] and t.status()=='entered' and t.pose().ack==2,'the failed actor is destroyed, the applied window kept')
+    local now=solid(b); consistent(b,t)
+    for id in pairs(applied) do assert(now[id]) end
+    b.fail_configure=nil
+    ok,message=t.update(packet(3))
+    assert(ok and message:find('reused 6, spawned 1',1,true) and t.pose().ack==3,message)
+    consistent(b,t); assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a parked box EVE walked into waits like a new one, and its parking counts as an op',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.configure_cost=0.0015 -- Three placements per 4 ms frame, all from the seven parked actors.
+    local boxes={{-2.5,-1,-4.5,6.5,0,4.5}}
+    for i=1,8 do boxes[#boxes+1]={-2.5+i*0.5,1,2,-2.25+i*0.5,2,3} end
+    local ok,message=t.update(moved(3,boxes,EAST))
+    assert(ok and message=='Importing Minecraft collision revision 3: 5 boxes left.',message)
+    b.position={X=22.5,Y=270,Z=795} -- Inside the fifth box, a parked actor.
+    ok,message=t.step(); assert(ok and message:find('waiting',1,true),message)
+    b.position={X=10,Y=20,Z=795}
+    repeat ok,message=t.step(); assert(ok) until message
+    assert(message:find('reused 7, spawned 1',1,true) and b.inside==nil,message)
+    b.park_cost=0.002
+    ok,message=t.update(moved(4,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))
+    assert(ok and message:find('8 removed',1,true) and message:find('slowest op 2.0 ms',1,true),message)
+    assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a parked actor the engine deleted is dropped, not placed',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.live[3]=nil -- One of the first guard set, parked.
+    local ok,message=t.update(packet(3))
+    assert(ok and message:find('reused 6, spawned 1',1,true) and t.pose().ack==3,message)
+    consistent(b,t); assert(t.restore()); assert(b.count()==0)
+end)
+
+check('a parked actor that fails to be destroyed on return keeps the patch for a retry',function()
+    local b=backend(); local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    local stuck=next(solid(b))
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST)))
+    b.fail_destroy=stuck
+    assert(not t.restore()); assert(t.status()=='cleanup-required' and b.count()==1 and b.live[stuck])
+    b.fail_destroy=nil; assert(t.restore()); assert(b.count()==0 and t.status()=='idle')
+end)
+
+-- The remote lab site: the lab kilometres away, autosave off while entered, and a return that waits for the ground.
+local SITE={X=-750000,Y=-750000}
+check('at a lab site the anchor is the site and entry, pose and boxes stay relative to it',function()
+    local b=backend(); b.site=SITE; b.autosave_on=false; local t=Terrain.new(b,100,b.time)
+    local ok,message=t.create(packet())
+    assert(ok and message:find('Lab at the remote site -750000 -750000.',1,true) and b.pin==nil,message)
+    local floor=imported(b).spec
+    assert(floor.center.X==-750000 and floor.center.Y==-750000 and floor.center.Z==650,'the same box, moved to the site')
+    assert(t.pose().anchor.X==-750000 and t.pose().anchor.Y==-750000 and t.pose().anchor.Z==700)
+    assert(t.enter()); assert(b.position.X==-750000 and b.position.Y==-750000 and b.position.Z==795)
+    assert(not b.autosave_on and b.pin==nil,'autosave off; nothing to pin where nothing streams')
+    b.position={X=-750000+200,Y=-750000+300,Z=890}
+    local p=t.pose(); assert(p.position.x==2 and p.position.y==1 and p.position.z==3)
+    assert(t.restore()); assert(b.position.X==10 and b.position.Y==20 and b.position.Z==100)
+    assert(b.autosave_on==false,'autosave back as it was, off here')
+end)
+
+check('a lab site entry is refused before EVE moves if autosave cannot be switched off',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); b.autosave=function() error('autosave refused') end
+    local ok,message=t.enter()
+    assert(not ok and message:find('autosave refused',1,true) and b.moves==0 and t.status()=='ready' and b.pin==nil,message)
+    assert(t.restore()); assert(b.moves==0 and b.count()==0)
+end)
+
+check('the return from a lab site waits for the ground, then moves, unpins and restores autosave',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); local count=b.count()
+    b.ground=false
+    local ok,message=t.restore()
+    assert(not ok and message:find('Waiting for Stellar Blade to stream the return point.',1,true),message)
+    assert(b.pin.X==10 and b.pin.Y==20 and b.pin.Z==100,'streaming pinned at the return point')
+    assert(b.position.X==-750000 and b.count()==count and not b.autosave_on and t.status()=='entered','EVE waits in the lab')
+    b.clock=9.9; assert(not t.restore() and b.moves==1 and b.flushes==0)
+    b.ground=true; b.clock=10.5
+    ok,message=t.restore()
+    assert(ok and message:find('Returned after waiting 10.5 s for the return point to stream and removed',1,true)
+        and not message:find('forced',1,true),message)
+    assert(b.position.X==10 and b.position.Z==100 and b.pin==nil and b.autosave_on and b.count()==0 and b.flushes==0)
+end)
+
+check('a lab site return without ground flushes streaming once after the wait and returns anyway',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    b.ground=false; assert(not t.restore())
+    b.clock=10; b.fail_move=true
+    local ok,message=t.restore()
+    assert(not ok and message:find('Return teleport failed',1,true) and b.flushes==1,message)
+    b.fail_move=false; ok,message=t.restore()
+    assert(ok and message:find('to stream (one forced load) and removed',1,true),message)
+    assert(b.flushes==1 and b.position.Z==100 and b.pin==nil and b.autosave_on,'one flush, then the return')
+end)
+
+check('a lab site return never times out while Stellar Blade is paused',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    b.ground=false; b.pause=true; assert(not t.restore())
+    b.clock=20; local ok,message=t.restore()
+    assert(not ok and message:find('Waiting for Stellar Blade',1,true) and b.moves==1 and b.flushes==0,message)
+    b.pause=false; b.clock=29.9; assert(not t.restore() and b.flushes==0,'the wait starts again once it runs')
+    b.clock=30; assert(t.restore()); assert(b.flushes==1 and b.position.Z==100 and b.pin==nil)
+end)
+
+check('a new pawn in the same world gets autosave and streaming back though its return is refused',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.pawn_id=9
+    local ok,message=t.restore()
+    assert(not ok and message:find('Player/world changed',1,true) and b.autosave_on and b.moves==1,message)
+    b=backend(); t=Terrain.new(b); assert(t.create(packet())); assert(t.enter()); b.pawn_id=9
+    assert(not t.restore()); assert(b.pin==nil and b.moves==1,'the start no longer pinned')
+    b=backend(); b.site=SITE; t=Terrain.new(b); assert(t.create(packet())); assert(t.enter()); b.world_id=7
+    assert(not t.restore()); assert(not b.autosave_on,'another world\'s controller is left alone')
+end)
+
+check('a failed unpin or autosave restore is retried after EVE is back',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter())
+    b.fail_pin=true
+    assert(not t.restore() and b.moves==1,'no return without the pin')
+    b.fail_pin=nil
+    local stream_at,autosave=b.stream_at,b.autosave
+    b.stream_at=function(position) assert(position,'unpin refused'); stream_at(position) end
+    assert(not t.restore()); assert(b.position.Z==100 and b.pin and b.count()>0,'back, still pinned; actors kept')
+    b.stream_at=stream_at; b.autosave=function() error('autosave refused') end
+    assert(not t.restore()); assert(b.moves==2 and b.pin==nil and not b.autosave_on and b.count()>0)
+    b.autosave=autosave; assert(t.restore()); assert(b.autosave_on and b.count()==0 and t.status()=='idle')
+end)
+
+check('a lab site whose streaming pin is refused keeps the lab above EVE',function()
+    local b=backend(); b.site=SITE; b.fail_pin=true
+    local t=Terrain.new(b)
+    local ok,message=t.create(packet())
+    assert(ok and message:find('Lab above EVE: streaming pin unavailable: ',1,true) and imported(b).spec.center.X==10,message)
+    ok,message=t.enter()
+    assert(ok and message:find('Streaming not pinned',1,true) and b.autosave_on,message)
+    assert(t.restore()); assert(b.position.Z==100 and b.count()==0)
+end)
+
+check('a pin the lab site probe could not clear is cleared by the return',function()
+    local b=backend(); b.site=SITE; local t=Terrain.new(b)
+    local stream_at=b.stream_at
+    b.stream_at=function(position) assert(position,'clear refused'); stream_at(position) end
+    local ok,message=t.create(packet())
+    assert(ok and message:find('Lab above EVE: streaming pin unavailable: ',1,true) and b.pin,message)
+    b.stream_at=stream_at; assert(t.restore()); assert(b.pin==nil and b.moves==0)
+end)
+
+check('without a site the start is pinned while entered, re-asserted and cleared after the return',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(b.pin==nil)
+    assert(t.enter()); assert(b.pin.X==10 and b.pin.Y==20 and b.pin.Z==100 and b.autosave_on)
+    b.pin=nil -- Stellar Blade's own warp clears it.
+    assert(t.update(packet(1))); assert(b.pin and b.pin.X==10,'the next heartbeat pins it again')
+    b.pin=nil; b.fail_pin=true; assert(t.update(packet(2)) and t.pose().ack==2,'a refused pin never blocks the terrain')
+    b.fail_pin=nil
+    assert(t.restore()); assert(b.pin==nil and b.position.Z==100 and b.flushes==0)
+end)
+
+check('the heartbeat never replaces Stellar Blade\'s own pin, nor pins once its warp has taken EVE away',function()
+    local b=backend(); local t=Terrain.new(b)
+    assert(t.create(packet())); assert(t.enter())
+    b.pin={X=50000,Y=60000,Z=0} -- Its warp pins its destination during its fade-out.
+    assert(t.update(packet(1))); assert(b.pin.X==50000,'its destination streams')
+    b.position={X=50000,Y=60000,Z=0}; b.pin=nil -- It moved EVE there and cleared its pin.
+    assert(t.update(packet(2))); assert(b.pin==nil,'streaming follows EVE, not her old start')
+    assert(t.restore()); assert(b.position.Z==100)
+end)
+
+check('a window move that would leave the world is deferred',function()
+    local b=backend(); b.site={X=-1039000,Y=0}; local t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.events={}
+    local ok,message=t.update(moved(2,{{-12.5,-1,-4.5,-3.5,0,4.5}},{-12.5,-2,-4.5,-3.5,4,4.5}))
+    assert(not ok and message:find('Window move deferred: the new window would leave the world.',1,true) and #b.events==0,message)
+    assert(t.update(moved(2,{{-2.5,-1,-4.5,6.5,0,4.5}},EAST))); assert(t.pose().ack==2)
+    assert(t.restore())
+    b=backend(); b.site={X=0,Y=-1039000}; t=Terrain.new(b,100,b.time)
+    assert(t.create(packet())); assert(t.enter()); b.events={}
+    ok,message=t.update(moved(2,{{-4.5,-1,-12.5,4.5,0,-3.5}},{-4.5,-2,-12.5,4.5,4,-3.5}))
+    assert(not ok and message:find('the new window would leave the world.',1,true) and #b.events==0,message)
     assert(t.restore())
 end)
 print(string.format('%d terrain lifecycle tests passed; native physics requires in-game verification.',tests))

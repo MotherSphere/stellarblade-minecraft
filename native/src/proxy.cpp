@@ -3,9 +3,12 @@
 #include <windows.h>
 
 #include "input.hpp"
+#include "pose_stream.hpp"
 #include "raw_capture.hpp"
 #include <array>
+#include <atomic>
 #include <bcrypt.h>
+#include <cstring>
 #include <intrin.h>
 #include <mutex>
 #include <thread>
@@ -27,9 +30,19 @@ DWORD packet_number = 0;
 // Pinned shipping build: only the slot-0 gameplay poll advances edges.
 // Its separate device-discovery calls may only observe the cached state.
 constexpr uintptr_t return_rva = 0x2bf7a3b, check_rva = 0x2bf7a28;
+// GUObjectArray of the same pinned build (inlined FUObjectArray::IndexToObject).
+constexpr uintptr_t objects_rva = 0x6dd7230;
 constexpr std::array<unsigned char, 19> call_bytes = {
     0x0f, 0x57, 0xc0, 0x48, 0x8d, 0x55, 0x90, 0x33, 0xc9, 0x0f,
     0x11, 0x45, 0x90, 0xff, 0x15, 0x3d, 0x6f, 0x9b, 0x02};
+// Stellar Blade's walk action has no controller key, and only its key test
+// starts the sprint-to-walk transit. That test (USBPlayerInput, RVA 0x23c9860)
+// has one caller, the input tick's call at RVA 0x23c8d3a, which is redirected
+// to force_walk: held while Minecraft holds the walk key.
+constexpr uintptr_t walk_call_rva = 0x23c8d3a, walk_test_rva = 0x23c9860;
+using WalkTestFn = unsigned char (*)(void *);
+WalkTestFn walk_test = nullptr;
+std::atomic<bool> bridge_walk{false};
 constexpr std::array<unsigned char, 32> expected_hash = {
     0x57, 0x3a, 0xaf, 0xf1, 0xc9, 0x45, 0x5f, 0x85, 0xea, 0x60, 0x36,
     0xef, 0x6f, 0x6c, 0xcb, 0x07, 0x74, 0xde, 0x41, 0x64, 0x72, 0x2a,
@@ -102,6 +115,45 @@ bool hash_matches(const std::wstring &path) {
   CloseHandle(f);
   return ok && digest == expected_hash;
 }
+unsigned char force_walk(void *input) {
+  unsigned char held = walk_test(input); // Always called: its toggle mode counts presses.
+  return bridge_walk.load(std::memory_order_relaxed) ? 1 : held;
+}
+// A jump to force_walk in a page within rel32 reach below the image, then the
+// call's displacement swapped in one atomic store of its aligned code word.
+bool hook_walk(uintptr_t base) {
+  uintptr_t site = base + walk_call_rva, word_at = site & ~uintptr_t(7);
+  void *page = nullptr;
+  for (uintptr_t at = (base & ~uintptr_t(0xffff)) - 0x10000;
+       !page && at && site - at < 0x7fff0000; at -= 0x10000)
+    page = VirtualAlloc(reinterpret_cast<void *>(at), 4096,
+                        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if (!page)
+    return false;
+  auto target = reinterpret_cast<uintptr_t>(&force_walk);
+  const unsigned char jump[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
+  std::memcpy(page, jump, sizeof(jump));
+  std::memcpy(static_cast<char *>(page) + sizeof(jump), &target, sizeof(target));
+  walk_test = reinterpret_cast<WalkTestFn>(base + walk_test_rva);
+  auto *word = reinterpret_cast<volatile LONG64 *>(word_at);
+  auto expected = static_cast<uint64_t>(*word);
+  auto next = stellar_input::redirect_call(expected, word_at, site,
+                                           base + walk_test_rva,
+                                           reinterpret_cast<uintptr_t>(page));
+  DWORD protection = 0, ignored = 0;
+  bool done = next && VirtualProtect(page, 4096, PAGE_EXECUTE_READ, &ignored) &&
+              VirtualProtect(reinterpret_cast<void *>(word_at), 8,
+                             PAGE_EXECUTE_READWRITE, &protection);
+  if (done) {
+    done = InterlockedCompareExchange64(word, LONG64(*next), LONG64(expected)) ==
+           LONG64(expected);
+    VirtualProtect(reinterpret_cast<void *>(word_at), 8, protection, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void *>(word_at), 8);
+  }
+  if (!done)
+    VirtualFree(page, 0, MEM_RELEASE);
+  return done;
+}
 bool verify_host() {
   auto module = GetModuleHandleW(nullptr);
   auto base = reinterpret_cast<unsigned char *>(module);
@@ -132,6 +184,8 @@ bool verify_host() {
       !hash_matches(module_path(module)))
     return false;
   gameplay_return = reinterpret_cast<uintptr_t>(base) + return_rva;
+  stellar_pose::initialize(reinterpret_cast<uintptr_t>(base) + objects_rva,
+                           reinterpret_cast<uintptr_t>(base) + stellar_pose::BoomVtableRva);
   return true;
 #endif
 }
@@ -169,8 +223,9 @@ bool read_directory(HMODULE self) {
     directory += L'\\';
   return true;
 }
-bool write_ack(const std::string &bytes) {
-  auto path = directory + L"eve-input-ack.txt", temp = path + L".tmp";
+// A complete file in the bridge directory: written beside it, then renamed over it.
+bool write_text(const wchar_t *name, const std::string &bytes) {
+  auto path = directory + name, temp = path + L".tmp";
   HANDLE f = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                          FILE_ATTRIBUTE_NORMAL, nullptr);
   if (f == INVALID_HANDLE_VALUE)
@@ -184,14 +239,17 @@ bool write_ack(const std::string &bytes) {
          MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 void worker() {
-  std::string published;
-  for (;;) {
+  std::string published, slot0, slot1;
+  // Input every 5 ms keeps forwarding latency low; permits, capture and pose
+  // files keep their 20 ms period. Cached permit bytes are re-validated.
+  for (unsigned iteration = 0;; ++iteration) {
+    bool slow = iteration % 4 == 0;
     auto input_bytes =
         read_file(directory + L"eve-input.txt", 4096).value_or("");
-    auto slot0 =
-        read_file(directory + L"eve-control-permit.0", 512).value_or("");
-    auto slot1 =
-        read_file(directory + L"eve-control-permit.1", 512).value_or("");
+    if (slow) {
+      slot0 = read_file(directory + L"eve-control-permit.0", 512).value_or("");
+      slot1 = read_file(directory + L"eve-control-permit.1", 512).value_or("");
+    }
     auto input = stellar_input::parse_input(input_bytes);
     auto permit = stellar_input::select_permit(slot0, slot1);
     std::string permit_bytes;
@@ -213,14 +271,31 @@ void worker() {
       auto key = stellar_input::encode_ack(*ack);
       if (key != published) {
         ack->time = stamp;
-        if (write_ack(stellar_input::encode_ack(*ack)))
+        if (write_text(L"eve-input-ack.txt", stellar_input::encode_ack(*ack)))
           published = std::move(key);
       }
+    }
+    if (!slow) {
+      Sleep(5);
+      continue;
     }
     auto capture_request =
         read_file(directory + L"eve-stream.txt", 512).value_or("");
     stellar_raw::poll_raw_capture(capture_request, wall_ms());
-    Sleep(20);
+    try {
+      auto wardrobe = stellar_pose::poll_files(
+          directory,
+          read_file(directory + L"eve-pose-request.txt", 512).value_or(""),
+          read_file(directory + L"eve-pose-components.0", 65536).value_or(""),
+          read_file(directory + L"eve-pose-components.1", 65536).value_or(""),
+          wall_ms(), read_file(directory + L"eve-lock.txt", 256).value_or(""),
+          read_file(directory + L"eve-wardrobe-request.txt", 512).value_or(""));
+      if (!wardrobe.empty())
+        write_text(L"eve-wardrobe.txt", wardrobe);
+    } catch (...) {
+      // The pose stream is optional and must never stop input forwarding.
+    }
+    Sleep(5);
   }
 }
 void initialize() {
@@ -247,6 +322,10 @@ void initialize() {
     return;
   // Keep the DLL and its sole worker alive until process termination.
   verified = true;
+#ifndef STELLAR_INPUT_TEST_HOST
+  // Only once pinned: the redirected call jumps into this DLL. Optional: without it the walk key does nothing.
+  hook_walk(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
+#endif
   try {
     stellar_raw::initialize_raw_capture(GetModuleHandleW(nullptr), directory);
   } catch (...) {
@@ -265,10 +344,26 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
   if (!verified || index != 0)
     return backend_get ? backend_get(index, state) : ERROR_DEVICE_NOT_CONNECTED;
   stellar_input::Core::Result result;
+  bool gameplay = reinterpret_cast<uintptr_t>(caller) == gameplay_return;
+  if (gameplay) {
+    // Game thread, between frames: last frame's animation and physics are final.
+    try {
+      std::string owner, permitted;
+      {
+        std::lock_guard<std::mutex> lock(state_lock);
+        owner = core.forwarding_run();
+        permitted = core.permit_run(GetTickCount64());
+      }
+      stellar_pose::on_gameplay_poll(owner, permitted);
+    } catch (...) {
+    }
+  }
   {
     std::lock_guard<std::mutex> lock(state_lock);
-    result = core.poll(reinterpret_cast<uintptr_t>(caller) == gameplay_return,
-                       wall_ms(), GetTickCount64());
+    result = core.poll(gameplay, wall_ms(), GetTickCount64());
+    bridge_walk.store(result.override &&
+                          (result.pad.buttons & stellar_input::walk_button),
+                      std::memory_order_relaxed);
     if (result.override) {
       if (result.pad != previous_pad) {
         previous_pad = result.pad;

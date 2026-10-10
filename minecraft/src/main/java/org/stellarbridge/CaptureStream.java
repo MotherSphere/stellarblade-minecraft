@@ -223,6 +223,9 @@ final class CaptureStream implements AutoCloseable {
         private int accepted;
         private long loadNanos;
         private long stoppedNanos;
+        // Delivery diagnostics for one run: worker arrivals versus displayed frames.
+        private int arrived, replaced, rejected, renders;
+        private long loadTotal, loadMax, uploadTotal, uploadMax;
 
         synchronized void start(String session, int revision, CaptureFrame.Position origin, long nowNanos) {
             start(session, revision, origin, nowNanos, null);
@@ -238,6 +241,8 @@ final class CaptureStream implements AutoCloseable {
             accepted = 0;
             loadNanos = 0;
             stoppedNanos = 0;
+            arrived = replaced = rejected = renders = 0;
+            loadTotal = loadMax = uploadTotal = uploadMax = 0;
             reason = "waiting for a fresh frame";
             lastFailure = "";
         }
@@ -246,20 +251,28 @@ final class CaptureStream implements AutoCloseable {
             return active == null ? null : new Request(active.epoch, active.session, active.revision, active.origin, previousId, active.run);
         }
 
-        synchronized void revision(int revision) {
+        /** A new terrain revision gets its own deadline from nowNanos: Lua may take a while to import a moved window. */
+        synchronized void revision(int revision, long nowNanos) {
             if (active == null || active.revision == revision) return;
             active = new Request(++epoch, active.session, revision, active.origin, previousId, active.run);
             discardPending();
+            startedNanos = lastNewNanos = nowNanos;
             reason = "waiting for terrain revision " + revision;
         }
 
         synchronized void publish(Request request, Prepared frame, long now, long nowNanos) {
             if (active != null && request.epoch == active.epoch && expired(nowNanos))
                 stop("no complete fresh generation before the deadline");
+            if (active != null && request.epoch == active.epoch) {
+                arrived++;
+                loadTotal += frame.loadNanos;
+                loadMax = Math.max(loadMax, frame.loadNanos);
+            }
             if (active == null || request.epoch != active.epoch || !fresh(frame.metadata.time(), now)
                     || (active.run == null ? frame.metadata.version() >= 4 : !active.run.equals(frame.metadata.run()))
                     || !CaptureProjection.matches(frame.metadata, active.session, active.revision, now)
                     || !CaptureFrame.newer(frame.metadata.id(), previousId)) {
+                if (active != null && request.epoch == active.epoch) rejected++;
                 frame.close();
                 return;
             }
@@ -273,6 +286,7 @@ final class CaptureStream implements AutoCloseable {
             received = true;
             lastNewNanos = nowNanos;
             frame.epoch = active.epoch;
+            if (pending != null) replaced++;
             discardPending();
             pending = frame;
             reason = "live";
@@ -287,11 +301,16 @@ final class CaptureStream implements AutoCloseable {
 
         synchronized boolean current(Prepared frame) { return active != null && active.epoch == frame.epoch; }
 
-        synchronized void accepted(Prepared frame) {
+        synchronized void accepted(Prepared frame, long uploadNanos) {
             if (!current(frame)) return;
             accepted++;
             loadNanos = frame.loadNanos;
+            uploadTotal += uploadNanos;
+            uploadMax = Math.max(uploadMax, uploadNanos);
         }
+
+        /** One Minecraft world render while a view is requested. */
+        synchronized void rendered() { if (active != null) renders++; }
 
         synchronized boolean expired(long nowNanos) {
             return active != null && nowNanos - (received ? lastNewNanos : startedNanos)
@@ -311,9 +330,17 @@ final class CaptureStream implements AutoCloseable {
         synchronized String status(long nowNanos) {
             double seconds = Math.max(0, ((active == null ? stoppedNanos : nowNanos) - startedNanos) / 1_000_000_000.0);
             return String.format(java.util.Locale.ROOT,
-                    "EVE live diagnostic: %s; %d frames accepted in %.1f s (%.2f frames/s); last worker read/decode %.1f ms%s",
+                    "EVE live diagnostic: %s; %d frames accepted in %.1f s (%.2f frames/s); last worker read/decode %.1f ms; "
+                            + "%d arrived, %d replaced before render, %d rejected; Minecraft %.1f FPS; "
+                            + "worker mean %.1f/max %.1f ms; upload mean %.1f/max %.1f ms%s",
                     reason, accepted, seconds, seconds > 0 ? accepted / seconds : 0, loadNanos / 1_000_000.0,
+                    arrived, replaced, rejected, seconds > 0 ? renders / seconds : 0,
+                    millis(loadTotal, arrived), loadMax / 1_000_000.0, millis(uploadTotal, accepted), uploadMax / 1_000_000.0,
                     lastFailure.isEmpty() ? "" : "; waiting: " + lastFailure);
+        }
+
+        private static double millis(long totalNanos, int count) {
+            return count > 0 ? totalNanos / 1_000_000.0 / count : 0;
         }
 
         synchronized void failure(Request request, String message) {

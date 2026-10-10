@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.log
 /build/
+/minecraft/logs/
+/logs/
+/installer/target/

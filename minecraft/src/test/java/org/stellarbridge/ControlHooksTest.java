@@ -20,7 +20,7 @@ public final class ControlHooksTest {
         ClassNode client = read("net/minecraft/client/MinecraftClient");
         for (String[] method : new String[][] {{"setScreen", "(Lnet/minecraft/client/gui/screen/Screen;)V"},
                 {"setOverlay", "(Lnet/minecraft/client/gui/screen/Overlay;)V"}, {"onWindowFocusChanged", "(Z)V"},
-                {"doAttack", "()Z"}, {"doItemUse", "()V"}, {"handleBlockBreaking", "(Z)V"}})
+                {"doAttack", "()Z"}, {"doItemUse", "()V"}, {"handleBlockBreaking", "(Z)V"}, {"handleInputEvents", "()V"}})
             assert hasMethod(client, method[0], method[1]);
         ClassNode keyboard = read("net/minecraft/client/Keyboard"), mouse = read("net/minecraft/client/Mouse");
         assert hasMethod(keyboard, "onKey", "(JIIII)V") && hasMethod(mouse, "onMouseButton", "(JIII)V");
@@ -81,7 +81,96 @@ public final class ControlHooksTest {
                 "(Ljava/lang/String;Ljava/lang/String;J)Lorg/stellarbridge/CaptureProjection$CameraPose;") == 1;
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setYaw", "(F)V") == 1;
         assert calls(controls, "alignPresentedLook", "net/minecraft/client/network/ClientPlayerEntity", "setPitch", "(F)V") == 1;
-        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery and narrow movement authority");
+        // EVE combat layout: use is the heavy attack (Y), the inventory key blocks (LB), hotbar 1 holds LB then adds X.
+        boolean[] held = new boolean[30];
+        long[] since = new long[30];
+        held[8] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x8000 : "Use (right click) is Y, not LB";
+        held[8] = false;
+        held[15] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x100 : "The inventory key is LB";
+        held[15] = false;
+        held[ControlBridge.SKILLS] = true;
+        since[ControlBridge.SKILLS] = 1_000;
+        assert ControlBridge.buttons(held, since, 1_000) == 0x100 : "A skill first holds LB";
+        assert ControlBridge.buttons(held, since, 1_000 + ControlBridge.SKILL_DELAY) == (0x100 | 0x4000) : "then adds its face button";
+        held[ControlBridge.SKILLS] = false;
+        held[ControlBridge.SKILLS + 3] = true;
+        assert ControlBridge.buttons(held, since, ControlBridge.SKILL_DELAY) == (0x100 | 0x2000) : "Skill 4 is LB with B (face right)";
+        held[ControlBridge.BURST] = true;
+        assert ControlBridge.buttons(held, since, ControlBridge.SKILL_DELAY) == (0x200 | 0x2000) : "With the burst key, RB leads";
+        held[ControlBridge.BURST] = false;
+        held[ControlBridge.SKILLS + 3] = false;
+        held[ControlBridge.AIM] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x10000 : "The aim key (Ctrl) aims the drone (LT)";
+        held[ControlBridge.ATTACK] = true;
+        assert ControlBridge.buttons(held, since, 0) == (0x10000 | 0x20000) : "Attack while aiming fires (RT), not X";
+        held[ControlBridge.AIM] = false;
+        assert ControlBridge.buttons(held, since, 0) == 0x4000 : "Attack alone is the light attack";
+        held[ControlBridge.ATTACK] = false;
+        // EVE's defense: the pinned server player's damage defers to AvatarCombat; the sneak key dodges (B), the inventory key guards.
+        assert hasMethod(read("net/minecraft/server/network/ServerPlayerEntity"), "damage", "(Lnet/minecraft/entity/damage/DamageSource;F)Z");
+        assert calls(read("org/stellarbridge/mixin/AvatarDefenseMixin"), "stellarEveDefends", "org/stellarbridge/AvatarCombat", "defend",
+                "(Lnet/minecraft/server/network/ServerPlayerEntity;Lnet/minecraft/entity/damage/DamageSource;F)Ljava/lang/Boolean;") == 1;
+        held[ControlBridge.DODGE] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x2000 : "The sneak key dodges (B)";
+        held[ControlBridge.DODGE] = false;
+        held[ControlBridge.GUARD] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x100 : "The inventory key guards (LB)";
+        held[ControlBridge.GUARD] = false;
+        // EVE's body moves living entities out with the pinned collision-checked move, each tick after her position.
+        ClassNode entity = read("net/minecraft/entity/Entity");
+        assert hasMethod(entity, "move", "(Lnet/minecraft/entity/MovementType;Lnet/minecraft/util/math/Vec3d;)V") && hasMethod(entity, "setOnGround", "(Z)V");
+        assert calls(read("org/stellarbridge/BridgeServer"), "tick", "org/stellarbridge/AvatarCombat", "shove", "(Lnet/minecraft/server/network/ServerPlayerEntity;)V") == 1;
+        // Stellar Blade's HUD replaces the pinned health bar, moves the armor row down into it and lifts the chat: the
+        // chat's 40 in its render and both click tests, not getWidth's.
+        ClassNode hud = read("net/minecraft/client/gui/hud/InGameHud"), chat = read("net/minecraft/client/gui/hud/ChatHud");
+        assert hasMethod(hud, "renderHealthBar", "(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/entity/player/PlayerEntity;IIIIFIIIZ)V");
+        assert calls(hud, "renderStatusBars", "net/minecraft/client/gui/hud/InGameHud", "renderArmor",
+                "(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/entity/player/PlayerEntity;IIII)V") == 1;
+        assert constants(chat, "render", 40) == 1 && constants(chat, "mouseClicked", 40.0) == 1 && constants(chat, "toChatLineY", 40.0) == 1;
+        assert chat.methods.stream().filter(method -> method.name.equals("render") || method.name.equals("mouseClicked")
+                || method.name.equals("toChatLineY")).count() == 3 : "One method of each name";
+        // Lock-on: the pinned outline query the locked target answers, and the camera angles toward it.
+        assert hasMethod(read("net/minecraft/client/MinecraftClient"), "hasOutline", "(Lnet/minecraft/entity/Entity;)Z");
+        float[] south = AvatarLock.angles(0, 0, 1), westUp = AvatarLock.angles(-1, 1, 0);
+        assert Math.abs(south[0]) < 1e-4 && Math.abs(south[1]) < 1e-4 : "Minecraft yaw 0 faces +Z";
+        assert Math.abs(westUp[0] - 90) < 1e-4 && Math.abs(westUp[1] + 45) < 1e-4 : "Yaw 90 faces -X; looking up is negative pitch";
+        held[20] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x40 : "The EVE sprint key is L3";
+        held[20] = false;
+        // Walk is Stellar Blade's walk key, answered by the adapter; the stick stays at full deflection (a smaller one
+        // never ends a sprint, and its axial 0.25 dead zone zeroes a light diagonal).
+        assert ControlBridge.buttons(held, since, 0) == 0 && java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 0});
+        held[ControlBridge.WALK] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0x40000 : "The EVE walk key is the adapter's walk bit";
+        assert java.util.Arrays.stream(ControlBridge.SENT).anyMatch(bit -> bit == 0x40000) : "The walk bit is sent";
+        boolean sendsSent = false;
+        for (var method : read("org/stellarbridge/ControlBridge").methods) if (method.name.equals("apply"))
+            for (var instruction : method.instructions) sendsSent |= instruction instanceof FieldInsnNode field && field.name.equals("SENT");
+        assert sendsSent : "apply() sends every bit of SENT";
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 0}) : "Walk alone does not move";
+        held[0] = true;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 32767}) : "Walking forward is a full stick";
+        held[2] = true;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {-23170, 23170}) : "A diagonal walk is a full stick";
+        held[ControlBridge.WALK] = false;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {-23170, 23170}) : "Running is the same stick";
+        held[1] = held[3] = true;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {0, 0}) : "Opposite keys cancel";
+        held[0] = true; held[1] = held[2] = false;
+        assert java.util.Arrays.equals(ControlBridge.stick(held), new int[] {23170, 23170}) : "Forward right";
+        held[0] = held[3] = false;
+        held[6] = true;
+        assert ControlBridge.buttons(held, since, 0) == 0 : "Minecraft's own sprint key does nothing for EVE";
+        held[6] = false;
+        int[] expected = {0x1, 0x2, 0x20000, 0x20, 0x80, 0x40 | 0x80}; // Heal, item, interact, scan, lock-on, Tachy (L3 with R3).
+        for (int k = 0; k < expected.length; k++) {
+            held[24 + k] = true;
+            assert ControlBridge.buttons(held, since, 0) == expected[k] : "EVE key " + k;
+            held[24 + k] = false;
+        }
+        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery, narrow movement authority and EVE's combat layout (skills, drone aim, sprint, walk)");
     }
     private static boolean hasMethod(ClassNode node, String name, String descriptor) {
         return node.methods.stream().anyMatch(method -> method.name.equals(name) && method.desc.equals(descriptor));
@@ -99,6 +188,13 @@ public final class ControlHooksTest {
         int count = 0;
         for (var method : node.methods) if (method.name.equals(methodName)) for (var instruction : method.instructions)
             if (instruction instanceof MethodInsnNode call && call.owner.equals(owner) && call.name.equals(name) && call.desc.equals(descriptor)) count++;
+        return count;
+    }
+    private static int constants(ClassNode node, String methodName, Object value) {
+        int count = 0;
+        for (var method : node.methods) if (method.name.equals(methodName)) for (var instruction : method.instructions)
+            if (instruction instanceof org.objectweb.asm.tree.IntInsnNode push && value.equals(push.operand)
+                    || instruction instanceof org.objectweb.asm.tree.LdcInsnNode ldc && value.equals(ldc.cst)) count++;
         return count;
     }
     private static ClassNode read(String name) throws Exception {

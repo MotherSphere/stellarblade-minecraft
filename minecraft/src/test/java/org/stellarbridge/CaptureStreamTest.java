@@ -54,7 +54,7 @@ public final class CaptureStreamTest {
             assert started.await(2, TimeUnit.SECONDS);
             if (invalidation == 0) mailbox.stop("off");
             if (invalidation == 1) mailbox.start(SESSION, 5, ORIGIN, 0);
-            if (invalidation == 2) mailbox.revision(6);
+            if (invalidation == 2) mailbox.revision(6, 0);
             release.countDown();
             worker.join(2000);
             assert !worker.isAlive() && delayed.color == null && mailbox.take() == null;
@@ -64,6 +64,10 @@ public final class CaptureStreamTest {
         mailbox.publish(mailbox.request(), revision, 100, 1_000_000_000L);
         assert mailbox.take() == revision : "A new terrain revision must recover without reactivation";
         revision.close();
+        // A later revision (a moved window Lua is still importing) gets its own deadline, not what is left of the last frame's.
+        mailbox.revision(7, 2_900_000_000L);
+        assert !mailbox.expired(3_100_000_000L) && !mailbox.expired(4_899_999_999L) && mailbox.expired(4_900_000_000L);
+        mailbox.revision(6, 4_000_000_000L);
         var changedPawn = prepared("100-6", 6, 12);
         mailbox.publish(mailbox.request(), changedPawn, 100, 1_500_000_000L);
         assert changedPawn.color == null && mailbox.request() == null;
@@ -76,6 +80,28 @@ public final class CaptureStreamTest {
         mailbox.stop("shutdown");
         assert pending.color == null && mailbox.take() == null;
         closed(pendingImage);
+
+        // Delivery counters separate worker arrivals, mailbox losses and displayed frames.
+        mailbox.start(SESSION, 5, ORIGIN, 0);
+        var request = mailbox.request();
+        var replaced = prepared("100-8", 5, 11);
+        var shown = prepared("100-9", 5, 11);
+        var older = prepared("100-8", 5, 11);
+        mailbox.publish(request, replaced, 100, 1_000_000_000L);
+        mailbox.publish(request, shown, 100, 1_100_000_000L);
+        mailbox.publish(request, older, 100, 1_200_000_000L);
+        for (int i = 0; i < 4; i++) mailbox.rendered();
+        try (var taken = mailbox.take()) {
+            assert taken == shown;
+            mailbox.accepted(taken, 2_000_000L);
+        }
+        String status = mailbox.status(2_000_000_000L);
+        assert status.contains("1 frames accepted in 2.0 s") && status.contains("3 arrived, 1 replaced before render, 1 rejected")
+                && status.contains("Minecraft 2.0 FPS") && status.contains("upload mean 2.0/max 2.0 ms") : status;
+        mailbox.start(SESSION, 5, ORIGIN, 0);
+        assert mailbox.status(1_000_000_000L).contains("0 arrived, 0 replaced before render, 0 rejected; Minecraft 0.0 FPS")
+                : "Every run starts with fresh delivery counters";
+        mailbox.stop("done");
         System.out.println("Capture stream lifecycle tests passed");
     }
 

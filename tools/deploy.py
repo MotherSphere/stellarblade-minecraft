@@ -31,6 +31,17 @@ def inventory(root):
     return files, directories
 
 
+def running_game():
+    """Whether Stellar Blade runs: its Lua must never be replaced under it."""
+    for path in Path("/proc").glob("[0-9]*/comm"):
+        try:
+            if path.read_text().strip().startswith("SB-Win64"):
+                return True
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            pass
+    return False
+
+
 def ownership(files, directories):
     return {"owner": MOD_NAME, "version": 1, "files": files, "directories": directories}
 
@@ -98,6 +109,8 @@ def main():
             raise ValueError(f"Expected an existing real Mods directory: {args.mods_dir}")
         if args.command == "remove" and args.bridge_dir is not None:
             raise ValueError("--bridge-dir is only valid when installing")
+        if running_game():
+            raise ValueError("Close Stellar Blade before changing its Lua mod")
         destination = install(args.mods_dir, args.bridge_dir) if args.command == "install" else remove(args.mods_dir)
     except (OSError, ValueError) as error:
         parser.exit(1, f"Error: {error}\n")

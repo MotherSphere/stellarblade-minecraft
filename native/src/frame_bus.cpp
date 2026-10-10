@@ -1,15 +1,6 @@
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 #include "frame_bus.hpp"
 #include "raw_capture.hpp"
+#include "shared_memory.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -23,22 +14,14 @@ constexpr uint64_t Lease = 3000, Maximum = stellar_input::max_integer;
 using Lines = stellar_input::detail::Lines;
 using stellar_input::detail::identity;
 using stellar_input::detail::number;
-uint64_t wall_now() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-}
-uint64_t monotonic_now() {
-#ifdef _WIN32
-  return GetTickCount64();
-#else
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-#endif
-}
+using stellar_shared::exchange32;
+using stellar_shared::load32;
+using stellar_shared::load64;
+using stellar_shared::monotonic_now;
+using stellar_shared::plain;
+using stellar_shared::put;
+using stellar_shared::store64;
+using stellar_shared::wall_now;
 bool fresh(uint64_t value, uint64_t now) {
   return value && (value <= now ? now - value <= Lease : value - now <= 100);
 }
@@ -56,65 +39,6 @@ std::optional<Layout> layout(uint32_t width, uint32_t height) {
   return Layout{static_cast<uint32_t>(pixels),
                 static_cast<uint32_t>(pixels * 4),
                 static_cast<uint32_t>(stride), static_cast<uint32_t>(bytes)};
-}
-template <class T> T plain(const uint8_t *base, size_t off) {
-  T value;
-  std::memcpy(&value, base + off, sizeof value);
-  return value;
-}
-template <class T> void put(uint8_t *base, size_t off, T value) {
-  std::memcpy(base + off, &value, sizeof value);
-}
-uint32_t load32(const uint8_t *base, size_t offset) {
-#ifdef _WIN32
-  return static_cast<uint32_t>(InterlockedCompareExchange(
-      reinterpret_cast<volatile LONG *>(const_cast<uint8_t *>(base) + offset),
-      0, 0));
-#else
-  return __atomic_load_n(reinterpret_cast<const uint32_t *>(base + offset),
-                         __ATOMIC_ACQUIRE);
-#endif
-}
-uint64_t load64(const uint8_t *base, size_t offset) {
-#ifdef _WIN32
-  return static_cast<uint64_t>(InterlockedCompareExchange64(
-      reinterpret_cast<volatile LONG64 *>(const_cast<uint8_t *>(base) + offset),
-      0, 0));
-#else
-  return __atomic_load_n(reinterpret_cast<const uint64_t *>(base + offset),
-                         __ATOMIC_ACQUIRE);
-#endif
-}
-uint32_t exchange32(uint8_t *base, size_t offset, uint32_t value) {
-#ifdef _WIN32
-  return static_cast<uint32_t>(
-      InterlockedExchange(reinterpret_cast<volatile LONG *>(base + offset),
-                          static_cast<LONG>(value)));
-#else
-  return __atomic_exchange_n(reinterpret_cast<uint32_t *>(base + offset), value,
-                             __ATOMIC_ACQ_REL);
-#endif
-}
-void store64(uint8_t *base, size_t offset, uint64_t value) {
-#ifdef _WIN32
-  InterlockedExchange64(reinterpret_cast<volatile LONG64 *>(base + offset),
-                        static_cast<LONG64>(value));
-#else
-  __atomic_store_n(reinterpret_cast<uint64_t *>(base + offset), value,
-                   __ATOMIC_RELEASE);
-#endif
-}
-bool claim(uint8_t *base, uint32_t pid) {
-#ifdef _WIN32
-  return InterlockedCompareExchange(
-             reinterpret_cast<volatile LONG *>(base + 192),
-             static_cast<LONG>(pid), 0) == 0;
-#else
-  uint32_t expected = 0;
-  return __atomic_compare_exchange_n(reinterpret_cast<uint32_t *>(base + 192),
-                                     &expected, pid, false, __ATOMIC_ACQ_REL,
-                                     __ATOMIC_ACQUIRE);
-#endif
 }
 bool middle_valid(uint32_t state) {
   return (state & ~7u) == 0 && (state & 3u) < Slots;
@@ -176,78 +100,20 @@ struct Producer::Impl {
   uint64_t counter = 0, heartbeat = 0, observed = 0;
   std::string metadata;
   bool owned = false, pending = false;
-#ifdef _WIN32
-  HANDLE file = INVALID_HANDLE_VALUE, mapping = nullptr;
-#else
-  int file = -1;
-#endif
+  stellar_shared::Mapping file;
   void release() {
     pending = false;
     metadata.clear();
-#ifdef _WIN32
-    if (base)
-      UnmapViewOfFile(base);
-    if (mapping)
-      CloseHandle(mapping);
-    if (file != INVALID_HANDLE_VALUE)
-      CloseHandle(file);
-    file = INVALID_HANDLE_VALUE;
-    mapping = nullptr;
-#else
-    if (base)
-      munmap(base, dimensions.bytes);
-    if (file >= 0)
-      ::close(file);
-    file = -1;
-#endif
+    file.close();
     base = nullptr;
     owned = false;
   }
   ~Impl() { release(); }
   bool map_file(const std::filesystem::path &target, Layout d) {
     dimensions = d;
-#ifdef _WIN32
-    file = CreateFileW(target.c_str(), GENERIC_READ | GENERIC_WRITE,
-                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                       nullptr, OPEN_EXISTING,
-                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                       nullptr);
-    if (file == INVALID_HANDLE_VALUE)
+    if (!file.open(target, d.bytes))
       return false;
-    BY_HANDLE_FILE_INFORMATION info{};
-    LARGE_INTEGER size{};
-    if (!GetFileInformationByHandle(file, &info) ||
-        (info.dwFileAttributes &
-         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) ||
-        !GetFileSizeEx(file, &size) || size.QuadPart != d.bytes) {
-      release();
-      return false;
-    }
-    mapping = CreateFileMappingW(file, nullptr, PAGE_READWRITE, 0, 0, nullptr);
-    if (!mapping) {
-      release();
-      return false;
-    }
-    base = static_cast<uint8_t *>(
-        MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, d.bytes));
-#else
-    file = ::open(target.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC);
-    if (file < 0)
-      return false;
-    struct stat info{};
-    if (fstat(file, &info) != 0 || !S_ISREG(info.st_mode) ||
-        info.st_size != d.bytes) {
-      release();
-      return false;
-    }
-    auto memory =
-        mmap(nullptr, d.bytes, PROT_READ | PROT_WRITE, MAP_SHARED, file, 0);
-    base = memory == MAP_FAILED ? nullptr : static_cast<uint8_t *>(memory);
-#endif
-    if (!base) {
-      release();
-      return false;
-    }
+    base = file.base;
     return true;
   }
   bool valid_header(const Request &r, uint64_t now) const {
@@ -301,7 +167,8 @@ bool Producer::open(const std::wstring &directory, const Request &request,
   stop();
   if (!self.map_file(path, *dimensions))
     return false;
-  if (!self.valid_header(request, wallMs) || !claim(self.base, pid)) {
+  if (!self.valid_header(request, wallMs) ||
+      !stellar_shared::claim(self.base, 192, pid)) {
     self.release();
     return false;
   }
@@ -392,7 +259,8 @@ bool Producer::plane(int kind, const void *pixels, size_t bytes, uint32_t width,
     stop();
     return false;
   }
-  if (!self.pending || kind < 0 || kind > 2 || (self.seen & (1u << kind)) ||
+  // Frame-v6 has color (0) and depth (2) planes; kind 1 is a retired mask.
+  if (!self.pending || (kind != 0 && kind != 2) || (self.seen & (1u << kind)) ||
       !pixels || width != self.request.width || height != self.request.height ||
       bytes != size_t(self.dimensions.pixels) * (kind == 2 ? 8 : 4)) {
     fail(2);
@@ -402,27 +270,24 @@ bool Producer::plane(int kind, const void *pixels, size_t bytes, uint32_t width,
   auto *rgba = slot + Header;
   auto *depth = rgba + self.dimensions.plane;
   auto *input = static_cast<const uint8_t *>(pixels);
-  const bool have_mask = (self.seen & 2u) != 0, have_depth = (self.seen & 4u) != 0;
-  for (size_t i = 0; i < self.dimensions.pixels; i++) {
-    if (kind == 0) {
+  if (kind == 0) {
+    for (size_t i = 0; i < self.dimensions.pixels; i++) {
       rgba[4 * i] = input[4 * i + 2];
       rgba[4 * i + 1] = input[4 * i + 1];
       rgba[4 * i + 2] = input[4 * i];
-    } else if (kind == 1) {
-      // Whichever coverage/depth plane arrives second clears invalid pixels.
-      rgba[4 * i + 3] = have_depth && plain<float>(depth, 4 * i) <= 0
-                            ? 0
-                            : 255 - input[4 * i + 3];
-    } else {
+    }
+  } else {
+    for (size_t i = 0; i < self.dimensions.pixels; i++) {
       auto value = half_float(plain<uint16_t>(input, 8 * i));
       value = std::isfinite(value) && value > 0 ? value : 0.0f;
       put(depth, 4 * i, value);
-      if (have_mask && value <= 0)
-        rgba[4 * i + 3] = 0;
+      // Captures clear unrendered pixels to the largest finite binary16 depth.
+      // Coverage is exactly the nearer depths; the color plane never owns alpha.
+      rgba[4 * i + 3] = value > 0 && value < 65504.0f ? 255 : 0;
     }
   }
   self.seen |= 1u << kind;
-  if (self.seen != 7)
+  if (self.seen != 5)
     return true;
   put(slot, 8, wall_now());
   // Adapted from SkyCraft's MIT-licensed overlay triple buffer: publish a
@@ -437,6 +302,7 @@ bool Producer::plane(int kind, const void *pixels, size_t bytes, uint32_t width,
   store64(self.base, 216, self.counter);
   return true;
 }
+bool Producer::pending() const { return impl_->pending; }
 void Producer::fail(uint32_t error) {
   auto &self = *impl_;
   self.pending = false;

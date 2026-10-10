@@ -29,7 +29,7 @@ final class RawFrameBus implements AutoCloseable {
         int munmap(Pointer address, NativeLong length);
         int close(int fd);
     }
-    private static final LibC C = Native.load("c", LibC.class);
+    static final LibC C = Native.load("c", LibC.class); // Shared with AvatarStream's pose mapping.
     final Path path;
     final String run, session;
     final int width, height, planeBytes, stride, bytes;
@@ -121,7 +121,7 @@ final class RawFrameBus implements AutoCloseable {
         byte[] descriptor = new byte[length];
         map.get(at + 64, descriptor);
         var metadata = CaptureFrame.parse(descriptor);
-        require(metadata.version() == 5 && metadata.width() == width && metadata.height() == height
+        require(metadata.version() == 6 && metadata.width() == width && metadata.height() == height
                 && metadata.run().equals(run) && metadata.link().session().equals(session)
                 && metadata.id().equals(metadata.time() + "-" + counter), "Raw frame identity or dimensions mismatch");
         require(publication - nowMs <= 1000 && nowMs - publication <= 3000, "Raw frame publication expired");

@@ -9,9 +9,12 @@ function box:SetGenerateOverlapEvents(value) assert(value==false) end
 function box:SetBoxExtent(value,update) self.extent=value; assert(update==true) end
 function box:SetCollisionObjectType(value) self.object_type=value end
 function box:SetCollisionResponseToAllChannels(value) self.response=value end
-function box:SetCollisionEnabled(value) self.mode=value end
+local order={}
+function box:SetCollisionEnabled(value) order[#order+1]=value; self.mode=value end
 function box:GetCollisionEnabled() return self.mode end
 local actor = {CollisionComponent=box,IsValid=function()return true end}
+function actor:K2_SetActorLocation(at,sweep,_,teleport) order[#order+1]='move'; assert(sweep==false and teleport==true); self.at=at; return true end
+function actor:K2_GetActorLocation() return self.at end
 local world = {IsValid=function()return true end}
 function actor:GetWorld() return world end
 function actor:SetActorEnableCollision(...)
@@ -41,5 +44,22 @@ local spec={role='floor',center={X=0,Y=0,Z=600},extent={X=800,Y=800,Z=25}}
 local handle=captured.spawn(spec)
 captured.configure(handle,spec)
 assert(actor.collision_enabled and box.mode==3 and box.response==2 and box.object_type==1)
-assert(box.extent.Z==25)
+assert(box.extent.Z==25 and table.concat(order,',')=='move,3','A box is sized and placed before it collides')
+-- The terrain pool: a parked box loses its collision before it moves away, and configure places it again.
+order={}
+captured.park(handle)
+assert(table.concat(order,',')=='0,move' and not actor.collision_enabled and actor.at.Z==600+10000)
+-- Mob walls: only EVE's capsule channel is blocked, without overlap events; collision leaves before a move into EVE and
+-- comes back only after a move away from her.
+local channels={}
+function box:SetCollisionResponseToChannel(channel,response) channels[channel]=response end
+pawn.CapsuleComponent={IsValid=function() return true end,GetCollisionObjectType=function() return 24 end}
+function pawn:K2_GetActorLocation() return {X=1,Y=2,Z=3} end
+local wall=captured.blocker_spawn()
+local info=captured.blocker_configure(wall)
+assert(wall==actor and info=='blocks channel 24' and box.response==0 and channels[24]==2 and box.object_type==1 and box.mode==0 and box.CanCharacterStepUpOn==0)
+order={}
+captured.blocker_place(wall,{center={X=5,Y=6,Z=7},extent={X=30,Y=30,Z=97.5}},true)
+captured.blocker_place(wall,{center={X=1,Y=2,Z=3},extent={X=30,Y=30,Z=97.5}},false)
+assert(table.concat(order,',')=='move,1,0,move' and box.mode==0 and actor.at.X==1 and box.extent.Z==97.5,table.concat(order,','))
 print('PASS target-game collision API contract; native physics remains untested.')

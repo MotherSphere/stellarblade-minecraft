@@ -154,6 +154,18 @@ class DeployTests(unittest.TestCase):
         self.run_cli("remove")
         self.assertTrue(bridge.is_dir())
 
+    def test_running_game_refuses_both_commands_before_writes(self):
+        spec = importlib.util.spec_from_file_location("deployment_under_test", self.script)
+        deployment = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(deployment)
+        for command in ("install", "remove"):
+            with mock.patch.object(deployment, "running_game", return_value=True), \
+                 mock.patch.object(sys, "argv", ["deploy.py", command, "--mods-dir", str(self.mods)]):
+                with self.assertRaises(SystemExit) as stopped:
+                    deployment.main()
+            self.assertEqual(stopped.exception.code, 1)
+            self.assertFalse(self.destination.exists())
+
     def test_bridge_configuration_refuses_symlink_or_shared_directory(self):
         bridge = self.root / "bridge"
         bridge.mkdir(mode=0o755)

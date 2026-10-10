@@ -27,7 +27,10 @@ abstract class CaptureGameRendererMixin {
     }
 
     @Inject(method = "renderWorld", at = @At("HEAD"))
-    private void stellarBeginCapture(RenderTickCounter ticks, CallbackInfo info) { CaptureView.beginFrame(); }
+    private void stellarBeginCapture(RenderTickCounter ticks, CallbackInfo info) {
+        CaptureView.beginFrame();
+        org.stellarbridge.AvatarView.beginFrame(); // Before the camera update, which follows the displayed EVE.
+    }
 
     @Inject(method = "renderWorld", at = @At("TAIL"))
     private void stellarEndCapture(RenderTickCounter ticks, CallbackInfo info) { CaptureView.endFrame(); }

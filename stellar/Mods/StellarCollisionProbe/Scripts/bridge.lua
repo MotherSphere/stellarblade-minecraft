@@ -4,6 +4,7 @@ local Bridge={}
 function Bridge.new(terrain,directory,log,clock)
     clock=clock or os.time
     local current,sequence,last_message,alive_time,stopping=nil,0,nil,0,false
+    local parsed={}
     local api={status=terrain.status,shapes=terrain.shapes,set_visuals_visible=terrain.set_visuals_visible}
     function api.pose()
         if not current or stopping or not Protocol.fresh(alive_time,clock()) then return nil end
@@ -24,14 +25,14 @@ function Bridge.new(terrain,directory,log,clock)
         local f,err=io.open(directory..'/terrain.txt','rb')
         if not f then return nil,err end
         local text=f:read(65537); f:close()
-        return Protocol.parse_terrain(text or '')
+        return Protocol.parse_terrain_cached(text or '',parsed)
     end
+    -- The window (bounds) follows EVE within one binding; the session, dimension and origin never move.
     local function same_binding(packet)
         if packet.session~=current.session or packet.dimension~=current.dimension then return false end
         for _,axis in ipairs({'x','y','z'}) do
             if packet.origin[axis]~=current.origin[axis] then return false end
         end
-        for i=1,6 do if packet.bounds[i]~=current.bounds[i] then return false end end
         return true
     end
     local function publish(pose,state)
@@ -98,8 +99,8 @@ function Bridge.new(terrain,directory,log,clock)
     end
     function api.tick(packet)
         if not current then return end
-        if stopping then
-            local ok,message=api.restore(); if not ok then report(message) end
+        if stopping then -- A retried return also logs how it ended (a return from a lab site waits for the ground).
+            local _,message=api.restore(); report(message)
             return
         end
         local now=clock()
@@ -111,7 +112,9 @@ function Bridge.new(terrain,directory,log,clock)
             end
             alive_time=packet.time
             local ok,message=terrain.update(packet)
-            if ok then current=packet; last_message=nil
+            if ok then
+                if packet.seq~=current.seq then report(message) else last_message=nil end
+                current=packet
             else
                 -- Keep the imported ack, but a validated heartbeat still proves the peer is alive.
                 report(message)
@@ -124,6 +127,14 @@ function Bridge.new(terrain,directory,log,clock)
         end
         local pose,err=terrain.pose()
         if pose then safe_publish(pose) else report('Pose unavailable: '..tostring(err)) end
+    end
+    -- Each native frame: continues a terrain revision's import within the frame budget and reports how it ended, each
+    -- distinct message once (heartbeats reset report's own repeat filter).
+    local last_step
+    function api.step()
+        if not current or stopping then return end
+        local _,message=terrain.step()
+        if message and message~=last_step then last_step=message; report(message) end
     end
     return api
 end

@@ -1,0 +1,33 @@
+[package]
+name = "sbmc-installer"
+version = "0.1.0"
+description = "Stellar Bridge: installs, updates and removes the Stellar Blade x Minecraft bridge"
+edition = "2024"
+license = "GPL-3.0-or-later"
+# The real floor of the resolved tree, checked with `cargo +<version> check --locked --all-targets`.
+rust-version = "1.90"
+publish = false
+
+[[bin]]
+name = "stellar-bridge-installer"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+# The shared Colony theme, fonts, Preferences kit, toast and Colony/<Program>/ paths.
+colony-ui = "0.1.6"
+iced = { version = "0.14.0", features = ["tokio", "sipper"] }
+# getuid for the private bridge directory check; already in the tree through iced.
+libc = "0.2.177"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# 0.11 has no LowerHex on digests: see safety::hex.
+sha2 = "0.11.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

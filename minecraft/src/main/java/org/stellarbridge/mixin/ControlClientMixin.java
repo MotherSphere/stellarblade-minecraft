@@ -25,6 +25,8 @@ abstract class ControlClientMixin {
     }
     @Inject(method = "doItemUse", at = @At("HEAD"), cancellable = true)
     private void stellarUse(CallbackInfo callback) { if (ControlBridge.suppressUse()) callback.cancel(); }
+    @Inject(method = "handleInputEvents", at = @At("HEAD"))
+    private void stellarEveKeys(CallbackInfo callback) { ControlBridge.consumeEveKeys(); }
     @ModifyVariable(method = "handleBlockBreaking", at = @At("HEAD"), argsOnly = true)
     private boolean stellarBreaking(boolean breaking) { return breaking && !ControlBridge.suppressAttack(); }
 }

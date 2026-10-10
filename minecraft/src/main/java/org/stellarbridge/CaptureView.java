@@ -89,7 +89,10 @@ public final class CaptureView {
 
     public static void beginFrame() {
         update();
-        if (liveBinding != null) adopt();
+        if (liveBinding != null) {
+            stream.mailbox.rendered();
+            adopt();
+        }
         rendering = active;
     }
     public static void endFrame() { rendering = null; }
@@ -98,6 +101,7 @@ public final class CaptureView {
         View view = rendering != null ? rendering : presented;
         return view != null && valid(view) ? view.camera : null;
     }
+    static boolean viewing() { return liveBinding != null || active != null; }
     static boolean controlFrameReady(String run, String session, long nowNanos) {
         return controlCamera(run, session, nowNanos) != null;
     }
@@ -156,7 +160,7 @@ public final class CaptureView {
         MinecraftClient client = source.getClient();
         var context = StellarBridge.renderingContext();
         if (context == null || !supported(client)) {
-            source.sendError(Text.literal("Enter the linked private creative terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
+            source.sendError(Text.literal("Enter the linked private terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
             return 0;
         }
         try {
@@ -191,7 +195,7 @@ public final class CaptureView {
                 return;
             }
             if (request.revision() != context.revision()) {
-                stream.mailbox.revision(context.revision());
+                stream.mailbox.revision(context.revision(), System.nanoTime());
                 clearView();
             }
             if (stream.mailbox.expired(System.nanoTime())) {
@@ -219,19 +223,23 @@ public final class CaptureView {
             if (!stream.mailbox.current(frame) || !CaptureStream.fresh(frame.metadata.time(), now())) return;
             if (frame.raw != null) {
                 if (rawTextures == null) rawTextures = new RawTextures(frame.metadata.width(), frame.metadata.height());
+                long uploadStarted = System.nanoTime();
                 rawTextures.upload(frame.raw);
+                long uploadNanos = System.nanoTime() - uploadStarted;
                 View next = new View(frame.metadata, frame.camera, liveBinding.world, liveBinding.owner,
                         liveBinding.dimension, liveBinding.origin, null, rawTextures.depth, true, frame.receivedNanos, rawTextures);
                 if (!stream.mailbox.current(frame) || !valid(next)) { clearView(); return; }
                 View previous = active;
                 active = next;
-                stream.mailbox.accepted(frame);
+                stream.mailbox.accepted(frame, uploadNanos);
                 close(previous);
                 return;
             }
+            long uploadStarted = System.nanoTime();
             texture = new NativeImageBackedTexture(frame.color);
             frame.color = null; // Ownership passes only after the texture constructor succeeds.
             depthTexture = uploadDepth(frame.depth, frame.metadata.width(), frame.metadata.height());
+            long uploadNanos = System.nanoTime() - uploadStarted;
             View next = new View(frame.metadata, frame.camera, liveBinding.world, liveBinding.owner,
                     liveBinding.dimension, liveBinding.origin, texture, depthTexture, true, frame.receivedNanos, null);
             if (!stream.mailbox.current(frame) || !valid(next)) return;
@@ -239,7 +247,7 @@ public final class CaptureView {
             active = next;
             texture = null;
             depthTexture = 0;
-            stream.mailbox.accepted(frame);
+            stream.mailbox.accepted(frame, uploadNanos);
             close(previous);
         } catch (RuntimeException failure) {
             stopLive("texture upload failed", true);
@@ -256,7 +264,7 @@ public final class CaptureView {
         MinecraftClient client = source.getClient();
         var context = StellarBridge.renderingContext();
         if (context == null || !supported(client)) {
-            source.sendError(Text.literal("Enter the linked private creative terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
+            source.sendError(Text.literal("Enter the linked private terrain first. Use Fast/Fancy, no Iris, and a calm player without effects."));
             return 0;
         }
         NativeImage color = null;

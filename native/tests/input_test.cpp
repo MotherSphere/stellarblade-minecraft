@@ -71,6 +71,14 @@ int main() {
          waiting.receipt(10000)->state == "ready");
   update(waiting, packet(1, 5, "neutral"), permit());
   assert(waiting.receipt(10000)->state == "blocked");
+  // The permit's run outlives forwarded input (the wardrobe's gate), until its lease or a stop.
+  assert(waiting.forwarding_run().empty() && waiting.permit_run(0) == run && waiting.permit_run(lease_ms - 1) == run &&
+         waiting.permit_run(lease_ms).empty());
+  auto stopped = permit(2);
+  stopped.replace(stopped.find("active"), 6, "stopped");
+  update(waiting, packet(1, 6, "neutral"), stopped);
+  assert(waiting.permit_run(0).empty() && "A stopped permit grants nothing");
+  assert(Core().permit_run(0).empty());
   Core c;
   arm(c);
   const std::string edges =
@@ -181,8 +189,33 @@ int main() {
   arm(future_permit);
   update(future_permit, packet(1, 2, "active"), permit(2, 11), 10000, 1);
   assert(future_permit.receipt(10000)->state == "blocked");
-  for (auto badmask : {1024u, 2048u, 262144u})
+  for (auto badmask : {1024u, 2048u, 524288u})
     assert(!parse_input(packet(1, 2, "active", "", 0, badmask)));
+  // The walk key travels as an ordinary ordered edge.
+  Core walk;
+  arm(walk);
+  update(walk, packet(1, 2, "active", "EDGE 1 262144 10000 0 32767 0 0\n"),
+         permit());
+  assert(walk_button == 262144 &&
+         walk.poll(true, 10000, 0).pad.buttons == walk_button);
+  // The force-walk call's code word (RVA 0x23c8d38: E8 21 0B 00 00 at +2)
+  // redirected to a page below the image, other bytes kept.
+  const uint64_t at = 0x1423c8d38, site = at + 2, callee = 0x1423c9860,
+                 call = 0xf300000b21e8cb8b;
+  auto moved = redirect_call(call, at, site, callee, 0x13fff0000);
+  assert(moved && *moved == 0xf3fdc272c1e8cb8b &&
+         int32_t(uint32_t(*moved >> 24)) == int64_t(0x13fff0000 - site - 5));
+  assert(!redirect_call(call, at, site, callee + 1, 0x13fff0000) &&
+         "another callee");
+  assert(!redirect_call(call ^ 0x10000, at, site, callee, 0x13fff0000) &&
+         "not a call");
+  assert(!redirect_call(call, at, site, callee, site + 5 - 0x80000001) &&
+         "out of reach");
+  assert(redirect_call(call, at, site, callee, site + 5 - 0x80000000));
+  assert(!redirect_call(call << 16, at, at + 4, at + 9 + 0xb21, 0x13fff0000) &&
+         "displacement past the word");
+  assert(!redirect_call(call, at + 1, site + 1, callee + 1, 0x13fff0000) &&
+         "unaligned word");
   std::string oversized_edges;
   for (int id = 1; id <= 33; ++id)
     oversized_edges += "EDGE " + std::to_string(id) + " " +

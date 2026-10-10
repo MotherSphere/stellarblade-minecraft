@@ -20,6 +20,24 @@ java {
 }
 
 tasks.withType(JavaCompile).configureEach { options.release = 21 }
+// Development runs for the one-PC multiplayer test (docs/multiplayer.md): a local server, and a second offline client with
+// its own bridge directory, so it never overwrites the files of the instance linked to Stellar Blade, and the network
+// development tools.
+loom {
+    runs {
+        server { runDir 'run/server' }
+        client {
+            runDir 'run/client'
+            vmArg "-Dstellarbridge.directory=${file('run/client/bridge')}"
+            vmArg '-Dstellarbridge.netTools=true' // echo, netrecord and netplay (RemoteEves).
+        }
+    }
+}
+// Reproducible archives: a commit's JAR hash can be rebuilt and compared with an installed one.
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
 
 processResources {
     from('../THIRD-PARTY-NOTICES.md')
@@ -46,6 +64,16 @@ processResources {
     controlStateTest: 'ControlStateTest',
     controlHooksTest: 'ControlHooksTest',
     rawFrameBusTest: 'RawFrameBusTest',
+    avatarModelTest: 'AvatarModelTest',
+    avatarStreamTest: 'AvatarStreamTest',
+    avatarItemsTest: 'AvatarItemsTest',
+    wardrobeTest: 'WardrobeTest',
+    serverSafetyTest: 'ServerSafetyTest',
+    bridgeNetTest: 'BridgeNetTest',
+    bridgeLinkTest: 'BridgeLinkTest',
+    combatTest: 'CombatTest',
+    netPoseTest: 'NetPoseTest',
+    remoteEveTest: 'RemoteEveTest',
 ].each { taskName, testClass ->
     def suite = tasks.register(taskName, JavaExec) {
         dependsOn testClasses
@@ -55,4 +83,32 @@ processResources {
         jvmArgs '-ea'
     }
     check.dependsOn suite
+}
+
+// Offline GPU check of a private avatar pack; not part of check. -PavatarCheck="<pack> <recording dir> <out.png> <seconds,...>"
+tasks.register('avatarRenderCheck', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.AvatarRenderCheck'
+    args = (project.findProperty('avatarCheck') ?: '').toString().tokenize(' ')
+    jvmArgs '-ea'
+}
+
+// Offline GPU timing of avatar rebuilds from a private pack; not part of check. -PavatarRebuild="<pack> <mesh+mesh...> ..."
+tasks.register('avatarRebuildCheck', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.AvatarRebuildCheck'
+    args = (project.findProperty('avatarRebuild') ?: '').toString().tokenize(' ')
+    jvmArgs '-ea'
+}
+
+// Cross-process pose mapping check with the native fixture; not part of check. -PposeInterop="<directory> <poses>"
+tasks.register('avatarStreamInterop', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.stellarbridge.AvatarStreamTest'
+    workingDir projectDir.parentFile
+    args = (project.findProperty('poseInterop') ?: '').toString().tokenize(' ')
+    jvmArgs '-ea'
 }

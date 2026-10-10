@@ -1,66 +1,48 @@
-# Stellar Blade × Minecraft
+<p align="center"><img src="installer/assets/logo.svg" alt="Stellar Bridge logo" width="128"></p>
 
-Experimental passthrough for playing EVE in Minecraft Java on Linux, with Stellar Blade running through Proton.
+<h1 align="center">Stellar Blade × Minecraft</h1>
 
-**Minecraft is the primary game and renderer.** Minecraft owns the world, inventory, menus and block interactions. Stellar Blade supplies EVE's native controller, animations and rendered appearance. The bridge composites her captured color and depth into Minecraft; it does not import her mesh or reimplement her combat system in Java.
+<p align="center"><strong>Play Stellar Blade's EVE inside Minecraft Java.</strong></p>
 
-The prototype supports a bounded terrain/collision link, continuous framebuffer-sized EVE capture and keyboard/mouse forwarding from Minecraft. Cross-game mob damage, general world streaming and Iris/shader-pack compatibility are not implemented. Hair/transparency and capture latency still need work. Minecraft's displayed FPS is distinct from the rate of new EVE images.
+Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world as EVE. Stellar Blade runs alongside under Proton and simulates her: her controls, animations, skills and effects. Minecraft stays the game you play in: it owns the world, your inventory and menus, and draws EVE with her own meshes, from the pose Stellar Blade streams every frame, through Minecraft's own camera.
 
-## Start a session
+## Highlights
 
-First follow [setup and build instructions](docs/setup.md). Use a private creative test world, Fast/Fancy graphics without Iris, and a backed-up Stellar Blade save in a clear outdoor location.
+- **EVE in Minecraft.** Minecraft draws EVE from her live pose at its own frame rate, with her cloth-simulated ponytail, her materials and her shadow in the sun.
+- **Stellar Blade's combat.** Sword, drone gun, grenades and Smart Mines; guard, parry, dodge and perfect dodge judged at each hit's impact; lock-on, Beta and Burst gauges, and Stellar Blade's HUD in place of the hearts.
+- **Any Minecraft mob.** EVE fights vanilla and mods' mobs through Minecraft's own damage, so each keeps its reactions and loot; in survival, Minecraft's health is hers.
+- **The wardrobe.** An **EVE's equipment** screen in Minecraft's pause menu changes her suit, hair, accessories, drone, gear and exospine through Stellar Blade's own menu rules.
+- **Multiplayer.** On a Fabric server, each EVE player links their own Stellar Blade, and modded players with an avatar pack see each other's EVE; players without the mod join as usual.
+- **A graphical installer.** Stellar Bridge, a Linux window in English and French, installs, updates, repairs, rolls back and uninstalls the bridge, and writes nothing before you accept its list of files.
 
-1. In Minecraft, stand on a full block and run `/stellar start`.
-2. In Stellar Blade, load EVE, press **F5** to import collision, then **F8** to enter the elevated lab. The lab must be clear of existing level geometry.
-3. Return to Minecraft and run **`/stellarview play`**. Close chat and release held controls. Forwarding begins after a fresh displayed image and a neutral native acknowledgement.
-4. Use **B** to switch between EVE controls and Minecraft build interactions. This binding is configurable in Minecraft's Controls menu.
-5. To stop, use **`/stellarview off`**, then **F11** in Stellar Blade to return EVE, then **`/stellar stop`** in Minecraft.
+## Get started
 
-Do not save, travel, load another save or reload Lua while EVE is in the lab. The bridge does not disable autosave. If returning fails, supporting collision stays in place so F11 can be retried.
+1. Build Stellar Bridge, the installer, from a checkout: no release is published yet ([setup](docs/setup.md#installer)).
+2. Close Stellar Blade and Minecraft and run it. It finds your games and installs into a dedicated Prism instance or one you pick.
+3. In a private test world, run `/stellar start`, `/stellar import`, `/stellar enter`, then `/stellaravatar play` ([playing](docs/playing.md#start-a-session)). Avatar mode needs the private avatar pack, which the installer does not build yet ([diagnostics](docs/diagnostics.md#avatar-view-experimental)); without it, `/stellarview play` starts capture mode.
 
-The patch is fixed around the starting anchor: **9 × 6 × 9 blocks**, at most 256 merged collision boxes, at 100 Unreal units per block. An active session keeps the private Minecraft world running through pause menus and focus changes. Stopping or disconnecting restores normal pause behavior. This is not a multiplayer or survival integration.
+## Documentation
 
-## Controls
-
-| Minecraft command or binding | Action |
+| Document | Contents |
 |---|---|
-| `/stellar start`, `/stellar status`, `/stellar stop` | Terrain and position link |
-| `/stellarview play` | Continuous EVE view with controls forwarded from Minecraft |
-| `/stellarview livehd` | Same continuous view without input forwarding |
-| **B**, `/stellarview mode eve`, `/stellarview mode build` | Switch control ownership |
-| `/stellarview gain <1..32767>` | Native camera sensitivity; default 2500 |
-| `/stellarview status` | Accepted image cadence and stream state |
-| `/stellarview off` | Stop rendering/input and restore the normal camera |
+| [Playing](docs/playing.md) | Sessions, the terrain window, controls, combat and EVE's equipment |
+| [Setup](docs/setup.md) | Supported versions, builds, the installer, the manual install, updates and removal |
+| [Multiplayer](docs/multiplayer.md) | Servers, what changes with others online, bandwidth and the one-PC test |
+| [Architecture](docs/architecture.md) | How the pieces fit, rendering, input, server and client halves, repository layout |
+| [Diagnostics](docs/diagnostics.md) | Diagnostic commands, logs, the avatar pack and performance |
+| [Network protocol](protocol/README.md) | Wire contracts between Minecraft, Lua, the native adapter and the network |
+| [Installer](installer/README.md) | Stellar Bridge's pages, operations and rules |
 
-EVE mode maps Minecraft movement, jump, sneak, sprint, attack and use bindings to left stick, A, B, L3, X and LB. Six extra controller buttons (Y, RB, LT, RT, R3, D-pad up) are initially unbound. Their actions follow Stellar Blade's controller settings. Build mode keeps camera look, neutralizes EVE's actions and restores normal Minecraft clicks and sneak interactions. Inventory, chat and hotbar remain Minecraft-owned.
+## Status
 
-Lost focus, menus, stale frames, native pause or an invalid context neutralize forwarded controls. Held keys must be released before control resumes.
+Experimental. It runs today on Linux, with one pinned Stellar Blade Steam build under Proton and Minecraft Java 1.21.1 with Fabric; Windows support is planned. Avatar mode needs a private avatar pack built from your own game files. Back up your Stellar Blade saves.
 
-## Repository layout
+## Credits and licence
 
-| Path | Contents |
-|---|---|
-| `minecraft/` | Fabric mod, renderer, input bridge and Java tests |
-| `stellar/Mods/StellarCollisionProbe/` | Deployable UE4SS Lua mod |
-| `stellar/tests/` | Lua protocol, geometry and lifecycle tests |
-| `native/src/`, `native/include/` | Version-pinned Windows capture/input adapter |
-| `native/tests/`, `native/fixtures/` | Portable checks and isolated Windows test hosts |
-| `protocol/` | Shared wire contract and fixtures |
-| `tools/`, `tools/tests/` | Offline checks and owned-installation tools |
-| `docs/` | Setup, architecture and diagnostic reference |
+The transport adapts [SkyCraft](https://github.com/chasmlol/SkyCraft)'s three-buffer ownership design. [SkyCraft PR 26](https://github.com/chasmlol/SkyCraft/pull/26) provides Linux mapping context; [2010 Rust rewrite mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) provides additional allocation-reuse and render-product examples. Engine-specific hooks are implemented and checked separately for Stellar Blade.
 
-Run all offline checks from the repository root with Java 21, Lua, Python, CMake and a C++17 compiler available:
+No proprietary game assets are included. Stellar Blade and Minecraft belong to their owners; this project is not affiliated with either.
 
-```sh
-python tools/check.py
-```
+[GPL-3.0-or-later](LICENSE) © 2026 MotherSphere
 
-Use `--only lua`, `--only python`, `--only native` or `--only minecraft` for one component. The runner builds artifacts without installing them or launching games.
-
-See [architecture](docs/architecture.md), [wire contracts](protocol/README.md) and [diagnostics](docs/diagnostics.md). The separate terrain renderer inside Stellar Blade is a diagnostic, not the main gameplay route.
-
-## References
-
-The transport adapts [SkyCraft](https://github.com/chasmlol/SkyCraft)'s three-buffer ownership design. [SkyCraft PR 26](https://github.com/chasmlol/SkyCraft/pull/26) provides Linux mapping context; [2010 Rust rewrite mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup) provides additional allocation-reuse and render-product examples. Engine-specific hooks are implemented and checked separately for Stellar Blade. See [third-party notices](THIRD-PARTY-NOTICES.md).
-
-No proprietary game assets are included.
+Stellar Blade × Minecraft is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed without any warranty; see the license for details. The logo is original artwork under the same licence. Code adapted from other projects, Fabric API and the fonts the installer embeds keep their own notices in [third-party notices](THIRD-PARTY-NOTICES.md).
