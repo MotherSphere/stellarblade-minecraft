@@ -193,7 +193,9 @@ fn same(a: &Path, b: &Path) -> bool {
 }
 
 fn real(path: &Path, directory: bool) -> Result<PathBuf> {
-    let path = std::path::absolute(path)?;
+    // On Windows `absolute` keeps a trailing separator as typed (`.\mc\`), which canonicalize drops; rebuilding
+    // from the components drops it too.
+    let path: PathBuf = std::path::absolute(path)?.components().collect();
     let metadata = fs::metadata(&path).ok();
     if !canonicalize(&path).is_ok_and(|c| same(&c, &path))
         || !metadata.is_some_and(|m| if directory { m.is_dir() } else { m.is_file() })
@@ -511,6 +513,20 @@ mod tests {
             lua_quote("Z:/a\"é"),
             "\"\\090\\058\\047\\097\\034\\195\\169\""
         );
+    }
+
+    #[test]
+    fn a_directory_typed_with_a_trailing_separator_is_real() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = canonicalize(root.path()).unwrap();
+        for typed in [
+            format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR),
+            format!("{}/", dir.display()),
+        ] {
+            assert_eq!(real_dir(Path::new(&typed)).unwrap(), dir, "{typed}");
+            let folder = crate::server::inspect(Path::new(&typed)).unwrap();
+            assert_eq!(folder.layout, crate::server::Layout::New, "{typed}");
+        }
     }
 
     #[cfg(unix)]
