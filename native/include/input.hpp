@@ -233,6 +233,45 @@ inline std::string encode_ack(const Ack &a) {
          std::to_string(a.seq) + "\n";
 }
 
+// eve-input-calls.txt: the adapter's slot-0 XInputGetState calls by caller since
+// it loaded (u32, wrapping), from the verified gameplay poll and from any other
+// return address (the game's device discovery, or an overlay hook such as Steam
+// Input's calling on the game's behalf: then the gameplay poll is never
+// recognized and input never forwarded). Apart from the acknowledgement, which
+// exists only after a recognized gameplay poll. report gives the file at most
+// once a second (monotonic now), with each count's rate over that interval;
+// never for the first sample.
+class CallReport {
+  uint64_t at_ = 0;
+  uint32_t gameplay_ = 0, other_ = 0;
+  bool started_ = false;
+
+public:
+  std::optional<std::string> report(uint32_t gameplay, uint32_t other,
+                                    uint64_t now, uint64_t wall) {
+    if (started_ && now - at_ < 1000)
+      return {};
+    std::optional<std::string> text;
+    if (started_) {
+      uint64_t elapsed = now - at_;
+      auto line = [&](const char *key, uint32_t count, uint32_t previous) {
+        return std::string(key) + " " + std::to_string(count) + " " +
+               std::to_string(uint64_t(uint32_t(count - previous)) * 1000 /
+                              elapsed) +
+               "\n";
+      };
+      text = "SBMC_XINPUT_CALLS 1\nTIME " + std::to_string(wall) + "\n" +
+             line("GAMEPLAY", gameplay, gameplay_) +
+             line("OTHER", other, other_) + "END\n";
+    }
+    started_ = true;
+    at_ = now;
+    gameplay_ = gameplay;
+    other_ = other;
+    return text;
+  }
+};
+
 // The worker owns parsing/I/O. Callers serialize Core access with one small
 // lock.
 class Core {

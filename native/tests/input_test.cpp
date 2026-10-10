@@ -3,7 +3,9 @@
 #endif
 #include "input.hpp"
 #include <cassert>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 using namespace stellar_input;
 static const std::string run(32, 'a'), session(32, 'b');
 static std::string permit(uint64_t seq = 1, uint64_t seconds = 10,
@@ -223,6 +225,25 @@ int main() {
   assert(!parse_input(packet(1, 2, "active", oversized_edges)));
   auto a = c.receipt(10000);
   assert(a && encode_ack(*a).find("SBMC_INPUT_ACK 1\n") == 0);
+
+  // The callers report: once a second, rates over the monotonic interval,
+  // counts wrapping as u32; the shared fixture is the file Java parses.
+  CallReport calls;
+  assert(!calls.report(0xfffffff0u, 1, 5000, 1791200000000) &&
+         "never for the first sample");
+  assert(!calls.report(0xfffffffau, 2, 5999, 1791200000999) &&
+         "at most once a second");
+  std::ifstream shared("protocol/fixtures/input-calls.txt", std::ios::binary);
+  std::string fixture((std::istreambuf_iterator<char>(shared)), {});
+  auto first = calls.report(44, 4, 6000, 1791200001000);
+  assert(first && *first == fixture && "60 gameplay calls across the wrap, 3 others");
+  auto second = calls.report(44, 4, 8000, 1791200003000);
+  assert(second && second->find("\nGAMEPLAY 44 0\nOTHER 4 0\n") != std::string::npos &&
+         "an idle interval rates 0");
+  auto slow = calls.report(144, 4, 10000, 1791200005000);
+  assert(slow && slow->find("\nGAMEPLAY 144 50\n") != std::string::npos &&
+         "rated over the elapsed time, not one second");
   std::cout << "PASS strict framing, dual leases, neutral handshake, ordered "
-               "edges, observer isolation, overlap, context and release\n";
+               "edges, observer isolation, overlap, context, release and the "
+               "callers report\n";
 }

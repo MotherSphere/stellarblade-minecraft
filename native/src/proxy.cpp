@@ -27,6 +27,8 @@ uintptr_t gameplay_return = 0;
 std::wstring directory;
 stellar_input::Pad previous_pad;
 DWORD packet_number = 0;
+// Slot-0 XInputGetState calls by caller, for eve-input-calls.txt (CallReport).
+std::atomic<uint32_t> gameplay_calls{0}, other_calls{0};
 // Pinned shipping build: only the slot-0 gameplay poll advances edges.
 // Its separate device-discovery calls may only observe the cached state.
 constexpr uintptr_t return_rva = 0x2bf7a3b, check_rva = 0x2bf7a28;
@@ -240,6 +242,7 @@ bool write_text(const wchar_t *name, const std::string &bytes) {
 }
 void worker() {
   std::string published, slot0, slot1;
+  stellar_input::CallReport calls;
   // Input every 5 ms keeps forwarding latency low; permits, capture and pose
   // files keep their 20 ms period. Cached permit bytes are re-validated.
   for (unsigned iteration = 0;; ++iteration) {
@@ -275,6 +278,9 @@ void worker() {
           published = std::move(key);
       }
     }
+    if (auto report = calls.report(gameplay_calls.load(std::memory_order_relaxed),
+                                   other_calls.load(std::memory_order_relaxed), now, wall))
+      write_text(L"eve-input-calls.txt", *report);
     if (!slow) {
       Sleep(5);
       continue;
@@ -323,6 +329,21 @@ void initialize() {
   // Keep the DLL and its sole worker alive until process termination.
   verified = true;
 #ifndef STELLAR_INPUT_TEST_HOST
+  // Windows 11 may ignore the game's timer resolution and slow it while it is
+  // occluded and silent, as behind a fullscreen Minecraft: the worker's
+  // Sleep(5) would last about 15.6 ms. Opt this process out (nothing persists;
+  // Wine ignores it); Windows 10 knows only the execution speed flag.
+  PROCESS_POWER_THROTTLING_STATE throttling{
+      PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+      PROCESS_POWER_THROTTLING_EXECUTION_SPEED |
+          PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+      0};
+  if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
+                             &throttling, sizeof throttling)) {
+    throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
+                          &throttling, sizeof throttling);
+  }
   // Only once pinned: the redirected call jumps into this DLL. Optional: without it the walk key does nothing.
   hook_walk(reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
 #endif
@@ -345,6 +366,7 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
     return backend_get ? backend_get(index, state) : ERROR_DEVICE_NOT_CONNECTED;
   stellar_input::Core::Result result;
   bool gameplay = reinterpret_cast<uintptr_t>(caller) == gameplay_return;
+  (gameplay ? gameplay_calls : other_calls).fetch_add(1, std::memory_order_relaxed);
   if (gameplay) {
     // Game thread, between frames: last frame's animation and physics are final.
     try {
