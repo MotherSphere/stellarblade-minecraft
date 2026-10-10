@@ -1,6 +1,6 @@
 # Diagnostic commands
 
-The gameplay path is [`/stellarview play`](playing.md#start-a-session). The commands below isolate problems; they are not required for each session. F10 belongs to the existing Stellar Blade console. Shift may also trigger native dodge; prefer console equivalents when keeping EVE still.
+The gameplay path is [`/stellaravatar play`](playing.md#start-a-session) (capture mode: `/stellarview play`). The commands below isolate problems; they are not required for each session. F10 belongs to the existing Stellar Blade console. Shift may also trigger native dodge; prefer console equivalents when keeping EVE still.
 
 ## Stellar Blade
 

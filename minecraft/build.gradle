@@ -20,7 +20,7 @@ java {
 }
 
 tasks.withType(JavaCompile).configureEach { options.release = 21 }
-// Development runs for the one-PC multiplayer test (docs/setup.md): a local server, and a second offline client with
+// Development runs for the one-PC multiplayer test (docs/multiplayer.md): a local server, and a second offline client with
 // its own bridge directory, so it never overwrites the files of the instance linked to Stellar Blade, and the network
 // development tools.
 loom {

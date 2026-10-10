@@ -7,7 +7,7 @@
 - A game-compatible UE4SS installation with `LoopInGameThreadWithDelay`. The development baseline is v3.0.1 Beta #0 (`08a0733`). Stock or newer loaders are not assumed interchangeable.
 - Proton baseline: `proton-cachyos-11.0-20261005-slr-x86_64_v3`. Other versions require validation.
 
-Use a separate private creative or survival Minecraft world, or a server of friends ([multiplayer](multiplayer.md)), without vehicles or player effects. Fluids in the terrain window become walls. In survival, EVE can die: use `keepInventory` or an empty inventory there. Avatar mode runs with any graphics mode; Iris (with Sodium) shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris. Back up Stellar Blade saves outside the game before using the lab. The prototype does not suppress autosaves.
+Use a separate private creative or survival Minecraft world, or a server of friends ([multiplayer](multiplayer.md)), without vehicles or player effects. Fluids in the terrain window become walls. In survival, EVE can die: use `keepInventory` or an empty inventory there. Avatar mode runs with any graphics mode; Iris (with Sodium) shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris. Back up Stellar Blade saves outside the game before using the lab. Outside the Great Desert's remote site, the prototype does not suppress autosaves ([playing](playing.md#start-a-session)).
 
 ## Build and check
 
