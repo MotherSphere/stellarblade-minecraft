@@ -65,7 +65,8 @@ pub fn lang() -> Lang {
     *ACTIVE.read().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The saved choice, else the environment's `LC_ALL`, `LC_MESSAGES` or `LANG`.
+/// The saved choice, else the environment's `LC_ALL`, `LC_MESSAGES` or `LANG`, else the system's language (Windows
+/// sets none of these variables).
 pub fn initial(saved: Option<&str>) -> Lang {
     if let Some(saved) = saved {
         return Lang::from_tag(saved);
@@ -74,6 +75,7 @@ pub fn initial(saved: Option<&str>) -> Lang {
         .iter()
         .filter_map(|var| std::env::var(var).ok())
         .find(|value| !value.is_empty())
+        .or_else(sys_locale::get_locale)
         .map_or(Lang::En, |value| Lang::from_tag(&value))
 }
 

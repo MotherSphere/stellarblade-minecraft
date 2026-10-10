@@ -2588,6 +2588,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sys-locale",
  "sysinfo",
  "tempfile",
  "windows-sys 0.61.2",
