@@ -46,8 +46,8 @@ final class SharedMapping implements AutoCloseable {
         boolean created = false;
         try {
             if (Platform.isWindows()) {
-                // Exclusive create without following a reparse point, not inheritable; read, write and delete sharing
-                // so the adapter (shared_memory.hpp) opens it and either side may delete it.
+                // Exclusive create without following a reparse point, not inheritable; read, write and delete sharing,
+                // as the adapter's own open (shared_memory.hpp) shares, so each side can open it beside the other.
                 var k = Kernel32.INSTANCE;
                 file = k.CreateFile(path.toString(), WinNT.GENERIC_READ | WinNT.GENERIC_WRITE,
                         WinNT.FILE_SHARE_READ | WinNT.FILE_SHARE_WRITE | WinNT.FILE_SHARE_DELETE, null, WinNT.CREATE_NEW,

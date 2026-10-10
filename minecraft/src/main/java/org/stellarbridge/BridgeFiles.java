@@ -53,8 +53,8 @@ final class BridgeFiles {
         Path temporary = Files.createTempFile(directory, "snapshot-", ".tmp", owner("rw-------"));
         try {
             Files.write(temporary, data);
-            // Windows refuses to replace a file another process holds open without delete sharing, as Lua's io.open and
-            // the adapter's readers do for microseconds. Linux rename never refuses it here.
+            // Windows refuses to replace a file while a reader holds it open (MoveFileEx has no POSIX rename semantics), as
+            // Lua's io.open and the adapter's readers do for microseconds. Linux rename never refuses it here.
             // ponytail: bounded retry; a reader holding a file >5 ms still fails and is reported as today.
             for (int retry = 0; ; retry++) {
                 try {

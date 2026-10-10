@@ -68,8 +68,10 @@ public final class BridgeRuntimeTest {
             files.publish("second\n");
             assert Files.readString(directory.resolve("terrain.txt")).equals("second\n");
             if (BridgeFiles.POSIX) assert Files.getPosixFilePermissions(directory.resolve("terrain.txt")).equals(PosixFilePermissions.fromString("rw-------"));
-            // One thread replaces terrain.txt while this one reads it: each read is a complete snapshot. A Java reader shares
-            // delete, so this cannot reproduce Lua's fopen on Windows; the contended run below does, against a C reader.
+            // One thread replaces terrain.txt while this one reads it about once a millisecond, as Lua polls: each read is a
+            // complete snapshot. On Windows a replacement is refused while any reader holds the file (MoveFileEx has no
+            // POSIX rename semantics), so a reader that never let go would outlast the bounded retry. The contended run
+            // below repeats this against a C reader that shares as Lua's fopen does.
             var failure = new AtomicReference<Throwable>();
             Thread writer = new Thread(() -> {
                 try { for (int i = 0; i < 2000; i++) files.publish("revision " + i + "\n" + "x".repeat(i % 512) + "\nEND\n"); }
@@ -82,6 +84,7 @@ public final class BridgeRuntimeTest {
                 assert text != null && (text.startsWith("revision ") && text.endsWith("\nEND\n") || text.equals("second\n"))
                         : "Torn or missing snapshot: " + text;
                 complete++;
+                Thread.sleep(1);
             }
             writer.join();
             if (failure.get() != null) throw new AssertionError("Replace failed beside a reader", failure.get());
