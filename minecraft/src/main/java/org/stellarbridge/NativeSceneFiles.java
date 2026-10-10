@@ -5,7 +5,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -93,8 +92,8 @@ final class NativeSceneFiles {
         }
 
         void commit() throws IOException {
-            Files.move(paths.checked(temporary), paths.checked("native-scene.txt"),
-                    StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            // Lua polls the descriptor with io.open, which Windows lets refuse the replace for a moment.
+            BridgeFiles.replace(paths.checked(temporary), paths.checked("native-scene.txt"));
             owned.remove(temporary);
             descriptorOwned = true;
             for (String name : active) if (!nextFiles.contains(name)) retired.add(name);

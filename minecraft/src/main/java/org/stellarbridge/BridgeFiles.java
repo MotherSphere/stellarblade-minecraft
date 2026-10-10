@@ -20,7 +20,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 final class BridgeFiles {
     private static final int MAX_BYTES = 65536;
     static final boolean POSIX = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
-    // A refused replace is tried again this many times, 1 ms apart (see write).
+    // A refused replace is tried again this many times, 1 ms apart (see replace).
     private static final int REPLACE_RETRIES = 5;
     private final Path directory;
 
@@ -53,24 +53,29 @@ final class BridgeFiles {
         Path temporary = Files.createTempFile(directory, "snapshot-", ".tmp", owner("rw-------"));
         try {
             Files.write(temporary, data);
-            // Windows refuses to replace a file while a reader holds it open (MoveFileEx has no POSIX rename semantics), as
-            // Lua's io.open and the adapter's readers do for microseconds. Linux rename never refuses it here.
-            // ponytail: bounded retry; a reader holding a file >5 ms still fails and is reported as today.
-            for (int retry = 0; ; retry++) {
-                try {
-                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-                    break;
-                } catch (AccessDeniedException busy) {
-                    if (retry == REPLACE_RETRIES) throw busy;
-                    try { Thread.sleep(1); }
-                    catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        throw busy;
-                    }
-                }
-            }
+            replace(temporary, target);
         } finally {
             Files.deleteIfExists(temporary);
+        }
+    }
+
+    /** Atomically moves {@code temporary} over {@code target}, as every snapshot a reader polls is replaced. */
+    static void replace(Path temporary, Path target) throws IOException {
+        // Windows refuses to replace a file while a reader holds it open (MoveFileEx has no POSIX rename semantics), as
+        // Lua's io.open and the adapter's readers do for microseconds. Linux rename never refuses it here.
+        // ponytail: bounded retry; a reader holding a file >5 ms still fails and is reported as today.
+        for (int retry = 0; ; retry++) {
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                return;
+            } catch (AccessDeniedException busy) {
+                if (retry == REPLACE_RETRIES) throw busy;
+                try { Thread.sleep(1); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw busy;
+                }
+            }
         }
     }
 
