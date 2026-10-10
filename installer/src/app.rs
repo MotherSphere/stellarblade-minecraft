@@ -21,13 +21,13 @@ use crate::ledger::{self, State, Status};
 use crate::ops::{self, Piece, Step, Target};
 use crate::payload::Payload;
 use crate::safety::{self, Running};
-use crate::{Kind as Refused, Ownership, Refusal, adapter, deploy, log, mods};
+use crate::{Kind as Refused, Ownership, Refusal, adapter, deploy, log, mods, platform};
 
 /// What the window works with: where to look and where to write its own data.
 #[derive(Clone)]
 pub struct Ctx {
     pub home: PathBuf,
-    /// `/proc` outside tests.
+    /// `/proc` outside tests; Windows reads the live process list instead.
     pub proc_root: PathBuf,
     /// `~/.local/share/Colony/Stellar Bridge`: `state.json`, `previous/`, `save-backups/`.
     pub data: PathBuf,
@@ -184,10 +184,12 @@ fn localized(error: &anyhow::Error) -> String {
 /// Reads everything the pages show. Nothing is written.
 pub fn detect(ctx: &Ctx) -> Found {
     let steam = detect::steam(&ctx.home);
-    let game = detect::game(&steam);
+    let game = detect::game(&steam, &ctx.home);
     let ue4ss = game.as_ref().and_then(|g| detect::ue4ss(&g.win64));
+    // Windows loads the adapter from the game folder: there is no override to look for.
     let dll_override = game
         .as_ref()
+        .filter(|_| platform::PROTON)
         .map(|g| detect::dll_override(g.prefix.as_deref(), &g.launch_options));
     let launchers = launcher::prism(&ctx.home);
     let instances: Vec<(Kind, Instance)> = launchers
@@ -268,7 +270,7 @@ fn game_side(game: &detect::Game, ue4ss: &detect::Ue4ss) -> Option<ops::Game> {
         ue4ss: ue4ss.dir.clone(),
         mods: ue4ss.mods.clone()?,
         prefix: game.prefix.clone(),
-        saves: game.saves(),
+        saves: game.saves.clone(),
     })
 }
 
@@ -777,7 +779,8 @@ impl App {
                     launcher
                         .instances
                         .join(launcher::INSTANCE_NAME)
-                        .join("minecraft/mods"),
+                        .join("minecraft")
+                        .join("mods"),
                     detect::bridge_home(&self.ctx.home, flatpak).join("bridge"),
                     Some(launcher.clone()),
                 )
@@ -797,7 +800,7 @@ impl App {
                     .map_err(|e| localized(&e))?;
                 // A Flatpak launcher cannot see the native bridge folder; only the dedicated instance carries the
                 // Java arguments that point it at one it can see.
-                if fs::canonicalize(self.ctx.home.join(".var/app"))
+                if platform::canonicalize(&self.ctx.home.join(".var/app"))
                     .is_ok_and(|v| mods.starts_with(v))
                 {
                     return Err(t("manual_flatpak").into());

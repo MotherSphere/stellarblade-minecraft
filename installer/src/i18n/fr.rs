@@ -449,6 +449,14 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Le dossier du pont doit appartenir à cet utilisateur, avec le mode 0700 : {path}",
     ),
     (
+        "err_bridge_volume",
+        "Le dossier du pont doit se trouver sur un disque NTFS local, jamais sur un partage réseau : {path}",
+    ),
+    (
+        "err_bridge_ascii",
+        "Le Lua de Stellar Blade n'ouvre que des chemins ASCII, et ce dossier contient d'autres caractères sans nom court (8.3) : {path}",
+    ),
+    (
         "err_no_ancestor",
         "Aucun dossier existant au-dessus de {path}",
     ),

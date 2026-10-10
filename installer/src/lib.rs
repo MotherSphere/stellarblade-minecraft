@@ -75,6 +75,8 @@ kinds! {
     BridgeControl => "err_bridge_control",
     BridgeNotAbsolute => "err_bridge_not_absolute",
     BridgeMode => "err_bridge_mode",
+    BridgeVolume => "err_bridge_volume",
+    BridgeAscii => "err_bridge_ascii",
     NoAncestor => "err_no_ancestor",
     ProcessList => "err_process_list",
     CloseFirst => "err_close_first",

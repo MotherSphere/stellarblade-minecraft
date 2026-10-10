@@ -276,7 +276,6 @@ pub fn remove(mods_dir: &Path, closed: Guard) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn open() -> Result<()> {
         Ok(())
@@ -336,11 +335,14 @@ mod tests {
         assert!(matches!(ownership(&mods).unwrap(), Ownership::Modified(_)));
         assert!(remove(&mods, &open).is_err());
         fs::remove_dir(destination.join("extra")).unwrap();
-        let script = destination.join("Scripts/main.lua");
-        fs::remove_file(&script).unwrap();
-        symlink(mods.join("mods.txt"), &script).unwrap();
-        assert!(remove(&mods, &open).is_err());
-        assert!(script.is_symlink());
+        #[cfg(unix)]
+        {
+            let script = destination.join("Scripts/main.lua");
+            fs::remove_file(&script).unwrap();
+            std::os::unix::fs::symlink(mods.join("mods.txt"), &script).unwrap();
+            assert!(remove(&mods, &open).is_err());
+            assert!(script.is_symlink());
+        }
     }
 
     #[test]
@@ -373,17 +375,24 @@ mod tests {
     #[test]
     fn bridge_configuration_is_owned_and_needs_a_private_directory() {
         let (root, mods) = mods();
-        let bridge = fs::canonicalize(root.path())
+        let bridge = platform::canonicalize(root.path())
             .unwrap()
             .join("bridge 'quoted'");
         fs::create_dir(&bridge).unwrap();
-        fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(install(&mods, &source(), Some(&bridge), &open).is_err());
-        assert!(!mods.join(MOD_NAME).exists());
-        fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(install(&mods, &source(), Some(&bridge), &open).is_err());
+            assert!(!mods.join(MOD_NAME).exists());
+            fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let destination = install(&mods, &source(), Some(&bridge), &open).unwrap();
         let config = fs::read_to_string(destination.join(CONFIG)).unwrap();
-        let expected = format!("Z:{}", bridge.display());
+        let expected = platform::game_path(&bridge).unwrap();
+        if platform::PROTON {
+            assert_eq!(expected, format!("Z:{}", bridge.display()));
+        }
         assert_eq!(
             config,
             format!(

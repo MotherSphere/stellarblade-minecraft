@@ -1,6 +1,9 @@
 //! The window's state machine on a fake home: every page of the wizard, a dedicated Prism instance, the games modal,
 //! repair, update, roll back, uninstall, the close guard, and a dry run that leaves the tree byte for byte as it was.
 //! Jobs run in place; every page is drawn after every message. Nothing outside the temporary folder is read or written.
+//! Linux only: the fake home has the Linux layout and a fake `/proc`; Windows detection reads the registry and the
+//! live process list, which a test cannot fake.
+#![cfg(unix)]
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};

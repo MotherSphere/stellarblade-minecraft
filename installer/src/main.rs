@@ -146,6 +146,8 @@ fn main() -> iced::Result {
         dry_run,
     };
 
+    // A double-clicked exe on Windows got a console of its own: the window does not need it.
+    platform::leave_own_console();
     colony_ui::fonts::BYTES
         .into_iter()
         .fold(

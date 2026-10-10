@@ -54,18 +54,12 @@ pub fn at(root: &Path, kind: Kind) -> Option<Launcher> {
     })
 }
 
-/// The Prism installations under `home`, native first.
+/// The Prism installations under `home`, native first (`%APPDATA%\PrismLauncher` on Windows).
 pub fn prism(home: &Path) -> Vec<Launcher> {
-    [
-        (home.join(".local/share/PrismLauncher"), Kind::Prism),
-        (
-            home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher"),
-            Kind::PrismFlatpak,
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(root, kind)| at(&root, kind))
-    .collect()
+    platform::prism_roots(home)
+        .into_iter()
+        .filter_map(|(root, kind)| at(&root, kind))
+        .collect()
 }
 
 /// A Prism or MultiMC instance.
@@ -185,7 +179,7 @@ pub fn create_instance(
         fs::create_dir_all(&launcher.instances)?;
     }
     // Instance folders are often links to another disk: resolve them once.
-    let dir = fs::canonicalize(&launcher.instances)?.join(name);
+    let dir = platform::canonicalize(&launcher.instances)?.join(name);
     fs::create_dir(&dir)?;
     let written = (|| -> Result<()> {
         let mut config = format!(
@@ -269,6 +263,7 @@ mod tests {
         fs::create_dir_all(dir.join("minecraft/mods")).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn prism_native_and_flatpak_instances_and_their_loaders() {
         let root = tempfile::tempdir().unwrap();
@@ -325,7 +320,7 @@ mod tests {
     #[test]
     fn multimc_folder_and_manual_mods_folder() {
         let root = tempfile::tempdir().unwrap();
-        let picked = fs::canonicalize(root.path()).unwrap();
+        let picked = platform::canonicalize(root.path()).unwrap();
         assert_eq!(at(&picked, Kind::MultiMc), None);
         write(&picked.join("multimc.cfg"), "InstanceDir=inst\n");
         fake_instance(&picked.join("inst"), "a", "A", Some("0.19.6+build"));
@@ -339,10 +334,11 @@ mod tests {
     #[test]
     fn dedicated_instance_is_compatible_and_never_overwrites() {
         let root = tempfile::tempdir().unwrap();
-        let home = fs::canonicalize(root.path()).unwrap();
-        let native = home.join(".local/share/PrismLauncher");
+        let home = platform::canonicalize(root.path()).unwrap();
+        let (native, _) = platform::prism_roots(&home).remove(0);
         write(&native.join("prismlauncher.cfg"), "InstanceDir=instances\n");
         let launcher = &prism(&home)[0];
+        assert_eq!(launcher.instances, native.join("instances"));
         let open = || Ok(());
         let running = || -> Result<()> { bail!("Close Prism first") };
         assert!(create_instance(launcher, INSTANCE_NAME, &[], &running).is_err());
@@ -353,6 +349,10 @@ mod tests {
         assert!(created.mods().is_dir());
         assert_eq!(instances(launcher), vec![created.clone()]);
         assert!(create_instance(launcher, INSTANCE_NAME, &[], &open).is_err());
+        assert!(create_instance(launcher, "../x", &[], &open).is_err());
+        if !cfg!(unix) {
+            return;
+        }
         let flatpak = home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher");
         write(&flatpak.join("prismlauncher.cfg"), "");
         let args = bridge_jvm_args(&home.join("data/stellar-blade-minecraft"));
@@ -364,7 +364,6 @@ mod tests {
         )));
         let spaced = bridge_jvm_args(Path::new("/home/a b"));
         assert!(create_instance(&prism(&home)[1], "T", &spaced, &open).is_err());
-        assert!(create_instance(launcher, "../x", &[], &open).is_err());
     }
 
     #[test]

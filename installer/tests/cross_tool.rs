@@ -1,5 +1,7 @@
 //! The installer and the Python tools share their ownership manifests: each removes what the other installed, and
-//! each refuses what the other would refuse. Runs `tools/deploy.py` and `tools/input_proxy.py` on fake trees.
+//! each refuses what the other would refuse. Runs `tools/deploy.py` and `tools/input_proxy.py` on fake trees. The
+//! Python tools are Linux developer tools: Windows players use the installer only.
+#![cfg(unix)]
 
 use sbmc_installer::{Ownership, adapter, deploy, safety};
 use std::fs;

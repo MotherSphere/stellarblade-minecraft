@@ -127,11 +127,16 @@ pub struct Steam {
     pub libraries: Vec<PathBuf>,
 }
 
-/// Every distinct Steam installation under `home`.
+/// Every distinct Steam installation of this user (under `home` on Linux, from the registry on Windows).
 pub fn steam(home: &Path) -> Vec<Steam> {
+    steam_at(platform::steam_roots(home))
+}
+
+/// Every distinct Steam installation among `candidates`, first match first.
+pub fn steam_at(candidates: Vec<(PathBuf, SteamKind)>) -> Vec<Steam> {
     let mut found: Vec<Steam> = Vec::new();
-    for (candidate, kind) in platform::steam_roots(home) {
-        let Ok(root) = fs::canonicalize(&candidate) else {
+    for (candidate, kind) in candidates {
+        let Ok(root) = platform::canonicalize(&candidate) else {
             continue;
         };
         if !root.join("steamapps").is_dir() || found.iter().any(|s| s.root == root) {
@@ -146,7 +151,8 @@ pub fn steam(home: &Path) -> Vec<Steam> {
             {
                 // Current format: a block with "path"; old format: the path itself.
                 if let Some(path) = library.get("path").and_then(Vdf::str).or(library.str()) {
-                    let path = fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+                    let path = platform::canonicalize(Path::new(path))
+                        .unwrap_or_else(|_| PathBuf::from(path));
                     if !libraries.contains(&path) {
                         libraries.push(path);
                     }
@@ -176,8 +182,11 @@ pub struct Game {
     pub build_id: Option<String>,
     /// Steam has an update pending or running: wait before installing.
     pub updating: bool,
-    /// `steamapps/compatdata/3489700/pfx`, when it exists.
+    /// `steamapps/compatdata/3489700/pfx`, when it exists (Linux only).
     pub prefix: Option<PathBuf>,
+    /// The `SaveGames` folder (Windows: the first of the candidates that exists). The SteamID64 below it is never
+    /// logged.
+    pub saves: Option<PathBuf>,
     /// The Proton tool Steam maps the game to, if set.
     pub proton: Option<String>,
     /// The game's launch options for each Steam account on this PC.
@@ -189,19 +198,10 @@ impl Game {
     pub fn build_supported(&self) -> bool {
         self.build_id.as_deref() == Some(pins::SB_BUILD_ID) && !self.updating
     }
-
-    /// The `SaveGames` folder in the prefix, when it exists. The SteamID64 below it is never logged.
-    pub fn saves(&self) -> Option<PathBuf> {
-        let saves = self
-            .prefix
-            .as_ref()?
-            .join("drive_c/users/steamuser/AppData/Local/SB/Saved/SaveGames");
-        saves.is_dir().then_some(saves)
-    }
 }
 
-/// Stellar Blade in any of the Steam installations.
-pub fn game(steams: &[Steam]) -> Option<Game> {
+/// Stellar Blade in any of the Steam installations; `home` locates the saves on Windows.
+pub fn game(steams: &[Steam], home: &Path) -> Option<Game> {
     for steam in steams {
         for library in &steam.libraries {
             let steamapps = library.join("steamapps");
@@ -229,6 +229,7 @@ pub fn game(steams: &[Steam]) -> Option<Game> {
                 .join("compatdata")
                 .join(pins::SB_APP_ID)
                 .join("pfx");
+            let prefix = (platform::PROTON && prefix.is_dir()).then_some(prefix);
             let proton = read_vdf(&steam.root.join("config/config.vdf")).and_then(|config| {
                 let mapping = config.at(&[
                     "InstallConfigStore",
@@ -253,7 +254,10 @@ pub fn game(steams: &[Steam]) -> Option<Game> {
                 dir,
                 build_id,
                 updating,
-                prefix: prefix.is_dir().then_some(prefix),
+                saves: platform::save_dirs(prefix.as_deref(), home)
+                    .into_iter()
+                    .find(|d| d.is_dir()),
+                prefix,
                 proton,
                 launch_options: launch_options(&steam.root),
             });
@@ -450,7 +454,10 @@ pub fn bridge_home(home: &Path, flatpak_prism: bool) -> PathBuf {
     if flatpak_prism {
         home.join(".var/app/org.prismlauncher.PrismLauncher/data/stellar-blade-minecraft")
     } else {
-        home.join(".local/share/stellar-blade-minecraft")
+        // Joined part by part: Windows paths keep one separator.
+        home.join(".local")
+            .join("share")
+            .join("stellar-blade-minecraft")
     }
 }
 
@@ -498,7 +505,7 @@ fn pack_manifest(text: &str) -> Option<(PathBuf, BTreeMap<String, String>)> {
 
 /// The `.pak`, `.utoc` and `.ucas` files under `paks` as `pack.py` lists them: "bytes mtime-ns" by path.
 fn pak_sources(paks: &Path) -> Result<BTreeMap<String, String>> {
-    let root = fs::canonicalize(paks)?;
+    let root = platform::canonicalize(paks)?;
     let mut found = BTreeMap::new();
     let visit = |dir: &Path, found: &mut BTreeMap<String, String>| -> Result<Vec<PathBuf>> {
         let mut subdirs = Vec::new();
@@ -593,6 +600,11 @@ mod tests {
         assert_eq!(Vdf::parse("\"a\" { \"b\""), None);
     }
 
+    /// A path as Steam writes it in a VDF string: backslashes escaped.
+    fn vdf_path(path: &Path) -> String {
+        path.display().to_string().replace('\\', "\\\\")
+    }
+
     /// A fake Steam: the root library holds nothing, a second library holds the game with its prefix.
     fn fake_steam(home: &Path, library: &Path) {
         let root = home.join(".local/share/Steam");
@@ -600,8 +612,8 @@ mod tests {
             &root.join("steamapps/libraryfolders.vdf"),
             &format!(
                 "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t\t\"apps\" {{ \"3489700\" \"1\" }}\n\t}}\n}}\n",
-                root.display(),
-                library.display()
+                vdf_path(&root),
+                vdf_path(library)
             ),
         );
         write(
@@ -621,34 +633,54 @@ mod tests {
             &root.join("userdata/12345/config/localconfig.vdf"),
             "\"UserLocalConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"apps\" { \"3489700\" { \"LaunchOptions\" \"PROTON_ENABLE_WAYLAND=1 %command%\" } } } } } }",
         );
-        fs::create_dir_all(home.join(".steam")).unwrap();
-        std::os::unix::fs::symlink(&root, home.join(".steam/steam")).unwrap();
+        #[cfg(unix)]
+        {
+            fs::create_dir_all(home.join(".steam")).unwrap();
+            std::os::unix::fs::symlink(&root, home.join(".steam/steam")).unwrap();
+        }
+    }
+
+    /// The fake Steam's root, as detection finds it on each system (the registry is not faked on Windows).
+    fn fake_steams(home: &Path) -> Vec<Steam> {
+        if cfg!(windows) {
+            steam_at(vec![(home.join(".local/share/Steam"), SteamKind::Native)])
+        } else {
+            steam(home)
+        }
     }
 
     #[test]
     fn finds_the_game_its_prefix_and_proton_in_a_second_library() {
         let root = tempfile::tempdir().unwrap();
-        let home = fs::canonicalize(root.path()).unwrap().join("home");
+        let home = platform::canonicalize(root.path()).unwrap().join("home");
         let library = home.parent().unwrap().join("SteamLibrary");
         fake_steam(&home, &library);
-        let steams = steam(&home);
+        let steams = fake_steams(&home);
         assert_eq!(steams.len(), 1, "the ~/.steam/steam link is the same Steam");
         assert_eq!(
             steams[0].libraries,
             vec![home.join(".local/share/Steam"), library.clone()]
         );
-        let game = game(&steams).unwrap();
+        let game = game(&steams, &home).unwrap();
         assert_eq!(
             game.win64,
             library.join("steamapps/common/StellarBlade/SB/Binaries/Win64")
         );
         assert!(game.build_supported());
         assert_eq!(game.proton.as_deref(), Some(pins::PROTON_TESTED));
-        assert_eq!(
-            game.prefix,
-            Some(library.join("steamapps/compatdata/3489700/pfx"))
-        );
-        assert!(game.saves().is_some());
+        if platform::PROTON {
+            assert_eq!(
+                game.prefix,
+                Some(library.join("steamapps/compatdata/3489700/pfx"))
+            );
+            assert!(game.saves.is_some());
+        } else {
+            assert_eq!((&game.prefix, &game.saves), (&None, &None));
+            fs::create_dir_all(home.join("Documents/StellarBlade")).unwrap();
+            let saves = home.join("AppData/Local/SB/Saved/SaveGames");
+            fs::create_dir_all(&saves).unwrap();
+            assert_eq!(super::game(&steams, &home).unwrap().saves, Some(saves));
+        }
         assert_eq!(
             game.launch_options,
             vec!["PROTON_ENABLE_WAYLAND=1 %command%"]
@@ -663,7 +695,7 @@ mod tests {
     #[test]
     fn update_in_progress_blocks_the_build_gate() {
         let root = tempfile::tempdir().unwrap();
-        let home = fs::canonicalize(root.path()).unwrap().join("home");
+        let home = platform::canonicalize(root.path()).unwrap().join("home");
         let library = home.parent().unwrap().join("SteamLibrary");
         fake_steam(&home, &library);
         let acf = library.join("steamapps/appmanifest_3489700.acf");
@@ -675,7 +707,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(!game(&steam(&home)).unwrap().build_supported());
+        assert!(!game(&fake_steams(&home), &home).unwrap().build_supported());
     }
 
     #[test]

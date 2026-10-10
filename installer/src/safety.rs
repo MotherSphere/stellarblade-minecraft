@@ -62,12 +62,17 @@ pub(crate) fn walk(
     inner(root, root, visit)
 }
 
-/// A relative path in the manifests' form: '/'-joined UTF-8.
+/// A relative path in the manifests' form: '/'-joined UTF-8, as the Python tools write it on Linux.
 pub(crate) fn slash(relative: &Path) -> Result<String> {
     let Some(text) = relative.to_str() else {
         bail!(Refusal::new(Kind::NonUtf8, relative.display()))
     };
-    Ok(text.to_string())
+    // A Windows file name never holds '\'; a Linux one may, and keeps it.
+    Ok(if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.to_string()
+    })
 }
 
 /// The sha256 of every regular file under `dir` by relative path: what "unchanged" means for the saves.
@@ -101,6 +106,19 @@ const MINECRAFT_MARKERS: &[&[u8]] = &[
     b"net.fabricmc.loader.impl.launch.knot.KnotClient",
 ];
 
+/// A Java process: `java`/`javaw` on Linux, `java.exe`/`javaw.exe` on Windows.
+fn is_java(comm: &str) -> bool {
+    matches!(comm, "java" | "javaw")
+        || comm.eq_ignore_ascii_case("java.exe")
+        || comm.eq_ignore_ascii_case("javaw.exe")
+}
+
+fn holds(cmdline: &[u8], markers: &[&[u8]]) -> bool {
+    markers
+        .iter()
+        .any(|m| cmdline.windows(m.len()).any(|w| w == *m))
+}
+
 /// What runs among `processes`. A Java process whose command line cannot be read counts as Minecraft (fail closed).
 pub fn running(processes: &[platform::Process], launchers: bool) -> Vec<Running> {
     let mut found: Vec<Running> = processes
@@ -109,14 +127,15 @@ pub fn running(processes: &[platform::Process], launchers: bool) -> Vec<Running>
             let comm = process.comm.as_str();
             if comm.starts_with("SB-Win64") || comm == "SB.exe" {
                 Some(Running::StellarBlade)
-            } else if comm == "java" || comm == "javaw" {
+            } else if is_java(comm) {
                 let cmdline = process.cmdline.as_deref().unwrap_or_default();
-                (cmdline.is_empty()
-                    || MINECRAFT_MARKERS
-                        .iter()
-                        .any(|m| cmdline.windows(m.len()).any(|w| w == *m)))
-                .then_some(Running::Minecraft)
-            } else if launchers && (comm == "prismlauncher" || comm.starts_with("MultiMC")) {
+                (cmdline.is_empty() || holds(cmdline, MINECRAFT_MARKERS))
+                    .then_some(Running::Minecraft)
+            } else if launchers
+                && (comm == "prismlauncher"
+                    || comm.eq_ignore_ascii_case("prismlauncher.exe")
+                    || comm.starts_with("MultiMC"))
+            {
                 Some(Running::Launcher)
             } else {
                 None
@@ -352,6 +371,7 @@ mod tests {
         Process {
             comm: comm.into(),
             cmdline: cmdline.map(<[u8]>::to_vec),
+            cwd: None,
         }
     }
 
@@ -383,6 +403,18 @@ mod tests {
         );
         assert_eq!(running(std::slice::from_ref(&launcher), false), vec![]);
         assert_eq!(running(&[launcher], true), vec![Running::Launcher]);
+        // Windows image names.
+        let javaw = process(
+            "javaw.exe",
+            Some(b"C:\\Java\\bin\\javaw.exe\0org.prismlauncher.EntryPoint"),
+        );
+        let elevated = process("java.exe", None);
+        let game = process("SB-Win64-Shipping.exe", Some(b"SB-Win64-Shipping.exe"));
+        let prism = process("prismlauncher.exe", Some(b"prismlauncher.exe"));
+        assert_eq!(running(&[javaw], false), vec![Running::Minecraft]);
+        assert_eq!(running(&[elevated], false), vec![Running::Minecraft]);
+        assert_eq!(running(&[game], false), vec![Running::StellarBlade]);
+        assert_eq!(running(&[prism], true), vec![Running::Launcher]);
     }
 
     #[test]
@@ -419,7 +451,11 @@ mod tests {
         fs::write(win64.join("dinput8.dll"), "new loader").unwrap();
         fs::write(minecraft.join("mods/sodium.jar"), "changed").unwrap();
         fs::create_dir(mods.join("NewMod")).unwrap();
-        let changed = before.changed(&protected.snapshot().unwrap());
+        let changed: Vec<String> = before
+            .changed(&protected.snapshot().unwrap())
+            .iter()
+            .map(|c| c.replace('\\', "/"))
+            .collect();
         let ends: Vec<_> = [
             "Win64/dinput8.dll",
             "Win64/dwmapi.dll",
@@ -446,13 +482,16 @@ mod tests {
         let copy = backup_saves(saves, &root.path().join("data/save-backups")).unwrap();
         assert_eq!(tree(&copy).unwrap(), before);
         assert_eq!(tree(saves).unwrap(), before);
-        std::os::unix::fs::symlink("/etc/hostname", saves.join("link")).unwrap();
-        assert!(backup_saves(saves, &root.path().join("data/save-backups")).is_err());
-        assert_eq!(
-            fs::read_dir(root.path().join("data/save-backups"))
-                .unwrap()
-                .count(),
-            1
-        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/hostname", saves.join("link")).unwrap();
+            assert!(backup_saves(saves, &root.path().join("data/save-backups")).is_err());
+            assert_eq!(
+                fs::read_dir(root.path().join("data/save-backups"))
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
     }
 }

@@ -6,7 +6,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
 use crate::ledger::{self, State, Status};
@@ -41,7 +40,7 @@ pub struct Target {
     pub game: Option<Game>,
     /// The Minecraft instance's `mods` folder.
     pub minecraft_mods: PathBuf,
-    /// The private bridge directory both sides share; created with mode 0700 when missing.
+    /// The private bridge directory both sides share; created private when missing (mode 0700 on Linux).
     pub bridge: PathBuf,
 }
 
@@ -107,6 +106,24 @@ fn hashes<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> BTreeMap<
         .collect()
 }
 
+/// Whether the bridge files in `mods` (owned, as `ownership` says) are exactly `payload`'s JAR and Fabric API.
+pub(crate) fn jar_current(
+    mods_dir: &Path,
+    ownership: &Ownership,
+    payload: &Payload,
+) -> Result<bool> {
+    Ok(
+        *ownership == Ownership::Owned && mods::drifted(mods_dir)?.is_empty() && {
+            let listed = mods::manifest(mods_dir)?.files;
+            let fabric = sha256_hex(&payload.fabric_api);
+            listed.get(&payload.jar.0) == Some(&sha256_hex(&payload.jar.1))
+                && listed.iter().all(|(name, hash)| {
+                    name == &payload.jar.0 || (mods::is_fabric_api(name) && *hash == fabric)
+                })
+        },
+    )
+}
+
 /// What the target holds, piece by piece, compared with `payload`.
 pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece>> {
     let mut pieces = Vec::new();
@@ -116,14 +133,7 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
     let current = if payload.jar.1.is_empty() {
         absent(&ownership)
     } else {
-        ownership == Ownership::Owned && mods::drifted(&target.minecraft_mods)?.is_empty() && {
-            let listed = mods::manifest(&target.minecraft_mods)?.files;
-            let fabric = sha256_hex(&payload.fabric_api);
-            listed.get(&payload.jar.0) == Some(&sha256_hex(&payload.jar.1))
-                && listed.iter().all(|(name, hash)| {
-                    name == &payload.jar.0 || (mods::is_fabric_api(name) && *hash == fabric)
-                })
-        }
+        jar_current(&target.minecraft_mods, &ownership, payload)?
     };
     pieces.push(Piece {
         name: JAR,
@@ -311,7 +321,7 @@ fn remove_owned(env: &Env, target: &Target, keep_fabric: bool) -> Result<Refusal
     Ok(refusals)
 }
 
-/// Creates the private bridge directory (mode 0700) when it is missing.
+/// Creates the private bridge directory (mode 0700 on Linux) when it is missing.
 fn ensure_bridge(bridge: &Path, closed: Guard) -> Result<()> {
     if !bridge.is_absolute() {
         bail!(Refusal::new(Kind::BridgeNotAbsolute, bridge.display()));
@@ -321,7 +331,7 @@ fn ensure_bridge(bridge: &Path, closed: Guard) -> Result<()> {
         if let Some(parent) = bridge.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::DirBuilder::new().mode(0o700).create(bridge)?;
+        platform::create_private_dir(bridge)?;
     }
     Ok(())
 }
@@ -398,7 +408,9 @@ fn left_behind(env: &Env, target: &Target) -> Result<()> {
     };
     let owned = |ownership: Result<Ownership>| matches!(ownership, Ok(Ownership::Owned));
     let same = |a: &Path, b: &Path| {
-        a == b || fs::canonicalize(a).is_ok_and(|a| fs::canonicalize(b).is_ok_and(|b| a == b))
+        a == b
+            || platform::canonicalize(a)
+                .is_ok_and(|a| platform::canonicalize(b).is_ok_and(|b| a == b))
     };
     let mut left = Vec::new();
     if !same(&old.minecraft_mods, &target.minecraft_mods)

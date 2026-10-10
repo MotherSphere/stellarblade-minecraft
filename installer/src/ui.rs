@@ -17,7 +17,7 @@ use crate::launcher::{self, Kind};
 use crate::ledger::Status;
 use crate::ops::{self, Step};
 use crate::safety::Running;
-use crate::{Ownership, detect, pins};
+use crate::{Ownership, detect, pins, platform};
 
 type El<'a> = Element<'a, Message>;
 
@@ -589,40 +589,43 @@ fn detect_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
                 (Level::Bad, format!("{value}\n{}", t("blocker_build")))
             };
             rows = rows.push(status_row(typo, level, t("row_game"), value));
-            rows = rows.push(match &game.proton {
-                None => status_row(
-                    typo,
-                    Level::Info,
-                    t("row_proton"),
-                    t("row_proton_default").into(),
-                ),
-                Some(name) if name == pins::PROTON_TESTED => {
-                    status_row(typo, Level::Ok, t("row_proton"), name.clone())
-                }
-                Some(name) => status_row(
-                    typo,
-                    Level::Warn,
-                    t("row_proton"),
-                    t_fmt(
-                        "row_proton_untested",
-                        &[("name", name), ("tested", pins::PROTON_TESTED)],
+            // Proton, its prefix and the DLL override exist on Linux only.
+            if platform::PROTON {
+                rows = rows.push(match &game.proton {
+                    None => status_row(
+                        typo,
+                        Level::Info,
+                        t("row_proton"),
+                        t("row_proton_default").into(),
                     ),
-                ),
-            });
-            rows = rows.push(match &game.prefix {
-                Some(prefix) => status_row(
-                    typo,
-                    Level::Ok,
-                    t("row_prefix"),
-                    prefix.display().to_string(),
-                ),
-                None => status_row(
-                    typo,
-                    Level::Warn,
-                    t("row_prefix"),
-                    t("row_prefix_missing").into(),
-                ),
-            });
+                    Some(name) if name == pins::PROTON_TESTED => {
+                        status_row(typo, Level::Ok, t("row_proton"), name.clone())
+                    }
+                    Some(name) => status_row(
+                        typo,
+                        Level::Warn,
+                        t("row_proton"),
+                        t_fmt(
+                            "row_proton_untested",
+                            &[("name", name), ("tested", pins::PROTON_TESTED)],
+                        ),
+                    ),
+                });
+                rows = rows.push(match &game.prefix {
+                    Some(prefix) => status_row(
+                        typo,
+                        Level::Ok,
+                        t("row_prefix"),
+                        prefix.display().to_string(),
+                    ),
+                    None => status_row(
+                        typo,
+                        Level::Warn,
+                        t("row_prefix"),
+                        t("row_prefix_missing").into(),
+                    ),
+                });
+            }
             rows = rows.push(match &found.ue4ss {
                 None => status_row(
                     typo,
@@ -651,26 +654,28 @@ fn detect_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
                     ),
                 ),
             });
-            rows = rows.push(match found.dll_override {
-                Some(Override::Registry) => status_row(
-                    typo,
-                    Level::Ok,
-                    t("row_override"),
-                    t("row_override_registry").into(),
-                ),
-                Some(Override::LaunchOptions) => status_row(
-                    typo,
-                    Level::Ok,
-                    t("row_override"),
-                    t("row_override_launch").into(),
-                ),
-                _ => status_row(
-                    typo,
-                    Level::Warn,
-                    t("row_override"),
-                    t("row_override_missing").into(),
-                ),
-            });
+            if platform::PROTON {
+                rows = rows.push(match found.dll_override {
+                    Some(Override::Registry) => status_row(
+                        typo,
+                        Level::Ok,
+                        t("row_override"),
+                        t("row_override_registry").into(),
+                    ),
+                    Some(Override::LaunchOptions) => status_row(
+                        typo,
+                        Level::Ok,
+                        t("row_override"),
+                        t("row_override_launch").into(),
+                    ),
+                    _ => status_row(
+                        typo,
+                        Level::Warn,
+                        t("row_override"),
+                        t("row_override_missing").into(),
+                    ),
+                });
+            }
         }
     }
     let compatible = found

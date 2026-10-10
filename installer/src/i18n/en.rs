@@ -418,6 +418,14 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_bridge_mode",
         "The bridge directory must belong to this user with mode 0700: {path}",
     ),
+    (
+        "err_bridge_volume",
+        "The bridge directory must be on a local NTFS disk, never a network share: {path}",
+    ),
+    (
+        "err_bridge_ascii",
+        "Stellar Blade's Lua opens only ASCII paths, and this folder has other characters and no short (8.3) name: {path}",
+    ),
     ("err_no_ancestor", "No existing folder above {path}"),
     (
         "err_process_list",
