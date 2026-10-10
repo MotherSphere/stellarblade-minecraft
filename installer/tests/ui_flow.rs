@@ -723,6 +723,29 @@ fn a_server_operator_makes_a_server_folder() {
     assert!(dry.outcome.as_ref().unwrap().dry_run);
     assert!(!other.exists());
 
+    // The EULA box ticked for one folder does not carry over to another.
+    let mut retyped = start(&fake, false);
+    let (first, second) = (fake.home.join("srv/first"), fake.home.join("srv/second"));
+    drive(&mut retyped, Message::Role(Role::Server));
+    drive(&mut retyped, Message::Start);
+    drive(
+        &mut retyped,
+        Message::ServerPath(first.display().to_string()),
+    );
+    drive(&mut retyped, Message::ServerCheck);
+    drive(&mut retyped, Message::ServerEula(true));
+    drive(
+        &mut retyped,
+        Message::ServerPath(second.display().to_string()),
+    );
+    drive(&mut retyped, Message::ServerCheck);
+    assert!(!retyped.server_eula);
+    drive(&mut retyped, Message::Begin(Action::Server));
+    assert!(retyped.outcome.as_ref().unwrap().ok);
+    assert!(second.join(server::LAUNCHER).is_file());
+    assert!(!second.join("eula.txt").exists());
+    assert!(!first.exists());
+
     // A check that ends after the folder was retyped does not arm the page for the old folder.
     let mut late = start(&fake, false);
     let stale = fake.home.join("srv/stale");
