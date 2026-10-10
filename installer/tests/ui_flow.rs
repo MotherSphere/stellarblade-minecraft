@@ -722,4 +722,27 @@ fn a_server_operator_makes_a_server_folder() {
     drive(&mut dry, Message::Begin(Action::Server));
     assert!(dry.outcome.as_ref().unwrap().dry_run);
     assert!(!other.exists());
+
+    // A check that ends after the folder was retyped does not arm the page for the old folder.
+    let mut late = start(&fake, false);
+    let stale = fake.home.join("srv/stale");
+    drive(&mut late, Message::Role(Role::Server));
+    drive(&mut late, Message::Start);
+    drive(&mut late, Message::ServerPath(stale.display().to_string()));
+    let job = late.step(Message::ServerCheck).unwrap();
+    drive(
+        &mut late,
+        Message::ServerPath(fake.home.join("srv/fresh").display().to_string()),
+    );
+    let sent = RefCell::new(Vec::new());
+    job.run(&|m| sent.borrow_mut().push(m));
+    for message in sent.into_inner() {
+        drive(&mut late, message);
+    }
+    assert!(late.server.is_none());
+    assert!(!late.server_checking, "the page can check the new folder");
+    drive(&mut late, Message::ServerEula(true));
+    drive(&mut late, Message::Begin(Action::Server));
+    assert_eq!(late.screen, Screen::Server);
+    assert!(!stale.exists());
 }

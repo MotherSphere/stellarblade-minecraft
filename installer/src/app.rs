@@ -475,7 +475,8 @@ pub enum Message {
     ServerPath(String),
     /// Reads the typed server folder and the Java version.
     ServerCheck,
-    ServerChecked(Box<Result<ServerCheck, String>>),
+    /// The folder text the check read, and what it found.
+    ServerChecked(String, Box<Result<ServerCheck, String>>),
     /// The operator accepts Mojang's EULA for a folder without `eula.txt`.
     ServerEula(bool),
 }
@@ -490,7 +491,7 @@ pub enum Job {
     Run(Box<Work>),
     /// Reads a server folder and runs `java -version`; writes nothing.
     ServerCheck {
-        dir: PathBuf,
+        typed: String,
         java: OsString,
     },
 }
@@ -542,14 +543,14 @@ impl Job {
                 };
                 send(Message::Finished(result.map_err(|e| localized(&e))));
             }
-            Job::ServerCheck { dir, java } => {
-                let checked = server::inspect(&dir)
+            Job::ServerCheck { typed, java } => {
+                let checked = server::inspect(Path::new(&typed))
                     .map(|folder| ServerCheck {
                         folder,
                         java: server::java_version(&java),
                     })
                     .map_err(|e| localized(&e));
-                send(Message::ServerChecked(Box::new(checked)));
+                send(Message::ServerChecked(typed, Box::new(checked)));
             }
         }
     }
@@ -1160,7 +1161,7 @@ impl App {
         }
         self.server_checking = true;
         Some(Job::ServerCheck {
-            dir: PathBuf::from(typed),
+            typed: typed.to_string(),
             java: self.ctx.java.clone(),
         })
     }
@@ -1512,9 +1513,14 @@ impl App {
                 self.server_path = path;
                 self.server = None;
                 self.server_eula = false;
+                // A check still running reads the old text and is dropped when it ends.
+                self.server_checking = false;
             }
             Message::ServerCheck => return self.check_server(),
-            Message::ServerChecked(checked) => {
+            // A check of a folder the operator has since retyped would arm the page for a folder it no longer
+            // shows; only the check of the text in the field counts.
+            Message::ServerChecked(typed, _) if typed != self.server_path.trim() => {}
+            Message::ServerChecked(_, checked) => {
                 self.server_checking = false;
                 match *checked {
                     Ok(check) => {
