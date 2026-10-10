@@ -55,3 +55,19 @@ The implementation limits terrain to one 40 × 24 × 40 window that follows EVE 
 [SkyCraft](https://github.com/chasmlol/SkyCraft/tree/bfcaf178524b92c2cdeb88e4ce0f13ef9ded6f32) supplies the adapted triple-buffer exchange and useful examples of persistent staging/textures and newest-ready consumption. [PR 26](https://github.com/chasmlol/SkyCraft/pull/26) illustrates Linux file-backed transport. This bridge keeps fresh run identities and explicit release acknowledgements instead of resetting an in-use mapping.
 
 [2010 Rust rewrite mashup](https://github.com/chasmlol/2010-rust-rewrite-mashup/tree/f608f85e407ff1b7689d54a9aafdd16e95711ac4) provides allocation-reuse and rendering-diagnostic examples. The Java buffer reuse follows the same principle without importing its engine or dependencies. See [wire contracts](../protocol/README.md) and [third-party notices](../THIRD-PARTY-NOTICES.md).
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `minecraft/` | Fabric mod, renderer, input bridge and Java tests |
+| `stellar/Mods/StellarCollisionProbe/` | Deployable UE4SS Lua mod |
+| `stellar/tests/` | Lua protocol, geometry and lifecycle tests |
+| `native/src/`, `native/include/` | Version-pinned Windows capture/input adapter |
+| `native/tests/`, `native/fixtures/` | Portable checks and isolated Windows test hosts |
+| `protocol/` | Shared wire contract and fixtures |
+| `tools/`, `tools/tests/` | Offline checks and owned-installation tools |
+| `installer/` | Stellar Bridge, the Rust installer for Linux ([its README](../installer/README.md)) |
+| `docs/` | Playing, setup, multiplayer, architecture and diagnostic reference |
+
+[Build and check](setup.md#build-and-check) runs every component's offline checks. The separate terrain renderer inside Stellar Blade is a diagnostic, not the main gameplay route.

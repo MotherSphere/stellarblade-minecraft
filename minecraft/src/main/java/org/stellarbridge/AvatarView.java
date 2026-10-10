@@ -330,7 +330,7 @@ public final class AvatarView {
     static void initialize() {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registry) -> {
             var command = ClientCommandManager.literal("stellaravatar");
-            // Development tools for the one-PC network test (docs/setup.md), with -Dstellarbridge.netTools=true only.
+            // Development tools for the one-PC network test (docs/multiplayer.md), with -Dstellarbridge.netTools=true only.
             if (RemoteEves.TOOLS) command
                     .then(ClientCommandManager.literal("echo").executes(context -> {
                         context.getSource().sendFeedback(Text.literal(RemoteEves.toggleEcho()
