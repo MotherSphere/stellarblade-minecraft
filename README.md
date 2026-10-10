@@ -19,7 +19,7 @@ Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world a
 
 1. Build Stellar Bridge, the installer, from a checkout: no release is published yet ([setup](docs/setup.md#installer)).
 2. Close Stellar Blade and Minecraft and run it. It finds your games and installs into a dedicated Prism instance or one you pick.
-3. In a private test world, run `/stellar start`, `/stellar import`, `/stellar enter`, then `/stellaravatar play` ([playing](docs/playing.md#start-a-session)).
+3. In a private test world, run `/stellar start`, `/stellar import`, `/stellar enter`, then `/stellaravatar play` ([playing](docs/playing.md#start-a-session)). Avatar mode needs the private avatar pack, which the installer does not build yet ([diagnostics](docs/diagnostics.md#avatar-view-experimental)); without it, `/stellarview play` starts capture mode.
 
 ## Documentation
 
