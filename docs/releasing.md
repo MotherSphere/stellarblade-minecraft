@@ -26,10 +26,10 @@ The project has a single version: the JAR, the installer and the release share i
 | `stellar-bridge-installer-linux-x86_64` | Linux: Stellar Bridge, the installer, with the payload embedded (the Lua mod, the DLL, the JAR and Fabric API). Needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12 and newer). Make it executable with `chmod +x`. |
 | `stellar-bridge-X.Y.Z.jar` | Every platform: the Fabric mod, for clients, servers and viewers. Fabric API 0.116.17+1.21.1 is a separate download. |
 | `xinput1_3.dll` | Windows x64: the native adapter Stellar Blade loads, for a [manual install](setup.md#install). |
-| `StellarCollisionProbe-X.Y.Z.zip` | The UE4SS Lua mod, as one `StellarCollisionProbe/` folder for `ue4ss/Mods`. |
+| `StellarCollisionProbe-X.Y.Z.zip` | The UE4SS Lua mod as one `StellarCollisionProbe/` folder. It stays inactive until `bridge_config.lua` exists; the installer or `tools/deploy.py` writes it (see [setup](setup.md#install)). |
 | `SHA256SUMS` | The SHA-256 of every other asset. |
 
-The installer's payload holds the same bytes as the separate JAR and DLL. There is no Windows installer yet: the installer builds only on Unix today, and Windows support comes with phase G3 ([installer](../installer/README.md)). Windows players and server hosts take the JAR, the DLL and the Lua mod.
+The installer's payload holds the same bytes as the separate JAR and DLL. There is no Windows installer yet: the installer builds only on Unix today, and Windows support comes with phase G3 ([installer](../installer/README.md)). Server hosts and viewers on any OS take the JAR. Playing needs Linux with Proton today; native Windows support is planned.
 
 The release DLL is built on GitHub's Windows runner with Visual Studio's ClangCL toolset, the compiler family of the local clang-cl/xwin build. `/Brepro` makes each toolchain reproducible, but the two toolchains do not produce the same bytes, so check a new toolchain's DLL in game before relying on it.
 
