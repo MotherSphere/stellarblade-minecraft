@@ -323,6 +323,16 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
         ("action_up_to_date", false),
         "repaired"
     );
+    // Reproducible builds: a docs-only release has the same pieces under a new name, still recorded by an update.
+    let mut renamed = Arc::into_inner(payload(1)).unwrap();
+    renamed.release = "0.1.0+docs".into();
+    app.ctx.payload = Some(Arc::new(renamed));
+    drive(&mut app, Message::Rescan);
+    assert_eq!(
+        app.primary_action(),
+        ("action_update", true),
+        "same pieces, another release"
+    );
     app.ctx.payload = Some(payload(2));
     drive(&mut app, Message::Rescan);
     assert_eq!(
@@ -544,6 +554,30 @@ fn a_viewer_and_a_python_tools_install() {
             .is_file()
     );
     assert!(mods::ownership(&instance.join("minecraft/mods")).is_ok());
+}
+
+/// A viewer install is up to date as a viewer only: picking EVE offers the update that adds the game side.
+#[test]
+fn a_viewer_can_add_the_game_side() {
+    let _language = language();
+    let fake = fake();
+    let mut app = start(&fake, false);
+    for message in [
+        Message::Role(Role::Viewer),
+        Message::Start,
+        Message::Continue,
+        Message::Choose(Choice::NewInstance(0)),
+        Message::ToConsent,
+        Message::Consent(true),
+        Message::Begin(Action::Install),
+        Message::Rescan,
+    ] {
+        drive(&mut app, message);
+    }
+    assert!(app.outcome.is_none() && errors(&app).is_empty());
+    assert_eq!(app.primary_action(), ("action_up_to_date", false));
+    drive(&mut app, Message::Role(Role::Eve));
+    assert_eq!(app.primary_action(), ("action_update", true));
 }
 
 /// A foreign xinput1_3.dll (UE4SS 2.x uses that name) shows on the detect page and blocks the EVE install there,

@@ -707,13 +707,19 @@ impl App {
             .then_some("blocker_game_files")
     }
 
-    /// The status page's primary button: its label key, and whether it starts the wizard. Up to date, it stays
-    /// disabled; repair and uninstall remain beside it.
+    /// The status page's primary button: its label key, and whether it starts the wizard. Up to date for the chosen
+    /// role, it stays disabled; repair and uninstall remain beside it. A viewer who picks EVE can still add the game
+    /// side.
     pub fn primary_action(&self) -> (&'static str, bool) {
         let found = self.found.as_ref();
         if !found.is_some_and(Found::installed) {
             ("action_install", self.can_continue())
-        } else if found.is_some_and(|f| f.up_to_date(self.ctx.payload.as_deref())) {
+        } else if found.is_some_and(|f| {
+            f.up_to_date(self.ctx.payload.as_deref())
+                && f.current
+                    .as_ref()
+                    .is_some_and(|t| t.game.is_some() == (self.role == Role::Eve))
+        }) {
             ("action_up_to_date", false)
         } else {
             ("action_update", self.can_continue())
