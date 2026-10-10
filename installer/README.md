@@ -2,9 +2,9 @@
 
 <img src="assets/logo.svg" alt="Stellar Bridge logo" width="96">
 
-`stellar-bridge-installer` installs, updates and removes the bridge on Linux with Stellar Blade under Proton and Minecraft in Prism or MultiMC: the UE4SS Lua mod, the XInput adapter, the bridge JAR and Fabric API. It is a Colony program (iced 0.14 and colony-ui 0.1.6), licensed GPL-3.0-or-later like the rest of the repository.
+`stellar-bridge-installer` installs, updates and removes the bridge with Minecraft in Prism or MultiMC and Stellar Blade under Proton on Linux or natively on Windows: the UE4SS Lua mod, the XInput adapter, the bridge JAR and Fabric API. It also sets up Fabric server folders. It is a Colony program (iced 0.14 and colony-ui 0.1.6), licensed GPL-3.0-or-later like the rest of the repository.
 
-**Status: G1.** It covers today's setup, Stellar Blade under Proton and Minecraft in Prism or MultiMC on Linux. It installs, updates, repairs, rolls back and uninstalls through a window. It writes nothing until you have seen the list of files and agreed. The avatar pack is detected but not built (G2), and Windows comes later (G3, G4).
+**Status: G1 on Linux, tested on the real install; G3 and G4 in code.** It installs, updates, repairs, rolls back and uninstalls through a window, and writes nothing until you have seen the list of files and agreed. Server folders work from the window and from the command line. The Windows build (Windows 11, and Windows 10 22H2 as a courtesy) covers EVE players, viewers and servers; its tests run under Wine here, and it still needs the Windows CI job and one grouped test on a real Windows PC. The avatar pack is detected but not built (G2).
 
 ## Using it
 
@@ -41,12 +41,21 @@ stellar-bridge-installer --server /srv/minecraft --uninstall     # remove the br
 
 It exits with 0 on success, 1 on a refusal or failure (the reason on stderr) and 2 on a usage error.
 
-| What | Where |
-|---|---|
-| `state.json`, `previous/<release>/`, `save-backups/` | `~/.local/share/Colony/Stellar Bridge/` |
-| Preferences (theme, sizes, dyslexia font, reduced motion, language) | `~/.config/Colony/Stellar Bridge/preferences.json` |
-| Log (one run, truncated at each start, also on stderr) | `~/.cache/Colony/Stellar Bridge/stellar-bridge.log` |
-| Bridge and avatar folders | `~/.local/share/stellar-blade-minecraft/{bridge,avatar}`, or inside the Flatpak Prism sandbox for its dedicated instance |
+### On Windows
+
+The same pages, with what differs on a native Windows install:
+
+- **Detect** finds Steam where the registry says it is (read only) or in its default folder, then its libraries through `libraryfolders.vdf`; Prism in `%APPDATA%\PrismLauncher`; MultiMC by its folder, as on Linux. There is no Proton tool, prefix or DLL override: Windows loads `xinput1_3.dll` from the game folder, so the done page shows no launch options. The saves are looked for in `%LOCALAPPDATA%\SB\Saved\SaveGames`, then in the two other folders guides name.
+- **The bridge folder** is `%USERPROFILE%\.local\share\stellar-blade-minecraft\bridge`, where the bridge JAR looks by default. It must be on a local NTFS disk, never a network share. UE4SS's Lua opens files with narrow paths, so the Lua config and the adapter's directory file hold the same ASCII string: the path itself, or for a profile such as `C:\Users\Clément` its 8.3 short form; without a short name the install is refused.
+- **Games closed** reads the live process list: `SB-Win64-Shipping.exe` or `SB.exe`, and `java.exe` or `javaw.exe` with a Minecraft command line (one that cannot be read, as for an elevated process, counts as Minecraft).
+- The exe runs as the user who starts it, never elevated. Started by a double click, it hides the console Windows gives it; from a terminal, `--help`, `--version` and `--server` print there.
+
+| What | Linux | Windows |
+|---|---|---|
+| `state.json`, `previous/<release>/`, `save-backups/` | `~/.local/share/Colony/Stellar Bridge/` | `%LOCALAPPDATA%\Colony\Stellar Bridge\` |
+| Preferences (theme, sizes, dyslexia font, reduced motion, language) | `~/.config/Colony/Stellar Bridge/preferences.json` | `%LOCALAPPDATA%\Colony\Stellar Bridge\preferences.json` |
+| Log (one run, truncated at each start, also on stderr) | `~/.cache/Colony/Stellar Bridge/stellar-bridge.log` | `%LOCALAPPDATA%\Colony\Stellar Bridge\cache\stellar-bridge.log` |
+| Bridge and avatar folders | `~/.local/share/stellar-blade-minecraft/{bridge,avatar}`, or inside the Flatpak Prism sandbox for its dedicated instance | `%USERPROFILE%\.local\share\stellar-blade-minecraft\{bridge,avatar}` |
 
 The default theme is colony-ui's Stellar Blade EVE palette. The program's name opens the Preferences page.
 
@@ -54,7 +63,7 @@ The default theme is colony-ui's Stellar Blade EVE palette. The program's name o
 
 | Module | Role |
 |---|---|
-| `detect` | Steam roots and libraries (`libraryfolders.vdf`), Stellar Blade (`appmanifest_3489700.acf`, build id, executable pin), its Proton prefix and tool, launch options, UE4SS and its `Mods` folder, the `xinput1_3` override and the launch options to copy when it is missing, the avatar pack and whether it matches the game files it was built from |
+| `detect` | Steam roots (from `platform`) and libraries (`libraryfolders.vdf`), Stellar Blade (`appmanifest_3489700.acf`, build id, executable pin), its Proton prefix and tool, launch options, UE4SS and its `Mods` folder, the `xinput1_3` override and the launch options to copy when it is missing, the avatar pack and whether it matches the game files it was built from |
 | `launcher` | Prism (native and Flatpak) and MultiMC instances from `instance.cfg` and `mmc-pack.json`; the dedicated `Stellar Bridge 1.21.1` instance (Minecraft 1.21.1, Fabric Loader 0.19.5, and for a Flatpak Prism the bridge folders inside its sandbox as Java arguments); a manual `mods` folder for other launchers |
 | `ops` | Install (also the update), repair, roll back, uninstall and verify on a target: the Stellar Blade side (executable, UE4SS and its `Mods` folder, prefix, saves), a Minecraft `mods` folder and the bridge directory |
 | `payload` | The pieces this release carries, embedded at build time (see below), and a kept previous set loaded back for a rollback |
@@ -64,7 +73,7 @@ The default theme is colony-ui's Stellar Blade EVE palette. The program's name o
 | `safety` | Games closed (`/proc`, failing closed), a server running in its folder, protected-file snapshots, save tree hashes and a verified save backup |
 | `ledger` | `state.json`, the previous owned set for rollback, under `~/.local/share/Colony/Stellar Bridge/` |
 | `server` | Server folder mode: what a server folder holds, the Java check, a new server from the embedded launcher, the bridge in `mods/`, `eula.txt` only on request, `.stellar-bridge-server.json` |
-| `platform` | The Proton `Z:` path, the private bridge directory check, the process list, Steam root candidates |
+| `platform` | The only module with Linux and Windows branches: the process list (`/proc`, or sysinfo on Windows), the path the game side opens (Proton's `Z:` form, or a Windows ASCII or 8.3 path), the private bridge directory (owner and 0700, or a local NTFS disk), where Steam (the registry on Windows, read only), Prism and the saves are, the home folder, and paths without Windows' `\\?\` prefix |
 | `app` | The window's state machine; detection, hashing and every operation run as jobs on a worker thread |
 | `ui` | The pages, drawn with iced 0.14 and colony-ui 0.1.6 (identity button, Preferences page, toasts), plus the error toast, buttons, status rows and the modal |
 | `i18n` | English and French strings, one file per locale, falling back to colony-ui's shared labels |
@@ -93,12 +102,13 @@ A Lua mod and adapter installed by the Python tools count as owned and are updat
 - Stellar Blade, Minecraft (and the launcher, when its files change) are closed before every write, checked again between files.
 - Foreign or modified content is refused and never forced. `enabled.txt` and the DLL are written last.
 - It never writes saves, overrides, the Proton registry, Steam settings, UE4SS, `dwmapi.dll`, `dinput8.dll` or other mods. It never launches a game or a launcher, and never opens Prism's `accounts.json`; from Steam's `config.vdf` it reads only `CompatToolMapping`.
-- The `xinput1_3` override is detected (prefix `user.reg` or launch options) and otherwise shown to copy: `WINEDLLOVERRIDES="xinput1_3=n,b" %command%`.
+- The `xinput1_3` override is detected (prefix `user.reg` or launch options) and otherwise shown to copy: `WINEDLLOVERRIDES="xinput1_3=n,b" %command%`. Windows needs none.
+- On Windows it reads the registry only to find Steam, and writes none.
 - In a server folder it never accepts Mojang's EULA for the operator, never writes `server.properties` or the worlds, and never starts the server.
 
 ## Build and check
 
-From the repository root, `python tools/check.py --only installer` runs `cargo fmt --check`, `cargo build --locked`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` in this folder. The payload is staged from the current JAR and DLL when both are built, and the complete `python tools/check.py` builds them first. The tests use temporary fake trees only and need `python3`. `tests/ui_flow.rs` walks the window's state machine through every page on a fake home: it creates a dedicated instance, installs, and goes through the games modal, repair, update, roll back and uninstall. It also checks that a dry run leaves the tree byte for byte as it was, that an install by the Python tools is detected and uninstalled, and that the server page makes a new server folder, writes `eula.txt` only with the box ticked and stops while a server runs there. The server tests run a fake `java` that prints a version.
+From the repository root, `python tools/check.py --only installer` runs `cargo fmt --check`, `cargo build --locked`, `cargo clippy --locked --all-targets -- -D warnings` and `cargo test --locked` in this folder. The payload is staged from the current JAR and DLL when both are built, and the complete `python tools/check.py` builds them first. The tests use temporary fake trees only and need `python3`. On Windows the unit tests and `tests/operations.rs` run too; `tests/ui_flow.rs` (a fake Linux home and `/proc`) and `tests/cross_tool.rs` (the Linux-only Python tools) are Linux only. `tests/ui_flow.rs` walks the window's state machine through every page on a fake home: it creates a dedicated instance, installs, and goes through the games modal, repair, update, roll back and uninstall. It also checks that a dry run leaves the tree byte for byte as it was, that an install by the Python tools is detected and uninstalled, and that the server page makes a new server folder, writes `eula.txt` only with the box ticked and stops while a server runs there. The server tests run a fake `java` that prints a version.
 
 A release binary with the payload, after a complete check on a committed tree:
 

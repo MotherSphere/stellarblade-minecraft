@@ -74,7 +74,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("never_touched_title", "Jamais modifié"),
     (
         "never_touched",
-        "Vos sauvegardes (une copie est faite une fois, avant la première installation), UE4SS, dwmapi.dll, dinput8.dll, les autres mods, les réglages et options de lancement Steam, et le registre du préfixe Proton. L'installateur ne lance jamais un jeu ni un launcher.",
+        "Vos sauvegardes (une copie est faite une fois, avant la première installation), UE4SS, dwmapi.dll, dinput8.dll, les autres mods, les réglages et options de lancement Steam, et le registre (celui du préfixe Proton sous Linux, celui de Windows, qu'il lit seulement pour trouver Steam). L'installateur ne lance jamais un jeu ni un launcher.",
     ),
     // Detect
     ("detect_title", "Ce qui se trouve sur ce PC"),

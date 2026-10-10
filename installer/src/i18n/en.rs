@@ -71,7 +71,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("never_touched_title", "Never touched"),
     (
         "never_touched",
-        "Your saves (a copy is made once, before the first install), UE4SS, dwmapi.dll, dinput8.dll, other mods, Steam settings and launch options, and the Proton prefix registry. The installer never starts a game or a launcher.",
+        "Your saves (a copy is made once, before the first install), UE4SS, dwmapi.dll, dinput8.dll, other mods, Steam settings and launch options, and the registry (the Proton prefix's on Linux, Windows' own, which it only reads to find Steam). The installer never starts a game or a launcher.",
     ),
     // Detect
     ("detect_title", "What is on this PC"),
