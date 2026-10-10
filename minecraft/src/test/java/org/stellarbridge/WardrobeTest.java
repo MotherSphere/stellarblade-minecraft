@@ -118,7 +118,8 @@ public final class WardrobeTest {
             assert Wardrobe.stalePack(pack) == null : "No manifest: a pack from before mod tracking";
             Map<String, String> found = Wardrobe.sources(paks);
             assert found.keySet().equals(java.util.Set.of("pakchunk0-WindowsNoEditor.pak", "~mods/My Mod/My Mod_P.utoc")) : found;
-            assert Wardrobe.sources(Files.createSymbolicLink(root.resolve("Linked"), paks)).equals(found) : "A symlinked Paks folder (a moved library)";
+            if (BridgeRuntimeTest.symlink(root.resolve("Linked"), paks))
+                assert Wardrobe.sources(root.resolve("Linked")).equals(found) : "A symlinked Paks folder (a moved library)";
             StringBuilder written = new StringBuilder("SBAVPACK 1\nPAKS " + paks + "\n");
             found.forEach((path, stamp) -> written.append("SOURCE ").append(path).append(' ').append(stamp).append('\n'));
             Files.writeString(pack.resolve("pack.txt"), written.append("END\n"));

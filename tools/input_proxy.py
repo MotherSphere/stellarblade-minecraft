@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import sys
 
 SUPPORTED_HASH = '573aaff1c9455f85ea6036ef6f6ccb0774de4164722a296276fbbfc7fa87545c'
 MANIFEST = '.stellar-input-deployment.json'
@@ -118,6 +119,9 @@ def main():
     parser.add_argument('--bridge-dir', type=Path)
     args = parser.parse_args()
     try:
+        # Its game check scans /proc and its paths go through Proton's Z: drive: on Windows it would report the game
+        # closed and write a Linux path.
+        if sys.platform != 'linux': raise ValueError('Linux developer tool; Windows players use the installer')
         if args.command == 'install':
             if args.dll is None or args.bridge_dir is None: raise ValueError('Install requires --dll and --bridge-dir')
             result = install(args.game_exe, args.dll, args.bridge_dir)

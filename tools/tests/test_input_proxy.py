@@ -1,8 +1,10 @@
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import struct
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -89,6 +91,17 @@ class InputProxyTests(unittest.TestCase):
         self.pad.write_bytes(self.pad.read_bytes() + 'stellar_input_fake_host.exe'.encode('utf-16-le'))
         with self.assertRaises(ValueError): self.install()
         self.assertEqual(len(list(self.game.iterdir())), 3)
+
+    def test_other_systems_are_refused_before_writes(self):
+        for argv in (['install', '--game-exe', str(self.exe), '--dll', str(self.pad), '--bridge-dir', str(self.bridge)],
+                     ['remove', '--game-exe', str(self.exe)]):
+            with mock.patch.object(self.proxy.sys, 'platform', 'win32'), \
+                 mock.patch.object(sys, 'argv', ['input_proxy.py', *argv]), \
+                 mock.patch.object(sys, 'stderr', new_callable=io.StringIO) as error:
+                with self.assertRaises(SystemExit) as stopped: self.proxy.main()
+            self.assertEqual(stopped.exception.code, 1)
+            self.assertIn('Linux developer tool; Windows players use the installer', error.getvalue())
+            self.assertEqual(len(list(self.game.iterdir())), 3)
 
     def test_failed_copy_rolls_back_only_new_owned_files(self):
         original = self.proxy.write_new

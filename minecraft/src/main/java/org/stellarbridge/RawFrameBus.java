@@ -1,10 +1,6 @@
 package org.stellarbridge;
 
-import com.sun.jna.Library;
-import com.sun.jna.Native;
-import com.sun.jna.NativeLong;
 import com.sun.jna.Platform;
-import com.sun.jna.Pointer;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
@@ -22,22 +18,14 @@ final class RawFrameBus implements AutoCloseable {
     static final VarHandle LONG = MethodHandles.byteBufferViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
     private static final long MAX = 9007199254740991L;
     private static final byte[] MAGIC = "SBMCFRM1".getBytes(StandardCharsets.US_ASCII);
-    interface LibC extends Library {
-        int open(String path, int flags, int mode);
-        int ftruncate(int fd, NativeLong length);
-        Pointer mmap(Pointer address, NativeLong length, int protection, int flags, int fd, NativeLong offset);
-        int munmap(Pointer address, NativeLong length);
-        int close(int fd);
-    }
-    static final LibC C = Native.load("c", LibC.class); // Shared with AvatarStream's pose mapping.
     final Path path;
     final String run, session;
     final int width, height, planeBytes, stride, bytes;
     private final long createdNanos = System.nanoTime();
     private final byte[] identity;
-    private Pointer address;
+    private SharedMapping shared;
     private ByteBuffer map;
-    private int fd = -1, front = 2, producerPid;
+    private int front = 2, producerPid;
     private long previousCounter;
     private long heartbeatMillis, heartbeatNanos;
     private boolean stopped, pendingDelete;
@@ -46,7 +34,8 @@ final class RawFrameBus implements AutoCloseable {
     private boolean poolClosed;
 
     RawFrameBus(Path directory, String run, String session, int width, int height, long nowMs) throws IOException {
-        if (!Platform.isLinux() || Native.POINTER_SIZE != 8) throw new IOException("Raw frames require 64-bit Linux");
+        // Capture mode stays Linux-only (its asynchronous close watch is inotify); avatar mode is the Windows path.
+        if (!Platform.isLinux()) throw new IOException("Raw frames require Linux: capture mode is Linux-only, use /stellaravatar play");
         require(run.matches("[0-9a-f]{32}") && session.matches("[0-9a-f]{32}"), "Invalid raw capture identity");
         require(width >= 1 && width <= MAX_WIDTH && height >= 1 && height <= MAX_HEIGHT, "Raw capture dimensions exceed 4K bounds");
         this.run = run; this.session = session; this.width = width; this.height = height;
@@ -56,18 +45,14 @@ final class RawFrameBus implements AutoCloseable {
         path = new BridgeFiles(directory).checked("eve-frames-" + run + ".bin");
         identity = (run + session).getBytes(StandardCharsets.US_ASCII);
         try {
-            fd = C.open(path.toString(), 2 | 64 | 128 | 0x20000 | 0x80000, 0600); // RDWR, CREAT, EXCL, NOFOLLOW, CLOEXEC.
-            if (fd < 0) throw new IOException("Cannot exclusively create raw capture mapping: errno " + Native.getLastError());
-            if (C.ftruncate(fd, new NativeLong(bytes)) != 0) throw new IOException("Cannot size raw capture mapping");
-            address = C.mmap(null, new NativeLong(bytes), 3, 1, fd, new NativeLong(0)); // READ|WRITE, MAP_SHARED.
-            if (Pointer.nativeValue(address) == -1) { address = null; throw new IOException("Cannot map raw capture file"); }
-            map = address.getByteBuffer(0, bytes).order(ByteOrder.LITTLE_ENDIAN);
+            shared = new SharedMapping(path, bytes, "raw capture mapping");
+            map = shared.map;
             map.put(0, MAGIC).putInt(8, 1).putInt(12, HEADER).putInt(16, width).putInt(20, height)
                     .putInt(24, stride).putInt(28, bytes).put(32, identity).putInt(96, Math.toIntExact(ProcessHandle.current().pid()));
             LONG.setRelease(map, 264, nowMs);
             INT.setRelease(map, 256, 1);
         } catch (IOException | RuntimeException | Error failure) {
-            boolean created = fd >= 0;
+            boolean created = shared != null; // SharedMapping removes what it created when it fails itself.
             unmap();
             if (created) Files.deleteIfExists(path);
             throw failure;
@@ -186,8 +171,7 @@ final class RawFrameBus implements AutoCloseable {
             free.clear();
         }
         map = null;
-        if (address != null) { C.munmap(address, new NativeLong(bytes)); address = null; }
-        if (fd >= 0) { C.close(fd); fd = -1; }
+        if (shared != null) { shared.close(); shared = null; }
     }
     static int[] dimensions(int width, int height) {
         if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid framebuffer dimensions");

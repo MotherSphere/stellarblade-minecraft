@@ -34,6 +34,11 @@ public final class RawFrameBusTest {
         assert java.util.Arrays.equals(RawFrameBus.dimensions(5120, 2880), new int[] {3840, 2160});
         assert java.util.Arrays.equals(RawFrameBus.dimensions(2560, 1440), new int[] {2560, 1440});
         assert Math.abs(CaptureProjection.horizontalExtent(1080, 1920, 1080, 1920) - 1) < 1e-8;
+        if (!com.sun.jna.Platform.isLinux()) {
+            rejects(() -> new RawFrameBus(Path.of("unused"), RUN, SESSION, 2, 2, System.currentTimeMillis())); // Refused first.
+            System.out.println("SKIP raw frame mappings: capture mode is Linux-only");
+            return;
+        }
         Path directory = Files.createTempDirectory("stellar-raw-frames-");
         try {
             long now = System.currentTimeMillis();
