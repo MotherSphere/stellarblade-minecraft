@@ -17,11 +17,14 @@ fn walk(root: &Path, dir: &Path, code: &mut String) {
         if metadata.is_dir() {
             walk(root, &path, code);
         } else if metadata.is_file() {
+            // '/'-joined like payload.json's names, also when the build runs on Windows.
             let relative = path
                 .strip_prefix(root)
                 .unwrap()
-                .to_str()
-                .expect("UTF-8 payload path");
+                .components()
+                .map(|c| c.as_os_str().to_str().expect("UTF-8 payload path"))
+                .collect::<Vec<_>>()
+                .join("/");
             let absolute = path.to_str().expect("UTF-8 payload path");
             writeln!(code, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
         } else {
@@ -44,6 +47,63 @@ fn main() {
         walk(&dir, &dir, &mut code);
     }
     code.push_str("];\n");
-    let out = Path::new(&env::var_os("OUT_DIR").unwrap()).join("payload.rs");
-    fs::write(out, code).unwrap();
+    let out = Path::new(&env::var_os("OUT_DIR").unwrap()).to_path_buf();
+    fs::write(out.join("payload.rs"), code).unwrap();
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        windows_resources(&out);
+    }
+}
+
+/// The Windows exe's icon, version information (this crate's version) and manifest (asInvoker: never elevated).
+fn windows_resources(out: &Path) {
+    let assets = Path::new(&env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("assets");
+    for name in ["icon.ico", "stellar-bridge-installer.manifest"] {
+        println!("cargo:rerun-if-changed={}", assets.join(name).display());
+    }
+    // Resource scripts read backslashes as escapes: forward slashes work for both rc.exe and llvm-rc.
+    let assets = assets.display().to_string().replace('\\', "/");
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let mut numbers = version
+        .split(['.', '-', '+'])
+        .map(|n| n.parse::<u16>().unwrap_or(0));
+    let mut next = || numbers.next().unwrap_or(0);
+    let numeric = format!("{},{},{},0", next(), next(), next());
+    let script = format!(
+        r#"1 ICON "{assets}/icon.ico"
+1 24 "{assets}/stellar-bridge-installer.manifest"
+1 VERSIONINFO
+FILEVERSION {numeric}
+PRODUCTVERSION {numeric}
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0x0
+FILEOS 0x40004
+FILETYPE 0x1
+FILESUBTYPE 0x0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Colony"
+      VALUE "FileDescription", "Stellar Bridge installer"
+      VALUE "FileVersion", "{version}"
+      VALUE "InternalName", "stellar-bridge-installer"
+      VALUE "LegalCopyright", "Licensed under GPL-3.0-or-later"
+      VALUE "OriginalFilename", "stellar-bridge-installer.exe"
+      VALUE "ProductName", "Stellar Bridge"
+      VALUE "ProductVersion", "{version}"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+"#
+    );
+    let path = out.join("stellar-bridge-installer.rc");
+    fs::write(&path, script).unwrap();
+    embed_resource::compile(&path, embed_resource::NONE)
+        .manifest_required()
+        .unwrap();
 }

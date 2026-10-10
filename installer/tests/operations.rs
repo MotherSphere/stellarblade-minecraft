@@ -1,17 +1,18 @@
 //! The operations end to end on a fake home: a Steam library with Stellar Blade, UE4SS, other loaders, a Proton prefix
 //! and saves, and a Prism with a dedicated instance created by the installer. Detection builds the target; nothing
-//! outside the temporary folder is read or written.
+//! outside the temporary folder is read or written. On Windows the same runs without the prefix, with the saves under
+//! the profile and the bridge path written as Windows opens it.
 
 use sbmc_installer::detect;
 use sbmc_installer::ledger::{self, Status};
 use sbmc_installer::ops::{self, Env, Game, Target};
 use sbmc_installer::payload::Payload;
+use sbmc_installer::platform::{self, SteamKind};
 use sbmc_installer::{Kind, Ownership, Refusal, adapter, deploy, launcher, mods, pins, safety};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
 
 fn write(path: &Path, data: impl AsRef<[u8]>) {
@@ -57,15 +58,16 @@ impl World {
 
 fn world() -> World {
     let root = tempfile::tempdir().unwrap();
-    let home = fs::canonicalize(root.path()).unwrap();
+    let home = platform::canonicalize(root.path()).unwrap();
     let steam = home.join(".local/share/Steam");
     let library = home.join("Games/SteamLibrary");
     write(
         &steam.join("steamapps/libraryfolders.vdf"),
         format!(
             "\"libraryfolders\" {{ \"0\" {{ \"path\" \"{}\" }} \"1\" {{ \"path\" \"{}\" }} }}",
-            steam.display(),
-            library.display()
+            // Steam escapes the backslashes of Windows paths.
+            steam.display().to_string().replace('\\', "\\\\"),
+            library.display().to_string().replace('\\', "\\\\")
         ),
     );
     write(
@@ -82,17 +84,20 @@ fn world() -> World {
     write(&win64.join("ue4ss/Mods/OtherMod/Scripts/main.lua"), "other");
     let prefix = library.join("steamapps/compatdata/3489700/pfx");
     write(&prefix.join("user.reg"), "WINE REGISTRY Version 2\n");
-    let saves = prefix.join("drive_c/users/steamuser/AppData/Local/SB/Saved/SaveGames");
+    let saves = platform::save_dirs(Some(&prefix), &home).remove(0);
     write(
         &saves.join("76561190000000000/StellarBladeSave00.sav"),
         "save",
     );
     write(
-        &home.join(".local/share/PrismLauncher/prismlauncher.cfg"),
+        &platform::prism_roots(&home)[0].0.join("prismlauncher.cfg"),
         "InstanceDir=instances\n",
     );
 
-    let found = detect::game(&detect::steam(&home)).unwrap();
+    // Windows finds Steam through the registry, which is not faked here.
+    let steams = detect::steam_at(vec![(steam.clone(), SteamKind::Native)]);
+    let found = detect::game(&steams, &home).unwrap();
+    assert_eq!(found.prefix.is_some(), platform::PROTON);
     assert!(found.build_supported());
     let ue4ss = detect::ue4ss(&found.win64).unwrap();
     let prism = &launcher::prism(&home)[0];
@@ -102,7 +107,7 @@ fn world() -> World {
     write(&instance.mods().join("sodium.jar"), "sodium");
     let target = Target {
         game: Some(Game {
-            saves: found.saves(),
+            saves: found.saves.clone(),
             exe: found.exe.clone(),
             ue4ss: ue4ss.dir,
             mods: ue4ss.mods.unwrap(),
@@ -180,14 +185,20 @@ fn install_update_rollback_and_uninstall() {
         fs::read(w.target.minecraft_mods.join(pins::FABRIC_API_FILE)).unwrap(),
         b"fabric api"
     );
-    let bridge = fs::metadata(&w.target.bridge).unwrap();
+    #[cfg(unix)]
     assert_eq!(
-        std::os::unix::fs::PermissionsExt::mode(&bridge.permissions()) & 0o777,
+        std::os::unix::fs::PermissionsExt::mode(
+            &fs::metadata(&w.target.bridge).unwrap().permissions()
+        ) & 0o777,
         0o700
     );
+    let game_path = platform::game_path(&w.target.bridge).unwrap();
+    if platform::PROTON {
+        assert_eq!(game_path, format!("Z:{}", w.target.bridge.display()));
+    }
     assert_eq!(
         fs::read_to_string(w.win64().join(adapter::CONFIG)).unwrap(),
-        format!("Z:{}\n", w.target.bridge.display())
+        game_path + "\n"
     );
     let backup = installed.save_backup.clone().unwrap();
     assert_eq!(safety::tree(&backup).unwrap(), saves_before);
@@ -497,6 +508,7 @@ fn a_viewer_gets_the_minecraft_side_only() {
 
 /// The Python tools' Lua mod and adapter are an owned set to the installer: it updates them, keeps them in previous/,
 /// and after the uninstall the Python tools install again.
+#[cfg(unix)]
 #[test]
 fn python_installs_are_updated_and_kept() {
     let w = world();
@@ -525,7 +537,7 @@ fn python_installs_are_updated_and_kept() {
     )
     .unwrap();
     let python = |command: &str| {
-        let mut run = Command::new("python3");
+        let mut run = std::process::Command::new("python3");
         run.arg(lab.join("tools/deploy.py"))
             .args([command, "--mods-dir"])
             .arg(&w.game().mods);
@@ -598,6 +610,7 @@ fn the_embedded_payload_installs_when_present() {
 
 /// A bridge folder that is no longer private, or would be created behind a link, stops an update before the owned
 /// pieces are removed: nothing is left half installed.
+#[cfg(unix)]
 #[test]
 fn an_unusable_bridge_folder_is_refused_before_any_write() {
     use std::os::unix::fs::PermissionsExt;

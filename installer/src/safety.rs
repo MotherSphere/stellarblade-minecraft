@@ -62,12 +62,17 @@ pub(crate) fn walk(
     inner(root, root, visit)
 }
 
-/// A relative path in the manifests' form: '/'-joined UTF-8.
+/// A relative path in the manifests' form: '/'-joined UTF-8, as the Python tools write it on Linux.
 pub(crate) fn slash(relative: &Path) -> Result<String> {
     let Some(text) = relative.to_str() else {
         bail!(Refusal::new(Kind::NonUtf8, relative.display()))
     };
-    Ok(text.to_string())
+    // A Windows file name never holds '\'; a Linux one may, and keeps it.
+    Ok(if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.to_string()
+    })
 }
 
 /// The sha256 of every regular file under `dir` by relative path: what "unchanged" means for the saves.
@@ -101,6 +106,19 @@ const MINECRAFT_MARKERS: &[&[u8]] = &[
     b"net.fabricmc.loader.impl.launch.knot.KnotClient",
 ];
 
+/// A Java process: `java`/`javaw` on Linux, `java.exe`/`javaw.exe` on Windows.
+fn is_java(comm: &str) -> bool {
+    matches!(comm, "java" | "javaw")
+        || comm.eq_ignore_ascii_case("java.exe")
+        || comm.eq_ignore_ascii_case("javaw.exe")
+}
+
+fn holds(cmdline: &[u8], markers: &[&[u8]]) -> bool {
+    markers
+        .iter()
+        .any(|m| cmdline.windows(m.len()).any(|w| w == *m))
+}
+
 /// What runs among `processes`. A Java process whose command line cannot be read counts as Minecraft (fail closed).
 pub fn running(processes: &[platform::Process], launchers: bool) -> Vec<Running> {
     let mut found: Vec<Running> = processes
@@ -109,14 +127,15 @@ pub fn running(processes: &[platform::Process], launchers: bool) -> Vec<Running>
             let comm = process.comm.as_str();
             if comm.starts_with("SB-Win64") || comm == "SB.exe" {
                 Some(Running::StellarBlade)
-            } else if comm == "java" || comm == "javaw" {
+            } else if is_java(comm) {
                 let cmdline = process.cmdline.as_deref().unwrap_or_default();
-                (cmdline.is_empty()
-                    || MINECRAFT_MARKERS
-                        .iter()
-                        .any(|m| cmdline.windows(m.len()).any(|w| w == *m)))
-                .then_some(Running::Minecraft)
-            } else if launchers && (comm == "prismlauncher" || comm.starts_with("MultiMC")) {
+                (cmdline.is_empty() || holds(cmdline, MINECRAFT_MARKERS))
+                    .then_some(Running::Minecraft)
+            } else if launchers
+                && (comm == "prismlauncher"
+                    || comm.eq_ignore_ascii_case("prismlauncher.exe")
+                    || comm.starts_with("MultiMC"))
+            {
                 Some(Running::Launcher)
             } else {
                 None
@@ -156,6 +175,42 @@ pub fn closed_at(proc_root: &Path, launchers: bool) -> Result<()> {
         })
         .collect();
     bail!(Refusal::new(Kind::CloseFirst, names.join(", ")))
+}
+
+const SERVER_MARKERS: &[&[u8]] = &[
+    b"net.fabricmc.loader.impl.launch.knot.KnotServer",
+    b"net.fabricmc.installer.ServerLauncher",
+    b"fabric-server-launch",
+    b"fabric-server-mc.",
+];
+
+/// Whether a Minecraft server runs in the server folder `dir` (canonical): a Java process working in it. A Java process
+/// whose working folder cannot be read counts when its command line looks like a server or cannot be read either
+/// (fail closed).
+pub fn server_running(processes: &[platform::Process], dir: &Path) -> bool {
+    processes.iter().any(|process| {
+        is_java(&process.comm)
+            && match &process.cwd {
+                Some(cwd) => platform::canonicalize(cwd)
+                    .unwrap_or_else(|_| cwd.clone())
+                    .starts_with(dir),
+                None => process
+                    .cmdline
+                    .as_deref()
+                    .is_none_or(|c| c.is_empty() || holds(c, SERVER_MARKERS)),
+            }
+    })
+}
+
+/// Refuses while a Minecraft server runs in `dir`, with the process list read under `proc_root` (`/proc` on Linux).
+/// Call it right before every write in a server folder.
+pub fn server_closed_at(proc_root: &Path, dir: &Path) -> Result<()> {
+    let processes = platform::processes(proc_root).context(Refusal::new(Kind::ProcessList, ""))?;
+    let dir = platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if server_running(&processes, &dir) {
+        bail!(Refusal::new(Kind::ServerRunning, dir.display()));
+    }
+    Ok(())
 }
 
 /// Files and folders the installer must leave exactly as they were. Each location is optional: an EVE player has all
@@ -352,6 +407,7 @@ mod tests {
         Process {
             comm: comm.into(),
             cmdline: cmdline.map(<[u8]>::to_vec),
+            cwd: None,
         }
     }
 
@@ -383,6 +439,45 @@ mod tests {
         );
         assert_eq!(running(std::slice::from_ref(&launcher), false), vec![]);
         assert_eq!(running(&[launcher], true), vec![Running::Launcher]);
+        // Windows image names.
+        let javaw = process(
+            "javaw.exe",
+            Some(b"C:\\Java\\bin\\javaw.exe\0org.prismlauncher.EntryPoint"),
+        );
+        let elevated = process("java.exe", None);
+        let game = process("SB-Win64-Shipping.exe", Some(b"SB-Win64-Shipping.exe"));
+        let prism = process("prismlauncher.exe", Some(b"prismlauncher.exe"));
+        assert_eq!(running(&[javaw], false), vec![Running::Minecraft]);
+        assert_eq!(running(&[elevated], false), vec![Running::Minecraft]);
+        assert_eq!(running(&[game], false), vec![Running::StellarBlade]);
+        assert_eq!(running(&[prism], true), vec![Running::Launcher]);
+    }
+
+    #[test]
+    fn a_server_runs_where_its_java_works_and_unknown_ones_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = platform::canonicalize(root.path()).unwrap();
+        let at = |cwd: &Path, cmdline: Option<&[u8]>| Process {
+            cwd: Some(cwd.to_path_buf()),
+            ..process("java", cmdline)
+        };
+        let server = at(&dir, Some(b"java\0-jar\0fabric-server-launch.jar\0nogui"));
+        let inside = at(&dir.join("world"), Some(b"java\0-jar\0server.jar"));
+        let client = at(&dir.with_file_name("elsewhere"), Some(b"java\0KnotClient"));
+        let hidden_server = process("java.exe", Some(b"java\0-jar\0fabric-server-launch.jar"));
+        let hidden_other = process("java", Some(b"java\0-jar\0jenkins.war"));
+        let unreadable = process("javaw.exe", None);
+        let not_java = Process {
+            cwd: Some(dir.clone()),
+            ..process("bash", Some(b"bash"))
+        };
+        assert!(server_running(&[server], &dir));
+        assert!(server_running(&[inside], &dir));
+        assert!(!server_running(&[client], &dir));
+        assert!(server_running(&[hidden_server], &dir));
+        assert!(!server_running(&[hidden_other], &dir));
+        assert!(server_running(&[unreadable], &dir));
+        assert!(!server_running(&[not_java], &dir));
     }
 
     #[test]
@@ -419,7 +514,11 @@ mod tests {
         fs::write(win64.join("dinput8.dll"), "new loader").unwrap();
         fs::write(minecraft.join("mods/sodium.jar"), "changed").unwrap();
         fs::create_dir(mods.join("NewMod")).unwrap();
-        let changed = before.changed(&protected.snapshot().unwrap());
+        let changed: Vec<String> = before
+            .changed(&protected.snapshot().unwrap())
+            .iter()
+            .map(|c| c.replace('\\', "/"))
+            .collect();
         let ends: Vec<_> = [
             "Win64/dinput8.dll",
             "Win64/dwmapi.dll",
@@ -446,13 +545,16 @@ mod tests {
         let copy = backup_saves(saves, &root.path().join("data/save-backups")).unwrap();
         assert_eq!(tree(&copy).unwrap(), before);
         assert_eq!(tree(saves).unwrap(), before);
-        std::os::unix::fs::symlink("/etc/hostname", saves.join("link")).unwrap();
-        assert!(backup_saves(saves, &root.path().join("data/save-backups")).is_err());
-        assert_eq!(
-            fs::read_dir(root.path().join("data/save-backups"))
-                .unwrap()
-                .count(),
-            1
-        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/hostname", saves.join("link")).unwrap();
+            assert!(backup_saves(saves, &root.path().join("data/save-backups")).is_err());
+            assert_eq!(
+                fs::read_dir(root.path().join("data/save-backups"))
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
     }
 }

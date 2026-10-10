@@ -1,9 +1,10 @@
 //! The window's state machine: welcome, detect (also the status page, with repair, roll back and uninstall), verify,
-//! target, consent, install with its step list and log, done. [`App::step`] never blocks: detection, hashing and every
-//! operation run as a [`Job`] on a worker thread that reports back through messages. The UI smoke test drives `step`
-//! and runs each job in place on a fake tree.
+//! target, consent, install with its step list and log, done; and for a server operator, the server folder page.
+//! [`App::step`] never blocks: detection, hashing and every operation run as a [`Job`] on a worker thread that reports
+//! back through messages. The UI smoke test drives `step` and runs each job in place on a fake tree.
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,13 +22,14 @@ use crate::ledger::{self, State, Status};
 use crate::ops::{self, Piece, Step, Target};
 use crate::payload::Payload;
 use crate::safety::{self, Running};
-use crate::{Kind as Refused, Ownership, Refusal, adapter, deploy, log, mods};
+use crate::server::{self, Folder, Layout};
+use crate::{Kind as Refused, Ownership, Refusal, adapter, deploy, log, mods, pins, platform};
 
 /// What the window works with: where to look and where to write its own data.
 #[derive(Clone)]
 pub struct Ctx {
     pub home: PathBuf,
-    /// `/proc` outside tests.
+    /// `/proc` outside tests; Windows reads the live process list instead.
     pub proc_root: PathBuf,
     /// `~/.local/share/Colony/Stellar Bridge`: `state.json`, `previous/`, `save-backups/`.
     pub data: PathBuf,
@@ -40,6 +42,8 @@ pub struct Ctx {
     pub payload: Option<Arc<Payload>>,
     /// Shows every plan and writes nothing.
     pub dry_run: bool,
+    /// The Java a server folder's start scripts run: `java` outside tests.
+    pub java: OsString,
 }
 
 impl Ctx {
@@ -90,6 +94,8 @@ pub enum Screen {
     Consent,
     Working,
     Done,
+    /// The server operator's page: the folder, what it holds, the EULA box.
+    Server,
 }
 
 impl Screen {
@@ -102,6 +108,21 @@ impl Screen {
         Screen::Working,
         Screen::Done,
     ];
+    pub const SERVER: [Screen; 4] = [
+        Screen::Welcome,
+        Screen::Server,
+        Screen::Working,
+        Screen::Done,
+    ];
+
+    /// The pages the sidebar lists for `role`.
+    pub fn steps(role: Role) -> &'static [Screen] {
+        if role == Role::Server {
+            &Self::SERVER
+        } else {
+            &Self::WIZARD
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +131,8 @@ pub enum Role {
     Eve,
     /// Minecraft only: the JAR and Fabric API.
     Viewer,
+    /// A Fabric server folder: the JAR and Fabric API in its `mods`, a new folder made when needed.
+    Server,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +142,8 @@ pub enum Action {
     Repair,
     Rollback,
     Uninstall,
+    /// Install or update in a server folder.
+    Server,
 }
 
 /// Where the Minecraft side goes.
@@ -184,10 +209,12 @@ fn localized(error: &anyhow::Error) -> String {
 /// Reads everything the pages show. Nothing is written.
 pub fn detect(ctx: &Ctx) -> Found {
     let steam = detect::steam(&ctx.home);
-    let game = detect::game(&steam);
+    let game = detect::game(&steam, &ctx.home);
     let ue4ss = game.as_ref().and_then(|g| detect::ue4ss(&g.win64));
+    // Windows loads the adapter from the game folder: there is no override to look for.
     let dll_override = game
         .as_ref()
+        .filter(|_| platform::PROTON)
         .map(|g| detect::dll_override(g.prefix.as_deref(), &g.launch_options));
     let launchers = launcher::prism(&ctx.home);
     let instances: Vec<(Kind, Instance)> = launchers
@@ -268,7 +295,7 @@ fn game_side(game: &detect::Game, ue4ss: &detect::Ue4ss) -> Option<ops::Game> {
         ue4ss: ue4ss.dir.clone(),
         mods: ue4ss.mods.clone()?,
         prefix: game.prefix.clone(),
-        saves: game.saves(),
+        saves: game.saves.clone(),
     })
 }
 
@@ -318,6 +345,88 @@ impl Toast {
     }
 }
 
+/// A server folder and the Java its start scripts would run, as the server page shows them.
+#[derive(Debug, Clone)]
+pub struct ServerCheck {
+    pub folder: Folder,
+    pub java: Option<u32>,
+}
+
+impl ServerCheck {
+    /// The folder can take the bridge and the Java runs the server.
+    pub fn ready(&self) -> bool {
+        self.java.is_some_and(|v| v >= pins::JAVA_MIN)
+    }
+}
+
+/// What a server folder holds, in the window's language: shown on the server page and printed by `--server`.
+pub fn server_lines(check: &ServerCheck) -> Vec<String> {
+    let folder = &check.folder;
+    let path = folder.dir.display().to_string();
+    let mut lines = vec![match &folder.layout {
+        Layout::New => t_fmt("server_new", &[("path", &path)]),
+        Layout::Ours => t_fmt("server_ours", &[("path", &path)]),
+        Layout::Existing {
+            loader: Some(loader),
+        } => t_fmt("server_existing", &[("path", &path), ("loader", loader)]),
+        Layout::Existing { loader: None } => t_fmt("server_existing_unknown", &[("path", &path)]),
+    }];
+    lines.push(
+        match &folder.bridge {
+            Ownership::Owned => t("server_bridge_owned"),
+            _ => t("server_bridge_absent"),
+        }
+        .to_string(),
+    );
+    lines.push(match check.java {
+        Some(version) if version >= pins::JAVA_MIN => {
+            t_fmt("server_java", &[("version", &version.to_string())])
+        }
+        found => i18n::refusal(&Refusal::new(
+            Refused::JavaVersion,
+            found.map_or("none".to_string(), |v| format!("Java {v}")),
+        )),
+    });
+    lines.push(
+        t(match folder.eula {
+            Some(true) => "server_eula_true",
+            Some(false) => "server_eula_false",
+            None => "server_eula_missing",
+        })
+        .to_string(),
+    );
+    if folder.online_mode == Some(false) {
+        lines.push(t("server_offline").to_string());
+    }
+    lines
+}
+
+/// What a server install did, in the window's language.
+pub fn server_done_lines(outcome: &server::Outcome) -> Vec<String> {
+    let path = outcome.before.dir.display().to_string();
+    let mut lines = vec![if outcome.unchanged {
+        t("server_done_current").to_string()
+    } else {
+        t_fmt(
+            "server_done_installed",
+            &[("path", &outcome.before.mods().display().to_string())],
+        )
+    }];
+    if outcome.before.layout == Layout::New {
+        lines.push(t_fmt("server_done_created", &[("path", &path)]));
+    }
+    let accepted = outcome.eula_written || outcome.before.eula == Some(true);
+    lines.push(if accepted {
+        t("server_done_start").to_string()
+    } else {
+        t_fmt(
+            "server_done_eula_todo",
+            &[("path", &path), ("url", pins::MINECRAFT_EULA)],
+        )
+    });
+    lines
+}
+
 /// The result shown on the done page.
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -363,13 +472,28 @@ pub enum Message {
     Finished(Result<Vec<String>, String>),
     Copy(String),
     CloseRequested(window::Id),
+    ServerPath(String),
+    /// Reads the typed server folder and the Java version.
+    ServerCheck,
+    /// The folder text the check read, and what it found.
+    ServerChecked(String, Box<Result<ServerCheck, String>>),
+    /// The operator accepts Mojang's EULA for a folder without `eula.txt`.
+    ServerEula(bool),
 }
 
 /// Blocking work, run off the UI thread by [`spawn`] and in place by the tests.
 pub enum Job {
     Detect(Ctx),
-    Hash { exe: PathBuf, pin: String },
+    Hash {
+        exe: PathBuf,
+        pin: String,
+    },
     Run(Box<Work>),
+    /// Reads a server folder and runs `java -version`; writes nothing.
+    ServerCheck {
+        typed: String,
+        java: OsString,
+    },
 }
 
 /// An operation and everything it needs.
@@ -380,6 +504,8 @@ pub struct Work {
     /// Create the dedicated instance in this launcher first.
     pub create: Option<Launcher>,
     pub remove_fabric: bool,
+    /// For [`Action::Server`]: the server folder, and whether the operator accepted Mojang's EULA.
+    pub server: Option<(PathBuf, bool)>,
 }
 
 impl Job {
@@ -401,15 +527,30 @@ impl Job {
                 ));
             }
             Job::Run(work) => {
-                let Work {
-                    ctx,
-                    action,
-                    target,
-                    create,
-                    remove_fabric,
-                } = *work;
-                let result = run(&ctx, action, target, create, remove_fabric, send);
+                let result = match (work.action, &work.server) {
+                    (Action::Server, Some((dir, eula))) => run_server(&work.ctx, dir, *eula),
+                    _ => {
+                        let Work {
+                            ctx,
+                            action,
+                            target,
+                            create,
+                            remove_fabric,
+                            ..
+                        } = *work;
+                        run(&ctx, action, target, create, remove_fabric, send)
+                    }
+                };
                 send(Message::Finished(result.map_err(|e| localized(&e))));
+            }
+            Job::ServerCheck { typed, java } => {
+                let checked = server::inspect(Path::new(&typed))
+                    .map(|folder| ServerCheck {
+                        folder,
+                        java: server::java_version(&java),
+                    })
+                    .map_err(|e| localized(&e));
+                send(Message::ServerChecked(typed, Box::new(checked)));
             }
         }
     }
@@ -495,7 +636,22 @@ fn run(
             }
             Ok(lines)
         }
+        // A Work for a server folder carries its folder and goes to run_server.
+        Action::Server => anyhow::bail!("No server folder given"),
     }
+}
+
+/// Installs or updates the bridge in the server folder `dir`, refusing while a server runs there.
+fn run_server(ctx: &Ctx, dir: &Path, accept_eula: bool) -> anyhow::Result<Vec<String>> {
+    let payload = ctx
+        .payload
+        .as_deref()
+        .context(Refusal::new(Refused::NoPayload, ""))?;
+    let proc_root = ctx.proc_root.clone();
+    let folder = dir.to_path_buf();
+    let closed = move || safety::server_closed_at(&proc_root, &folder);
+    let outcome = server::install(dir, payload, accept_eula, &ctx.java, &closed)?;
+    Ok(server_done_lines(&outcome))
 }
 
 /// Runs `job` on a worker thread; its messages come back in order.
@@ -546,6 +702,11 @@ pub struct App {
     pub outcome: Option<Outcome>,
     pub toasts: Vec<Toast>,
     next_toast: u64,
+    /// The server page: the typed folder, what it holds, and the EULA box.
+    pub server_path: String,
+    pub server: Option<Result<ServerCheck, String>>,
+    pub server_checking: bool,
+    pub server_eula: bool,
 }
 
 impl App {
@@ -587,6 +748,10 @@ impl App {
             outcome: None,
             toasts: Vec::new(),
             next_toast: 0,
+            server_path: String::new(),
+            server: None,
+            server_checking: false,
+            server_eula: false,
         };
         (app, job)
     }
@@ -777,7 +942,8 @@ impl App {
                     launcher
                         .instances
                         .join(launcher::INSTANCE_NAME)
-                        .join("minecraft/mods"),
+                        .join("minecraft")
+                        .join("mods"),
                     detect::bridge_home(&self.ctx.home, flatpak).join("bridge"),
                     Some(launcher.clone()),
                 )
@@ -797,7 +963,7 @@ impl App {
                     .map_err(|e| localized(&e))?;
                 // A Flatpak launcher cannot see the native bridge folder; only the dedicated instance carries the
                 // Java arguments that point it at one it can see.
-                if fs::canonicalize(self.ctx.home.join(".var/app"))
+                if platform::canonicalize(&self.ctx.home.join(".var/app"))
                     .is_ok_and(|v| mods.starts_with(v))
                 {
                     return Err(t("manual_flatpak").into());
@@ -806,7 +972,7 @@ impl App {
             }
         };
         let game = match self.role {
-            Role::Viewer => None,
+            Role::Viewer | Role::Server => None,
             Role::Eve => {
                 if self.exe_ok != Some(true) {
                     return Err(t("exe_not_verified").into());
@@ -876,6 +1042,7 @@ impl App {
             Screen::Target if self.role == Role::Eve => Screen::Verify,
             Screen::Target => Screen::Detect,
             Screen::Consent => Screen::Target,
+            Screen::Server => Screen::Welcome,
             other => other,
         }
     }
@@ -934,7 +1101,7 @@ impl App {
                 }
                 Ok(lines)
             }
-            Action::Install => Ok(Vec::new()),
+            Action::Install | Action::Server => Ok(Vec::new()),
         }
     }
 
@@ -947,8 +1114,63 @@ impl App {
             .is_some_and(|m| m.files.keys().any(|n| mods::is_fabric_api(n)))
     }
 
+    /// The server page's install: the checked folder, refused while a server runs there (checked in the job).
+    fn launch_server(&mut self) -> Option<Job> {
+        let check = self.server.as_ref()?.as_ref().ok()?;
+        if !check.ready() || self.ctx.payload.is_none() {
+            return None;
+        }
+        let dir = check.folder.dir.clone();
+        let eula = self.server_eula && check.folder.eula.is_none();
+        self.action = Some(Action::Server);
+        if self.ctx.dry_run {
+            self.outcome = Some(Outcome {
+                action: Action::Server,
+                ok: true,
+                dry_run: true,
+                lines: vec![t("dry_run_nothing_written").to_string()],
+            });
+            self.screen = Screen::Done;
+            return None;
+        }
+        self.busy = true;
+        self.steps.clear();
+        self.log.clear();
+        self.outcome = None;
+        self.screen = Screen::Working;
+        log::line(&format!("Starting the server install in {}", dir.display()));
+        Some(Job::Run(Box::new(Work {
+            ctx: self.ctx.clone(),
+            action: Action::Server,
+            target: Target {
+                game: None,
+                minecraft_mods: dir.join("mods"),
+                bridge: PathBuf::new(),
+            },
+            create: None,
+            remove_fabric: false,
+            server: Some((dir, eula)),
+        })))
+    }
+
+    fn check_server(&mut self) -> Option<Job> {
+        let typed = self.server_path.trim();
+        if typed.is_empty() {
+            self.error(t("server_pick"));
+            return None;
+        }
+        self.server_checking = true;
+        Some(Job::ServerCheck {
+            typed: typed.to_string(),
+            java: self.ctx.java.clone(),
+        })
+    }
+
     /// Checks the games, then starts `action` or waits for them in the games modal.
     fn launch(&mut self, action: Action) -> Option<Job> {
+        if action == Action::Server {
+            return self.launch_server();
+        }
         let (target, create) = match action {
             Action::Install => match &self.plan {
                 Some((target, create, _)) => (target.clone(), create.clone()),
@@ -1003,6 +1225,7 @@ impl App {
             target,
             create,
             remove_fabric: self.remove_fabric,
+            server: None,
         })))
     }
 
@@ -1033,7 +1256,13 @@ impl App {
             }
             Message::DismissToast(id) => self.toasts.retain(|t| t.id != id),
 
-            Message::Start => self.screen = Screen::Detect,
+            Message::Start => {
+                self.screen = if self.role == Role::Server {
+                    Screen::Server
+                } else {
+                    Screen::Detect
+                }
+            }
             Message::Role(role) => {
                 self.role = role;
                 self.role_chosen = true;
@@ -1048,8 +1277,12 @@ impl App {
                 if self.busy {
                     return None;
                 }
-                self.screen = Screen::Detect;
                 self.outcome = None;
+                if self.role == Role::Server {
+                    self.screen = Screen::Server;
+                    return self.check_server();
+                }
+                self.screen = Screen::Detect;
                 return self.rescan();
             }
             Message::Detected(found) => {
@@ -1196,6 +1429,11 @@ impl App {
                     return self.launch(Action::Install);
                 }
             }
+            Message::Begin(Action::Server) => {
+                if self.screen == Screen::Server && !self.busy {
+                    return self.launch(Action::Server);
+                }
+            }
             Message::Begin(action) => {
                 self.remove_fabric = false;
                 match self.confirm_lines(action) {
@@ -1266,8 +1504,38 @@ impl App {
                 });
                 self.screen = Screen::Done;
                 // The pages after this show what is on disk now.
+                if action == Action::Server {
+                    return self.check_server();
+                }
                 return self.rescan();
             }
+            Message::ServerPath(path) => {
+                self.server_path = path;
+                self.server = None;
+                self.server_eula = false;
+                // A check still running reads the old text and is dropped when it ends.
+                self.server_checking = false;
+            }
+            Message::ServerCheck => return self.check_server(),
+            // A check of a folder the operator has since retyped would arm the page for a folder it no longer
+            // shows; only the check of the text in the field counts.
+            Message::ServerChecked(typed, _) if typed != self.server_path.trim() => {}
+            Message::ServerChecked(_, checked) => {
+                self.server_checking = false;
+                match *checked {
+                    Ok(check) => {
+                        for line in server_lines(&check) {
+                            log::line(&format!("Server folder: {line}"));
+                        }
+                        self.server = Some(Ok(check));
+                    }
+                    Err(error) => {
+                        self.error(error.clone());
+                        self.server = Some(Err(error));
+                    }
+                }
+            }
+            Message::ServerEula(checked) => self.server_eula = checked,
             Message::Copy(_) | Message::CloseRequested(_) => {}
         }
         None

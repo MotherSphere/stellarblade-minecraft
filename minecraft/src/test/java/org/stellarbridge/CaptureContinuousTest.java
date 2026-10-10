@@ -16,6 +16,7 @@ public final class CaptureContinuousTest {
     private static int sequence;
 
     public static void main(String[] args) throws Exception {
+        if (!com.sun.jna.Platform.isLinux()) { System.out.println("SKIP continuous capture: capture mode is Linux-only"); return; }
         bmp = CaptureBmpTest.bmp();
         mask = CaptureBmpTest.png(new BufferedImage(1280, 720, BufferedImage.TYPE_INT_ARGB));
         depth = CaptureBmpTest.depth();

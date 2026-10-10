@@ -74,7 +74,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("never_touched_title", "Jamais modifié"),
     (
         "never_touched",
-        "Vos sauvegardes (une copie est faite une fois, avant la première installation), UE4SS, dwmapi.dll, dinput8.dll, les autres mods, les réglages et options de lancement Steam, et le registre du préfixe Proton. L'installateur ne lance jamais un jeu ni un launcher.",
+        "Vos sauvegardes (une copie est faite une fois, avant la première installation), UE4SS, dwmapi.dll, dinput8.dll, les autres mods, les réglages et options de lancement Steam, et le registre (celui du préfixe Proton sous Linux, celui de Windows, qu'il lit seulement pour trouver Steam). L'installateur ne lance jamais un jeu ni un launcher.",
     ),
     // Detect
     ("detect_title", "Ce qui se trouve sur ce PC"),
@@ -449,12 +449,36 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Le dossier du pont doit appartenir à cet utilisateur, avec le mode 0700 : {path}",
     ),
     (
+        "err_bridge_volume",
+        "Le dossier du pont doit se trouver sur un disque NTFS local, jamais sur un partage réseau : {path}",
+    ),
+    (
+        "err_bridge_ascii",
+        "Le Lua de Stellar Blade n'ouvre que des chemins ASCII, et ce dossier contient d'autres caractères sans nom court (8.3) : {path}",
+    ),
+    (
         "err_no_ancestor",
         "Aucun dossier existant au-dessus de {path}",
     ),
     (
         "err_process_list",
         "Impossible de lister les processus pour vérifier que les jeux sont fermés",
+    ),
+    (
+        "err_server_running",
+        "Arrêtez d'abord le serveur Minecraft lancé dans {path}",
+    ),
+    (
+        "err_server_folder",
+        "Ni un dossier vide, ni un serveur Fabric pour Minecraft 1.21.1 : {path}",
+    ),
+    (
+        "err_server_loader",
+        "Le Fabric Loader de ce serveur est antérieur à 0.19.5, la version dont le pont a besoin : {path}",
+    ),
+    (
+        "err_java_version",
+        "Le serveur a besoin de Java 21 ou plus récent, en tant que `java` dans le PATH (trouvé : {path}). Installez-le, puis réessayez.",
     ),
     ("err_close_first", "Fermez d'abord {path}"),
     (
@@ -530,5 +554,89 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     (
         "err_pick_mods",
         "Choisissez le dossier mods de l'instance : {path}",
+    ),
+    // Server folder
+    ("screen_server", "Dossier du serveur"),
+    ("role_server", "Administrateur de serveur"),
+    (
+        "role_server_hint",
+        "Un serveur Fabric pour Minecraft 1.21.1 : le JAR du pont et Fabric API dans son dossier mods, dans un dossier de serveur existant ou nouveau.",
+    ),
+    ("action_server", "Installer sur le serveur"),
+    ("server_title", "Dossier du serveur"),
+    (
+        "server_body",
+        "Saisissez le dossier d'un serveur Fabric pour Minecraft 1.21.1, ou un dossier vide ou nouveau pour en créer un avec le lanceur de serveur de Fabric. Puis vérifiez-le.",
+    ),
+    (
+        "server_placeholder",
+        "Dossier du serveur, par exemple /srv/minecraft ou C:\\Serveurs\\Minecraft",
+    ),
+    ("server_check", "Vérifier"),
+    ("server_pick", "Saisissez d'abord le dossier du serveur."),
+    (
+        "server_new",
+        "Nouveau serveur : {path} reçoit le lanceur de serveur de Fabric, start.sh, start.bat et un dossier mods",
+    ),
+    ("server_ours", "Serveur créé par cet installateur : {path}"),
+    (
+        "server_existing",
+        "Serveur Fabric pour Minecraft 1.21.1, Fabric Loader {loader} : {path}",
+    ),
+    (
+        "server_existing_unknown",
+        "Serveur Fabric pour Minecraft 1.21.1 (version de Fabric Loader pas encore visible) : {path}",
+    ),
+    ("server_bridge_absent", "Pont : pas encore installé"),
+    (
+        "server_bridge_owned",
+        "Pont : installé par cet installateur (mis à jour si cette version diffère)",
+    ),
+    ("server_java", "Java {version} lance le serveur"),
+    ("server_eula_true", "CLUF de Mojang : accepté dans eula.txt"),
+    (
+        "server_eula_false",
+        "CLUF de Mojang : eula.txt indique false. Le serveur démarrera quand vous y mettrez eula=true, après l'avoir lu.",
+    ),
+    (
+        "server_eula_missing",
+        "CLUF de Mojang : pas encore de eula.txt",
+    ),
+    (
+        "server_offline",
+        "online-mode=false : n'importe qui peut rejoindre sous n'importe quel nom. L'installateur laisse server.properties tel quel.",
+    ),
+    (
+        "server_eula_body",
+        "Le serveur Minecraft ne démarre qu'une fois le CLUF de Mojang accepté dans eula.txt. Lisez-le ; cochez la case seulement si vous l'acceptez pour ce serveur, ou modifiez eula.txt vous-même plus tard.",
+    ),
+    (
+        "server_eula_check",
+        "J'ai lu le CLUF de Minecraft de Mojang et je l'accepte pour ce serveur",
+    ),
+    (
+        "server_never_touched",
+        "server.properties (online-mode reste tel quel), les mondes, les autres mods et un eula.txt existant. Rien n'est téléchargé et le serveur n'est jamais lancé.",
+    ),
+    (
+        "server_done_installed",
+        "JAR du pont et Fabric API dans {path}",
+    ),
+    (
+        "server_done_current",
+        "Cette version est déjà installée : rien n'a changé.",
+    ),
+    ("server_done_created", "Nouveau dossier de serveur : {path}"),
+    (
+        "server_done_start",
+        "Lancez le serveur avec start.sh (Linux) ou start.bat (Windows), ou comme d'habitude.",
+    ),
+    (
+        "server_done_eula_todo",
+        "Avant le premier lancement, lisez le CLUF de Mojang ({url}) et mettez eula=true dans eula.txt dans {path} si vous l'acceptez.",
+    ),
+    (
+        "server_done_removed",
+        "JAR du pont retiré. Fabric API, le lanceur, les scripts de lancement, eula.txt et les mondes restent.",
     ),
 ];

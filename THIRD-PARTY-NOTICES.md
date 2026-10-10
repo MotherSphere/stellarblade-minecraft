@@ -8,6 +8,12 @@ The installer binary embeds Fabric API 0.116.17+1.21.1 (`fabric-api-0.116.17+1.2
 
 Source: https://github.com/FabricMC/fabric
 
+## Fabric server launcher in the installer
+
+The installer binary embeds Fabric's server launcher for Minecraft 1.21.1 with Fabric Loader 0.19.5 (`fabric-server-launch.jar`, unmodified, SHA-256 `809d99b1…7ed0`) and writes it into a new server folder. It contains Fabric Installer 1.1.2 and mjson 1.4.1, both licensed under the Apache License 2.0. The licence text and the notice are in [installer/vendor/fabric-server/](installer/vendor/fabric-server/) (`LICENSE`, `NOTICE`), are embedded in the installer and are printed by `stellar-bridge-installer --licenses`.
+
+Source: https://github.com/FabricMC/fabric-installer
+
 ## Fonts in the installer
 
 The installer embeds the fonts of colony-ui 0.1.6 (GPL-3.0-or-later): JetBrainsMono Nerd Font (JetBrains Mono 2.304 with Nerd Fonts 3.4.0), OpenDyslexic 0.990 and Font Awesome 6 Free 6.7.2, all unmodified and under the SIL Open Font License 1.1. Their licence texts are in [installer/licenses/](installer/licenses/) and are printed by `stellar-bridge-installer --licenses`.

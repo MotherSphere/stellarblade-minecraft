@@ -106,6 +106,22 @@ public final class ControlStateTest {
                 goodAck.replace("SEQ 1", "SEQ -1"), goodAck.replace("EDGE 0", "EDGE 9007199254740992"),
                 goodAck.replace("RUN " + RUN, "RUN ABCD"), "x".repeat(513)}) rejects(() -> ControlState.parseAck(bad.getBytes(StandardCharsets.US_ASCII)));
 
+        // The adapter's callers report (the native encoder writes the same fixture): fresh, it names its rates; a gameplay
+        // poll never recognized while another caller polls at the game's rate points at an overlay hook.
+        String calls = Files.readString(Path.of("protocol/fixtures/input-calls.txt"));
+        var report = ControlState.parseCalls(calls.getBytes(StandardCharsets.US_ASCII));
+        assert report.equals(new ControlState.Calls(1791200001000L, 44, 60, 4, 3)) : report;
+        assert report.status(1791200002000L).equals(" XInput slot 0: 60 calls/s from the gameplay poll, 3/s from other callers.")
+                : report.status(1791200002000L);
+        assert report.status(1791200004001L).isEmpty() && report.status(1791200000000L - 1).isEmpty() : "A stale report says nothing";
+        var hooked = new ControlState.Calls(TIME, 0, 0, 3600, 60);
+        assert hooked.status(TIME).contains("not recognized") && !new ControlState.Calls(TIME, 0, 0, 3, 9).status(TIME).contains("not recognized")
+                : "Only another caller at the game's poll rate points at a hook";
+        for (String bad : new String[] {calls.replace("SBMC_XINPUT_CALLS 1", "SBMC_XINPUT_CALLS 2"), calls.replace("END\n", ""),
+                calls.replace("GAMEPLAY 44 60", "GAMEPLAY 44"), calls.replace("OTHER 4 3", "OTHER 4294967296 3"),
+                calls.replace("TIME 1791200001000", "TIME 0"), calls.replace("\nEND\n", "\nEND\nEXTRA\n"), calls.replace("OTHER", "GAMEPLAY")})
+            rejects(() -> ControlState.parseCalls(bad.getBytes(StandardCharsets.US_ASCII)));
+
         Path directory = Files.createTempDirectory("stellar-control-packets-");
         try {
             var files = new ControlFiles(directory);
@@ -114,8 +130,7 @@ public final class ControlStateTest {
             Files.writeString(directory.resolve("eve-input-ack.txt"), goodAck);
             assert files.readAck().equals(ack(1, 1, 0, "ready", TIME));
             Files.delete(directory.resolve("eve-input-ack.txt"));
-            Files.createSymbolicLink(directory.resolve("eve-input-ack.txt"), directory.resolve("eve-input.txt"));
-            rejects(files::readAck);
+            if (BridgeRuntimeTest.symlink(directory.resolve("eve-input-ack.txt"), directory.resolve("eve-input.txt"))) rejects(files::readAck);
             rejects(() -> files.publish("x".repeat(4097)));
         } finally {
             try (var paths = Files.walk(directory)) {

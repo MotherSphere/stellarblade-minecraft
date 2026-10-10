@@ -246,7 +246,6 @@ pub fn test_dll() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     fn open() -> Result<()> {
         Ok(())
@@ -262,7 +261,7 @@ mod tests {
 
     fn game() -> Game {
         let root = tempfile::tempdir().unwrap();
-        let base = fs::canonicalize(root.path()).unwrap();
+        let base = platform::canonicalize(root.path()).unwrap();
         let dir = base.join("game");
         fs::create_dir(&dir).unwrap();
         let exe = dir.join(EXE);
@@ -270,8 +269,7 @@ mod tests {
         fs::write(dir.join("dinput8.dll"), b"preserve Xion").unwrap();
         fs::write(dir.join("dwmapi.dll"), b"preserve UE4SS").unwrap();
         let bridge = base.join("bridge");
-        fs::create_dir(&bridge).unwrap();
-        fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700)).unwrap();
+        platform::create_private_dir(&bridge).unwrap();
         Game {
             _root: root,
             dir,
@@ -297,7 +295,7 @@ mod tests {
         assert_eq!(fs::read(g.dir.join(DLL)).unwrap(), test_dll());
         assert_eq!(
             fs::read_to_string(g.dir.join(CONFIG)).unwrap(),
-            format!("Z:{}\n", g.bridge.display())
+            platform::game_path(&g.bridge).unwrap() + "\n"
         );
         assert_eq!(ownership(&g.dir, &g.pin).unwrap(), Ownership::Owned);
         remove(&g.exe, &g.pin, &open).unwrap();
@@ -346,8 +344,12 @@ mod tests {
                 .flat_map(u16::to_le_bytes),
         );
         assert!(install(&g.exe, &fake_host, &g.bridge, &g.pin, &open).is_err());
-        fs::set_permissions(&g.bridge, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(install(&g.exe, &test_dll(), &g.bridge, &g.pin, &open).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&g.bridge, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(install(&g.exe, &test_dll(), &g.bridge, &g.pin, &open).is_err());
+        }
         assert_eq!(names(&g.dir).len(), 3);
     }
 

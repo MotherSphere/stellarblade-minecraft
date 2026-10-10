@@ -4,8 +4,9 @@ version = "0.1.0" # x-release-please-version
 description = "Stellar Bridge: installs, updates and removes the Stellar Blade x Minecraft bridge"
 edition = "2024"
 license = "GPL-3.0-or-later"
-# The real floor of the resolved tree, checked with `cargo +<version> check --locked --all-targets`.
-rust-version = "1.90"
+# The real floor of the resolved tree, checked with `cargo +<version> check --locked --all-targets`: sysinfo sets it on
+# Windows; the Linux tree alone builds with 1.90, checked with `--ignore-rust-version` added.
+rust-version = "1.95"
 publish = false
 
 [[bin]]
@@ -17,12 +18,31 @@ anyhow = "1.0.104"
 # The shared Colony theme, fonts, Preferences kit, toast and Colony/<Program>/ paths.
 colony-ui = "0.1.6"
 iced = { version = "0.14.0", features = ["tokio", "sipper"] }
-# getuid for the private bridge directory check; already in the tree through iced.
-libc = "0.2.177"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # 0.11 has no LowerHex on digests: see safety::hex.
 sha2 = "0.11.0"
+# The system language where no LANG is set (Windows); already in the tree through iced's text stack.
+sys-locale = "0.3.2"
+
+[target.'cfg(unix)'.dependencies]
+# getuid for the private bridge directory check; already in the tree through iced.
+libc = "0.2.177"
+
+[target.'cfg(windows)'.dependencies]
+# The process list with command lines and working folders (Windows has no /proc).
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+# Read-only registry lookups (Steam), 8.3 short paths, drive and volume checks, the console; already in the tree.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Registry",
+] }
+
+[build-dependencies]
+# The Windows exe's icon, version information and asInvoker manifest (rc.exe, or llvm-rc when cross-building).
+embed-resource = "3.0.12"
 
 [dev-dependencies]
 tempfile = "3.27.0"

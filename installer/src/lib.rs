@@ -16,6 +16,7 @@ pub mod payload;
 pub mod pins;
 pub mod platform;
 pub mod safety;
+pub mod server;
 pub mod ui;
 
 /// Who owns what sits at an install location, as both ownership manifests define it.
@@ -75,6 +76,8 @@ kinds! {
     BridgeControl => "err_bridge_control",
     BridgeNotAbsolute => "err_bridge_not_absolute",
     BridgeMode => "err_bridge_mode",
+    BridgeVolume => "err_bridge_volume",
+    BridgeAscii => "err_bridge_ascii",
     NoAncestor => "err_no_ancestor",
     ProcessList => "err_process_list",
     CloseFirst => "err_close_first",
@@ -98,6 +101,10 @@ kinds! {
     JavaArgument => "err_java_argument",
     InstanceUnreadable => "err_instance_unreadable",
     PickMods => "err_pick_mods",
+    ServerRunning => "err_server_running",
+    ServerFolder => "err_server_folder",
+    ServerLoader => "err_server_loader",
+    JavaVersion => "err_java_version",
     NoPayload => "no_payload",
 }
 

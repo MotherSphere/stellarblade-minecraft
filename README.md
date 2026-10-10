@@ -4,7 +4,7 @@
 
 <p align="center"><strong>Play Stellar Blade's EVE inside Minecraft Java.</strong></p>
 
-Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world as EVE. Stellar Blade runs alongside under Proton and simulates her: her controls, animations, skills and effects. Minecraft stays the game you play in: it owns the world, your inventory and menus, and draws EVE with her own meshes, from the pose Stellar Blade streams every frame, through Minecraft's own camera.
+Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world as EVE. Stellar Blade runs alongside, under Proton on Linux or natively on Windows, and simulates her: her controls, animations, skills and effects. Minecraft stays the game you play in: it owns the world, your inventory and menus, and draws EVE with her own meshes, from the pose Stellar Blade streams every frame, through Minecraft's own camera.
 
 ## Highlights
 
@@ -13,13 +13,13 @@ Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world a
 - **Any Minecraft mob.** EVE fights vanilla and mods' mobs through Minecraft's own damage, so each keeps its reactions and loot; in survival, Minecraft's health is hers.
 - **The wardrobe.** An **EVE's equipment** screen in Minecraft's pause menu changes her suit, hair, accessories, drone, gear and exospine through Stellar Blade's own menu rules.
 - **Multiplayer.** On a Fabric server, each EVE player links their own Stellar Blade, and modded players with an avatar pack see each other's EVE; players without the mod join as usual.
-- **A graphical installer.** Stellar Bridge, a Linux window in English and French, installs, updates, repairs, rolls back and uninstalls the bridge, and writes nothing before you accept its list of files.
+- **A graphical installer.** Stellar Bridge, a window for Linux and Windows in English and French, installs, updates, repairs, rolls back and uninstalls the bridge, sets up Fabric server folders, and writes nothing before you accept its list of files.
 
 ## Get started
 
-1. Build Stellar Bridge, the installer, from a checkout: no release is published yet ([setup](docs/setup.md#installer)).
+1. Download Stellar Bridge, the installer, from the releases (Linux or Windows), or build it from a checkout ([setup](docs/setup.md#installer)).
 2. Close Stellar Blade and Minecraft and run it. It finds your games and installs into a dedicated Prism instance or one you pick.
-3. In a private test world, run `/stellar start`, `/stellar import`, `/stellar enter`, then `/stellaravatar play` ([playing](docs/playing.md#start-a-session)). Avatar mode needs the private avatar pack, which the installer does not build yet ([diagnostics](docs/diagnostics.md#avatar-view-experimental)); without it, `/stellarview play` starts capture mode.
+3. In a private test world, run `/stellar start`, `/stellar import`, `/stellar enter`, then `/stellaravatar play` ([playing](docs/playing.md#start-a-session)). Avatar mode needs the private avatar pack, which the installer does not build yet ([diagnostics](docs/diagnostics.md#avatar-view-experimental)); without it, `/stellarview play` starts capture mode on Linux.
 
 ## Documentation
 
@@ -36,7 +36,7 @@ Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world a
 
 ## Status
 
-Experimental. It runs today on Linux, with one pinned Stellar Blade Steam build under Proton and Minecraft Java 1.21.1 with Fabric; Windows support is planned. Avatar mode needs a private avatar pack built from your own game files. Back up your Stellar Blade saves.
+Experimental. It runs today on Linux, with one pinned Stellar Blade Steam build under Proton and Minecraft Java 1.21.1 with Fabric. The native Windows bridge (Windows 11, Windows 10 22H2 as a courtesy, both games on Windows, avatar mode) has its installer and is checked on a Windows CI runner, but has not yet been played on a real Windows PC. Avatar mode needs a private avatar pack built from your own game files. Back up your Stellar Blade saves.
 
 ## Credits and licence
 

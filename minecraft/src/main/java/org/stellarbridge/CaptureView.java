@@ -155,7 +155,15 @@ public final class CaptureView {
                 Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
     }
 
+    /** Capture mode (/stellarview, /stellarpreview) stays on Linux; Windows plays EVE in avatar mode. True after refusing. */
+    static boolean linuxOnly(FabricClientCommandSource source) {
+        if (com.sun.jna.Platform.isLinux()) return false;
+        source.sendError(Text.literal("Capture mode is Linux-only; on Windows, use /stellaravatar play."));
+        return true;
+    }
+
     private static int live(FabricClientCommandSource source, boolean hd) {
+        if (linuxOnly(source)) return 0;
         off();
         MinecraftClient client = source.getClient();
         var context = StellarBridge.renderingContext();
@@ -170,7 +178,7 @@ public final class CaptureView {
                 stream.startHd(context.session(), context.revision(), context.origin(), System.nanoTime(), size[0], size[1]);
             }
             else stream.mailbox.start(context.session(), context.revision(), context.origin(), System.nanoTime());
-        } catch (IOException failure) {
+        } catch (IOException | LinkageError failure) { // LinkageError: a native library mistake, not a crash.
             source.sendError(Text.literal("EVE HD request failed: " + failure.getMessage()));
             return 0;
         }
@@ -260,6 +268,7 @@ public final class CaptureView {
     }
 
     private static int load(FabricClientCommandSource source) {
+        if (linuxOnly(source)) return 0;
         off();
         MinecraftClient client = source.getClient();
         var context = StellarBridge.renderingContext();

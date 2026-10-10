@@ -54,6 +54,7 @@ final class CapturePreview {
     }
 
     private static int load(FabricClientCommandSource source) {
+        if (CaptureView.linuxOnly(source)) return 0;
         off();
         MinecraftClient client = source.getClient();
         if (!eligible(client)) {

@@ -146,6 +146,36 @@ final class ControlState {
         require(integer(field(lines[8], "END"), 1) == seq, "Controller ACK footer mismatch");
         return new Ack(run, session, epoch, seq, time, edge, state);
     }
+    /**
+     * The adapter's slot-0 XInputGetState callers (eve-input-calls.txt): totals since it loaded and calls per second over
+     * its last interval, from the recognized gameplay poll and from any other caller. Another caller at the game's poll
+     * rate with no gameplay calls is an overlay hook (Steam Input) calling on the game's behalf: input is never forwarded.
+     */
+    record Calls(long time, long gameplay, long gameplayRate, long other, long otherRate) {
+        /** One status sentence while the report is fresh (an adapter running now), else empty. */
+        String status(long nowMs) {
+            if (nowMs - time > 3000 || time - nowMs > 1000) return "";
+            return String.format(" XInput slot 0: %d calls/s from the gameplay poll, %d/s from other callers%s.", gameplayRate, otherRate,
+                    gameplayRate == 0 && otherRate >= 10 ? " (the gameplay poll is not recognized: disable Steam Input for Stellar Blade)" : "");
+        }
+    }
+    static Calls parseCalls(byte[] bytes) {
+        require(bytes.length > 0 && bytes.length <= 512, "Callers report exceeds limits");
+        for (byte value : bytes) require(value == '\n' || value >= 32 && value <= 126, "Callers report must be ASCII/LF");
+        String[] lines = new String(bytes, StandardCharsets.US_ASCII).split("\n", -1);
+        require(lines.length == 6 && lines[5].isEmpty() && lines[0].equals("SBMC_XINPUT_CALLS 1") && lines[4].equals("END"),
+                "Invalid callers report framing");
+        long time = integer(field(lines[1], "TIME"), 1);
+        long[] gameplay = counts(lines[2], "GAMEPLAY"), other = counts(lines[3], "OTHER");
+        return new Calls(time, gameplay[0], gameplay[1], other[0], other[1]);
+    }
+    private static long[] counts(String line, String tag) {
+        String[] fields = line.split(" ", -1);
+        require(fields.length == 3 && fields[0].equals(tag), "Invalid callers report field");
+        long count = integer(fields[1], 0), rate = integer(fields[2], 0);
+        require(count <= 0xffffffffL && rate <= 0xffffffffL, "Callers report count exceeds 32 bits");
+        return new long[] {count, rate};
+    }
     private static String field(String line, String tag) {
         String[] fields = line.split(" ", -1);
         require(fields.length == 2 && fields[0].equals(tag) && !fields[1].isEmpty(), "Invalid controller ACK field");

@@ -1,4 +1,5 @@
 #define WIN32_LEAN_AND_MEAN
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -70,6 +71,7 @@ int main() {
   DeleteFileA("eve-control-permit.0");
   DeleteFileA("eve-control-permit.1");
   DeleteFileA("eve-input-ack.txt");
+  DeleteFileA("eve-input-calls.txt");
   char cwd[4096];
   require(GetCurrentDirectoryA(sizeof(cwd), cwd) > 0, "cwd");
   write("stellar-input-directory.txt", std::string(cwd) + "\n");
@@ -170,7 +172,23 @@ int main() {
   // Unloading the caller's handle cannot invalidate the pinned worker/module.
   FreeLibrary(fixture);
   require(get(0, &a) == ERROR_SUCCESS, "worker module pinned");
+  // The callers report counts the slot-0 polls above by return address: the
+  // gameplay poll's, and the observer's (an overlay hook would be one).
+  bool reported = false;
+  for (int n = 0; n < 40 && !reported; ++n) {
+    auto calls = read("eve-input-calls.txt");
+    auto count = [&](const char *key) {
+      auto at = calls.find(key);
+      return at == std::string::npos ? 0ul : std::stoul(calls.substr(at + std::strlen(key)));
+    };
+    reported = calls.rfind("SBMC_XINPUT_CALLS 1\nTIME ", 0) == 0 &&
+               count("\nGAMEPLAY ") == 6 && count("\nOTHER ") == 9;
+    if (!reported)
+      Sleep(100);
+  }
+  require(reported, "callers report");
   std::cout
       << "PASS production identity rejection, ordinals, forwarding, gameplay "
-         "gate, neutral handshake, edge ACK, stop, expiry, module lifetime\n";
+         "gate, neutral handshake, edge ACK, stop, expiry, module lifetime, "
+         "callers report\n";
 }

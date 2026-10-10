@@ -37,7 +37,7 @@ pub fn is_fabric_api(name: &str) -> bool {
 
 /// The `mods` folder with links resolved: instance folders often live on another disk.
 fn folder(mods: &Path) -> Result<PathBuf> {
-    let mods = fs::canonicalize(mods)?;
+    let mods = platform::canonicalize(mods)?;
     if !mods.is_dir() {
         bail!(Refusal::new(Kind::NotDirectory, mods.display()));
     }
@@ -297,7 +297,7 @@ mod tests {
 
     fn mods() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
-        let mods = fs::canonicalize(root.path()).unwrap().join("mods");
+        let mods = platform::canonicalize(root.path()).unwrap().join("mods");
         fs::create_dir(&mods).unwrap();
         fs::write(mods.join("sodium.jar"), "sodium").unwrap();
         (root, mods)
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(names(&mods).unwrap(), vec!["sodium.jar"]);
         assert!(install(&mods, ("other.jar", b"x"), b"fabric", &open).is_err());
         let empty = tempfile::tempdir().unwrap();
-        let bare = fs::canonicalize(empty.path()).unwrap();
+        let bare = platform::canonicalize(empty.path()).unwrap();
         assert!(
             install(&bare, JAR, b"", &open).is_err(),
             "no Fabric API to add"

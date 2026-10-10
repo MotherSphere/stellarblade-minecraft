@@ -88,9 +88,11 @@ public final class CaptureFrameTest {
             Files.write(colorPath, wrongSize);
             rejects(() -> CaptureFrame.read(directory, 1791110000));
             Files.delete(colorPath);
-            Files.createSymbolicLink(colorPath, directory.resolve("eve-frame-" + ID + "-mask.png"));
-            rejects(() -> CaptureFrame.read(directory, 1791110000));
-            Files.delete(colorPath); Files.write(colorPath, color);
+            if (BridgeRuntimeTest.symlink(colorPath, directory.resolve("eve-frame-" + ID + "-mask.png"))) {
+                rejects(() -> CaptureFrame.read(directory, 1791110000));
+                Files.delete(colorPath);
+            }
+            Files.write(colorPath, color);
             byte[] badDepth = depth.clone(); badDepth[depth.length - 1] = 0;
             // Corrupt a scanline run length, preserving declared byte count.
             badDepth[badDepth.length - 2] = 0;
@@ -99,8 +101,7 @@ public final class CaptureFrameTest {
             Files.writeString(directory.resolve("eve-frame.txt"), metadata.replace(" 0 75\n", " 0 76\n"));
             rejects(() -> CaptureFrame.verifyUnchanged(directory, loaded.descriptor()));
             Path alias = directory.resolve("alias");
-            Files.createSymbolicLink(alias, directory);
-            rejects(() -> CaptureFrame.read(alias, 1791110000));
+            if (BridgeRuntimeTest.symlink(alias, directory)) rejects(() -> CaptureFrame.read(alias, 1791110000));
         } finally {
             try (var paths = Files.walk(directory)) {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.delete(path);

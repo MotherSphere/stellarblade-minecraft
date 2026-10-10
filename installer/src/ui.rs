@@ -17,7 +17,7 @@ use crate::launcher::{self, Kind};
 use crate::ledger::Status;
 use crate::ops::{self, Step};
 use crate::safety::Running;
-use crate::{Ownership, detect, pins};
+use crate::{Ownership, detect, pins, platform};
 
 type El<'a> = Element<'a, Message>;
 
@@ -240,6 +240,7 @@ fn screen_label(screen: Screen) -> &'static str {
         Screen::Consent => t("screen_consent"),
         Screen::Working => t("screen_working"),
         Screen::Done => t("screen_done"),
+        Screen::Server => t("screen_server"),
     }
 }
 
@@ -265,6 +266,7 @@ fn action_label(action: Action) -> &'static str {
         Action::Repair => t("action_repair"),
         Action::Rollback => t("action_rollback"),
         Action::Uninstall => t("action_uninstall"),
+        Action::Server => t("action_server"),
     }
 }
 
@@ -298,7 +300,7 @@ pub fn view(app: &App) -> El<'_> {
         widgets::nav_label(&typo, t("nav_steps")),
     ]
     .spacing(8);
-    for screen in Screen::WIZARD {
+    for &screen in Screen::steps(app.role) {
         let current = screen == app.screen;
         sidebar = sidebar.push(
             text(screen_label(screen))
@@ -341,6 +343,7 @@ pub fn view(app: &App) -> El<'_> {
             Screen::Consent => consent(app, &typo),
             Screen::Working => working(app, &typo),
             Screen::Done => done(app, &typo),
+            Screen::Server => server_page(app, &typo),
         };
         scrollable(container(page).padding(28).width(Fill))
             .height(Fill)
@@ -499,6 +502,7 @@ fn welcome<'a>(app: &'a App, typo: &Typography) -> El<'a> {
         subheading(typo, t("role_title")),
         role(Role::Eve, t("role_eve"), t("role_eve_hint")),
         role(Role::Viewer, t("role_viewer"), t("role_viewer_hint")),
+        role(Role::Server, t("role_server"), t("role_server_hint")),
         card(
             column![
                 subheading(typo, t("welcome_changes_title")),
@@ -589,40 +593,43 @@ fn detect_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
                 (Level::Bad, format!("{value}\n{}", t("blocker_build")))
             };
             rows = rows.push(status_row(typo, level, t("row_game"), value));
-            rows = rows.push(match &game.proton {
-                None => status_row(
-                    typo,
-                    Level::Info,
-                    t("row_proton"),
-                    t("row_proton_default").into(),
-                ),
-                Some(name) if name == pins::PROTON_TESTED => {
-                    status_row(typo, Level::Ok, t("row_proton"), name.clone())
-                }
-                Some(name) => status_row(
-                    typo,
-                    Level::Warn,
-                    t("row_proton"),
-                    t_fmt(
-                        "row_proton_untested",
-                        &[("name", name), ("tested", pins::PROTON_TESTED)],
+            // Proton, its prefix and the DLL override exist on Linux only.
+            if platform::PROTON {
+                rows = rows.push(match &game.proton {
+                    None => status_row(
+                        typo,
+                        Level::Info,
+                        t("row_proton"),
+                        t("row_proton_default").into(),
                     ),
-                ),
-            });
-            rows = rows.push(match &game.prefix {
-                Some(prefix) => status_row(
-                    typo,
-                    Level::Ok,
-                    t("row_prefix"),
-                    prefix.display().to_string(),
-                ),
-                None => status_row(
-                    typo,
-                    Level::Warn,
-                    t("row_prefix"),
-                    t("row_prefix_missing").into(),
-                ),
-            });
+                    Some(name) if name == pins::PROTON_TESTED => {
+                        status_row(typo, Level::Ok, t("row_proton"), name.clone())
+                    }
+                    Some(name) => status_row(
+                        typo,
+                        Level::Warn,
+                        t("row_proton"),
+                        t_fmt(
+                            "row_proton_untested",
+                            &[("name", name), ("tested", pins::PROTON_TESTED)],
+                        ),
+                    ),
+                });
+                rows = rows.push(match &game.prefix {
+                    Some(prefix) => status_row(
+                        typo,
+                        Level::Ok,
+                        t("row_prefix"),
+                        prefix.display().to_string(),
+                    ),
+                    None => status_row(
+                        typo,
+                        Level::Warn,
+                        t("row_prefix"),
+                        t("row_prefix_missing").into(),
+                    ),
+                });
+            }
             rows = rows.push(match &found.ue4ss {
                 None => status_row(
                     typo,
@@ -651,26 +658,28 @@ fn detect_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
                     ),
                 ),
             });
-            rows = rows.push(match found.dll_override {
-                Some(Override::Registry) => status_row(
-                    typo,
-                    Level::Ok,
-                    t("row_override"),
-                    t("row_override_registry").into(),
-                ),
-                Some(Override::LaunchOptions) => status_row(
-                    typo,
-                    Level::Ok,
-                    t("row_override"),
-                    t("row_override_launch").into(),
-                ),
-                _ => status_row(
-                    typo,
-                    Level::Warn,
-                    t("row_override"),
-                    t("row_override_missing").into(),
-                ),
-            });
+            if platform::PROTON {
+                rows = rows.push(match found.dll_override {
+                    Some(Override::Registry) => status_row(
+                        typo,
+                        Level::Ok,
+                        t("row_override"),
+                        t("row_override_registry").into(),
+                    ),
+                    Some(Override::LaunchOptions) => status_row(
+                        typo,
+                        Level::Ok,
+                        t("row_override"),
+                        t("row_override_launch").into(),
+                    ),
+                    _ => status_row(
+                        typo,
+                        Level::Warn,
+                        t("row_override"),
+                        t("row_override_missing").into(),
+                    ),
+                });
+            }
         }
     }
     let compatible = found
@@ -1128,6 +1137,68 @@ fn done<'a>(app: &'a App, typo: &Typography) -> El<'a> {
         typo,
         t("back_to_status"),
         (!app.busy).then_some(Message::Rescan),
+    ))
+    .into()
+}
+
+/// The server operator's page: the folder, what it holds, Mojang's EULA box, then the install.
+fn server_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
+    let mut page = column![
+        heading(typo, t("server_title")),
+        para(typo, t("server_body")),
+        row![
+            text_input(t("server_placeholder"), &app.server_path)
+                .on_input(Message::ServerPath)
+                .on_submit(Message::ServerCheck)
+                .size(typo.sz(13))
+                .padding(8),
+            secondary(
+                typo,
+                t("server_check"),
+                (!app.server_checking).then_some(Message::ServerCheck)
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(12);
+    let mut ready = false;
+    if let Some(Ok(check)) = &app.server {
+        page = page.push(card(lines(typo, crate::app::server_lines(check))));
+        if check.folder.eula.is_none() {
+            page = page.push(card(
+                column![
+                    para(typo, t("server_eula_body")),
+                    code(typo, pins::MINECRAFT_EULA),
+                    checkbox(app.server_eula)
+                        .label(t("server_eula_check"))
+                        .on_toggle(Message::ServerEula)
+                        .text_size(typo.sz(13)),
+                ]
+                .spacing(8),
+            ));
+        }
+        ready = check.ready() && app.ctx.payload.is_some();
+    }
+    if app.ctx.payload.is_none() {
+        page = page.push(para(typo, t("no_payload")));
+    }
+    page = page
+        .push(subheading(typo, t("never_touched_title")))
+        .push(para(typo, t("server_never_touched")));
+    let label = if app.ctx.dry_run {
+        t("dry_run_finish")
+    } else {
+        t("action_server")
+    };
+    page.push(nav(
+        typo,
+        true,
+        primary(
+            typo,
+            label,
+            (ready && !app.busy).then_some(Message::Begin(Action::Server)),
+        ),
     ))
     .into()
 }

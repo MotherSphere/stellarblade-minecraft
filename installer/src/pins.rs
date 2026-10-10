@@ -23,3 +23,12 @@ pub const LAUNCH_OPTION: &str = "WINEDLLOVERRIDES=\"xinput1_3=n,b\" %command%";
 
 /// Stellar Blade's licence agreement, linked from the consent page: modding the game is the player's own risk.
 pub const SB_EULA: &str = "https://store.steampowered.com/eula/3489700_eula_0";
+
+/// `vendor/fabric-server/fabric-server-launch.jar`: Fabric's server launcher for Minecraft 1.21.1, Fabric Loader 0.19.5
+/// and Fabric Installer 1.1.2, embedded for new server folders (see its NOTICE).
+pub const FABRIC_SERVER_LAUNCHER_SHA256: &str =
+    "809d99b16dd4d4b57384d128724ab0d6560f859aaba989dc6750d8437a447ed0";
+/// The oldest Java that runs Minecraft 1.21.1's server.
+pub const JAVA_MIN: u32 = 21;
+/// Mojang's licence for the Minecraft server, linked wherever the operator may accept it.
+pub const MINECRAFT_EULA: &str = "https://aka.ms/MinecraftEULA";
