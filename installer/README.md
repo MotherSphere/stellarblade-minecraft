@@ -131,7 +131,7 @@ The window's application id is `stellar-bridge-installer`, so Wayland compositor
 
 The Windows build (`--target x86_64-pc-windows-msvc`, on Windows or cross-built) is `stellar-bridge-installer.exe`, published as `stellar-bridge-installer-windows-x86_64.exe`. `build.rs` gives it the icon `assets/icon.ico`, version information from `Cargo.toml` and the manifest `assets/stellar-bridge-installer.manifest`, which runs it as the user who starts it, never elevated. The resource compiler is the Windows SDK's `rc.exe`, or `llvm-rc` when cross-building.
 
-The declared minimum Rust is 1.95, set by sysinfo, which only the Windows build uses; the Linux tree alone builds with 1.90 (ordered-float through wgpu). The Windows CI job checks 1.95 on every run; check the Linux floor after dependency changes with `cargo +1.90 check --locked --all-targets`.
+The declared minimum Rust is 1.95, set by sysinfo, which only the Windows build uses; the Linux tree alone builds with 1.90 (ordered-float through wgpu). The Windows CI job checks 1.95 on every run; check the Linux floor after dependency changes with `cargo +1.90 check --locked --all-targets --ignore-rust-version`.
 
 ## Logo
 

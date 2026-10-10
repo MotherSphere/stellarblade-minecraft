@@ -73,7 +73,7 @@ The implementation limits terrain to one 40 × 24 × 40 window that follows EVE 
 | `native/tests/`, `native/fixtures/` | Portable checks and isolated Windows test hosts |
 | `protocol/` | Shared wire contract and fixtures |
 | `tools/`, `tools/tests/` | Offline checks and owned-installation tools |
-| `installer/` | Stellar Bridge, the Rust installer for Linux ([its README](../installer/README.md)) |
+| `installer/` | Stellar Bridge, the Rust installer for Linux and Windows, with its server folder mode ([its README](../installer/README.md)) |
 | `docs/` | Playing, setup, multiplayer, architecture and diagnostic reference |
 
 [Build and check](setup.md#build-and-check) runs every component's offline checks. The separate terrain renderer inside Stellar Blade is a diagnostic, not the main gameplay route.
