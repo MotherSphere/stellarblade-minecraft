@@ -4,7 +4,7 @@
 
 <p align="center"><strong>Play Stellar Blade's EVE inside Minecraft Java.</strong></p>
 
-Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world as EVE. Stellar Blade runs alongside under Proton and simulates her: her controls, animations, skills and effects. Minecraft stays the game you play in: it owns the world, your inventory and menus, and draws EVE with her own meshes, from the pose Stellar Blade streams every frame, through Minecraft's own camera.
+Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world as EVE. Stellar Blade runs alongside, under Proton on Linux or natively on Windows, and simulates her: her controls, animations, skills and effects. Minecraft stays the game you play in: it owns the world, your inventory and menus, and draws EVE with her own meshes, from the pose Stellar Blade streams every frame, through Minecraft's own camera.
 
 ## Highlights
 
@@ -36,7 +36,7 @@ Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world a
 
 ## Status
 
-Experimental. It runs today on Linux, with one pinned Stellar Blade Steam build under Proton and Minecraft Java 1.21.1 with Fabric; Windows support is planned. Avatar mode needs a private avatar pack built from your own game files. Back up your Stellar Blade saves.
+Experimental. It runs today on Linux, with one pinned Stellar Blade Steam build under Proton and Minecraft Java 1.21.1 with Fabric. The native Windows bridge (Windows 11, both games on Windows, avatar mode) is checked on a Windows CI runner but has not yet been played on a real Windows PC. Avatar mode needs a private avatar pack built from your own game files. Back up your Stellar Blade saves.
 
 ## Credits and licence
 

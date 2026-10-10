@@ -46,7 +46,8 @@ The assets are not signed. The Project-Colony organisation key is limited to Pro
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`:
 
 - **Windows DLL** (`windows-2025`): builds `xinput1_3.dll` with `cmake -A x64 -T ClangCL` and runs the four portable native tests as Windows programs.
-- **Linux checks and installer** (`ubuntu-22.04`): runs `python3 tools/check.py` (Lua 5.4, Python, the host native tests, the Fabric build and the Java-Lua exchange, then the installer with that DLL and the JAR embedded). The `windows` component stays local: it needs the clang-cl/xwin toolchain and Wine or Proton, and reports `SKIP windows` in CI.
+- **Windows bridge tests** (`windows-2025`, not for release builds): `python tools/check.py --only minecraft` (the Java suites on Windows' file system; capture-mode suites report `SKIP`) and `--only windows` (both Windows trees, every native check and the fake host, run directly); then the pose mapping between Java and `stellar_pose_stream_fixture.exe`, and `BridgeRuntimeTest`'s contended run beside `stellar_share_stress.exe`, a C reader and writer that shares files as Lua does.
+- **Linux checks and installer** (`ubuntu-22.04`): runs `python3 tools/check.py` (Lua 5.4, Python, the host native tests, the Fabric build and the Java-Lua exchange, then the installer with that DLL and the JAR embedded). There the `windows` component reports `SKIP windows`: it needs the clang-cl/xwin toolchain and Wine or Proton, and the Windows bridge job runs it on Windows instead.
 
 For a release, the same workflow also checks the tag against the version files, builds the installer in release mode with its payload, runs `--version` against the payload and stages the assets.
 
