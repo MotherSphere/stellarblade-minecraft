@@ -17,11 +17,14 @@ fn walk(root: &Path, dir: &Path, code: &mut String) {
         if metadata.is_dir() {
             walk(root, &path, code);
         } else if metadata.is_file() {
+            // '/'-joined like payload.json's names, also when the build runs on Windows.
             let relative = path
                 .strip_prefix(root)
                 .unwrap()
-                .to_str()
-                .expect("UTF-8 payload path");
+                .components()
+                .map(|c| c.as_os_str().to_str().expect("UTF-8 payload path"))
+                .collect::<Vec<_>>()
+                .join("/");
             let absolute = path.to_str().expect("UTF-8 payload path");
             writeln!(code, "    ({relative:?}, include_bytes!({absolute:?})),").unwrap();
         } else {
