@@ -462,7 +462,8 @@ pub fn save_dirs(prefix: Option<&Path>, _home: &Path) -> Vec<PathBuf> {
 }
 
 /// Where Stellar Blade may keep its saves on Windows, the likeliest first: `%LOCALAPPDATA%\SB\Saved\SaveGames` (what
-/// the Proton prefix mirrors), then the two folders guides name. The SteamID64 below them is never logged.
+/// the Proton prefix mirrors), then two folders some guides name (unconfirmed; they are only read). The SteamID64
+/// below them is never logged.
 #[cfg(windows)]
 pub fn save_dirs(_prefix: Option<&Path>, home: &Path) -> Vec<PathBuf> {
     [

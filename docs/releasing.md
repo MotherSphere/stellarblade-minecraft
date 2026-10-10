@@ -24,12 +24,13 @@ The project has a single version: the JAR, the installer and the release share i
 | Asset | For |
 |---|---|
 | `stellar-bridge-installer-linux-x86_64` | Linux: Stellar Bridge, the installer, with the payload embedded (the Lua mod, the DLL, the JAR and Fabric API). Needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12 and newer). Make it executable with `chmod +x`. |
+| `stellar-bridge-installer-windows-x86_64.exe` | Windows 11 x64 (Windows 10 22H2 as a courtesy): the same installer with the same payload, for EVE players, viewers and server folders. It runs as the user who starts it, never elevated. It is not signed, so SmartScreen may warn before the first start. |
 | `stellar-bridge-X.Y.Z.jar` | Every platform: the Fabric mod, for clients, servers and viewers. Fabric API 0.116.17+1.21.1 is a separate download. |
 | `xinput1_3.dll` | Windows x64: the native adapter Stellar Blade loads, for a [manual install](setup.md#install). |
 | `StellarCollisionProbe-X.Y.Z.zip` | The UE4SS Lua mod as one `StellarCollisionProbe/` folder. It stays inactive until `bridge_config.lua` exists; the installer or `tools/deploy.py` writes it (see [setup](setup.md#install)). |
 | `SHA256SUMS` | The SHA-256 of every other asset. |
 
-The installer's payload holds the same bytes as the separate JAR and DLL. There is no Windows installer yet: the installer builds only on Unix today, and Windows support comes with phase G3 ([installer](../installer/README.md)). Server hosts and viewers on any OS take the JAR. Playing needs Linux with Proton today; native Windows support is planned.
+Both installers embed one payload, staged once by the Linux job, and hold the same bytes as the separate JAR and DLL. Server hosts and viewers on any OS can also take the JAR by hand. Playing as EVE on Windows is untested in game so far: it waits for a grouped test on a real Windows PC ([installer](../installer/README.md)).
 
 The release DLL is built on GitHub's Windows runner with Visual Studio's ClangCL toolset, the compiler family of the local clang-cl/xwin build. `/Brepro` makes each toolchain reproducible, but the two toolchains do not produce the same bytes, so check a new toolchain's DLL in game before relying on it. The runner image label is pinned (`windows-2025`), so a move to a new image and its Visual Studio arrives as a visible commit; GitHub's weekly updates of that image can still bring minor toolset updates.
 
@@ -46,9 +47,10 @@ The assets are not signed. The Project-Colony organisation key is limited to Pro
 `.github/workflows/ci.yml` runs on every pull request and every push to `main`:
 
 - **Windows DLL** (`windows-2025`): builds `xinput1_3.dll` with `cmake -A x64 -T ClangCL` and runs the four portable native tests as Windows programs.
-- **Linux checks and installer** (`ubuntu-22.04`): runs `python3 tools/check.py` (Lua 5.4, Python, the host native tests, the Fabric build and the Java-Lua exchange, then the installer with that DLL and the JAR embedded). The `windows` component stays local: it needs the clang-cl/xwin toolchain and Wine or Proton, and reports `SKIP windows` in CI.
+- **Linux checks and installer** (`ubuntu-22.04`): runs `python3 tools/check.py` (Lua 5.4, Python, the host native tests, the Fabric build and the Java-Lua exchange, then the installer with that DLL and the JAR embedded). The `windows` component stays local: it needs the clang-cl/xwin toolchain and Wine or Proton, and reports `SKIP windows` in CI. It then stages the payload with `tools/payload.py` (the Lua mod, the DLL, the JAR and Fabric API of this commit), uploads it for the next job, and runs `--version` on the installer, which loads the payload and checks every file of it.
+- **Windows installer** (`windows-2025`, after the Linux job): runs `cargo clippy`, `cargo test` and a `cargo check` with the declared minimum Rust (1.95) with that same payload embedded, so the Windows tests install the real pieces on fake trees, then builds the exe and runs the same `--version` smoke test.
 
-For a release, the same workflow also checks the tag against the version files, builds the installer in release mode with its payload, runs `--version` against the payload and stages the assets.
+For a release, the same workflow first checks the tag against the version files, then builds both installers in release mode with the payload, runs `--version` on each and stages the assets; the publish job merges the Linux and Windows artifacts.
 
 Actions are pinned to full commit SHAs. Each job gets only the token permissions it needs: read for builds, write for the release-please and publish jobs only.
 
@@ -56,5 +58,5 @@ Actions are pinned to full commit SHAs. Each job gets only the token permissions
 
 - Release Please opens its pull request with the workflow's `GITHUB_TOKEN`. Turn on Settings > Actions > General > Workflow permissions > **Allow GitHub Actions to create and approve pull requests**.
 - GitHub runs no workflow for a pull request opened with `GITHUB_TOKEN`, so the release pull request shows no CI run. It changes only the versions and the changelog, and the release build runs every check before anything is published. Before merging, close and reopen the release pull request. The reopen is your own event, so `ci.yml` runs on it and catches a stale `Cargo.lock` or a new lint before the tag exists.
-- The repository is private: releases are visible to its collaborators only, and Actions minutes count against the account's private quota (Windows minutes count double).
+- The repository is private: releases are visible to its collaborators only, and Actions minutes count against the account's private quota (Windows minutes count double, and each run has two Windows jobs).
 - If a build or the publish step fails, re-run the failed jobs. If the run cannot be re-run, open Actions > Release Please > **Run workflow** and give the tag: it rebuilds from the tag and publishes the release if it is still a draft. A published release is never changed by the workflow. A tag whose code cannot build stays a draft. Fix it on `main`, and the next release replaces it.
