@@ -4,8 +4,8 @@ Releases go through [Release Please](https://github.com/googleapis/release-pleas
 
 ## From commits to a release
 
-1. **Conventional commits on `minecraft-main-renderer`.** Every commit that reaches the default branch, directly or through a merged pull request, uses a conventional subject (`feat:`, `fix:`, `docs:`...).
-2. **The release pull request.** After each push, `.github/workflows/release-please.yml` opens or updates one pull request, `chore(minecraft-main-renderer): release X.Y.Z`. It adds the new `CHANGELOG.md` section (each line links its commit) and sets the version in `minecraft/build.gradle`, `installer/Cargo.toml` and `installer/Cargo.lock`. Review it like any other pull request; leave the versions to it.
+1. **Conventional commits on `main`.** Every commit that reaches the default branch, directly or through a merged pull request, uses a conventional subject (`feat:`, `fix:`, `docs:`...).
+2. **The release pull request.** After each push, `.github/workflows/release-please.yml` opens or updates one pull request, `chore(main): release X.Y.Z`. It adds the new `CHANGELOG.md` section (each line links its commit) and sets the version in `minecraft/build.gradle`, `installer/Cargo.toml` and `installer/Cargo.lock`. Review it like any other pull request; leave the versions to it.
 3. **Merge.** Merging it makes Release Please create the tag `vX.Y.Z` and the release as a draft. The workflow builds every asset from the tag through `.github/workflows/ci.yml` (all checks included), attaches them with `SHA256SUMS`, checks that each one is attached, and only then publishes it.
 
 | Commit type | Changelog section | Version bump below 1.0 |
@@ -43,7 +43,7 @@ The assets are not signed. The Project-Colony organisation key is limited to Pro
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request and every push to `minecraft-main-renderer`:
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`:
 
 - **Windows DLL** (`windows-2025`): builds `xinput1_3.dll` with `cmake -A x64 -T ClangCL` and runs the four portable native tests as Windows programs.
 - **Linux checks and installer** (`ubuntu-22.04`): runs `python3 tools/check.py` (Lua 5.4, Python, the host native tests, the Fabric build and the Java-Lua exchange, then the installer with that DLL and the JAR embedded). The `windows` component stays local: it needs the clang-cl/xwin toolchain and Wine or Proton, and reports `SKIP windows` in CI.
@@ -57,4 +57,4 @@ Actions are pinned to full commit SHAs. Each job gets only the token permissions
 - Release Please opens its pull request with the workflow's `GITHUB_TOKEN`. Turn on Settings > Actions > General > Workflow permissions > **Allow GitHub Actions to create and approve pull requests**.
 - GitHub runs no workflow for a pull request opened with `GITHUB_TOKEN`, so the release pull request shows no CI run. It changes only the versions and the changelog, and the release build runs every check before anything is published. Before merging, close and reopen the release pull request. The reopen is your own event, so `ci.yml` runs on it and catches a stale `Cargo.lock` or a new lint before the tag exists.
 - The repository is private: releases are visible to its collaborators only, and Actions minutes count against the account's private quota (Windows minutes count double).
-- If a build or the publish step fails, re-run the failed jobs. If the run cannot be re-run, open Actions > Release Please > **Run workflow** and give the tag: it rebuilds from the tag and publishes the release if it is still a draft. A published release is never changed by the workflow. A tag whose code cannot build stays a draft. Fix it on `minecraft-main-renderer`, and the next release replaces it.
+- If a build or the publish step fails, re-run the failed jobs. If the run cannot be re-run, open Actions > Release Please > **Run workflow** and give the tag: it rebuilds from the tag and publishes the release if it is still a draft. A published release is never changed by the workflow. A tag whose code cannot build stays a draft. Fix it on `main`, and the next release replaces it.

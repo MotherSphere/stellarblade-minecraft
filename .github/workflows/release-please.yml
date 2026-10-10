@@ -1,4 +1,4 @@
-# Release Please keeps a release pull request open from the conventional commits on minecraft-main-renderer.
+# Release Please keeps a release pull request open from the conventional commits on main.
 # Merging it tags vX.Y.Z and creates the GitHub release as a draft (release-please-config.json sets draft and
 # force-tag-creation, so the tag exists at once and the next run finds this release). This workflow then builds the
 # assets from the tag through ci.yml, attaches them with SHA256SUMS and only then publishes the release.
@@ -10,7 +10,7 @@ name: Release Please
 
 on:
   push:
-    branches: [minecraft-main-renderer]
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
