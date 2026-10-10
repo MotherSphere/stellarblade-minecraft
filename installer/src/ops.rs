@@ -501,10 +501,13 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     .context(format!(
                         "the previous state could not be restored: {undo:#}"
                     ))
-                    .context(Refusal::new(
-                        Kind::InstallNotRestored,
-                        previous.map_or("-".into(), |p| p.display().to_string()),
-                    )),
+                    .context(match previous {
+                        Some(previous) => {
+                            Refusal::new(Kind::InstallNotRestored, previous.display())
+                        }
+                        // A first install replaced nothing: what it wrote is left behind.
+                        None => Refusal::new(Kind::InstallNotRemoved, ""),
+                    }),
             });
         }
     }

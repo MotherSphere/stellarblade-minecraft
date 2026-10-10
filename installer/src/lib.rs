@@ -88,6 +88,7 @@ kinds! {
     MismatchAfterWrite => "err_mismatch_after_write",
     InstallRestored => "err_install_restored",
     InstallNotRestored => "err_install_not_restored",
+    InstallNotRemoved => "err_install_not_removed",
     NoPrevious => "err_no_previous",
     PreviousChanged => "err_previous_changed",
     StillModified => "err_still_modified",

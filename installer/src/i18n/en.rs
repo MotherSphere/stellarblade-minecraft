@@ -459,6 +459,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Installation failed and the previous state could not be restored; the replaced files are kept in {path}",
     ),
     (
+        "err_install_not_removed",
+        "Installation failed and the files it wrote could not all be removed; the log has the details",
+    ),
+    (
         "err_no_previous",
         "There is no previous set to roll back to",
     ),

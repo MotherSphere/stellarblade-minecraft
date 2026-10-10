@@ -498,6 +498,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "L'installation a échoué et l'état précédent n'a pas pu être rétabli ; les fichiers remplacés sont conservés dans {path}",
     ),
     (
+        "err_install_not_removed",
+        "L'installation a échoué et les fichiers écrits n'ont pas tous pu être retirés ; le journal contient les détails",
+    ),
+    (
         "err_no_previous",
         "Il n'y a pas de version précédente à rétablir",
     ),
