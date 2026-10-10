@@ -315,7 +315,10 @@ fn create(dir: &Path, payload: &Payload, accept_eula: bool, closed: Guard) -> Re
     let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
         bail!(Refusal::new(Kind::ServerFolder, dir.display()));
     };
-    let staging = parent.join(format!(".{}.partial", name.to_string_lossy()));
+    let staging = parent.join(format!(
+        ".{}.stellar-bridge-partial",
+        name.to_string_lossy()
+    ));
     closed()?;
     if fs::symlink_metadata(&staging).is_ok() {
         // Left by a run that was killed; only this installer makes it.
@@ -580,7 +583,7 @@ mod tests {
             fs::read(dir.join("mods").join(pins::FABRIC_API_FILE)).unwrap(),
             b"fabric api"
         );
-        assert!(!base.join(".server.partial").exists());
+        assert!(!base.join(".server.stellar-bridge-partial").exists());
         let folder = inspect(&dir).unwrap();
         assert_eq!(
             (folder.layout, folder.bridge),

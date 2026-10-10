@@ -220,7 +220,8 @@ pub fn game(steams: &[Steam], home: &Path) -> Option<Game> {
                 continue;
             };
             let dir = steamapps.join("common").join(installdir);
-            let win64 = dir.join("SB/Binaries/Win64");
+            // Part by part, so Windows paths shown and recorded keep one separator.
+            let win64 = dir.join("SB").join("Binaries").join("Win64");
             let build_id = field("buildid");
             let target = field("TargetBuildID").filter(|t| t != "0");
             let updating = field("StateFlags").as_deref() != Some("4")

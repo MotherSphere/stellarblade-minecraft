@@ -1,7 +1,7 @@
 //! The window's state machine: welcome, detect (also the status page, with repair, roll back and uninstall), verify,
-//! target, consent, install with its step list and log, done; and for a server operator, the server folder page. [`App::step`] never blocks: detection, hashing and every
-//! operation run as a [`Job`] on a worker thread that reports back through messages. The UI smoke test drives `step`
-//! and runs each job in place on a fake tree.
+//! target, consent, install with its step list and log, done; and for a server operator, the server folder page.
+//! [`App::step`] never blocks: detection, hashing and every operation run as a [`Job`] on a worker thread that reports
+//! back through messages. The UI smoke test drives `step` and runs each job in place on a fake tree.
 
 use std::collections::HashSet;
 use std::ffi::OsString;
