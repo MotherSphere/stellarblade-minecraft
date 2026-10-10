@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::safety;
+use crate::{Kind, Refusal, safety};
 
 /// The program name: `Colony/Stellar Bridge/` folders.
 pub const PROGRAM: &str = "Stellar Bridge";
@@ -73,7 +73,7 @@ pub fn save(path: &Path, state: &State) -> Result<()> {
 /// `previous/<release>/`, replacing the set kept before. About 1 MB: the avatar pack is never copied.
 pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
     if release.is_empty() || release.contains(['/', '\\']) || release.starts_with('.') {
-        bail!("Invalid release name: {release}");
+        bail!(Refusal::new(Kind::InvalidRelease, release));
     }
     let previous = data.join("previous");
     fs::create_dir_all(&previous)?;
@@ -84,7 +84,7 @@ pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<Path
     fs::create_dir(&staging)?;
     let copied = items.iter().try_for_each(|item| {
         let Some(name) = item.file_name() else {
-            bail!("Cannot keep {}", item.display())
+            bail!(Refusal::new(Kind::CannotKeep, item.display()))
         };
         safety::copy_tree(item, &staging.join(name))
     });

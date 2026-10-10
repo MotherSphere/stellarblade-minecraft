@@ -7,6 +7,8 @@ use std::io;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::{Kind, Refusal};
+
 /// One running process: its short name (Linux truncates it to 15 bytes) and its command line, `None` when unreadable.
 pub struct Process {
     pub comm: String,
@@ -40,10 +42,10 @@ pub fn processes(proc_root: &Path) -> io::Result<Vec<Process>> {
 /// directory file hold this same string.
 pub fn game_path(bridge: &Path) -> Result<String> {
     let Some(path) = bridge.to_str() else {
-        bail!("Bridge path must be UTF-8: {}", bridge.display())
+        bail!(Refusal::new(Kind::NonUtf8, bridge.display()))
     };
     if path.contains(['\n', '\r', '\0']) {
-        bail!("Bridge path cannot contain control separators");
+        bail!(Refusal::new(Kind::BridgeControl, path.escape_debug()));
     }
     Ok(format!("Z:{path}"))
 }
@@ -60,15 +62,16 @@ pub fn lua_quote(text: &str) -> String {
 
 fn real(path: &Path, directory: bool) -> Result<PathBuf> {
     let path = std::path::absolute(path)?;
-    let kind = if directory { "directory" } else { "file" };
     let metadata = fs::metadata(&path).ok();
     if fs::canonicalize(&path).ok().as_ref() != Some(&path)
         || !metadata.is_some_and(|m| if directory { m.is_dir() } else { m.is_file() })
     {
-        bail!(
-            "Expected a real {kind} without symlinks: {}",
-            path.display()
-        );
+        let kind = if directory {
+            Kind::RealDir
+        } else {
+            Kind::RealFile
+        };
+        bail!(Refusal::new(kind, path.display()));
     }
     Ok(path)
 }
@@ -86,13 +89,13 @@ pub fn real_dir(path: &Path) -> Result<PathBuf> {
 /// The shared bridge directory: absolute, without symlinks, owned by this user and closed to others (mode 0700).
 pub fn private_dir(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() {
-        bail!("Bridge directory must be an existing absolute directory without symlinks");
+        bail!(Refusal::new(Kind::BridgeNotAbsolute, path.display()));
     }
     let path = real_dir(path)?;
     let metadata = fs::metadata(&path)?;
     // SAFETY: getuid has no preconditions and cannot fail.
     if metadata.uid() != unsafe { libc::getuid() } || metadata.permissions().mode() & 0o077 != 0 {
-        bail!("Bridge directory must belong to this user with mode 0700");
+        bail!(Refusal::new(Kind::BridgeMode, path.display()));
     }
     Ok(path)
 }
@@ -106,7 +109,7 @@ pub fn bridge_ready(path: &Path) -> Result<()> {
         return Ok(());
     }
     if !path.is_absolute() {
-        bail!("The bridge directory must be absolute: {}", path.display());
+        bail!(Refusal::new(Kind::BridgeNotAbsolute, path.display()));
     }
     // The nearest existing ancestor, a symbolic link included, must be a real directory.
     match path
@@ -115,7 +118,7 @@ pub fn bridge_ready(path: &Path) -> Result<()> {
         .find(|a| fs::symlink_metadata(a).is_ok())
     {
         Some(ancestor) => real_dir(ancestor).map(drop),
-        None => bail!("No existing folder above {}", path.display()),
+        None => bail!(Refusal::new(Kind::NoAncestor, path.display())),
     }
 }
 

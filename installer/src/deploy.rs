@@ -8,7 +8,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::safety::{self, sha256_hex, slash};
-use crate::{Guard, Ownership, platform};
+use crate::{Guard, Kind, Ownership, Refusal, platform};
 
 pub const MOD_NAME: &str = "StellarCollisionProbe";
 pub const MANIFEST: &str = ".deployment.json";
@@ -46,15 +46,12 @@ impl Manifest {
 /// The files (with sha256) and directories under `root`, refusing symbolic links and special files.
 pub fn inventory(root: &Path) -> Result<(BTreeMap<String, String>, Vec<String>)> {
     if !fs::symlink_metadata(root).is_ok_and(|m| m.is_dir()) {
-        bail!("Expected a real directory: {}", root.display());
+        bail!(Refusal::new(Kind::NotDirectory, root.display()));
     }
     let (mut files, mut directories) = (BTreeMap::new(), Vec::new());
     safety::walk(root, &mut |relative, metadata| {
         if metadata.is_symlink() {
-            bail!(
-                "Refusing a symbolic link: {}",
-                root.join(relative).display()
-            );
+            bail!(Refusal::new(Kind::Symlink, root.join(relative).display()));
         } else if metadata.is_dir() {
             directories.push(relative.to_path_buf());
         } else if metadata.is_file() {
@@ -63,10 +60,10 @@ pub fn inventory(root: &Path) -> Result<(BTreeMap<String, String>, Vec<String>)>
                 sha256_hex(&fs::read(root.join(relative))?),
             );
         } else {
-            bail!(
-                "Refusing a nonregular file: {}",
+            bail!(Refusal::new(
+                Kind::NotRegular,
                 root.join(relative).display()
-            );
+            ));
         }
         Ok(())
     })?;
@@ -147,14 +144,11 @@ pub fn install(
         }
     };
     if !fs::symlink_metadata(mods_dir).is_ok_and(|m| m.is_dir()) {
-        bail!(
-            "Expected an existing real Mods directory: {}",
-            mods_dir.display()
-        );
+        bail!(Refusal::new(Kind::NotDirectory, mods_dir.display()));
     }
     let destination = mods_dir.join(MOD_NAME);
     if fs::symlink_metadata(&destination).is_ok() {
-        bail!("Refusing to replace {}", destination.display());
+        bail!(Refusal::new(Kind::Replace, destination.display()));
     }
     let staging = mods_dir.join(STAGING);
     if fs::symlink_metadata(&staging).is_ok() {
@@ -201,21 +195,27 @@ pub fn ownership(mods_dir: &Path) -> Result<Ownership> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Ownership::Absent),
         Err(e) => return Err(e.into()),
         Ok(m) if !m.is_dir() => {
-            return Ok(Ownership::Foreign(format!(
-                "Expected a real directory: {}",
-                destination.display()
+            return Ok(Ownership::Foreign(Refusal::new(
+                Kind::NotDirectory,
+                destination.display(),
             )));
         }
         Ok(_) => {}
     }
     let (mut files, directories) = match inventory(&destination) {
         Ok(found) => found,
-        Err(error) => return Ok(Ownership::Modified(error.to_string())),
+        Err(error) => {
+            return Ok(Ownership::Modified(crate::refusal(
+                error,
+                Kind::ModifiedLua,
+                &destination,
+            )));
+        }
     };
     if files.remove(MANIFEST).is_none() {
-        return Ok(Ownership::Foreign(format!(
-            "Refusing an unowned directory: {}",
-            destination.display()
+        return Ok(Ownership::Foreign(Refusal::new(
+            Kind::ForeignLua,
+            destination.display(),
         )));
     }
     let manifest: Option<Manifest> =
@@ -223,19 +223,16 @@ pub fn ownership(mods_dir: &Path) -> Result<Ownership> {
     Ok(if manifest == Some(Manifest::of(files, directories)) {
         Ownership::Owned
     } else {
-        Ownership::Modified(format!(
-            "Refusing modified or extra content: {}",
-            destination.display()
-        ))
+        Ownership::Modified(Refusal::new(Kind::ModifiedLua, destination.display()))
     })
 }
 
 /// The installed mod's manifest, when it parses as ours.
 pub fn manifest(mods_dir: &Path) -> Result<Manifest> {
     let path = platform::real_file(&mods_dir.join(MOD_NAME).join(MANIFEST))?;
-    match serde_json::from_slice::<Manifest>(&fs::read(path)?) {
+    match serde_json::from_slice::<Manifest>(&fs::read(&path)?) {
         Ok(manifest) if manifest.owner == MOD_NAME && manifest.version == 1 => Ok(manifest),
-        _ => bail!("Lua ownership manifest is not recognized"),
+        _ => bail!(Refusal::new(Kind::UnknownManifest, path.display())),
     }
 }
 
@@ -243,13 +240,17 @@ pub fn manifest(mods_dir: &Path) -> Result<Manifest> {
 /// folders and symbolic links cannot be repaired.
 pub fn drifted(mods_dir: &Path) -> Result<Vec<(String, String)>> {
     let manifest = manifest(mods_dir)?;
-    let (mut files, directories) = inventory(&mods_dir.join(MOD_NAME))?;
+    let root = mods_dir.join(MOD_NAME);
+    let (mut files, directories) = inventory(&root)?;
     files.remove(MANIFEST);
     if directories != manifest.directories {
-        bail!("Refusing changed Lua mod folders");
+        bail!(Refusal::new(Kind::ChangedLuaFolders, root.display()));
     }
     if let Some(extra) = files.keys().find(|f| !manifest.files.contains_key(*f)) {
-        bail!("Refusing an unlisted Lua mod file: {extra}");
+        bail!(Refusal::new(
+            Kind::UnlistedLuaFile,
+            root.join(extra).display()
+        ));
     }
     Ok(manifest
         .files
@@ -267,7 +268,7 @@ pub fn remove(mods_dir: &Path, closed: Guard) -> Result<PathBuf> {
             fs::remove_dir_all(&destination)?;
             Ok(destination)
         }
-        Ownership::Absent => bail!("No Lua mod to remove in {}", mods_dir.display()),
+        Ownership::Absent => bail!(Refusal::new(Kind::NothingToRemove, mods_dir.display())),
         Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal),
     }
 }

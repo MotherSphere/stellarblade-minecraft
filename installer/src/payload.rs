@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::deploy::{self, Tree};
 use crate::safety::{hex, sha256_hex};
-use crate::{Ownership, adapter, mods, pins};
+use crate::{Kind, Ownership, Refusal, adapter, mods, pins};
 
 include!(concat!(env!("OUT_DIR"), "/payload.rs"));
 
@@ -129,8 +129,8 @@ impl Payload {
             .and_then(|n| n.to_str())
             .context("Invalid previous set")?
             .to_string();
-        let changed = |what: &str, refusal: String| -> Result<()> {
-            bail!("The previous {what} changed since it was kept: {refusal}")
+        let changed = |refusal: Refusal| -> Result<()> {
+            bail!(Refusal::new(Kind::PreviousChanged, refusal.subject))
         };
         let mut lua = Tree::new();
         match deploy::ownership(dir)? {
@@ -140,13 +140,13 @@ impl Payload {
                 lua.remove(deploy::CONFIG);
             }
             Ownership::Absent => {}
-            Ownership::Foreign(r) | Ownership::Modified(r) => changed("Lua mod", r)?,
+            Ownership::Foreign(r) | Ownership::Modified(r) => changed(r)?,
         }
         let mut dll = Vec::new();
         match adapter::ownership(dir, pin)? {
             Ownership::Owned => dll = fs::read(dir.join(adapter::DLL))?,
             Ownership::Absent => {}
-            Ownership::Foreign(r) | Ownership::Modified(r) => changed("adapter", r)?,
+            Ownership::Foreign(r) | Ownership::Modified(r) => changed(r)?,
         }
         // A set kept from the Python tools has no JAR: it stays empty.
         let (mut jar, mut fabric_api) = ((String::new(), Vec::new()), Vec::new());
@@ -162,7 +162,7 @@ impl Payload {
                 }
             }
             Ownership::Absent => {}
-            Ownership::Foreign(r) | Ownership::Modified(r) => changed("bridge JAR", r)?,
+            Ownership::Foreign(r) | Ownership::Modified(r) => changed(r)?,
         }
         Ok(Payload {
             release,

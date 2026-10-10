@@ -21,8 +21,8 @@ use crate::{Ownership, detect, pins};
 
 type El<'a> = Element<'a, Message>;
 
-#[derive(Clone, Copy)]
-enum Level {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
     Ok,
     Warn,
     Bad,
@@ -514,19 +514,21 @@ fn welcome<'a>(app: &'a App, typo: &Typography) -> El<'a> {
     .into()
 }
 
-fn ownership_row<'a>(typo: &Typography, piece: &ops::Piece) -> El<'a> {
-    let (level, value) = match &piece.ownership {
+/// A piece's status row: its level and what it says, a refusal with its path.
+pub fn piece_status(piece: &ops::Piece) -> (Level, String) {
+    match &piece.ownership {
         Ownership::Absent => (Level::Info, t("piece_absent").to_string()),
         Ownership::Owned if piece.current => (Level::Ok, t("piece_current").to_string()),
         Ownership::Owned => (Level::Warn, t("piece_other_release").to_string()),
-        Ownership::Foreign(refusal) | Ownership::Modified(refusal) => (Level::Bad, refusal.clone()),
-    };
-    let label = match piece.name {
-        ops::JAR => t("piece_jar"),
-        ops::LUA => t("piece_lua"),
-        _ => t("piece_adapter"),
-    };
-    status_row(typo, level, label, value)
+        Ownership::Foreign(refusal) | Ownership::Modified(refusal) => {
+            (Level::Bad, i18n::refusal(refusal))
+        }
+    }
+}
+
+fn ownership_row<'a>(typo: &Typography, piece: &ops::Piece) -> El<'a> {
+    let (level, value) = piece_status(piece);
+    status_row(typo, level, i18n::piece(piece.name), value)
 }
 
 fn detect_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {

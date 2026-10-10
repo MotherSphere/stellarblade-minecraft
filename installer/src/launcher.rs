@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{Guard, pins, platform};
+use crate::{Guard, Refusal, pins, platform};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -178,7 +178,7 @@ pub fn create_instance(
         .iter()
         .find(|a| a.is_empty() || a.contains(|c: char| c.is_whitespace() || "\"',;#\\".contains(c)))
     {
-        bail!("Unsupported Java argument for the instance: {bad}");
+        bail!(Refusal::new(crate::Kind::JavaArgument, bad));
     }
     closed()?;
     if !launcher.instances.exists() {
@@ -211,7 +211,8 @@ pub fn create_instance(
         fs::remove_dir_all(&dir)?;
         return Err(error);
     }
-    instance(&dir).ok_or_else(|| anyhow::anyhow!("The new instance cannot be read back"))
+    instance(&dir)
+        .ok_or_else(|| Refusal::new(crate::Kind::InstanceUnreadable, dir.display()).into())
 }
 
 /// The Java arguments that point the JAR at bridge and avatar folders other than its defaults.
@@ -231,7 +232,7 @@ pub fn bridge_jvm_args(bridge_home: &Path) -> Vec<String> {
 pub fn manual_mods(path: &Path) -> Result<PathBuf> {
     let path = platform::real_dir(path)?;
     if path.file_name().and_then(|n| n.to_str()) != Some("mods") {
-        bail!("Pick the instance's mods folder");
+        bail!(Refusal::new(crate::Kind::PickMods, path.display()));
     }
     Ok(path)
 }

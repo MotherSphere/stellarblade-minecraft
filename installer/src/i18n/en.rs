@@ -338,4 +338,147 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Start Minecraft from the instance, open your test world, stand on a full block and run /stellar start. With EVE loaded in Stellar Blade, press F5 then F8 there (or run /stellar import then /stellar enter), then /stellaravatar play in Minecraft.",
     ),
     ("log_at", "Log: {path}"),
+    // Refusals and failures of the core, by `Kind` key; `{path}` is what they are about
+    ("err_cause", "{error}: {cause}"),
+    ("piece_refusal", "{piece}: {refusal}"),
+    (
+        "err_unexpected",
+        "Unexpected error: the log has the details.",
+    ),
+    (
+        "err_foreign_jar",
+        "Refusing a bridge JAR this installer did not install: {path}",
+    ),
+    ("err_modified_jar", "Refusing modified bridge files: {path}"),
+    ("err_foreign_lua", "Refusing an unowned directory: {path}"),
+    (
+        "err_modified_lua",
+        "Refusing modified or extra content: {path}",
+    ),
+    (
+        "err_foreign_adapter",
+        "Refusing existing input adapter content: {path}",
+    ),
+    (
+        "err_modified_adapter",
+        "Refusing modified input adapter content: {path}",
+    ),
+    (
+        "err_unknown_manifest",
+        "The ownership manifest is not recognized: {path}",
+    ),
+    ("err_not_directory", "Expected a real directory: {path}"),
+    (
+        "err_real_file",
+        "Expected a real file without symlinks: {path}",
+    ),
+    (
+        "err_real_dir",
+        "Expected a real directory without symlinks: {path}",
+    ),
+    ("err_symlink", "Refusing a symbolic link: {path}"),
+    ("err_not_regular", "Refusing a non-regular file: {path}"),
+    ("err_non_utf8", "Refusing a non-UTF-8 path: {path}"),
+    (
+        "err_changed_lua_folders",
+        "Refusing changed Lua mod folders: {path}",
+    ),
+    (
+        "err_unlisted_lua_file",
+        "Refusing an unlisted Lua mod file: {path}",
+    ),
+    ("err_replace", "Refusing to replace {path}"),
+    (
+        "err_nothing_to_remove",
+        "Nothing of the bridge to remove in {path}",
+    ),
+    (
+        "err_remove_first",
+        "Remove the installed bridge JAR first: {path}",
+    ),
+    (
+        "err_fabric_missing",
+        "Fabric API is missing from {path} and not carried",
+    ),
+    ("err_expected_exe", "Expected SB-Win64-Shipping.exe: {path}"),
+    (
+        "err_unsupported_exe",
+        "Unsupported Stellar Blade executable: wait for a bridge release that supports this game version ({path})",
+    ),
+    (
+        "err_bridge_control",
+        "The bridge path cannot contain line breaks: {path}",
+    ),
+    (
+        "err_bridge_not_absolute",
+        "The bridge directory must be absolute: {path}",
+    ),
+    (
+        "err_bridge_mode",
+        "The bridge directory must belong to this user with mode 0700: {path}",
+    ),
+    ("err_no_ancestor", "No existing folder above {path}"),
+    (
+        "err_process_list",
+        "Cannot list processes to check that the games are closed",
+    ),
+    ("err_close_first", "Close {path} first"),
+    (
+        "err_save_backup_differs",
+        "The save backup differs from the saves: {path}",
+    ),
+    ("err_protected_changed", "Protected files changed: {path}"),
+    (
+        "err_saves_changed",
+        "The Stellar Blade saves changed: {path}",
+    ),
+    (
+        "err_mods_missing",
+        "The Minecraft mods folder does not exist: {path}",
+    ),
+    (
+        "err_left_behind",
+        "The bridge is still installed in {path}: uninstall it there first, then install here",
+    ),
+    ("err_no_jar", "{path} has no bridge JAR to install"),
+    (
+        "err_no_game_side",
+        "{path} has no Stellar Blade side to install",
+    ),
+    (
+        "err_mismatch_after_write",
+        "{path} does not match the release after writing",
+    ),
+    (
+        "err_install_restored",
+        "Installation failed; the previous state was restored",
+    ),
+    (
+        "err_install_not_restored",
+        "Installation failed and the previous state could not be restored; the replaced files are kept in {path}",
+    ),
+    (
+        "err_no_previous",
+        "There is no previous set to roll back to",
+    ),
+    (
+        "err_previous_changed",
+        "The kept previous set changed since it was kept: {path}",
+    ),
+    ("err_still_modified", "{path} is still not as installed"),
+    (
+        "err_run_update",
+        "{path} differs from what this installer carries: run the update instead",
+    ),
+    ("err_invalid_release", "Invalid release name: {path}"),
+    ("err_cannot_keep", "Cannot keep {path}"),
+    (
+        "err_java_argument",
+        "Unsupported Java argument for the instance (no spaces or quotes): {path}",
+    ),
+    (
+        "err_instance_unreadable",
+        "The new instance cannot be read back: {path}",
+    ),
+    ("err_pick_mods", "Pick the instance's mods folder: {path}"),
 ];

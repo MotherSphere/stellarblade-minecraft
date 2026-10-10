@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::ledger::{self, State, Status};
 use crate::payload::Payload;
 use crate::safety::{self, Protected, Snapshot, sha256_file, sha256_hex};
-use crate::{Guard, Ownership, adapter, deploy, mods, pins, platform};
+use crate::{Guard, Kind, Ownership, Refusal, adapter, deploy, mods, pins, platform};
 
 /// The Stellar Blade side of a target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +89,15 @@ pub struct Piece {
     pub ownership: Ownership,
     /// Owned, unchanged, and the same content as the payload.
     pub current: bool,
+}
+
+/// Where a piece is on `target`: what a failure about it names.
+fn piece_path(target: &Target, name: &str) -> PathBuf {
+    match (name, &target.game) {
+        (LUA, Some(game)) => game.mods.join(deploy::MOD_NAME),
+        (ADAPTER, Some(game)) => game.win64().join(adapter::DLL),
+        _ => target.minecraft_mods.clone(),
+    }
 }
 
 fn hashes<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> BTreeMap<String, String> {
@@ -234,10 +243,14 @@ impl Guarded {
     fn unchanged(&self, target: &Target) -> Result<()> {
         let changed = self.before.changed(&self.protected.snapshot()?);
         if !changed.is_empty() {
-            bail!("Protected files changed: {}", changed.join(", "));
+            bail!(Refusal::new(Kind::ProtectedChanged, changed.join(", ")));
         }
         if saves(target)? != self.saves {
-            bail!("The Stellar Blade saves changed");
+            let saves = target.game.as_ref().and_then(|g| g.saves.as_deref());
+            bail!(Refusal::new(
+                Kind::SavesChanged,
+                saves.unwrap_or(Path::new("")).display()
+            ));
         }
         Ok(())
     }
@@ -265,16 +278,19 @@ pub fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// The pieces left alone, by name, and why.
+pub type Refusals = Vec<(&'static str, Refusal)>;
+
 /// Removes every owned piece; foreign or modified pieces are left alone and returned as refusals.
-fn remove_owned(env: &Env, target: &Target, keep_fabric: bool) -> Result<Vec<String>> {
+fn remove_owned(env: &Env, target: &Target, keep_fabric: bool) -> Result<Refusals> {
     let mut refusals = Vec::new();
     let mut take =
-        |name: &str, ownership: Ownership, remove: &dyn Fn() -> Result<()>| -> Result<()> {
+        |name: &'static str, ownership: Ownership, remove: &dyn Fn() -> Result<()>| -> Result<()> {
             match ownership {
                 Ownership::Absent => Ok(()),
                 Ownership::Owned => remove(),
                 Ownership::Foreign(refusal) | Ownership::Modified(refusal) => {
-                    refusals.push(format!("{name}: {refusal}"));
+                    refusals.push((name, refusal));
                     Ok(())
                 }
             }
@@ -298,10 +314,7 @@ fn remove_owned(env: &Env, target: &Target, keep_fabric: bool) -> Result<Vec<Str
 /// Creates the private bridge directory (mode 0700) when it is missing.
 fn ensure_bridge(bridge: &Path, closed: Guard) -> Result<()> {
     if !bridge.is_absolute() {
-        bail!(
-            "The bridge directory must be absolute: {}",
-            bridge.display()
-        );
+        bail!(Refusal::new(Kind::BridgeNotAbsolute, bridge.display()));
     }
     if !bridge.exists() {
         closed()?;
@@ -345,12 +358,10 @@ fn check(env: &Env, target: &Target, payload: &Payload, guarded: &Guarded) -> Re
         .into_iter()
         .find(|p| !p.current)
     {
-        bail!(
-            "{} does not match {} after writing: {:?}",
-            piece.name,
-            payload.release,
-            piece.ownership
-        );
+        bail!(Refusal::new(
+            Kind::MismatchAfterWrite,
+            piece_path(target, piece.name).display()
+        ));
     }
     guarded.unchanged(target)
 }
@@ -360,19 +371,17 @@ fn gates(target: &Target, env: &Env) -> Result<()> {
     (env.step)(Step::Checks);
     (env.closed)()?;
     if !target.minecraft_mods.is_dir() {
-        bail!(
-            "The Minecraft mods folder does not exist: {}",
+        bail!(Refusal::new(
+            Kind::ModsMissing,
             target.minecraft_mods.display()
-        );
+        ));
     }
     if let Some(game) = &target.game {
         platform::real_dir(&game.mods)?;
         // Checked here, not first when the Lua mod is written: by then the owned pieces would be gone.
         platform::bridge_ready(&target.bridge)?;
         if sha256_file(&platform::real_file(&game.exe)?, &mut |_| {})? != env.pin {
-            bail!(
-                "Unsupported Stellar Blade executable: wait for a bridge release that supports this game version"
-            );
+            bail!(Refusal::new(Kind::UnsupportedExe, game.exe.display()));
         }
     }
     Ok(())
@@ -406,10 +415,7 @@ fn left_behind(env: &Env, target: &Target) -> Result<()> {
         }
     }
     if !left.is_empty() {
-        bail!(
-            "The bridge is still installed in {}: uninstall it there first, then install here",
-            left.join(", ")
-        );
+        bail!(Refusal::new(Kind::LeftBehind, left.join(", ")));
     }
     Ok(())
 }
@@ -421,15 +427,15 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     gates(target, env)?;
     left_behind(env, target)?;
     if payload.jar.1.is_empty() {
-        bail!("{} has no bridge JAR to install", payload.release);
+        bail!(Refusal::new(Kind::NoJar, &payload.release));
     }
     if target.game.is_some() && (payload.lua.is_empty() || payload.dll.is_empty()) {
-        bail!("{} has no Stellar Blade side to install", payload.release);
+        bail!(Refusal::new(Kind::NoGameSide, &payload.release));
     }
     let pieces = verify(env, target, payload)?;
     for piece in &pieces {
         if let Ownership::Foreign(refusal) | Ownership::Modified(refusal) = &piece.ownership {
-            bail!("{}: {refusal}", piece.name);
+            bail!(refusal.clone());
         }
     }
     let path = state_path(env);
@@ -471,8 +477,8 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         if let Err(error) = done {
             (env.step)(Step::Restore);
             let restored = remove_owned(env, target, false).and_then(|refusals| {
-                if !refusals.is_empty() {
-                    bail!(refusals.join("; "));
+                if let Some((_, refusal)) = refusals.into_iter().next() {
+                    bail!(refusal);
                 }
                 if let Some(previous) = &previous {
                     let kept = Payload::from_previous(previous, env.pin)?;
@@ -483,15 +489,22 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             });
             return Err(match restored {
                 Ok(()) => {
-                    state.status = if previous.is_some() { Status::Installed } else { Status::Removed };
+                    state.status = if previous.is_some() {
+                        Status::Installed
+                    } else {
+                        Status::Removed
+                    };
                     ledger::save(&path, &state)?;
-                    error.context("Installation failed; the previous state was restored")
+                    error.context(Refusal::new(Kind::InstallRestored, ""))
                 }
-                Err(undo) => error.context(format!(
-                    "Installation failed and the previous state could not be restored ({undo:#}); the replaced \
-                     files are kept in {}",
-                    previous.map_or("no previous set".into(), |p| p.display().to_string())
-                )),
+                Err(undo) => error
+                    .context(format!(
+                        "the previous state could not be restored: {undo:#}"
+                    ))
+                    .context(Refusal::new(
+                        Kind::InstallNotRestored,
+                        previous.map_or("-".into(), |p| p.display().to_string()),
+                    )),
             });
         }
     }
@@ -580,7 +593,7 @@ pub fn rollback(env: &Env, target: &Target) -> Result<State> {
     let previous = state
         .previous
         .filter(|p| p.is_dir())
-        .context("There is no previous set to roll back to")?;
+        .context(Refusal::new(Kind::NoPrevious, ""))?;
     let payload = Payload::from_previous(&previous, env.pin)?;
     install(env, target, &payload)
 }
@@ -601,11 +614,10 @@ pub fn repair(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<PathB
     (env.step)(Step::Verify);
     for piece in verify(env, target, payload)? {
         if !matches!(piece.ownership, Ownership::Owned | Ownership::Absent) {
-            bail!(
-                "{} is still not as installed: {:?}",
-                piece.name,
-                piece.ownership
-            );
+            bail!(Refusal::new(
+                Kind::StillModified,
+                piece_path(target, piece.name).display()
+            ));
         }
     }
     guarded.unchanged(target)?;
@@ -635,10 +647,7 @@ pub fn repair_plan(
                 Some(bytes) if sha256_hex(&bytes) == expected => {
                     plan.push((dir.join(&name), bytes))
                 }
-                _ => bail!(
-                    "{} differs from what this installer carries: run the update instead",
-                    dir.join(&name).display()
-                ),
+                _ => bail!(Refusal::new(Kind::RunUpdate, dir.join(&name).display())),
             }
         }
         Ok(())
@@ -686,10 +695,10 @@ pub fn repair_plan(
     Ok(plan)
 }
 
-/// Removes every owned piece. Foreign or modified pieces are never forced: they are returned as refusals, verbatim.
+/// Removes every owned piece. Foreign or modified pieces are never forced: they are returned as typed refusals, with their paths.
 /// Fabric API goes too only with `remove_fabric` (other mods may need it); a created instance, the pack, the save
 /// backups and `state.json` stay.
-pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Vec<String>> {
+pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Refusals> {
     (env.step)(Step::Checks);
     (env.closed)()?;
     let guarded = Guarded::take(target, own_jars(target, None)?)?;

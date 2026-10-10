@@ -21,7 +21,7 @@ use crate::ledger::{self, State, Status};
 use crate::ops::{self, Piece, Step, Target};
 use crate::payload::Payload;
 use crate::safety::{self, Running};
-use crate::{Ownership, adapter, deploy, log, mods};
+use crate::{Kind as Refused, Ownership, Refusal, adapter, deploy, log, mods};
 
 /// What the window works with: where to look and where to write its own data.
 #[derive(Clone)]
@@ -165,6 +165,12 @@ impl Found {
     }
 }
 
+/// `error` in the window's language; its raw text goes to the log only.
+fn localized(error: &anyhow::Error) -> String {
+    log::line(&format!("Error detail: {error:#}"));
+    i18n::error(error)
+}
+
 /// Reads everything the pages show. Nothing is written.
 pub fn detect(ctx: &Ctx) -> Found {
     let steam = detect::steam(&ctx.home);
@@ -194,7 +200,7 @@ pub fn detect(ctx: &Ctx) -> Found {
             let empty = Payload::default();
             match ops::verify(&env, target, ctx.payload.as_deref().unwrap_or(&empty)) {
                 Ok(pieces) => (pieces, None),
-                Err(error) => (Vec::new(), Some(format!("{error:#}"))),
+                Err(error) => (Vec::new(), Some(localized(&error))),
             }
         }
         // Nothing installed yet: still show what already sits where the game side would go.
@@ -212,7 +218,12 @@ pub fn detect(ctx: &Ctx) -> Found {
                             ownership,
                             current: false,
                         }),
-                        Err(e) => error = Some(format!("{name}: {e:#}")),
+                        Err(e) => {
+                            error = Some(t_fmt(
+                                "piece_refusal",
+                                &[("piece", i18n::piece(name)), ("refusal", &localized(&e))],
+                            ))
+                        }
                     }
                 }
                 (pieces, error)
@@ -376,7 +387,7 @@ impl Job {
                     }
                 });
                 send(Message::HashDone(
-                    hashed.map(|h| h == pin).map_err(|e| e.to_string()),
+                    hashed.map(|h| h == pin).map_err(|e| localized(&e.into())),
                 ));
             }
             Job::Run(work) => {
@@ -388,7 +399,7 @@ impl Job {
                     remove_fabric,
                 } = *work;
                 let result = run(&ctx, action, target, create, remove_fabric, send);
-                send(Message::Finished(result.map_err(|e| format!("{e:#}"))));
+                send(Message::Finished(result.map_err(|e| localized(&e))));
             }
         }
     }
@@ -409,7 +420,11 @@ fn run(
         pin: &ctx.pin,
         step: &|step| send(Message::Step(step)),
     };
-    let payload = || ctx.payload.as_deref().context(t("no_payload"));
+    let payload = || {
+        ctx.payload
+            .as_deref()
+            .context(Refusal::new(Refused::NoPayload, ""))
+    };
     match action {
         Action::Install => {
             let payload = payload()?;
@@ -464,7 +479,10 @@ fn run(
                 return Ok(vec![t("done_removed_all").to_string()]);
             }
             let mut lines = vec![t("done_left_in_place").to_string()];
-            lines.extend(refusals);
+            for (name, refusal) in &refusals {
+                log::line(&format!("Left in place: {name}: {refusal}"));
+                lines.push(i18n::piece_refusal(name, refusal));
+            }
             Ok(lines)
         }
     }
@@ -747,7 +765,7 @@ impl App {
             }
             Choice::Manual => {
                 let mods = launcher::manual_mods(Path::new(self.manual_path.trim()))
-                    .map_err(|e| format!("{e:#}"))?;
+                    .map_err(|e| localized(&e))?;
                 // A Flatpak launcher cannot see the native bridge folder; only the dedicated instance carries the
                 // Java arguments that point it at one it can see.
                 if fs::canonicalize(self.ctx.home.join(".var/app"))
@@ -794,10 +812,17 @@ impl App {
         let mut found = Vec::new();
         let mut add = |name: &str, ownership: anyhow::Result<Ownership>| match ownership {
             Ok(Ownership::Foreign(r) | Ownership::Modified(r)) => {
-                found.push(format!("{name}: {r}"))
+                log::line(&format!("Refused: {name}: {r}"));
+                found.push(i18n::piece_refusal(name, &r))
             }
             Ok(_) => {}
-            Err(error) => found.push(format!("{name}: {error:#}")),
+            Err(error) => found.push(t_fmt(
+                "piece_refusal",
+                &[
+                    ("piece", i18n::piece(name)),
+                    ("refusal", &localized(&error)),
+                ],
+            )),
         };
         if target.minecraft_mods.is_dir() {
             add(ops::JAR, mods::ownership(&target.minecraft_mods));
@@ -838,8 +863,7 @@ impl App {
         match action {
             Action::Repair => {
                 let payload = self.ctx.payload.as_deref().ok_or(t("no_payload"))?;
-                let plan =
-                    ops::repair_plan(&env, &target, payload).map_err(|e| format!("{e:#}"))?;
+                let plan = ops::repair_plan(&env, &target, payload).map_err(|e| localized(&e))?;
                 if plan.is_empty() {
                     return Err(t("done_nothing_to_repair").into());
                 }
@@ -855,14 +879,14 @@ impl App {
                 let release = previous.file_name().unwrap_or_default().to_string_lossy();
                 let mut lines = vec![t_fmt("rollback_to", &[("release", &release)])];
                 lines.extend(show(
-                    ops::owned_paths(&env, &target).map_err(|e| format!("{e:#}"))?,
+                    ops::owned_paths(&env, &target).map_err(|e| localized(&e))?,
                 ));
                 Ok(lines)
             }
             Action::Uninstall => {
                 // Fabric API stays unless the box is ticked.
                 let removed = ops::owned_paths(&env, &target)
-                    .map_err(|e| format!("{e:#}"))?
+                    .map_err(|e| localized(&e))?
                     .into_iter()
                     .filter(|path| {
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -875,7 +899,7 @@ impl App {
                     if let Ownership::Foreign(r) | Ownership::Modified(r) = &piece.ownership {
                         lines.push(t_fmt(
                             "left_in_place",
-                            &[("what", &format!("{}: {r}", piece.name))],
+                            &[("what", &i18n::piece_refusal(piece.name, r))],
                         ));
                     }
                 }
@@ -929,7 +953,7 @@ impl App {
                 return None;
             }
             Err(error) => {
-                self.error(format!("{error:#}"));
+                self.error(localized(&error));
                 return None;
             }
         }
@@ -1132,7 +1156,7 @@ impl App {
                             self.consent = false;
                             self.screen = Screen::Consent;
                         }
-                        Err(error) => self.error(format!("{error:#}")),
+                        Err(error) => self.error(localized(&error)),
                     }
                 }
                 Err(error) => self.error(error),
@@ -1179,7 +1203,7 @@ impl App {
                         && self.pending == Some(Action::Install);
                     match safety::running_at(&self.ctx.proc_root, launchers) {
                         Ok(running) => self.modal = Some(Modal::Games(running)),
-                        Err(error) => self.error(format!("{error:#}")),
+                        Err(error) => self.error(localized(&error)),
                     }
                 }
             }

@@ -1,11 +1,14 @@
 //! The window's strings in English (canonical) and French, one file per locale as in Colony. A key missing from both
 //! tables falls back to colony-ui's shared labels (themes, Preferences), then renders as itself so the gap shows.
-//! Refusals from the core (`ops`, `deploy`, `adapter`, `mods`) stay in English, word for word.
+//! Refusals from the core are typed ([`crate::Refusal`]) and shown from these tables with their path; their raw
+//! English text goes only to the log.
 
 mod en;
 mod fr;
 
 use std::sync::RwLock;
+
+use crate::{Refusal, ops};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
@@ -94,10 +97,58 @@ pub fn t_fmt(key: &str, vars: &[(&str, &str)]) -> String {
     })
 }
 
+/// A key's English string with `{path}` replaced: a [`Refusal`]'s text in the log.
+pub(crate) fn english(key: &str, path: &str) -> String {
+    find(Lang::En, key).unwrap_or(key).replace("{path}", path)
+}
+
+/// A refusal of the core in the window's language, its path kept.
+pub fn refusal(refusal: &Refusal) -> String {
+    t_fmt(refusal.kind.key(), &[("path", &refusal.subject)])
+}
+
+/// An error of the core in the window's language: its refusals, outermost first. An error without one says the log
+/// has the details; the raw text belongs there only.
+pub fn error(error: &anyhow::Error) -> String {
+    // The outermost refusal may be a context, which the chain does not give as a `Refusal`.
+    let outer = error.downcast_ref::<Refusal>();
+    let inner = error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<Refusal>())
+        .filter(|r| !outer.is_some_and(|o| std::ptr::eq(o, *r)));
+    outer
+        .into_iter()
+        .chain(inner)
+        .map(refusal)
+        .reduce(|error, cause| t_fmt("err_cause", &[("error", &error), ("cause", &cause)]))
+        .unwrap_or_else(|| t("err_unexpected").into())
+}
+
+/// The name of an installed piece ([`ops::JAR`], [`ops::LUA`], [`ops::ADAPTER`]).
+pub fn piece(name: &str) -> &'static str {
+    match name {
+        ops::JAR => t("piece_jar"),
+        ops::LUA => t("piece_lua"),
+        _ => t("piece_adapter"),
+    }
+}
+
+/// A piece left alone or refused, by name, in the window's language.
+pub fn piece_refusal(name: &str, refusal: &Refusal) -> String {
+    t_fmt(
+        "piece_refusal",
+        &[("piece", piece(name)), ("refusal", &self::refusal(refusal))],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use std::sync::Mutex;
+
+    /// The language is global: the tests that switch it take turns.
+    static SWITCH: Mutex<()> = Mutex::new(());
 
     fn keys(lang: Lang) -> BTreeSet<&'static str> {
         lang.table().iter().map(|(k, _)| *k).collect()
@@ -154,8 +205,40 @@ mod tests {
         assert!(used > 50, "the scan found only {used} lookups");
     }
 
+    /// Every refusal kind of the core has its string in both locales, with the path where English shows one.
+    #[test]
+    fn every_refusal_kind_has_both_strings() {
+        for kind in crate::Kind::ALL {
+            let english = find(Lang::En, kind.key()).unwrap_or_default();
+            let french = find(Lang::Fr, kind.key()).unwrap_or_default();
+            assert!(!english.is_empty() && !french.is_empty(), "{kind:?}");
+            assert_ne!(english, french, "{kind:?} is not translated");
+        }
+        let foreign = Refusal::new(crate::Kind::ForeignJar, "/mods/stellar-bridge-0.1.0.jar");
+        assert_eq!(
+            foreign.to_string(),
+            "Refusing a bridge JAR this installer did not install: /mods/stellar-bridge-0.1.0.jar"
+        );
+        let _turn = SWITCH.lock().unwrap_or_else(|e| e.into_inner());
+        set_lang(Lang::Fr);
+        let shown = refusal(&foreign);
+        let wrapped = anyhow::Error::from(foreign.clone())
+            .context("raw")
+            .context(Refusal::new(crate::Kind::InstallRestored, ""));
+        let chained = error(&wrapped);
+        let untyped = error(&anyhow::anyhow!("No such file or directory"));
+        set_lang(Lang::En);
+        assert!(shown.contains("/mods/stellar-bridge-0.1.0.jar") && !shown.contains("Refusing"));
+        assert!(
+            chained.ends_with(&shown) && !chained.contains("raw"),
+            "{chained}"
+        );
+        assert_eq!(untyped, find(Lang::Fr, "err_unexpected").unwrap());
+    }
+
     #[test]
     fn french_is_used_once_chosen() {
+        let _turn = SWITCH.lock().unwrap_or_else(|e| e.into_inner());
         set_lang(Lang::Fr);
         assert_eq!(t("start"), "Commencer");
         assert_eq!(

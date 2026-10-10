@@ -6,15 +6,22 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use sbmc_installer::app::{Action, App, Choice, Ctx, Message, Modal, Prefs, Role, Screen};
 use sbmc_installer::detect::Override;
+use sbmc_installer::i18n::{self, Lang};
 use sbmc_installer::ledger::{self, Status};
 use sbmc_installer::ops::Step;
 use sbmc_installer::payload::Payload;
 use sbmc_installer::safety::{self, Running};
-use sbmc_installer::{Ownership, adapter, deploy, launcher, mods, pins, ui};
+use sbmc_installer::{Kind, Ownership, Refusal, adapter, deploy, launcher, mods, ops, pins, ui};
+
+/// The window's language is global: each test holds it for its whole run.
+fn language() -> MutexGuard<'static, ()> {
+    static LANGUAGE: Mutex<()> = Mutex::new(());
+    LANGUAGE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn write(path: &Path, data: impl AsRef<[u8]>) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -169,6 +176,7 @@ fn instance_mods(fake: &Fake) -> PathBuf {
 
 #[test]
 fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
+    let _language = language();
     let fake = fake();
     let saves = safety::tree(&fake.saves).unwrap();
     let mut app = start(&fake, false);
@@ -395,6 +403,7 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
 
 #[test]
 fn a_dry_run_walks_to_done_and_writes_nothing() {
+    let _language = language();
     let fake = fake();
     let before = safety::tree(&fake.home).unwrap();
     let mut app = start(&fake, true);
@@ -418,6 +427,7 @@ fn a_dry_run_walks_to_done_and_writes_nothing() {
 
 #[test]
 fn a_viewer_and_a_python_tools_install() {
+    let _language = language();
     let fake = fake();
     // The Lua mod and adapter as the Python tools leave them, and a bridge JAR copied by hand.
     let bridge = fake
@@ -468,6 +478,16 @@ fn a_viewer_and_a_python_tools_install() {
     assert!(found.installed());
     assert!(matches!(found.pieces[0].ownership, Ownership::Foreign(_)));
     assert_eq!(found.pieces[1].ownership, Ownership::Owned);
+    // The refusal shows in the window's language with its path, on the status row and in the toast.
+    let jar = instance.join("minecraft/mods/stellar-bridge-0.1.0.jar");
+    let refusal = Refusal::new(Kind::ForeignJar, jar.display());
+    drive(&mut app, Message::Language(Lang::Fr));
+    let (_, row) = ui::piece_status(&app.found.as_ref().unwrap().pieces[0]);
+    assert_eq!(row, i18n::refusal(&refusal));
+    assert!(
+        row.starts_with("Refusé") && row.ends_with(&jar.display().to_string()),
+        "{row}"
+    );
     // Installing into that instance is refused before anything is written.
     drive(&mut app, Message::Role(Role::Viewer));
     drive(&mut app, Message::Continue);
@@ -475,11 +495,12 @@ fn a_viewer_and_a_python_tools_install() {
     drive(&mut app, Message::Choose(Choice::Instance(0)));
     drive(&mut app, Message::ToConsent);
     assert_eq!(app.screen, Screen::Target);
-    assert!(
-        errors(&app)[0].contains("did not install"),
-        "{:?}",
-        errors(&app)
+    assert_eq!(
+        errors(&app),
+        [format!("Mod du pont : {}", i18n::refusal(&refusal))]
     );
+    assert_eq!(errors(&app)[0], i18n::piece_refusal(ops::JAR, &refusal));
+    drive(&mut app, Message::Language(Lang::En));
     // Uninstall removes what the Python tools recorded and leaves the hand-copied JAR, saying so.
     drive(&mut app, Message::Rescan);
     drive(&mut app, Message::Begin(Action::Uninstall));
@@ -507,6 +528,7 @@ fn a_viewer_and_a_python_tools_install() {
 /// before the hash; a Flatpak instance's mods folder typed by hand is refused; toasts go after Colony's delays.
 #[test]
 fn foreign_game_files_flatpak_folders_and_toasts() {
+    let _language = language();
     let fake = fake();
     write(&fake.win64.join("xinput1_3.dll"), "UE4SS 2.x");
     let mut app = start(&fake, false);

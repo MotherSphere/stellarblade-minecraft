@@ -356,4 +356,174 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Lancez Minecraft depuis l'instance, ouvrez votre monde de test, placez-vous sur un bloc plein et tapez /stellar start. Avec EVE chargée dans Stellar Blade, appuyez sur F5 puis F8 (ou tapez /stellar import puis /stellar enter), puis /stellaravatar play dans Minecraft.",
     ),
     ("log_at", "Journal : {path}"),
+    // Refusals and failures of the core, by `Kind` key; `{path}` is what they are about
+    ("err_cause", "{error} : {cause}"),
+    ("piece_refusal", "{piece} : {refusal}"),
+    (
+        "err_unexpected",
+        "Erreur inattendue : le journal contient les détails.",
+    ),
+    (
+        "err_foreign_jar",
+        "Refusé : un JAR du pont que cet installateur n'a pas installé : {path}",
+    ),
+    (
+        "err_modified_jar",
+        "Refusé : des fichiers du pont modifiés : {path}",
+    ),
+    (
+        "err_foreign_lua",
+        "Refusé : un dossier qui n'appartient pas au pont : {path}",
+    ),
+    (
+        "err_modified_lua",
+        "Refusé : un contenu modifié ou ajouté : {path}",
+    ),
+    (
+        "err_foreign_adapter",
+        "Refusé : un adaptateur d'entrées déjà présent : {path}",
+    ),
+    (
+        "err_modified_adapter",
+        "Refusé : un adaptateur d'entrées modifié : {path}",
+    ),
+    (
+        "err_unknown_manifest",
+        "Le manifeste d'appartenance n'est pas reconnu : {path}",
+    ),
+    ("err_not_directory", "Un vrai dossier est attendu : {path}"),
+    (
+        "err_real_file",
+        "Un vrai fichier, sans lien symbolique, est attendu : {path}",
+    ),
+    (
+        "err_real_dir",
+        "Un vrai dossier, sans lien symbolique, est attendu : {path}",
+    ),
+    ("err_symlink", "Refusé : un lien symbolique : {path}"),
+    ("err_not_regular", "Refusé : un fichier spécial : {path}"),
+    (
+        "err_non_utf8",
+        "Refusé : un chemin qui n'est pas en UTF-8 : {path}",
+    ),
+    (
+        "err_changed_lua_folders",
+        "Refusé : les dossiers du mod Lua ont changé : {path}",
+    ),
+    (
+        "err_unlisted_lua_file",
+        "Refusé : un fichier non répertorié dans le mod Lua : {path}",
+    ),
+    ("err_replace", "Refusé : remplacer {path}"),
+    (
+        "err_nothing_to_remove",
+        "Rien du pont à retirer dans {path}",
+    ),
+    (
+        "err_remove_first",
+        "Retirez d'abord le JAR du pont installé : {path}",
+    ),
+    (
+        "err_fabric_missing",
+        "Fabric API manque dans {path} et n'est pas fourni",
+    ),
+    (
+        "err_expected_exe",
+        "SB-Win64-Shipping.exe est attendu : {path}",
+    ),
+    (
+        "err_unsupported_exe",
+        "Exécutable de Stellar Blade non pris en charge : attendez une version du pont qui prend en charge cette version du jeu ({path})",
+    ),
+    (
+        "err_bridge_control",
+        "Le chemin du pont ne peut pas contenir de saut de ligne : {path}",
+    ),
+    (
+        "err_bridge_not_absolute",
+        "Le dossier du pont doit être un chemin absolu : {path}",
+    ),
+    (
+        "err_bridge_mode",
+        "Le dossier du pont doit appartenir à cet utilisateur, avec le mode 0700 : {path}",
+    ),
+    (
+        "err_no_ancestor",
+        "Aucun dossier existant au-dessus de {path}",
+    ),
+    (
+        "err_process_list",
+        "Impossible de lister les processus pour vérifier que les jeux sont fermés",
+    ),
+    ("err_close_first", "Fermez d'abord {path}"),
+    (
+        "err_save_backup_differs",
+        "La copie des sauvegardes diffère des sauvegardes : {path}",
+    ),
+    (
+        "err_protected_changed",
+        "Des fichiers protégés ont changé : {path}",
+    ),
+    (
+        "err_saves_changed",
+        "Les sauvegardes de Stellar Blade ont changé : {path}",
+    ),
+    (
+        "err_mods_missing",
+        "Le dossier mods de Minecraft n'existe pas : {path}",
+    ),
+    (
+        "err_left_behind",
+        "Le pont est encore installé dans {path} : désinstallez-le là d'abord, puis installez ici",
+    ),
+    (
+        "err_no_jar",
+        "{path} ne contient pas de JAR du pont à installer",
+    ),
+    (
+        "err_no_game_side",
+        "{path} ne contient pas la partie Stellar Blade à installer",
+    ),
+    (
+        "err_mismatch_after_write",
+        "{path} ne correspond pas à la version après l'écriture",
+    ),
+    (
+        "err_install_restored",
+        "L'installation a échoué ; l'état précédent a été rétabli",
+    ),
+    (
+        "err_install_not_restored",
+        "L'installation a échoué et l'état précédent n'a pas pu être rétabli ; les fichiers remplacés sont conservés dans {path}",
+    ),
+    (
+        "err_no_previous",
+        "Il n'y a pas de version précédente à rétablir",
+    ),
+    (
+        "err_previous_changed",
+        "La version précédente conservée a changé depuis : {path}",
+    ),
+    (
+        "err_still_modified",
+        "{path} n'est toujours pas tel qu'installé",
+    ),
+    (
+        "err_run_update",
+        "{path} diffère de ce que contient cet installateur : lancez plutôt la mise à jour",
+    ),
+    ("err_invalid_release", "Nom de version invalide : {path}"),
+    ("err_cannot_keep", "Impossible de conserver {path}"),
+    (
+        "err_java_argument",
+        "Argument Java non pris en charge pour l'instance (ni espace ni guillemet) : {path}",
+    ),
+    (
+        "err_instance_unreadable",
+        "La nouvelle instance ne peut pas être relue : {path}",
+    ),
+    (
+        "err_pick_mods",
+        "Choisissez le dossier mods de l'instance : {path}",
+    ),
 ];

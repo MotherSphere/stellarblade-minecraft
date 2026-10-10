@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::safety::{sha256_file, sha256_hex};
-use crate::{Guard, Ownership, platform};
+use crate::{Guard, Kind, Ownership, Refusal, platform};
 
 pub const MANIFEST: &str = ".stellar-input-deployment.json";
 pub const DLL: &str = "xinput1_3.dll";
@@ -33,7 +33,7 @@ pub struct Manifest {
 fn game_directory(exe: &Path) -> Result<PathBuf> {
     let exe = platform::real_file(exe)?;
     if exe.file_name().and_then(|n| n.to_str()) != Some(EXE) {
-        bail!("Expected {EXE}");
+        bail!(Refusal::new(Kind::ExpectedExe, exe.display()));
     }
     Ok(exe.parent().expect("a file has a parent").to_path_buf())
 }
@@ -90,17 +90,18 @@ pub fn install(exe: &Path, dll: &[u8], bridge: &Path, pin: &str, closed: Guard) 
     let destination = game_directory(exe)?;
     closed()?;
     if sha256_file(exe, &mut |_| {})? != pin {
-        bail!("Unsupported Stellar Blade executable; input remains uninstalled");
+        bail!(Refusal::new(Kind::UnsupportedExe, exe.display()));
     }
     check_dll(dll)?;
     let directory = directory_file(bridge)?;
     for entry in fs::read_dir(&destination)? {
-        let name = entry?.file_name().to_string_lossy().to_lowercase();
+        let found = entry?.file_name();
+        let name = found.to_string_lossy().to_lowercase();
         if [DLL, CONFIG, MANIFEST].contains(&name.as_str()) {
-            bail!(
-                "Refusing existing input adapter content: {}",
-                destination.join(name).display()
-            );
+            bail!(Refusal::new(
+                Kind::ForeignAdapter,
+                destination.join(found).display()
+            ));
         }
     }
     let outputs = [(CONFIG, directory.as_slice()), (DLL, dll)];
@@ -145,12 +146,13 @@ pub fn directory_file(bridge: &Path) -> Result<Vec<u8>> {
 
 /// The adapter's manifest in `win64`, when it is ours and was made for the executable `pin`.
 pub fn manifest(win64: &Path, pin: &str) -> Result<Manifest> {
+    let unknown = || Refusal::new(Kind::UnknownManifest, win64.join(MANIFEST).display());
     let Ok(path) = platform::real_file(&win64.join(MANIFEST)) else {
-        bail!("Input adapter ownership is not recognized");
+        bail!(unknown());
     };
     let data = fs::read(&path)?;
     if data.len() > 4096 {
-        bail!("Invalid input ownership manifest");
+        bail!(unknown());
     }
     match serde_json::from_slice::<Manifest>(&data) {
         Ok(manifest)
@@ -161,7 +163,7 @@ pub fn manifest(win64: &Path, pin: &str) -> Result<Manifest> {
         {
             Ok(manifest)
         }
-        _ => bail!("Input adapter ownership is not recognized"),
+        _ => bail!(unknown()),
     }
 }
 
@@ -174,7 +176,7 @@ pub fn drifted(win64: &Path, pin: &str) -> Result<Vec<(String, String)>> {
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => drift.push((name, expected)),
             Err(e) => return Err(e.into()),
-            Ok(m) if !m.is_file() => bail!("Refusing a non-regular file: {}", path.display()),
+            Ok(m) if !m.is_file() => bail!(Refusal::new(Kind::NotRegular, path.display())),
             Ok(_) if sha256_file(&path, &mut |_| {})? != expected => drift.push((name, expected)),
             Ok(_) => {}
         }
@@ -187,11 +189,12 @@ pub fn ownership(win64: &Path, pin: &str) -> Result<Ownership> {
     let manifest_path = win64.join(MANIFEST);
     if !manifest_path.exists() && !manifest_path.is_symlink() {
         for entry in fs::read_dir(win64)? {
-            let name = entry?.file_name().to_string_lossy().to_lowercase();
+            let found = entry?.file_name();
+            let name = found.to_string_lossy().to_lowercase();
             if name == DLL || name == CONFIG {
-                return Ok(Ownership::Foreign(format!(
-                    "Refusing existing input adapter content: {}",
-                    win64.join(name).display()
+                return Ok(Ownership::Foreign(Refusal::new(
+                    Kind::ForeignAdapter,
+                    win64.join(found).display(),
                 )));
             }
         }
@@ -200,11 +203,14 @@ pub fn ownership(win64: &Path, pin: &str) -> Result<Ownership> {
     Ok(match drifted(win64, pin) {
         Ok(drift) => match drift.first() {
             None => Ownership::Owned,
-            Some((name, _)) => {
-                Ownership::Modified(format!("Refusing modified input adapter content: {name}"))
-            }
+            Some((name, _)) => Ownership::Modified(Refusal::new(
+                Kind::ModifiedAdapter,
+                win64.join(name).display(),
+            )),
         },
-        Err(error) => Ownership::Modified(error.to_string()),
+        Err(error) => {
+            Ownership::Modified(crate::refusal(error, Kind::ModifiedAdapter, &manifest_path))
+        }
     })
 }
 
@@ -220,7 +226,7 @@ pub fn remove(exe: &Path, pin: &str, closed: Guard) -> Result<PathBuf> {
             }
             Ok(destination)
         }
-        Ownership::Absent => bail!("No input adapter to remove in {}", destination.display()),
+        Ownership::Absent => bail!(Refusal::new(Kind::NothingToRemove, destination.display())),
         Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal),
     }
 }

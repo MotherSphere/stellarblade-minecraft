@@ -6,7 +6,7 @@ use sbmc_installer::detect;
 use sbmc_installer::ledger::{self, Status};
 use sbmc_installer::ops::{self, Env, Game, Target};
 use sbmc_installer::payload::Payload;
-use sbmc_installer::{Ownership, adapter, deploy, launcher, mods, pins, safety};
+use sbmc_installer::{Kind, Ownership, Refusal, adapter, deploy, launcher, mods, pins, safety};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -242,7 +242,7 @@ fn install_update_rollback_and_uninstall() {
     assert!(rolled.previous.unwrap().ends_with("previous/0.2.0+test"));
 
     let refusals = ops::uninstall(&w.env(), &w.target, true).unwrap();
-    assert_eq!(refusals, Vec::<String>::new());
+    assert_eq!(refusals, Vec::new());
     assert_eq!(state(&w).status, Status::Removed);
     let mut names: Vec<_> = fs::read_dir(&w.target.minecraft_mods)
         .unwrap()
@@ -312,7 +312,11 @@ fn refusals_happen_before_any_write() {
     fs::write(&foreign_dll, "UE4SS 2.x").unwrap();
     let files = w.files();
     let error = ops::install(&w.env(), &w.target, &v1).unwrap_err();
-    assert!(error.to_string().starts_with(ops::ADAPTER), "{error:#}");
+    assert_eq!(
+        error.downcast_ref::<Refusal>(),
+        Some(&Refusal::new(Kind::ForeignAdapter, foreign_dll.display())),
+        "{error:#}"
+    );
     untouched(&w, &files);
     fs::remove_file(&foreign_dll).unwrap();
 
@@ -326,7 +330,14 @@ fn refusals_happen_before_any_write() {
     fs::write(&script, "edited by hand").unwrap();
     let files = w.files();
     let error = ops::install(&w.env(), &w.target, &payload(2)).unwrap_err();
-    assert!(error.to_string().starts_with(ops::LUA), "{error:#}");
+    assert_eq!(
+        error.downcast_ref::<Refusal>(),
+        Some(&Refusal::new(
+            Kind::ModifiedLua,
+            w.game().mods.join(deploy::MOD_NAME).display()
+        )),
+        "{error:#}"
+    );
     assert_eq!(w.files(), files);
     w.running.set(true);
     assert!(ops::uninstall(&w.env(), &w.target, false).is_err());
@@ -334,9 +345,15 @@ fn refusals_happen_before_any_write() {
     w.running.set(false);
     let refusals = ops::uninstall(&w.env(), &w.target, false).unwrap();
     assert_eq!(refusals.len(), 1);
-    assert!(
-        refusals[0].starts_with("Lua mod: Refusing modified"),
-        "{refusals:?}"
+    assert_eq!(
+        refusals[0],
+        (
+            ops::LUA,
+            Refusal::new(
+                Kind::ModifiedLua,
+                w.game().mods.join(deploy::MOD_NAME).display()
+            )
+        )
     );
     assert_eq!(fs::read_to_string(&script).unwrap(), "edited by hand");
     assert!(!w.win64().join(adapter::DLL).exists());
@@ -469,10 +486,7 @@ fn a_viewer_gets_the_minecraft_side_only() {
     assert!(!w.target.bridge.exists());
     assert!(!w.game().mods.join(deploy::MOD_NAME).exists());
     assert_eq!(state(&w).save_backup, None);
-    assert_eq!(
-        ops::uninstall(&w.env(), &viewer, true).unwrap(),
-        Vec::<String>::new()
-    );
+    assert_eq!(ops::uninstall(&w.env(), &viewer, true).unwrap(), Vec::new());
     assert!(
         w.target
             .minecraft_mods

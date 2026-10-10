@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use crate::platform;
+use crate::{Kind, Refusal, platform};
 
 /// Lower-case hex of a digest (sha2 0.11 digests have no `{:x}`).
 pub fn hex(bytes: &[u8]) -> String {
@@ -65,7 +65,7 @@ pub(crate) fn walk(
 /// A relative path in the manifests' form: '/'-joined UTF-8.
 pub(crate) fn slash(relative: &Path) -> Result<String> {
     let Some(text) = relative.to_str() else {
-        bail!("Refusing a non-UTF-8 path: {}", relative.display())
+        bail!(Refusal::new(Kind::NonUtf8, relative.display()))
     };
     Ok(text.to_string())
 }
@@ -130,8 +130,7 @@ pub fn running(processes: &[platform::Process], launchers: bool) -> Vec<Running>
 
 /// What runs now among the processes under `proc_root` (`/proc` outside tests).
 pub fn running_at(proc_root: &Path, launchers: bool) -> Result<Vec<Running>> {
-    let processes = platform::processes(proc_root)
-        .context("Cannot list processes to check that the games are closed")?;
+    let processes = platform::processes(proc_root).context(Refusal::new(Kind::ProcessList, ""))?;
     Ok(running(&processes, launchers))
 }
 
@@ -147,15 +146,16 @@ pub fn closed_at(proc_root: &Path, launchers: bool) -> Result<()> {
     if found.is_empty() {
         return Ok(());
     }
+    // Names only, the same in every language.
     let names: Vec<&str> = found
         .iter()
         .map(|r| match r {
             Running::StellarBlade => "Stellar Blade",
             Running::Minecraft => "Minecraft",
-            Running::Launcher => "the Minecraft launcher",
+            Running::Launcher => "Prism Launcher / MultiMC",
         })
         .collect();
-    bail!("Close {} first", names.join(", "))
+    bail!(Refusal::new(Kind::CloseFirst, names.join(", ")))
 }
 
 /// Files and folders the installer must leave exactly as they were. Each location is optional: an EVE player has all
@@ -295,10 +295,7 @@ pub fn copy_tree(source: &Path, target: &Path) -> Result<()> {
         return Ok(());
     }
     if !metadata.is_dir() {
-        bail!(
-            "Refusing to copy a symbolic link or special file: {}",
-            source.display()
-        );
+        bail!(Refusal::new(Kind::NotRegular, source.display()));
     }
     fs::create_dir(target)?;
     copy_contents(source, target)
@@ -312,10 +309,10 @@ fn copy_contents(source: &Path, target: &Path) -> Result<()> {
         } else if metadata.is_file() {
             fs::copy(source.join(relative), target.join(relative))?;
         } else {
-            bail!(
-                "Refusing to copy a symbolic link or special file: {}",
+            bail!(Refusal::new(
+                Kind::NotRegular,
                 source.join(relative).display()
-            );
+            ));
         }
         Ok(())
     })
@@ -335,7 +332,7 @@ pub fn backup_saves(saves: &Path, backups: &Path) -> Result<PathBuf> {
     fs::create_dir(&target)?;
     let copied = copy_contents(saves, &target).and_then(|()| {
         if tree(&target)? != before || tree(saves)? != before {
-            bail!("The save backup differs from the saves");
+            bail!(Refusal::new(Kind::SaveBackupDiffers, target.display()));
         }
         Ok(())
     });

@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::safety::{sha256_file, sha256_hex};
-use crate::{Guard, Ownership, pins, platform};
+use crate::{Guard, Kind, Ownership, Refusal, pins, platform};
 
 pub const MANIFEST: &str = ".stellar-bridge-install.json";
 const OWNER: &str = "stellar-bridge";
@@ -39,7 +39,7 @@ pub fn is_fabric_api(name: &str) -> bool {
 fn folder(mods: &Path) -> Result<PathBuf> {
     let mods = fs::canonicalize(mods)?;
     if !mods.is_dir() {
-        bail!("Expected a mods folder: {}", mods.display());
+        bail!(Refusal::new(Kind::NotDirectory, mods.display()));
     }
     Ok(mods)
 }
@@ -56,10 +56,11 @@ fn names(mods: &Path) -> Result<Vec<String>> {
 /// The folder's manifest, when it is a valid one of ours.
 pub fn manifest(mods: &Path) -> Result<Manifest> {
     let path = platform::real_file(&mods.join(MANIFEST))?;
-    let data = fs::read(path)?;
+    let data = fs::read(&path)?;
+    let unknown = || Refusal::new(Kind::UnknownManifest, path.display());
     let manifest: Manifest = match serde_json::from_slice(&data) {
         Ok(manifest) if data.len() <= 4096 => manifest,
-        _ => bail!("Mods ownership manifest is not recognized"),
+        _ => bail!(unknown()),
     };
     // Only the two names this installer ever writes, so a manifest can never claim another mod.
     let plain = |name: &String| {
@@ -72,7 +73,7 @@ pub fn manifest(mods: &Path) -> Result<Manifest> {
         || !manifest.files.keys().all(plain)
         || manifest.files.keys().filter(|n| is_bridge_jar(n)).count() != 1
     {
-        bail!("Mods ownership manifest is not recognized");
+        bail!(unknown());
     }
     Ok(manifest)
 }
@@ -93,7 +94,7 @@ fn find(mods: &Path, name: &str, expected: &str) -> Result<Listed> {
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e.into()),
-            Ok(m) if !m.is_file() => bail!("Refusing a non-regular file: {}", path.display()),
+            Ok(m) if !m.is_file() => bail!(Refusal::new(Kind::NotRegular, path.display())),
             Ok(_) if sha256_file(&path, &mut |_| {})? == expected => {
                 return Ok(Listed::Present(path));
             }
@@ -111,7 +112,7 @@ fn listed(mods: &Path) -> Result<Vec<(String, String, Listed)>> {
         .iter()
         .find(|n| is_bridge_jar(n) && !manifest.files.contains_key(*n))
     {
-        bail!("Refusing a bridge JAR this installer did not install: {name}");
+        bail!(Refusal::new(Kind::ForeignJar, mods.join(name).display()));
     }
     let mut found = Vec::new();
     for (name, expected) in manifest.files {
@@ -159,30 +160,26 @@ pub fn ownership(mods: &Path) -> Result<Ownership> {
     let path = mods.join(MANIFEST);
     if !path.exists() && !path.is_symlink() {
         return Ok(match names(mods)?.into_iter().find(|n| is_bridge_jar(n)) {
-            Some(name) => Ownership::Foreign(format!(
-                "Refusing a bridge JAR this installer did not install: {}",
-                mods.join(name).display()
-            )),
+            Some(name) => {
+                Ownership::Foreign(Refusal::new(Kind::ForeignJar, mods.join(name).display()))
+            }
             None => Ownership::Absent,
         });
     }
     Ok(match listed(mods) {
         Ok(found) => {
-            let changed: Vec<&str> = found
+            let changed: Vec<String> = found
                 .iter()
                 .filter(|(_, _, state)| matches!(state, Listed::Changed))
-                .map(|(name, _, _)| name.as_str())
+                .map(|(name, _, _)| mods.join(name).display().to_string())
                 .collect();
             if changed.is_empty() {
                 Ownership::Owned
             } else {
-                Ownership::Modified(format!(
-                    "Refusing modified bridge files: {}",
-                    changed.join(", ")
-                ))
+                Ownership::Modified(Refusal::new(Kind::ModifiedJar, changed.join(", ")))
             }
         }
-        Err(error) => Ownership::Modified(error.to_string()),
+        Err(error) => Ownership::Modified(crate::refusal(error, Kind::ModifiedJar, &path)),
     })
 }
 
@@ -220,16 +217,13 @@ pub fn install(
     }
     match ownership(&mods)? {
         Ownership::Absent => {}
-        Ownership::Owned => bail!("Remove the installed bridge JAR first"),
+        Ownership::Owned => bail!(Refusal::new(Kind::RemoveFirst, mods.display())),
         Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal),
     }
     let mut outputs = Vec::new();
     if !names(&mods)?.iter().any(|n| is_fabric_api(n)) {
         if fabric_api.is_empty() {
-            bail!(
-                "Fabric API is missing from {} and not carried",
-                mods.display()
-            );
+            bail!(Refusal::new(Kind::FabricMissing, mods.display()));
         }
         outputs.push((pins::FABRIC_API_FILE, fabric_api));
     }
@@ -238,7 +232,7 @@ pub fn install(
         .iter()
         .find(|(name, _)| mods.join(name).exists() || mods.join(name).is_symlink())
     {
-        bail!("Refusing to replace {}", mods.join(name).display());
+        bail!(Refusal::new(Kind::Replace, mods.join(name).display()));
     }
     let manifest = Manifest {
         owner: OWNER.into(),
@@ -279,7 +273,7 @@ pub fn remove(mods: &Path, keep_fabric: bool, closed: Guard) -> Result<()> {
     closed()?;
     match ownership(&mods)? {
         Ownership::Owned => {}
-        Ownership::Absent => bail!("No bridge JAR to remove in {}", mods.display()),
+        Ownership::Absent => bail!(Refusal::new(Kind::NothingToRemove, mods.display())),
         Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal),
     }
     let mut found = present(&mods)?;
