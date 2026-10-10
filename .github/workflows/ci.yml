@@ -1,7 +1,7 @@
 # The offline checks on hosted runners, and the release build when release-please.yml calls it with a tag.
 # The Windows job builds xinput1_3.dll natively and runs its portable tests; the Linux job runs tools/check.py with
-# that DLL in place, so the installer's tests embed and install the real pieces on fake trees. tools/check.py's
-# windows component (clang-cl/xwin plus Wine or Proton) stays local.
+# that DLL in place, so the installer's tests embed and install the real pieces on fake trees. The Windows bridge job
+# runs the Java suites and tools/check.py's windows component on Windows itself (locally: clang-cl/xwin plus Wine).
 name: CI
 
 on:
@@ -53,6 +53,54 @@ jobs:
           path: build/native-windows/Release/xinput1_3.dll
           if-no-files-found: error
           retention-days: 3
+
+  windows-bridge:
+    name: Windows bridge tests
+    # The bridge on Windows itself, where Wine cannot stand in: the Java suites on Windows' file system, the native
+    # checks and fake host run directly, the pose mapping between Java and the adapter's code, and Java's replacements
+    # beside a reader that shares like Lua's. Nothing here touches a game. Not for release builds: their commit passed it.
+    if: ${{ !inputs.ref }}
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Java suites
+        run: python tools/check.py --only minecraft
+      # The DLL, the native checks and the fake host (callers report included), built with the release DLL's toolset.
+      - name: Native checks
+        run: python tools/check.py --only windows
+      # Java creates and maps the pose file (SharedMapping's Kernel32 branch), the fixture opens it as the adapter does,
+      # publishes until Java stops, and releases it; Java then deletes it. The fixture's budget exceeds Java's count.
+      - name: Pose mapping interop
+        run: |
+          dir="$(cygpath -m "$RUNNER_TEMP")/pose-interop"
+          log="$RUNNER_TEMP/pose-interop.log"
+          mkdir -p "$dir"
+          trap 'cat "$log"' EXIT
+          (cd minecraft && ./gradlew.bat -q avatarStreamInterop -PposeInterop="$dir 200") > "$log" 2>&1 &
+          java=$!
+          for _ in $(seq 240); do grep -q '^READY' "$log" && break; sleep 0.5; done
+          build/native-windows-fixture/Release/stellar_pose_stream_fixture.exe "$dir" 1000
+          wait "$java"
+          grep -q '^PASS pose interop' "$log"
+      # Lua's MSVC fopen shares no delete: Java's replacements of terrain.txt must outlast it (the bounded retry), and
+      # its reads of a file the C side removes and renames must read a pending removal as absent.
+      - name: File sharing beside Lua's reader
+        run: |
+          dir="$(cygpath -m "$RUNNER_TEMP")/share-stress"
+          mkdir -p "$dir"
+          build/native-windows-fixture/Release/stellar_share_stress.exe "$dir" &
+          reader=$!
+          (cd minecraft && ./gradlew.bat -q bridgeRuntimeTest --args="$dir 5000")
+          wait "$reader"
 
   linux:
     name: Linux checks and installer

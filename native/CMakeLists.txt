@@ -32,7 +32,9 @@ if(WIN32)
     target_compile_definitions(stellar_input_fixture PRIVATE STELLAR_INPUT_TEST_HOST=1)
     target_link_libraries(stellar_input_fixture PRIVATE bcrypt)
     set_target_properties(stellar_input_fixture PROPERTIES PREFIX "")
-    find_program(CLANG_ASSEMBLER clang REQUIRED)
+    # Beside clang-cl first: Visual Studio's ClangCL toolset ships clang there without putting it on PATH.
+    get_filename_component(STELLAR_COMPILER_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+    find_program(CLANG_ASSEMBLER clang HINTS ${STELLAR_COMPILER_DIR} REQUIRED)
     add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/fake_gameplay.obj
       COMMAND ${CLANG_ASSEMBLER} --target=x86_64-pc-windows-msvc -c ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/fake_gameplay.S -o ${CMAKE_CURRENT_BINARY_DIR}/fake_gameplay.obj
       DEPENDS fixtures/fake_gameplay.S VERBATIM)
@@ -42,6 +44,8 @@ if(WIN32)
     target_include_directories(stellar_frame_bus_fixture PRIVATE include)
     add_executable(stellar_pose_stream_fixture fixtures/pose_stream_fixture.cpp src/pose_stream.cpp)
     target_include_directories(stellar_pose_stream_fixture PRIVATE include)
+    # Lua's side of the Windows sharing check (CI, beside BridgeRuntimeTest's contended run).
+    add_executable(stellar_share_stress fixtures/share_stress.cpp)
     add_executable(stellar_input_fake_host fixtures/fake_host.cpp ${CMAKE_CURRENT_BINARY_DIR}/fake_gameplay.obj)
     target_link_options(stellar_input_fake_host PRIVATE /EXPORT:FakeGameplayReturn)
   endif()

@@ -5,11 +5,14 @@ import argparse
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# On Windows itself (the CI's Windows test job): Gradle's batch wrapper, and the Windows checks without Wine.
+NATIVE_WINDOWS = os.name == 'nt'
 
 
 def run(command, *, cwd=ROOT, quiet=False, env=None):
@@ -24,24 +27,45 @@ def run(command, *, cwd=ROOT, quiet=False, env=None):
 
 
 def windows(toolchain, wine):
-    """The Windows DLL and its isolated checks: built with clang-cl/xwin, run under Wine or Proton in a throwaway
-    prefix and working directory (the checks write files there; protocol fixtures are linked in)."""
-    for build, extra in ((ROOT / 'build/native-windows', []),
-                         (ROOT / 'build/native-windows-fixture', ['-DSTELLAR_INPUT_BUILD_FIXTURE=ON'])):
-        run(['cmake', '-S', 'native', '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
-             f'-DCMAKE_TOOLCHAIN_FILE={toolchain}', *extra])
-        run(['cmake', '--build', build])
+    """The Windows DLL and its isolated checks. On Linux: built with clang-cl/xwin, run under Wine or Proton in a
+    throwaway prefix. On Windows: built with Visual Studio's ClangCL toolset (the release DLL's), run directly. Each
+    check runs in a throwaway working directory (the checks write files there) with a copy of the protocol fixtures;
+    the fake host runs beside both DLLs of the fixture build."""
+    builds = ((ROOT / 'build/native-windows', []), (ROOT / 'build/native-windows-fixture', ['-DSTELLAR_INPUT_BUILD_FIXTURE=ON']))
+    for build, extra in builds:
+        if NATIVE_WINDOWS:
+            run(['cmake', '-S', 'native', '-B', build, '-A', 'x64', '-T', 'ClangCL', *extra])
+            run(['cmake', '--build', build, '--config', 'Release', '--parallel'])
+        else:
+            run(['cmake', '-S', 'native', '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+                 f'-DCMAKE_TOOLCHAIN_FILE={toolchain}', *extra])
+            run(['cmake', '--build', build])
+    outputs = [windows_outputs(build) for build, _ in builds]
     with tempfile.TemporaryDirectory(prefix='stellar-windows-check-') as scratch:
         scratch = Path(scratch)
-        (scratch / 'protocol').symlink_to(ROOT / 'protocol', target_is_directory=True)
+        shutil.copytree(ROOT / 'protocol', scratch / 'protocol')
         (scratch / 'raw').mkdir()
-        env = {**os.environ, 'WINEPREFIX': str(scratch / 'prefix'), 'WINEDEBUG': '-all', 'DISPLAY': '', 'WAYLAND_DISPLAY': ''}
-        tests = sorted(ROOT.glob('build/native-windows*/stellar_*_tests.exe'))
+        host = scratch / 'host'
+        host.mkdir()
+        for name in ('stellar_input_fake_host.exe', 'xinput1_3.dll', 'stellar_input_fixture.dll'):
+            shutil.copy2(outputs[1] / name, host)
+        if NATIVE_WINDOWS:
+            prefix, drive, env = [], '', None
+        else:
+            prefix, drive = [wine], 'Z:'
+            env = {**os.environ, 'WINEPREFIX': str(scratch / 'prefix'), 'WINEDEBUG': '-all', 'DISPLAY': '', 'WAYLAND_DISPLAY': ''}
+        tests = sorted(path for output in outputs for path in output.glob('stellar_*_tests.exe'))
         if not tests:
             raise SystemExit('Windows checks are missing')
         for path in tests:
-            extra = ['Z:' + str(scratch / 'raw')] if path.name == 'stellar_raw_hook_tests.exe' else []
-            run([wine, path, *extra], cwd=scratch, env=env, quiet=True)
+            extra = [drive + str(scratch / 'raw')] if path.name == 'stellar_raw_hook_tests.exe' else []
+            run([*prefix, path, *extra], cwd=scratch, env=env, quiet=True)
+        run([*prefix, host / 'stellar_input_fake_host.exe'], cwd=host, env=env, quiet=True)
+
+
+def windows_outputs(build):
+    """Where a native Windows build put its programs: Visual Studio's multi-config Release folder, or Ninja's root."""
+    return build / 'Release' if NATIVE_WINDOWS else build
 
 
 def installer(crate):
@@ -73,7 +97,7 @@ def main():
                         help='Wine or Proton wine binary for the Windows checks (default: $STELLAR_WINE)')
     args = parser.parse_args()
     for component in (args.only,) if args.only else components:
-        if component == 'windows' and not (args.windows_toolchain and args.wine):
+        if component == 'windows' and not NATIVE_WINDOWS and not (args.windows_toolchain and args.wine):
             if args.only:
                 raise SystemExit('The Windows check needs --windows-toolchain and --wine')
             print('SKIP windows (no --windows-toolchain and --wine)', flush=True)
@@ -99,14 +123,18 @@ def main():
         elif component == 'windows':
             windows(args.windows_toolchain, args.wine)
         else:
-            gradlew = ROOT / 'minecraft/gradlew'
+            gradlew = ROOT / ('minecraft/gradlew.bat' if NATIVE_WINDOWS else 'minecraft/gradlew')
             run([gradlew, 'build'], cwd=ROOT / 'minecraft')
-            # The shared terrain and EVE text both ways: Java writes, Lua reads and answers, Java reads the answer.
-            with tempfile.TemporaryDirectory() as exchange:
-                java = [gradlew, '-q', 'protocolTest', f'--args=. {exchange}']
-                run(java, cwd=ROOT / 'minecraft')
-                run(['lua', 'stellar/tests/protocol_test.lua', exchange])
-                run(java, cwd=ROOT / 'minecraft')
+            # The shared terrain and EVE text both ways: Java writes, Lua reads and answers, Java reads the answer. The
+            # Windows runner has no Lua; the Linux job runs this exchange.
+            if NATIVE_WINDOWS and not shutil.which('lua'):
+                print('SKIP Java-Lua protocol exchange (no lua on PATH)', flush=True)
+            else:
+                with tempfile.TemporaryDirectory() as exchange:
+                    java = [gradlew, '-q', 'protocolTest', f'--args=. {exchange}']
+                    run(java, cwd=ROOT / 'minecraft')
+                    run(['lua', 'stellar/tests/protocol_test.lua', exchange])
+                    run(java, cwd=ROOT / 'minecraft')
         print(f'PASS {component}', flush=True)
 
 
