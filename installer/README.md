@@ -119,7 +119,9 @@ install -Dm644 installer/assets/logo.svg ~/.local/share/icons/hicolor/scalable/a
 
 The window's application id is `stellar-bridge-installer`, so Wayland compositors take its icon from that entry; X11 uses the 64 px icon embedded in the binary.
 
-The declared minimum Rust is 1.90, the floor of the resolved dependency tree (ordered-float through wgpu). Check it after dependency changes with `cargo +1.90 check --locked --all-targets`.
+The Windows build (`--target x86_64-pc-windows-msvc`, on Windows or cross-built) is `stellar-bridge-installer.exe`. `build.rs` gives it the icon `assets/icon.ico`, version information from `Cargo.toml` and the manifest `assets/stellar-bridge-installer.manifest`, which runs it as the user who starts it, never elevated. The resource compiler is the Windows SDK's `rc.exe`, or `llvm-rc` when cross-building.
+
+The declared minimum Rust is 1.95, set by sysinfo, which only the Windows build uses; the Linux tree alone builds with 1.90 (ordered-float through wgpu). Check them after dependency changes with `cargo +1.95 check --locked --all-targets --target x86_64-pc-windows-msvc` and `cargo +1.90 check --locked --all-targets`.
 
 ## Logo
 
@@ -127,4 +129,7 @@ The declared minimum Rust is 1.90, the floor of the resolved dependency tree (or
 
 ```sh
 rsvg-convert -w 64 -h 64 installer/assets/logo.svg | magick png:- -depth 8 rgba:installer/assets/icon-64.rgba
+rsvg-convert -w 256 -h 256 installer/assets/logo.svg | magick png:- -define icon:auto-resize=64,48,32,16 installer/assets/icon.ico
 ```
+
+The second line renders the Windows exe's icon.
