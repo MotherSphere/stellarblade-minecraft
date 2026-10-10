@@ -577,6 +577,7 @@ public final class AvatarStreamTest {
                     try { stream.poll(table, now, System.nanoTime()); throw new AssertionError("A stopped producer must end the stream"); }
                     catch (java.io.IOException expected) { assert expected.getMessage().contains("stopped"); }
                     assert Files.readString(directory.resolve("eve-pose-request.txt")).contains("STATE stopped");
+                    unmap(map); // The test plays the adapter, which unmaps on release (Windows deletes no mapped file).
                     assert stream.reap() && !Files.exists(stream.path);
                 }
             }
@@ -1017,12 +1018,28 @@ public final class AvatarStreamTest {
             }
             stream.stop();
             long release = System.nanoTime() + 10_000_000_000L;
-            while (!stream.reap()) {
+            while (!reaped(stream)) {
                 if (System.nanoTime() > release) throw new AssertionError("Native producer did not release the run");
                 Thread.sleep(10);
             }
             System.out.println("PASS pose interop: " + decoded + " ordered native poses read, run released and deleted");
         }
+    }
+
+    /**
+     * Reaps as AvatarView does: a failed delete is retried later. On Windows the native process may still hold its view
+     * for a moment after it released the run, and a mapped file cannot be deleted.
+     */
+    private static boolean reaped(AvatarStream stream) {
+        try { return stream.reap(); }
+        catch (java.io.IOException notYet) { return false; }
+    }
+
+    /** Unmaps a test's own FileChannel view now instead of at garbage collection. The buffer must not be used again. */
+    static void unmap(java.nio.ByteBuffer map) throws ReflectiveOperationException {
+        var field = Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe");
+        field.setAccessible(true);
+        ((sun.misc.Unsafe) field.get(null)).invokeCleaner(map);
     }
 
     /** CharacterMesh0 world + 3 bones, then Mesh_Face world + 2 morph weights. */

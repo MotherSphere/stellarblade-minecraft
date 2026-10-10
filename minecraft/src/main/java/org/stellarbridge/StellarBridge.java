@@ -42,8 +42,10 @@ public final class StellarBridge implements ClientModInitializer {
             Path directory = Path.of(System.getProperty("stellarbridge.directory",
                     Path.of(System.getProperty("user.home"), ".local", "share", "stellar-blade-minecraft", "bridge").toString()));
             new BridgeFiles(directory);
-            CaptureFrame.startWatching(directory);
-            LOG.info("Asynchronous capture close notifications armed");
+            if (com.sun.jna.Platform.isLinux()) {
+                CaptureFrame.startWatching(directory);
+                LOG.info("Asynchronous capture close notifications armed");
+            } else LOG.info("Capture mode is Linux-only; EVE plays in avatar mode (/stellaravatar play)");
         } catch (IOException | RuntimeException | LinkageError failure) {
             LOG.warn("Asynchronous capture unavailable; synchronous captures remain supported: {}", failure.toString());
         }

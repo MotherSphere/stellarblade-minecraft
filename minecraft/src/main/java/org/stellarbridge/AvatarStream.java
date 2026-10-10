@@ -1,9 +1,5 @@
 package org.stellarbridge;
 
-import com.sun.jna.Native;
-import com.sun.jna.NativeLong;
-import com.sun.jna.Platform;
-import com.sun.jna.Pointer;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -88,9 +84,9 @@ final class AvatarStream implements AutoCloseable {
     final Path path;
     private final BridgeFiles files;
     private final long createdNanos = System.nanoTime();
-    private Pointer address;
+    private SharedMapping shared;
     private ByteBuffer map;
-    private int fd = -1, front = 2, producerPid;
+    private int front = 2, producerPid;
     private long previousCounter, heartbeatMillis, heartbeatNanos, readNanos, requestMillis, leaseMillis;
     private volatile long renderBeatNanos = System.nanoTime(); // The render thread's last heartbeat, for keepAlive.
     // keepAlive refreshes every KEEP_ALIVE_MS, well inside Lua's 3 s lease, while the render thread called heartbeat within
@@ -100,25 +96,21 @@ final class AvatarStream implements AutoCloseable {
     private float[] clothFloats; // The newest sample's cloth, reused (about 208 KB).
 
     AvatarStream(Path directory, String run, long nowMs) throws IOException {
-        if (!Platform.isLinux() || Native.POINTER_SIZE != 8) throw new IOException("The pose stream requires 64-bit Linux");
+        if (!SharedMapping.supported()) throw new IOException("The pose stream requires 64-bit Linux or Windows");
         require(run.matches("[0-9a-f]{32}"), "Invalid pose stream identity");
         this.run = run;
         files = new BridgeFiles(directory);
         path = files.checked("eve-pose-" + run + ".bin");
         try {
-            fd = RawFrameBus.C.open(path.toString(), 2 | 64 | 128 | 0x20000 | 0x80000, 0600); // RDWR, CREAT, EXCL, NOFOLLOW, CLOEXEC.
-            if (fd < 0) throw new IOException("Cannot exclusively create the pose mapping: errno " + Native.getLastError());
-            if (RawFrameBus.C.ftruncate(fd, new NativeLong(TOTAL)) != 0) throw new IOException("Cannot size the pose mapping");
-            address = RawFrameBus.C.mmap(null, new NativeLong(TOTAL), 3, 1, fd, new NativeLong(0));
-            if (Pointer.nativeValue(address) == -1) { address = null; throw new IOException("Cannot map the pose file"); }
-            map = address.getByteBuffer(0, TOTAL).order(ByteOrder.LITTLE_ENDIAN);
+            shared = new SharedMapping(path, TOTAL, "pose mapping");
+            map = shared.map;
             map.put(0, MAGIC).putInt(8, 1).putInt(12, HEADER).putInt(16, SLOT).putInt(20, CAPACITY).putInt(28, TOTAL)
                     .put(32, run.getBytes(StandardCharsets.US_ASCII)).putInt(96, Math.toIntExact(ProcessHandle.current().pid()));
             RawFrameBus.LONG.setRelease(map, 264, leaseMillis = nowMs);
             RawFrameBus.INT.setRelease(map, 256, 1);
             request(true, nowMs);
         } catch (IOException | RuntimeException | Error failure) {
-            boolean created = fd >= 0;
+            boolean created = shared != null; // SharedMapping removes what it created when it fails itself.
             unmap();
             if (created) Files.deleteIfExists(path);
             throw failure;
@@ -794,8 +786,7 @@ final class AvatarStream implements AutoCloseable {
     }
     private synchronized void unmap() {
         map = null;
-        if (address != null) { RawFrameBus.C.munmap(address, new NativeLong(TOTAL)); address = null; }
-        if (fd >= 0) { RawFrameBus.C.close(fd); fd = -1; }
+        if (shared != null) { shared.close(); shared = null; }
     }
     private static void require(boolean condition, String message) throws IOException {
         if (!condition) throw new IOException(message);

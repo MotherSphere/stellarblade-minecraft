@@ -1,11 +1,7 @@
 package org.stellarbridge;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.UUID;
 
 /** Small request/ack snapshots; image closure never certifies an Unreal task's lifetime. */
@@ -76,12 +72,6 @@ final class CaptureSession {
 
     private synchronized void publish(String name, String packet) throws IOException {
         if (files == null) files = new BridgeFiles(directory);
-        Path target = files.checked(name);
-        Path temporary = Files.createTempFile(target.getParent(), "capture-session-", ".tmp",
-                PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
-        try {
-            Files.writeString(temporary, packet, StandardCharsets.US_ASCII);
-            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } finally { Files.deleteIfExists(temporary); }
+        files.write(name, packet);
     }
 }

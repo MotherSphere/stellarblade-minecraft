@@ -35,6 +35,7 @@ public final class CaptureAsyncTest {
                 descriptor.replace("depth.hdr " + depth.length, "depth.hdr 0"),
                 descriptor.replace("color.bmp", "color.png") }) rejects(() -> CaptureFrame.parse(invalid.getBytes()));
         validatePng(mask);
+        if (!com.sun.jna.Platform.isLinux()) { System.out.println("SKIP asynchronous capture: its close watch is Linux-only"); return; }
         Path directory = Files.createTempDirectory("stellar-async-capture-");
         try {
             // Pose/terrain traffic exists before the first capture. A bounded backlog is not lost evidence.

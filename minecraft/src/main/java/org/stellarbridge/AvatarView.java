@@ -470,7 +470,7 @@ public final class AvatarView {
                     + " After /stellar start, F5 and F8 she stands where the bridge places EVE; otherwise two blocks ahead."
                     + " /stellaravatar status shows the stream; /stellaravatar off stops it."));
             return 1;
-        } catch (IOException | RuntimeException failure) {
+        } catch (IOException | RuntimeException | LinkageError failure) { // LinkageError: a native library mistake, not a crash.
             return error(source, "EVE live avatar failed: " + failure.getMessage());
         }
     }
@@ -1065,6 +1065,16 @@ public final class AvatarView {
     // the entity by the display delay, and a sprinting player covers about 6 blocks a second.
     static final double STANDS_IN = 8;
 
+    /** Who calls the adapter's XInputGetState: tells a recognized gameplay poll from an overlay hook calling instead. */
+    private static String callsStatus() {
+        try {
+            String text = new BridgeFiles(bridgeDirectory()).read("eve-input-calls.txt");
+            return text == null ? "" : ControlState.parseCalls(text.getBytes(java.nio.charset.StandardCharsets.US_ASCII))
+                    .status(System.currentTimeMillis());
+        } catch (IOException | IllegalArgumentException unreadable) {
+            return " XInput callers report unreadable.";
+        }
+    }
     private static String status() {
         if (replay != null) return "EVE avatar: replaying " + replay.model.parts.size() + " meshes from the pose probe recording.";
         return live == null ? "EVE avatar is off." : liveStatus(live);
@@ -1088,7 +1098,7 @@ public final class AvatarView {
                 + clothStatus(current) + AvatarHudFile.status() + AvatarHud.status()
                 + hiddenStatus(current) + current.gun.status(current.stream.shots())
                 + evadeStatus(current.stream.evades()) + gaugeStatus(current.stream.gauges())
-                + AvatarStats.status(current.stats) + reportStatus(current.stream.report())
+                + AvatarStats.status(current.stats) + reportStatus(current.stream.report()) + callsStatus()
                 + (ShaderPacks.active() ? " Drawn through Minecraft's entity programs." : " Drawn with her own shaders.");
     }
 
