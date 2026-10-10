@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 
 
 MOD_NAME = "StellarCollisionProbe"
@@ -105,6 +106,10 @@ def main():
     parser.add_argument("--bridge-dir", type=Path, help="Existing private Linux bridge directory, exposed through Proton Z:")
     args = parser.parse_args()
     try:
+        # Its game check scans /proc and its paths go through Proton's Z: drive: on Windows it would report the game
+        # closed and write a Linux path.
+        if sys.platform != "linux":
+            raise ValueError("Linux developer tool; Windows players use the installer")
         if args.mods_dir.is_symlink() or not args.mods_dir.is_dir():
             raise ValueError(f"Expected an existing real Mods directory: {args.mods_dir}")
         if args.command == "remove" and args.bridge_dir is not None:

@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -164,6 +165,21 @@ class DeployTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as stopped:
                     deployment.main()
             self.assertEqual(stopped.exception.code, 1)
+            self.assertFalse(self.destination.exists())
+
+    def test_other_systems_are_refused_before_writes(self):
+        spec = importlib.util.spec_from_file_location("deployment_under_test", self.script)
+        deployment = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(deployment)
+        for command in ("install", "remove"):
+            with mock.patch.object(deployment, "running_game", return_value=False), \
+                 mock.patch.object(deployment.sys, "platform", "win32"), \
+                 mock.patch.object(sys, "argv", ["deploy.py", command, "--mods-dir", str(self.mods)]), \
+                 mock.patch.object(sys, "stderr", new_callable=io.StringIO) as error:
+                with self.assertRaises(SystemExit) as stopped:
+                    deployment.main()
+            self.assertEqual(stopped.exception.code, 1)
+            self.assertIn("Linux developer tool; Windows players use the installer", error.getvalue())
             self.assertFalse(self.destination.exists())
 
     def test_bridge_configuration_refuses_symlink_or_shared_directory(self):
