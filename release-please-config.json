@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "initial-version": "0.1.0",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "draft": false,
+      "prerelease": false,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "changelog-sections": [
+        {"type": "feat", "section": "Features"},
+        {"type": "fix", "section": "Fixes"},
+        {"type": "perf", "section": "Performance"},
+        {"type": "refactor", "section": "Internals"},
+        {"type": "docs", "section": "Documentation"},
+        {"type": "chore", "section": "Chores", "hidden": true},
+        {"type": "test", "section": "Tests", "hidden": true},
+        {"type": "ci", "section": "CI", "hidden": true},
+        {"type": "build", "section": "Build", "hidden": true},
+        {"type": "style", "section": "Style", "hidden": true}
+      ],
+      "extra-files": [
+        "minecraft/build.gradle",
+        "installer/Cargo.toml",
+        {"type": "toml", "path": "installer/Cargo.lock", "jsonpath": "$.package[?(@.name.value==='sbmc-installer')].version"}
+      ]
+    }
+  },
+  "pull-request-header": "The next release, assembled from the conventional commits since the last one. Merging this pull request tags it, and the tag is what builds and publishes the Linux and Windows assets."
+}

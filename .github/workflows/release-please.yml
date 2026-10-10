@@ -1,0 +1,107 @@
+# Release Please keeps a release pull request open from the conventional commits on minecraft-main-renderer.
+# Merging it tags vX.Y.Z and creates the GitHub release; this workflow holds that release as a draft, builds the
+# assets from the tag through ci.yml, attaches them with SHA256SUMS and only then publishes it.
+#
+# A release created with GITHUB_TOKEN fires no release event, so the build is chained here with needs: rather than
+# triggered by one. release-please reports release_created once only: if a build or publish fails, re-running the
+# failed jobs works, and "Run workflow" with the tag rebuilds and publishes a release that is still a draft.
+name: Release Please
+
+on:
+  push:
+    branches: [minecraft-main-renderer]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of a draft release to rebuild and publish (vX.Y.Z)
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      # Manifest mode only: passing release-type as well would make the action ignore both files.
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      # release-please publishes the release, and moves "latest" to it, before any asset exists.
+      - name: Hold the release as a draft until its assets are attached
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=true
+
+  build:
+    needs: release-please
+    if: ${{ !cancelled() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+
+  publish:
+    needs: [release-please, build]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: assets
+      - name: Write SHA256SUMS
+        working-directory: assets
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      # Signing is optional: this user-account repository cannot use the Project-Colony organisation key. With a
+      # repository secret STELLAR_SIGNING_KEY_PEM (an Ed25519 private key), SHA256SUMS.sig signs the checksums.
+      - id: key
+        run: echo "present=${{ secrets.STELLAR_SIGNING_KEY_PEM != '' }}" >> "$GITHUB_OUTPUT"
+      - name: Sign SHA256SUMS
+        if: steps.key.outputs.present == 'true'
+        working-directory: assets
+        env:
+          SIGNING_KEY: ${{ secrets.STELLAR_SIGNING_KEY_PEM }}
+        run: |
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS -out SHA256SUMS.sig
+          openssl pkeyutl -verify -rawin -inkey "$key" -in SHA256SUMS -sigfile SHA256SUMS.sig
+      - name: Attach the assets and publish
+        run: |
+          version=${TAG#v}
+          expected=(stellar-bridge-installer-linux-x86_64 "stellar-bridge-$version.jar" xinput1_3.dll
+            "StellarCollisionProbe-$version.zip" SHA256SUMS)
+          if [[ -f assets/SHA256SUMS.sig ]]; then expected+=(SHA256SUMS.sig); fi
+          for name in "${expected[@]}"; do
+            [[ -f "assets/$name" ]] || { echo "::error::missing asset $name"; exit 1; }
+          done
+          [[ $(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft -q .isDraft) == true ]] ||
+            { echo "::error::$TAG is not a draft release: refusing to change a published release"; exit 1; }
+          (cd assets && gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${expected[@]}")
+          attached=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          for name in "${expected[@]}"; do
+            grep -qxF "$name" <<<"$attached" || { echo "::error::$name is not attached to $TAG"; exit 1; }
+          done
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false
