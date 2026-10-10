@@ -27,6 +27,24 @@ const FONT_LICENSES: [(&str, &str); 3] = [
     ),
 ];
 
+/// The logo at 64 px as raw RGBA, rendered from `assets/logo.svg` (see the README). On Wayland the compositor takes the
+/// icon from the `.desktop` file that matches the application id instead.
+const ICON_RGBA: &[u8] = include_bytes!("../assets/icon-64.rgba");
+
+fn window() -> iced::window::Settings {
+    iced::window::Settings {
+        size: iced::Size::new(1000.0, 720.0),
+        icon: iced::window::icon::from_rgba(ICON_RGBA.to_vec(), 64, 64).ok(),
+        // The basename of assets/stellar-bridge-installer.desktop.
+        #[cfg(target_os = "linux")]
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: "stellar-bridge-installer".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 fn payload() -> Option<Payload> {
     match Payload::embedded() {
         Ok(payload) => payload,
@@ -146,6 +164,14 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .default_font(colony_ui::ui_font())
         .exit_on_close_request(false)
-        .window_size((1000.0, 720.0))
+        .window(window())
         .run()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_window_icon_matches_its_size() {
+        assert!(super::window().icon.is_some());
+    }
 }

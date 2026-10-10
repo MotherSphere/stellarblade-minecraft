@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Stellar Bridge logo (original artwork, GPL-3.0-or-later).
+       A bridge arch rises from the top ray of a four-pointed star, whose
+       lower ray is blade-long, and lands on an isometric cube, in colony-ui's
+       Stellar Blade EVE colours: green ink on white-grey ceramic. -->
+  <rect x="1.5" y="1.5" width="61" height="61" rx="13" fill="#eceeec" stroke="#1a6b3b" stroke-width="3"/>
+  <!-- Star -->
+  <path d="M17 21 L19.8 35.2 L29 38 L19.8 40.8 L17 57 L14.2 40.8 L5 38 L14.2 35.2 Z" fill="#1a6b3b"/>
+  <!-- Bridge arch -->
+  <path d="M17 27 C17 9 46 9 46 27" fill="none" stroke="#21a04d" stroke-width="5" stroke-linecap="round"/>
+  <!-- Cube -->
+  <g stroke="#1a6b3b" stroke-width="1.5" stroke-linejoin="round">
+    <path d="M46 25 L58.5 31.5 L46 38 L33.5 31.5 Z" fill="#ffffff"/>
+    <path d="M33.5 31.5 L46 38 L46 54 L33.5 47.5 Z" fill="#21a04d"/>
+    <path d="M46 38 L58.5 31.5 L58.5 47.5 L46 54 Z" fill="#1a6b3b"/>
+  </g>
+</svg>

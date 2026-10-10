@@ -1,5 +1,7 @@
 # Stellar Bridge installer
 
+<img src="assets/logo.svg" alt="Stellar Bridge logo" width="96">
+
 `stellar-bridge-installer` installs, updates and removes the bridge on Linux with Stellar Blade under Proton and Minecraft in Prism or MultiMC: the UE4SS Lua mod, the XInput adapter, the bridge JAR and Fabric API. It is a Colony program (iced 0.14 and colony-ui 0.1.6), licensed GPL-3.0-or-later like the rest of the repository.
 
 **Status: G1.** It covers today's setup, Stellar Blade under Proton and Minecraft in Prism or MultiMC on Linux. It installs, updates, repairs, rolls back and uninstalls through a window. It writes nothing until you have seen the list of files and agreed. The avatar pack is detected but not built (G2), and Windows comes later (G3, G4).
@@ -85,4 +87,22 @@ SBMC_PAYLOAD=/path/to/new/payload cargo build --release --locked --manifest-path
 
 The binary is `installer/target/release/stellar-bridge-installer`. It embeds colony-ui's fonts, under the SIL Open Font License 1.1 (texts in `licenses/`, printed by `--licenses`).
 
+To add it to the desktop menu, install the binary, its desktop entry and the logo for your user:
+
+```sh
+install -Dm755 installer/target/release/stellar-bridge-installer ~/.local/bin/stellar-bridge-installer
+install -Dm644 installer/assets/stellar-bridge-installer.desktop ~/.local/share/applications/stellar-bridge-installer.desktop
+install -Dm644 installer/assets/logo.svg ~/.local/share/icons/hicolor/scalable/apps/stellar-bridge-installer.svg
+```
+
+The window's application id is `stellar-bridge-installer`, so Wayland compositors take its icon from that entry; X11 uses the 64 px icon embedded in the binary.
+
 The declared minimum Rust is 1.90, the floor of the resolved dependency tree (ordered-float through wgpu). Check it after dependency changes with `cargo +1.90 check --locked --all-targets`.
+
+## Logo
+
+`assets/logo.svg` is the Stellar Bridge logo: a bridge arch from a star to a cube, in colony-ui's Stellar Blade EVE colours. It is original artwork under GPL-3.0-or-later like the rest of the repository, and uses no game art, logo or font. The window icon `assets/icon-64.rgba` is rendered from it; after changing the SVG, render it again with:
+
+```sh
+rsvg-convert -w 64 -h 64 installer/assets/logo.svg | magick png:- -depth 8 rgba:installer/assets/icon-64.rgba
+```
