@@ -603,6 +603,19 @@ fn foreign_game_files_flatpak_folders_and_toasts() {
     drive(&mut app, Message::Role(Role::Viewer));
     drive(&mut app, Message::Continue);
     assert_eq!(app.screen, Screen::Target);
+    // A core error shows in the window's language, its English text in the log only.
+    drive(&mut app, Message::Language(Lang::Fr));
+    drive(
+        &mut app,
+        Message::ManualPath(fake.saves.display().to_string()),
+    );
+    drive(&mut app, Message::ToConsent);
+    let pick = Refusal::new(Kind::PickMods, fake.saves.display());
+    assert_eq!(errors(&app), [i18n::refusal(&pick)]);
+    assert_ne!(errors(&app)[0], pick.to_string());
+    drive(&mut app, Message::Language(Lang::En));
+    let toast = app.toasts[0].id;
+    drive(&mut app, Message::DismissToast(toast));
     let flatpak = fake.home.join(
         ".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances/A/minecraft/mods",
     );

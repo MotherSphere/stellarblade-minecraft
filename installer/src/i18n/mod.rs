@@ -222,6 +222,7 @@ mod tests {
         let _turn = SWITCH.lock().unwrap_or_else(|e| e.into_inner());
         set_lang(Lang::Fr);
         let shown = refusal(&foreign);
+        let bare = error(&anyhow::Error::from(foreign.clone()));
         let wrapped = anyhow::Error::from(foreign.clone())
             .context("raw")
             .context(Refusal::new(crate::Kind::InstallRestored, ""));
@@ -229,6 +230,7 @@ mod tests {
         let untyped = error(&anyhow::anyhow!("No such file or directory"));
         set_lang(Lang::En);
         assert!(shown.contains("/mods/stellar-bridge-0.1.0.jar") && !shown.contains("Refusing"));
+        assert_eq!(bare, shown, "shown once");
         assert!(
             chained.ends_with(&shown) && !chained.contains("raw"),
             "{chained}"
