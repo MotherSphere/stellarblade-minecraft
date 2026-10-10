@@ -30,7 +30,8 @@ defaults:
 jobs:
   windows:
     name: Windows DLL
-    runs-on: windows-latest
+    # Pinned like ubuntu-22.04: a new image changes the toolset that builds the shipped DLL, so a move is a commit.
+    runs-on: windows-2025
     steps:
       # The protocol fixtures the tests read must keep their committed line endings.
       - run: git config --global core.autocrlf false

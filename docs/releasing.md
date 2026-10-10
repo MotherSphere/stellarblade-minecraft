@@ -31,7 +31,7 @@ The project has a single version: the JAR, the installer and the release share i
 
 The installer's payload holds the same bytes as the separate JAR and DLL. There is no Windows installer yet: the installer builds only on Unix today, and Windows support comes with phase G3 ([installer](../installer/README.md)). Server hosts and viewers on any OS take the JAR. Playing needs Linux with Proton today; native Windows support is planned.
 
-The release DLL is built on GitHub's Windows runner with Visual Studio's ClangCL toolset, the compiler family of the local clang-cl/xwin build. `/Brepro` makes each toolchain reproducible, but the two toolchains do not produce the same bytes, so check a new toolchain's DLL in game before relying on it.
+The release DLL is built on GitHub's Windows runner with Visual Studio's ClangCL toolset, the compiler family of the local clang-cl/xwin build. `/Brepro` makes each toolchain reproducible, but the two toolchains do not produce the same bytes, so check a new toolchain's DLL in game before relying on it. The runner image label is pinned (`windows-2025`), so a move to a new image and its Visual Studio arrives as a visible commit; GitHub's weekly updates of that image can still bring minor toolset updates.
 
 Check downloads with:
 
@@ -45,7 +45,7 @@ The assets are not signed. The Project-Colony organisation key is limited to Pro
 
 `.github/workflows/ci.yml` runs on every pull request and every push to `minecraft-main-renderer`:
 
-- **Windows DLL** (`windows-latest`): builds `xinput1_3.dll` with `cmake -A x64 -T ClangCL` and runs the four portable native tests as Windows programs.
+- **Windows DLL** (`windows-2025`): builds `xinput1_3.dll` with `cmake -A x64 -T ClangCL` and runs the four portable native tests as Windows programs.
 - **Linux checks and installer** (`ubuntu-22.04`): runs `python3 tools/check.py` (Lua 5.4, Python, the host native tests, the Fabric build and the Java-Lua exchange, then the installer with that DLL and the JAR embedded). The `windows` component stays local: it needs the clang-cl/xwin toolchain and Wine or Proton, and reports `SKIP windows` in CI.
 
 For a release, the same workflow also checks the tag against the version files, builds the installer in release mode with its payload, runs `--version` against the payload and stages the assets.
