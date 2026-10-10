@@ -101,7 +101,7 @@ The declared minimum Rust is 1.90, the floor of the resolved dependency tree (or
 
 ## Logo
 
-`assets/logo.svg` is the Stellar Bridge logo: a bridge arch from a star to a cube, in colony-ui's Stellar Blade EVE colours. It is original artwork under GPL-3.0-or-later like the rest of the repository, and uses no game art, logo or font. The window icon `assets/icon-64.rgba` is rendered from it; after changing the SVG, render it again with:
+`assets/logo.svg` is the Stellar Bridge logo, "Split Block": one block split along an S seam into two interlocking pieces, a black one and a gold one, for the two worlds the bridge joins. Its seam is filled, so it looks the same on light and dark backgrounds. It is original artwork under GPL-3.0-or-later like the rest of the repository, and uses no game art, logo or font. The window icon `assets/icon-64.rgba` is rendered from it; after changing the SVG, render it again with:
 
 ```sh
 rsvg-convert -w 64 -h 64 installer/assets/logo.svg | magick png:- -depth 8 rgba:installer/assets/icon-64.rgba
