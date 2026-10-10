@@ -2578,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "sbmc-installer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "colony-ui",

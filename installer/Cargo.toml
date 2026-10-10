@@ -1,6 +1,6 @@
 [package]
 name = "sbmc-installer"
-version = "0.1.0" # x-release-please-version
+version = "0.2.0" # x-release-please-version
 description = "Stellar Bridge: installs, updates and removes the Stellar Blade x Minecraft bridge"
 edition = "2024"
 license = "GPL-3.0-or-later"
