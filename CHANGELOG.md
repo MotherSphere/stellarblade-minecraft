@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.2.0](https://github.com/MotherSphere/stellarblade-minecraft/compare/v0.1.0...v0.2.0) (2026-10-10)
+
+
+### Features
+
+* **installer:** server folder mode with a headless --server option ([af82892](https://github.com/MotherSphere/stellarblade-minecraft/commit/af8289298b6cb475bbd5b00fe8d64fbf8fc1af46))
+* **installer:** split the platform layer for Windows ([981bffb](https://github.com/MotherSphere/stellarblade-minecraft/commit/981bffb1e468c2564c15d1874b8c66262c2a4812))
+* **installer:** start in the system language on Windows ([2448133](https://github.com/MotherSphere/stellarblade-minecraft/commit/2448133b0ea58f7b8aaa593b255b5b7ecc58cd25))
+* **minecraft:** run the bridge on Windows ([f585387](https://github.com/MotherSphere/stellarblade-minecraft/commit/f5853873252be97edb4a3066d408fcdae5e4f5ed))
+* **native:** opt out of power throttling and report XInput callers ([16ae888](https://github.com/MotherSphere/stellarblade-minecraft/commit/16ae8881441b1d440d4fc49729897f736f13e7ed))
+* Windows support: native bridge, Windows installer and server folders ([bfc4a1c](https://github.com/MotherSphere/stellarblade-minecraft/commit/bfc4a1c4e77c4c2adcf355b9499c00bf990c7e2a))
+
+
+### Fixes
+
+* **installer:** accept a Windows folder typed with a trailing separator ([7c3f656](https://github.com/MotherSphere/stellarblade-minecraft/commit/7c3f656831918426e465a3980ec75ce3c7f53165))
+* **installer:** drop a server check that ends after the folder was retyped ([ac5f0c1](https://github.com/MotherSphere/stellarblade-minecraft/commit/ac5f0c11f2027f4bc1450949bca82d2d93377344))
+* **installer:** name embedded payload files with '/' on a Windows build host ([9e157e5](https://github.com/MotherSphere/stellarblade-minecraft/commit/9e157e5fff0714d299d79814c67c22b428c39ffe))
+* **installer:** name the server staging folder after the installer ([f4c2c5e](https://github.com/MotherSphere/stellarblade-minecraft/commit/f4c2c5e4d552c12d4e8fc33b80cb6fdef79ea994))
+* **minecraft:** allow for readers that share delete on Windows ([559cac1](https://github.com/MotherSphere/stellarblade-minecraft/commit/559cac1cbcc0bb7c023fe50b3c1f4a90ddb22d4d))
+* **minecraft:** retry the native scene replace on Windows ([6316724](https://github.com/MotherSphere/stellarblade-minecraft/commit/6316724b31a967b4ca38a36593e0c9f97a9472cd))
+* **native:** keep a wardrobe answer until the adapter writes it ([8a4e23e](https://github.com/MotherSphere/stellarblade-minecraft/commit/8a4e23ec568ccecdf420f55f46a993ffa7728581))
+* **tools:** make the Python deploy tools refuse other systems ([5a5a002](https://github.com/MotherSphere/stellarblade-minecraft/commit/5a5a0029462e4b2840ef9d3b0125a48edfe7c161))
+
+
+### Documentation
+
+* describe the Windows installer and its release asset ([850282e](https://github.com/MotherSphere/stellarblade-minecraft/commit/850282e7372891e95bb69bba7dc349d33faccec2))
+* document the native Windows bridge ([5116a06](https://github.com/MotherSphere/stellarblade-minecraft/commit/5116a06a677b6b5776e9d5a759c6fe9d43b7b34b))
+* **installer:** describe the Windows installer ([f294bfb](https://github.com/MotherSphere/stellarblade-minecraft/commit/f294bfb9dae398d1af8b3036ab1c63c7bf958633))
+* **installer:** say the Windows bridge it installs now runs natively ([e884ba6](https://github.com/MotherSphere/stellarblade-minecraft/commit/e884ba68becfa36dcd0748eb833bf86ca28b79fb))
+* list the Fabric server launcher and fix the Linux Rust floor check ([a5c7a03](https://github.com/MotherSphere/stellarblade-minecraft/commit/a5c7a030d0fb22d6df5b0f2af1a7733fa0411a3a))
+
 ## 0.1.0 (2026-10-10)
 
 
