@@ -194,6 +194,7 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
     assert_eq!(found.dll_override, Some(Override::Missing));
     assert!(!found.installed() && found.current.is_none());
     assert!(app.can_continue());
+    assert_eq!(app.primary_action(), ("action_install", true));
 
     // Verify: the executable is hashed against the pin.
     drive(&mut app, Message::Continue);
@@ -287,6 +288,11 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
     drive(&mut app, Message::Rescan);
     assert_eq!(app.screen, Screen::Detect);
     assert!(app.found.as_ref().unwrap().installed());
+    assert_eq!(
+        app.primary_action(),
+        ("action_up_to_date", false),
+        "this release, every piece current"
+    );
     let bridge_lua = fake
         .win64
         .join("ue4ss/Mods")
@@ -294,6 +300,11 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
         .join("Scripts/bridge.lua");
     fs::remove_file(&bridge_lua).unwrap();
     drive(&mut app, Message::Rescan);
+    assert_eq!(
+        app.primary_action(),
+        ("action_update", false),
+        "a drifted game piece: repair it first"
+    );
     drive(&mut app, Message::Begin(Action::Repair));
     match &app.modal {
         Some(Modal::Confirm(Action::Repair, lines)) => {
@@ -306,8 +317,19 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
     assert_eq!(fs::read(&bridge_lua).unwrap(), b"return {}\n");
 
     // Update to another release through the same wizard: the recorded target is preselected.
+    drive(&mut app, Message::Rescan);
+    assert_eq!(
+        app.primary_action(),
+        ("action_up_to_date", false),
+        "repaired"
+    );
     app.ctx.payload = Some(payload(2));
     drive(&mut app, Message::Rescan);
+    assert_eq!(
+        app.primary_action(),
+        ("action_update", true),
+        "an older release"
+    );
     assert_eq!((app.choice, app.role), (Some(Choice::Current), Role::Eve));
     drive(&mut app, Message::Continue);
     drive(&mut app, Message::Continue);

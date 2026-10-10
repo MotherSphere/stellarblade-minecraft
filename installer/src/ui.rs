@@ -782,15 +782,10 @@ fn detect_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
             t("rescan"),
             (!app.detecting).then_some(Message::Rescan)
         ),
-        primary(
-            typo,
-            t(if found.installed() {
-                "action_update"
-            } else {
-                "action_install"
-            }),
-            app.can_continue().then_some(Message::Continue),
-        ),
+        {
+            let (label, enabled) = app.primary_action();
+            primary(typo, t(label), enabled.then_some(Message::Continue))
+        },
     ]
     .spacing(12);
     page = page.push(actions);

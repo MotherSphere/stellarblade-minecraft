@@ -163,6 +163,16 @@ impl Found {
                 .as_ref()
                 .is_some_and(|s| s.status != Status::Removed)
     }
+
+    /// `payload`'s release is recorded as installed and every piece is current: there is nothing to update.
+    pub fn up_to_date(&self, payload: Option<&Payload>) -> bool {
+        self.pieces_error.is_none()
+            && !self.pieces.is_empty()
+            && self.pieces.iter().all(|p| p.current)
+            && self.state.as_ref().is_some_and(|s| {
+                s.status == Status::Installed && payload.is_some_and(|p| p.release == s.release)
+            })
+    }
 }
 
 /// `error` in the window's language; its raw text goes to the log only.
@@ -695,6 +705,19 @@ impl App {
                     && matches!(p.ownership, Ownership::Foreign(_) | Ownership::Modified(_))
             })
             .then_some("blocker_game_files")
+    }
+
+    /// The status page's primary button: its label key, and whether it starts the wizard. Up to date, it stays
+    /// disabled; repair and uninstall remain beside it.
+    pub fn primary_action(&self) -> (&'static str, bool) {
+        let found = self.found.as_ref();
+        if !found.is_some_and(Found::installed) {
+            ("action_install", self.can_continue())
+        } else if found.is_some_and(|f| f.up_to_date(self.ctx.payload.as_deref())) {
+            ("action_up_to_date", false)
+        } else {
+            ("action_update", self.can_continue())
+        }
     }
 
     pub fn can_continue(&self) -> bool {

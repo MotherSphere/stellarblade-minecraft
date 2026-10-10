@@ -45,6 +45,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("back_to_status", "Retour à l'état de l'installation"),
     ("action_install", "Installer"),
     ("action_update", "Mettre à jour"),
+    ("action_up_to_date", "À jour"),
     ("action_repair", "Réparer"),
     ("action_rollback", "Revenir en arrière"),
     ("action_uninstall", "Désinstaller"),

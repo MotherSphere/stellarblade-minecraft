@@ -42,6 +42,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("back_to_status", "Back to the status page"),
     ("action_install", "Install"),
     ("action_update", "Update"),
+    ("action_up_to_date", "Up to date"),
     ("action_repair", "Repair"),
     ("action_rollback", "Roll back"),
     ("action_uninstall", "Uninstall"),
