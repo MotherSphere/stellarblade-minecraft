@@ -241,7 +241,10 @@ bool write_text(const wchar_t *name, const std::string &bytes) {
          MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
 }
 void worker() {
-  std::string published, slot0, slot1;
+  // A wardrobe answer is handed over once, so it is kept until written:
+  // Windows refuses the replace while Java reads the file. The ack and the
+  // calls report are rewritten on later passes anyway.
+  std::string published, slot0, slot1, unsent_wardrobe;
   stellar_input::CallReport calls;
   // Input every 5 ms keeps forwarding latency low; permits, capture and pose
   // files keep their 20 ms period. Cached permit bytes are re-validated.
@@ -297,7 +300,10 @@ void worker() {
           wall_ms(), read_file(directory + L"eve-lock.txt", 256).value_or(""),
           read_file(directory + L"eve-wardrobe-request.txt", 512).value_or(""));
       if (!wardrobe.empty())
-        write_text(L"eve-wardrobe.txt", wardrobe);
+        unsent_wardrobe = std::move(wardrobe);
+      if (!unsent_wardrobe.empty() &&
+          write_text(L"eve-wardrobe.txt", unsent_wardrobe))
+        unsent_wardrobe.clear();
     } catch (...) {
       // The pose stream is optional and must never stop input forwarding.
     }
