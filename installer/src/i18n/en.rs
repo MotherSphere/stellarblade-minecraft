@@ -431,6 +431,22 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_process_list",
         "Cannot list processes to check that the games are closed",
     ),
+    (
+        "err_server_running",
+        "Stop the Minecraft server running in {path} first",
+    ),
+    (
+        "err_server_folder",
+        "Neither an empty folder nor a Fabric server for Minecraft 1.21.1: {path}",
+    ),
+    (
+        "err_server_loader",
+        "This server's Fabric Loader is older than 0.19.5, which the bridge needs: {path}",
+    ),
+    (
+        "err_java_version",
+        "The server needs Java 21 or newer as `java` on the PATH (found: {path}). Install it, then try again.",
+    ),
     ("err_close_first", "Close {path} first"),
     (
         "err_save_backup_differs",
@@ -494,4 +510,85 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "The new instance cannot be read back: {path}",
     ),
     ("err_pick_mods", "Pick the instance's mods folder: {path}"),
+    // Server folder
+    ("screen_server", "Server folder"),
+    ("role_server", "Server operator"),
+    (
+        "role_server_hint",
+        "A Fabric server for Minecraft 1.21.1: the bridge JAR and Fabric API in its mods folder, in an existing server folder or a new one.",
+    ),
+    ("action_server", "Install on the server"),
+    ("server_title", "Server folder"),
+    (
+        "server_body",
+        "Type the folder of a Fabric server for Minecraft 1.21.1, or an empty or new folder to make one with Fabric's server launcher. Then check it.",
+    ),
+    (
+        "server_placeholder",
+        "Server folder, for example /srv/minecraft or C:\\Servers\\Minecraft",
+    ),
+    ("server_check", "Check"),
+    ("server_pick", "Type the server folder first."),
+    (
+        "server_new",
+        "New server: {path} gets Fabric's server launcher, start.sh, start.bat and a mods folder",
+    ),
+    ("server_ours", "Server made by this installer: {path}"),
+    (
+        "server_existing",
+        "Fabric server for Minecraft 1.21.1, Fabric Loader {loader}: {path}",
+    ),
+    (
+        "server_existing_unknown",
+        "Fabric server for Minecraft 1.21.1 (Fabric Loader version not shown yet): {path}",
+    ),
+    ("server_bridge_absent", "Bridge: not installed yet"),
+    (
+        "server_bridge_owned",
+        "Bridge: installed by this installer (updated if this release differs)",
+    ),
+    ("server_java", "Java {version} runs the server"),
+    ("server_eula_true", "Mojang's EULA: accepted in eula.txt"),
+    (
+        "server_eula_false",
+        "Mojang's EULA: eula.txt says false. The server starts once you set eula=true there, after reading it.",
+    ),
+    ("server_eula_missing", "Mojang's EULA: no eula.txt yet"),
+    (
+        "server_offline",
+        "online-mode=false: anyone can join under any name. The installer leaves server.properties as it is.",
+    ),
+    (
+        "server_eula_body",
+        "The Minecraft server starts only once Mojang's EULA is accepted in eula.txt. Read it; tick the box only if you accept it for this server, or edit eula.txt yourself later.",
+    ),
+    (
+        "server_eula_check",
+        "I have read Mojang's Minecraft EULA and accept it for this server",
+    ),
+    (
+        "server_never_touched",
+        "server.properties (online-mode stays as it is), the worlds, other mods and an existing eula.txt. Nothing is downloaded and the server is never started.",
+    ),
+    (
+        "server_done_installed",
+        "Bridge JAR and Fabric API in {path}",
+    ),
+    (
+        "server_done_current",
+        "This release is already installed: nothing changed.",
+    ),
+    ("server_done_created", "New server folder: {path}"),
+    (
+        "server_done_start",
+        "Start the server with start.sh (Linux) or start.bat (Windows), or as you usually do.",
+    ),
+    (
+        "server_done_eula_todo",
+        "Before the first start, read Mojang's EULA ({url}) and set eula=true in eula.txt in {path} if you accept it.",
+    ),
+    (
+        "server_done_removed",
+        "Bridge JAR removed. Fabric API, the launcher, the start scripts, eula.txt and the worlds stay.",
+    ),
 ];

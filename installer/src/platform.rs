@@ -331,6 +331,18 @@ pub fn make_executable(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// A child command that opens no window: Windows would give a console program started from the window a console of
+/// its own.
+pub fn quiet(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// How Steam was installed: Flatpak and Snap Steam run Proton in their own sandbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SteamKind {

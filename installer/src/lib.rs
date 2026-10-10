@@ -16,6 +16,7 @@ pub mod payload;
 pub mod pins;
 pub mod platform;
 pub mod safety;
+pub mod server;
 pub mod ui;
 
 /// Who owns what sits at an install location, as both ownership manifests define it.
@@ -100,6 +101,10 @@ kinds! {
     JavaArgument => "err_java_argument",
     InstanceUnreadable => "err_instance_unreadable",
     PickMods => "err_pick_mods",
+    ServerRunning => "err_server_running",
+    ServerFolder => "err_server_folder",
+    ServerLoader => "err_server_loader",
+    JavaVersion => "err_java_version",
     NoPayload => "no_payload",
 }
 

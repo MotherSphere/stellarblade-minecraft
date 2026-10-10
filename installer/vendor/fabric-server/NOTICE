@@ -1,0 +1,18 @@
+Fabric server launcher, embedded in stellar-bridge-installer for new server folders
+
+fabric-server-launch.jar is the unmodified file Fabric's meta server builds for Minecraft 1.21.1, Fabric Loader
+0.19.5 and Fabric Installer 1.1.2:
+
+  https://meta.fabricmc.net/v2/versions/loader/1.21.1/0.19.5/1.1.2/server/jar
+  fetched 2026-10-10 as fabric-server-mc.1.21.1-loader.0.19.5-launcher.1.1.2.jar
+  sha256 809d99b16dd4d4b57384d128724ab0d6560f859aaba989dc6750d8437a447ed0 (pinned in src/pins.rs)
+
+It contains:
+
+- Fabric Installer 1.1.2 (net.fabricmc.installer), Copyright FabricMC, licensed under the Apache License 2.0
+  (https://github.com/FabricMC/fabric-installer). The licence text is in LICENSE beside this file.
+- mjson 1.4.1 (org.sharegov:mjson), licensed under the Apache License 2.0, as its bundled pom.xml states.
+
+At its first start the launcher downloads the Minecraft server from Mojang and Fabric Loader's libraries; the
+installer itself downloads nothing. Mojang's EULA (https://aka.ms/MinecraftEULA) applies to the Minecraft server and
+is accepted by the server operator, never by the installer on their behalf.

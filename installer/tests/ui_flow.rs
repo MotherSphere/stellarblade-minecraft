@@ -1,5 +1,6 @@
 //! The window's state machine on a fake home: every page of the wizard, a dedicated Prism instance, the games modal,
-//! repair, update, roll back, uninstall, the close guard, and a dry run that leaves the tree byte for byte as it was.
+//! repair, update, roll back, uninstall, the close guard, a dry run that leaves the tree byte for byte as it was, and
+//! the server operator's page.
 //! Jobs run in place; every page is drawn after every message. Nothing outside the temporary folder is read or written.
 //! Linux only: the fake home has the Linux layout and a fake `/proc`; Windows detection reads the registry and the
 //! live process list, which a test cannot fake.
@@ -18,7 +19,9 @@ use sbmc_installer::ledger::{self, Status};
 use sbmc_installer::ops::Step;
 use sbmc_installer::payload::Payload;
 use sbmc_installer::safety::{self, Running};
-use sbmc_installer::{Kind, Ownership, Refusal, adapter, deploy, launcher, mods, ops, pins, ui};
+use sbmc_installer::{
+    Kind, Ownership, Refusal, adapter, deploy, launcher, mods, ops, pins, server, ui,
+};
 
 /// The window's language is global: each test holds it for its whole run.
 fn language() -> MutexGuard<'static, ()> {
@@ -84,6 +87,12 @@ fn fake() -> Fake {
     );
     let proc_root = home.join("proc");
     fs::create_dir_all(&proc_root).unwrap();
+    // `java -version` for the server page: Java 21.
+    write(
+        &home.join("bin/java"),
+        "#!/bin/sh\necho 'openjdk version \"21.0.5\" 2024-10-15' >&2\n",
+    );
+    sbmc_installer::platform::make_executable(&home.join("bin/java")).unwrap();
     Fake {
         _root: root,
         win64,
@@ -125,6 +134,7 @@ fn ctx(fake: &Fake, dry_run: bool) -> Ctx {
         pin: safety::sha256_hex(b"test executable"),
         payload: Some(payload(1)),
         dry_run,
+        java: fake.home.join("bin/java").into_os_string(),
     }
 }
 
@@ -635,4 +645,81 @@ fn foreign_game_files_flatpak_folders_and_toasts() {
     app.toasts[0].shown = now - std::time::Duration::from_secs(11);
     drive(&mut app, Message::Tick);
     assert!(app.toasts.is_empty());
+}
+
+/// A server operator: a new server folder with the EULA box ticked, an update check, a running server that stops the
+/// install, and a dry run that writes nothing.
+#[test]
+fn a_server_operator_makes_a_server_folder() {
+    let _language = language();
+    let fake = fake();
+    let mut app = start(&fake, false);
+    drive(&mut app, Message::Role(Role::Server));
+    drive(&mut app, Message::Start);
+    assert_eq!(app.screen, Screen::Server);
+    assert!(Screen::steps(app.role).contains(&Screen::Server));
+    drive(&mut app, Message::Begin(Action::Server));
+    assert_eq!(app.screen, Screen::Server, "nothing checked yet");
+    drive(&mut app, Message::ServerCheck);
+    assert_eq!(errors(&app), vec!["Type the server folder first."]);
+
+    let dir = fake.home.join("srv/minecraft");
+    fs::create_dir_all(dir.parent().unwrap()).unwrap();
+    drive(&mut app, Message::ServerPath(dir.display().to_string()));
+    drive(&mut app, Message::ServerCheck);
+    let check = app.server.clone().unwrap().unwrap();
+    assert_eq!(check.folder.layout, server::Layout::New);
+    assert!(check.ready());
+    let lines = sbmc_installer::app::server_lines(&check);
+    assert!(lines.iter().any(|l| l.contains("Java 21")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("no eula.txt")), "{lines:?}");
+    drive(&mut app, Message::ServerEula(true));
+    drive(&mut app, Message::Begin(Action::Server));
+    let outcome = app.outcome.clone().unwrap();
+    assert!(outcome.ok, "{:?}", outcome.lines);
+    assert_eq!((app.screen, outcome.action), (Screen::Done, Action::Server));
+    assert!(dir.join(server::LAUNCHER).is_file());
+    assert!(dir.join("mods/stellar-bridge-0.1.0.jar").is_file());
+    assert!(
+        fs::read_to_string(dir.join("eula.txt"))
+            .unwrap()
+            .contains("eula=true")
+    );
+    // The page shows the folder as it is now.
+    assert_eq!(
+        app.server.clone().unwrap().unwrap().folder.layout,
+        server::Layout::Ours
+    );
+    drive(&mut app, Message::Rescan);
+    assert_eq!(app.screen, Screen::Server);
+
+    // A server running in the folder stops the install before anything changes.
+    let files = safety::tree(&dir).unwrap();
+    write(&fake.proc_root.join("4242/comm"), "java\n");
+    write(
+        &fake.proc_root.join("4242/cmdline"),
+        b"java\0-jar\0fabric-server-launch.jar\0nogui\0",
+    );
+    std::os::unix::fs::symlink(&dir, fake.proc_root.join("4242/cwd")).unwrap();
+    drive(&mut app, Message::Begin(Action::Server));
+    let outcome = app.outcome.clone().unwrap();
+    assert!(!outcome.ok);
+    assert!(
+        outcome.lines[0].contains("Stop the Minecraft server"),
+        "{:?}",
+        outcome.lines
+    );
+    assert_eq!(safety::tree(&dir).unwrap(), files);
+    fs::remove_dir_all(fake.proc_root.join("4242")).unwrap();
+
+    // A dry run checks and shows, and writes nothing.
+    let mut dry = start(&fake, true);
+    let other = fake.home.join("srv/other");
+    drive(&mut dry, Message::Role(Role::Server));
+    drive(&mut dry, Message::Start);
+    drive(&mut dry, Message::ServerPath(other.display().to_string()));
+    drive(&mut dry, Message::ServerCheck);
+    drive(&mut dry, Message::Begin(Action::Server));
+    assert!(dry.outcome.as_ref().unwrap().dry_run);
+    assert!(!other.exists());
 }

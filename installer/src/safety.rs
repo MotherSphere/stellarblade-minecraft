@@ -177,6 +177,42 @@ pub fn closed_at(proc_root: &Path, launchers: bool) -> Result<()> {
     bail!(Refusal::new(Kind::CloseFirst, names.join(", ")))
 }
 
+const SERVER_MARKERS: &[&[u8]] = &[
+    b"net.fabricmc.loader.impl.launch.knot.KnotServer",
+    b"net.fabricmc.installer.ServerLauncher",
+    b"fabric-server-launch",
+    b"fabric-server-mc.",
+];
+
+/// Whether a Minecraft server runs in the server folder `dir` (canonical): a Java process working in it. A Java process
+/// whose working folder cannot be read counts when its command line looks like a server or cannot be read either
+/// (fail closed).
+pub fn server_running(processes: &[platform::Process], dir: &Path) -> bool {
+    processes.iter().any(|process| {
+        is_java(&process.comm)
+            && match &process.cwd {
+                Some(cwd) => platform::canonicalize(cwd)
+                    .unwrap_or_else(|_| cwd.clone())
+                    .starts_with(dir),
+                None => process
+                    .cmdline
+                    .as_deref()
+                    .is_none_or(|c| c.is_empty() || holds(c, SERVER_MARKERS)),
+            }
+    })
+}
+
+/// Refuses while a Minecraft server runs in `dir`, with the process list read under `proc_root` (`/proc` on Linux).
+/// Call it right before every write in a server folder.
+pub fn server_closed_at(proc_root: &Path, dir: &Path) -> Result<()> {
+    let processes = platform::processes(proc_root).context(Refusal::new(Kind::ProcessList, ""))?;
+    let dir = platform::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if server_running(&processes, &dir) {
+        bail!(Refusal::new(Kind::ServerRunning, dir.display()));
+    }
+    Ok(())
+}
+
 /// Files and folders the installer must leave exactly as they were. Each location is optional: an EVE player has all
 /// of them, a viewer only Minecraft's.
 #[derive(Debug, Default, Clone)]
@@ -415,6 +451,33 @@ mod tests {
         assert_eq!(running(&[elevated], false), vec![Running::Minecraft]);
         assert_eq!(running(&[game], false), vec![Running::StellarBlade]);
         assert_eq!(running(&[prism], true), vec![Running::Launcher]);
+    }
+
+    #[test]
+    fn a_server_runs_where_its_java_works_and_unknown_ones_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = platform::canonicalize(root.path()).unwrap();
+        let at = |cwd: &Path, cmdline: Option<&[u8]>| Process {
+            cwd: Some(cwd.to_path_buf()),
+            ..process("java", cmdline)
+        };
+        let server = at(&dir, Some(b"java\0-jar\0fabric-server-launch.jar\0nogui"));
+        let inside = at(&dir.join("world"), Some(b"java\0-jar\0server.jar"));
+        let client = at(&dir.with_file_name("elsewhere"), Some(b"java\0KnotClient"));
+        let hidden_server = process("java.exe", Some(b"java\0-jar\0fabric-server-launch.jar"));
+        let hidden_other = process("java", Some(b"java\0-jar\0jenkins.war"));
+        let unreadable = process("javaw.exe", None);
+        let not_java = Process {
+            cwd: Some(dir.clone()),
+            ..process("bash", Some(b"bash"))
+        };
+        assert!(server_running(&[server], &dir));
+        assert!(server_running(&[inside], &dir));
+        assert!(!server_running(&[client], &dir));
+        assert!(server_running(&[hidden_server], &dir));
+        assert!(!server_running(&[hidden_other], &dir));
+        assert!(server_running(&[unreadable], &dir));
+        assert!(!server_running(&[not_java], &dir));
     }
 
     #[test]

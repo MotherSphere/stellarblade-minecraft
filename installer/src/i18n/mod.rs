@@ -185,7 +185,11 @@ mod tests {
     fn every_key_the_window_uses_exists() {
         let known = keys(Lang::En);
         let mut used = 0;
-        for source in [include_str!("../app.rs"), include_str!("../ui.rs")] {
+        for source in [
+            include_str!("../app.rs"),
+            include_str!("../ui.rs"),
+            include_str!("../main.rs"),
+        ] {
             for call in ["t(\"", "t_fmt(\""] {
                 for (at, _) in source.match_indices(call) {
                     // `text("…")` is not a lookup.
