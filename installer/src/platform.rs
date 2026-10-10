@@ -573,9 +573,22 @@ mod tests {
         assert_eq!(game_path(&ascii).unwrap(), ascii.to_str().unwrap());
         assert!(game_path(Path::new(r"\\server\share\bridge")).is_err());
         assert!(game_path(Path::new(r"relative\bridge")).is_err());
+        assert!(bridge_ready(&ascii).is_ok());
+        create_private_dir(&ascii).unwrap();
+        assert_eq!(private_dir(&ascii).unwrap(), ascii);
+        assert!(private_dir(Path::new(r"\\server\share")).is_err());
         // A non-ASCII folder is written with its short name, the same string before and after its child exists.
         let accented = base.join("Clément");
         fs::create_dir(&accented).unwrap();
+        // A volume that keeps no 8.3 names (fsutil 8dot3name) gives the long name back: the path is refused.
+        if !short_path(&accented).is_some_and(|s| s.is_ascii()) {
+            let refused = game_path(&accented.join("bridge")).unwrap_err();
+            assert_eq!(
+                refused.downcast::<Refusal>().unwrap().kind,
+                Kind::BridgeAscii
+            );
+            return;
+        }
         let missing = game_path(&accented.join("bridge")).unwrap();
         assert!(
             missing.is_ascii() && missing.ends_with(r"\bridge"),
@@ -589,10 +602,6 @@ mod tests {
             fs::read(accented.join("bridge").join("probe")).unwrap(),
             b"same folder"
         );
-        assert!(bridge_ready(&ascii).is_ok());
-        create_private_dir(&ascii).unwrap();
-        assert_eq!(private_dir(&ascii).unwrap(), ascii);
-        assert!(private_dir(Path::new(r"\\server\share")).is_err());
     }
 
     #[cfg(windows)]
