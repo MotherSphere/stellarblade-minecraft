@@ -8,7 +8,8 @@ pub const SB_BUILD_ID: &str = "24463856";
 pub const SB_EXE_SHA256: &str = "573aaff1c9455f85ea6036ef6f6ccb0774de4164722a296276fbbfc7fa87545c";
 /// The Proton build the bridge was tested on. Others get a warning, never a refusal.
 pub const PROTON_TESTED: &str = "proton-cachyos-11.0-20261005-slr-x86_64_v3";
-/// `ue4ss/UE4SS.dll` builds known to work (v3.0.1 Beta #0, `08a0733`). Others get an "untested" warning.
+/// `ue4ss/UE4SS.dll` builds known to work: Stellar Blade UE4SS 1.0 to 1.3 (Nexus Mods, mod 2952; v3.0.1 Beta #0,
+/// `08a0733`), which all carry this file. Others get an "untested" warning.
 pub const UE4SS_KNOWN_SHA256: &[&str] =
     &["e0cc51ce5b47d5be82194510b0b4b4054dd15ce0322a983655a022f92d27dabe"];
 
