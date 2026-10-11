@@ -58,7 +58,9 @@
       <_CUE4ParsePatch>$(MSBuildThisFileDirectory)cue4parse.patch</_CUE4ParsePatch>
     </PropertyGroup>
     <Error Condition="!Exists('$(_CUE4ParseDir)/CUE4Parse/CUE4Parse.csproj')" Text="CUE4Parse is missing: run git submodule update --init tools/eve-extract/CUE4Parse" />
-    <Exec Command="git apply --reverse --check &quot;$(_CUE4ParsePatch)&quot;" WorkingDirectory="$(_CUE4ParseDir)" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+    <!-- On an unpatched tree this check prints "error: patch failed" lines; MSBuild would read them as build errors
+         (an English git does, a translated one does not), so only its exit code counts. -->
+    <Exec Command="git apply --reverse --check &quot;$(_CUE4ParsePatch)&quot;" WorkingDirectory="$(_CUE4ParseDir)" IgnoreExitCode="true" IgnoreStandardErrorWarningFormat="true" StandardOutputImportance="low" StandardErrorImportance="low">
       <Output TaskParameter="ExitCode" PropertyName="_CUE4ParsePatched" />
     </Exec>
     <Exec Condition="'$(_CUE4ParsePatched)' != '0'" Command="git apply &quot;$(_CUE4ParsePatch)&quot;" WorkingDirectory="$(_CUE4ParseDir)" />

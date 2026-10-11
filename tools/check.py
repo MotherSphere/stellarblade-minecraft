@@ -83,7 +83,8 @@ def eve_extract(wine):
     project = ROOT / 'tools/eve-extract'
     if not (project / 'CUE4Parse/CUE4Parse/CUE4Parse.csproj').is_file():
         raise SystemExit('tools/eve-extract/CUE4Parse is empty: initialise the submodule first')
-    env = {**os.environ, 'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1'}
+    # LC_ALL=C: git and MSBuild print as on CI, whose English messages MSBuild can read as errors.
+    env = {**os.environ, 'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1', 'LC_ALL': 'C'}
     run([dotnet, 'run', '--project', project / 'tests'], env=env, quiet=True)
     shutil.rmtree(EVE_EXTRACT, ignore_errors=True)
     sums = []
