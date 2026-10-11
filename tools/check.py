@@ -5,12 +5,18 @@ import argparse
 import os
 from pathlib import Path
 import shlex
+import hashlib
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# The pack builder's sidecars and the SHA256SUMS over them, which the installer build pins (SBMC_EVE_EXTRACT names
+# this folder). The keys are .NET runtime identifiers, the values the release asset names.
+EVE_EXTRACT = ROOT / 'build/eve-extract'
+SIDECARS = {'linux-x64': 'eve-extract-linux-x64', 'win-x64': 'eve-extract-win-x64.exe'}
 # On Windows itself (the CI's Windows test job): Gradle's batch wrapper, and the Windows checks without Wine.
 NATIVE_WINDOWS = os.name == 'nt'
 
@@ -68,6 +74,82 @@ def windows_outputs(build):
     return build / 'Release' if NATIVE_WINDOWS else build
 
 
+def eve_extract(wine):
+    """EveExtract, the avatar pack builder's sidecar (tools/eve-extract): its input checks on synthetic trees, then one
+    self-contained single-file build per OS into build/eve-extract with their SHA256SUMS, and a smoke test of each on
+    synthetic inputs. The Windows build and the input checks run again as Windows programs under Wine when it is given
+    (directly on Windows)."""
+    dotnet = shutil.which('dotnet')
+    project = ROOT / 'tools/eve-extract'
+    if not (project / 'CUE4Parse/CUE4Parse/CUE4Parse.csproj').is_file():
+        raise SystemExit('tools/eve-extract/CUE4Parse is empty: initialise the submodule first')
+    env = {**os.environ, 'DOTNET_CLI_TELEMETRY_OPTOUT': '1', 'DOTNET_NOLOGO': '1'}
+    run([dotnet, 'run', '--project', project / 'tests'], env=env, quiet=True)
+    shutil.rmtree(EVE_EXTRACT, ignore_errors=True)
+    sums = []
+    for rid, name in SIDECARS.items():
+        publish = EVE_EXTRACT / rid
+        run([dotnet, 'publish', project / 'EveExtract.csproj', '-c', 'Release', '-r', rid, '-o', publish], env=env, quiet=True)
+        (publish / ('eve-extract.exe' if rid == 'win-x64' else 'eve-extract')).replace(EVE_EXTRACT / name)
+        shutil.rmtree(publish)
+        sums.append(f'{hashlib.sha256((EVE_EXTRACT / name).read_bytes()).hexdigest()}  {name}\n')
+    (EVE_EXTRACT / 'SHA256SUMS').write_text(''.join(sums))
+    if not NATIVE_WINDOWS:
+        eve_extract_smoke([EVE_EXTRACT / SIDECARS['linux-x64']], env)
+    if not NATIVE_WINDOWS and not wine:
+        print('SKIP eve-extract as a Windows program (no --wine)', flush=True)
+        return
+    with tempfile.TemporaryDirectory(prefix='stellar-eve-extract-windows-') as scratch:
+        scratch = Path(scratch)
+        tests = scratch / 'tests'
+        run([dotnet, 'publish', project / 'tests', '-c', 'Release', '-r', 'win-x64', '--self-contained', '-o', tests],
+            env=env, quiet=True)
+        prefix, drive, windows_env = [], '', env
+        if not NATIVE_WINDOWS:
+            prefix, drive = [wine], 'Z:'
+            windows_env = {**env, 'WINEPREFIX': str(scratch / 'prefix'), 'WINEDEBUG': '-all', 'DISPLAY': '', 'WAYLAND_DISPLAY': ''}
+        # Where the mod-container lookup meets Windows' '\' separators.
+        run([*prefix, tests / 'EveExtract.Tests.exe'], env=windows_env, quiet=True)
+        eve_extract_smoke([*prefix, EVE_EXTRACT / SIDECARS['win-x64']], windows_env, drive)
+
+
+def eve_extract_smoke(command, env, drive=''):
+    """The sidecar on synthetic inputs: help, licences, the exit codes of bad arguments and of missing or unusable
+    inputs (2 and 3), and no output folder made. Paths reach a Windows build under Wine through drive Z:."""
+    with tempfile.TemporaryDirectory(prefix='stellar-eve-extract-') as scratch:
+        scratch = Path(scratch)
+        # Where the bundle unpacks SkiaSharp's native library; the Windows host needs the folder to exist.
+        (scratch / 'bundle').mkdir()
+        env = {**env, 'DOTNET_BUNDLE_EXTRACT_BASE_DIR': drive + str(scratch / 'bundle')}
+        paks = scratch / 'Paks'
+        paks.mkdir()
+        (paks / 'pakchunk0-WinGDK.utoc').write_bytes(b'')
+        # A usmap v0 that parses (no compression, then no names, enums or structs), and one of an unknown version.
+        (scratch / 'empty.usmap').write_bytes(b'\xc4\x30\x00\x00' + struct.pack('<II', 12, 12) + bytes(12))
+        (scratch / 'future.usmap').write_bytes(b'\xc4\x30\xff')
+        (scratch / 'oodle').write_text('not a library')
+        work = scratch / 'work'
+
+        def inputs(mode='json', paks=paks, usmap='empty.usmap'):
+            return ['--paks', drive + str(paks), '--usmap', drive + str(scratch / usmap), '--oodle',
+                    drive + str(scratch / 'oodle'), '--out', drive + str(work), mode, 'SB/Content/Data/ItemTable']
+
+        for code, args, text in ((0, ['--help'], 'never downloaded'), (2, [], 'eve-extract --paks'),
+                                 (0, ['--licenses'], 'Apache License'), (2, inputs(mode='inventory'), 'the mode must be'),
+                                 (3, inputs(paks=scratch / 'absent'), 'no Paks folder'),
+                                 (3, inputs(usmap='future.usmap'), 'not a readable usmap'),
+                                 (3, inputs(), 'not a loadable Oodle library')):
+            line = [str(value) for value in (*command, *args)]
+            print('$ ' + shlex.join(line), flush=True)
+            result = subprocess.run(line, env=env, text=True, capture_output=True)
+            if result.returncode != code or text not in result.stdout + result.stderr:
+                print(result.stdout, end='')
+                print(result.stderr, end='', file=sys.stderr)
+                raise SystemExit(f'expected exit code {code} and "{text}", got exit code {result.returncode}')
+        if work.exists():
+            raise SystemExit('eve-extract made its output folder before its inputs passed')
+
+
 def installer(crate):
     """Format, build, lint and test the installer. Its tests also run tools/deploy.py and tools/input_proxy.py against
     the Rust port on fake trees. When the JAR and the Windows DLL are built, the payload is staged from them and
@@ -80,6 +162,9 @@ def installer(crate):
             env['SBMC_PAYLOAD'] = str(staged)
         else:
             print('installer: building without a payload: ' + (result.stderr or result.stdout).strip(), flush=True)
+        # The sidecars the eve-extract step built, for the installer to pin.
+        if (EVE_EXTRACT / 'SHA256SUMS').is_file():
+            env['SBMC_EVE_EXTRACT'] = str(EVE_EXTRACT)
         run(['cargo', 'fmt', '--check'], cwd=crate)
         run(['cargo', 'build', '--locked'], cwd=crate, env=env)
         run(['cargo', 'clippy', '--locked', '--all-targets', '--', '-D', 'warnings'], cwd=crate, env=env)
@@ -87,8 +172,8 @@ def installer(crate):
 
 
 def main():
-    # The installer comes last: it embeds the JAR and DLL the steps before it build.
-    components = ('lua', 'python', 'native', 'minecraft', 'windows', 'installer')
+    # The installer comes last: it embeds the JAR and DLL the steps before it build, and pins the sidecars.
+    components = ('lua', 'python', 'native', 'minecraft', 'windows', 'eve-extract', 'installer')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--only', choices=components, help='Run one component instead of the complete check')
     parser.add_argument('--windows-toolchain', default=os.environ.get('STELLAR_WINDOWS_TOOLCHAIN'),
@@ -115,6 +200,13 @@ def main():
             run([sys.executable, '-m', 'unittest', 'discover', '-s', 'tools/tests', '-p', 'test_*.py'])
         elif component == 'installer':
             installer(ROOT / 'installer')
+        elif component == 'eve-extract':
+            if not shutil.which('dotnet'):
+                if args.only:
+                    raise SystemExit('The eve-extract check needs the .NET 10 SDK (dotnet on PATH)')
+                print('SKIP eve-extract (no dotnet on PATH)', flush=True)
+                continue
+            eve_extract(args.wine)
         elif component == 'native':
             build = ROOT / 'build/native-host'
             run(['cmake', '-S', 'native', '-B', build, '-DCMAKE_BUILD_TYPE=Release'])

@@ -1,0 +1,4 @@
+[submodule "tools/eve-extract/CUE4Parse"]
+	path = tools/eve-extract/CUE4Parse
+	url = https://github.com/FabianFG/CUE4Parse.git
+	ignore = dirty
