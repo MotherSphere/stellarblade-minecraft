@@ -32,11 +32,14 @@
     <ProjectReference Include="CUE4Parse/CUE4Parse/CUE4Parse.csproj" AdditionalProperties="CUE4PARSE_SKIP_NATIVE=1" />
     <ProjectReference Include="CUE4Parse/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj" AdditionalProperties="CUE4PARSE_SKIP_NATIVE=1" />
     <!-- Linux's Skia without fontconfig; Windows' comes with SkiaSharp itself. The version CUE4Parse pins. -->
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.9" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.9" GeneratePathProperty="true" />
     <!-- The licences option prints these: the notices of everything the published file carries. -->
     <EmbeddedResource Include="../../THIRD-PARTY-NOTICES.md" LogicalName="THIRD-PARTY-NOTICES.md" />
     <EmbeddedResource Include="CUE4Parse/NOTICE" LogicalName="CUE4Parse.NOTICE" />
     <EmbeddedResource Include="CUE4Parse/LICENSE" LogicalName="CUE4Parse.LICENSE" />
+    <!-- The notices of what SkiaSharp's native library bundles (Skia, libpng, FreeType, HarfBuzz, the DNG SDK...); the
+         Windows package's file is the same. -->
+    <EmbeddedResource Include="$(PkgSkiaSharp_NativeAssets_Linux_NoDependencies)/THIRD-PARTY-NOTICES.txt" LogicalName="SkiaSharp.THIRD-PARTY-NOTICES" />
   </ItemGroup>
 
   <!-- A self-contained build carries the .NET runtime: its licence and third-party notices too. -->

@@ -135,7 +135,7 @@ def eve_extract_smoke(command, env, drive=''):
                     drive + str(scratch / 'oodle'), '--out', drive + str(work), mode, 'SB/Content/Data/ItemTable']
 
         for code, args, text in ((0, ['--help'], 'never downloaded'), (2, [], 'eve-extract --paks'),
-                                 (0, ['--licenses'], 'Apache License'), (2, inputs(mode='inventory'), 'the mode must be'),
+                                 (0, ['--licenses'], 'Apache License'), (0, ['--licenses'], 'libpng'), (2, inputs(mode='inventory'), 'the mode must be'),
                                  (3, inputs(paks=scratch / 'absent'), 'no Paks folder'),
                                  (3, inputs(usmap='future.usmap'), 'not a readable usmap'),
                                  (3, inputs(), 'not a loadable Oodle library')):
