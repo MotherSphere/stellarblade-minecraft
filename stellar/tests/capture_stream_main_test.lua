@@ -539,3 +539,17 @@ render_fails=true; assert(not hd_allowed(),'A failed restore refuses Minecraft /
 restores=render_restores; assert(hd_allowed()==true and render_restores==restores+1,'livehd starts after the restore')
 keys.F11(); drain(); stream_binding=nil
 print('PASS world drawing wiring: bound-stream cut, capture and scene exclusions, failure restores, F6, restore before every start')
+-- The usmap dump's wiring: UE4SS's folders through IterateGameDirectories, once EVE (an SBCharacter) is in a world.
+local dumps,sbcharacter,find=0,{IsValid=function()return true end},StaticFindObject
+StaticFindObject=function(path) if path=='/Script/SB.SBCharacter' then return sbcharacter end; return find(path) end
+function pawn:IsA(class) return class==sbcharacter end
+local ue4ss={{__name='UE4SS.dll'},{__name='UE4SS-settings.ini'}}
+IterateGameDirectories=function()
+    return {Game={Binaries={Win64={__files={{__name='SB-Win64-Shipping.exe'}},ue4ss={__files=ue4ss}}}}}
+end
+DumpUSMAP=function() dumps=dumps+1; ue4ss[#ue4ss+1]={__name='Mappings.usmap'} end
+loop(); drain(); loop(); drain()
+local wrote
+for _,message in ipairs(logs) do wrote=wrote or message:find('Mappings: wrote Mappings.usmap for the avatar pack builder',1,true) end
+assert(dumps==1 and wrote,'One dump once EVE is loaded, into the UE4SS folder')
+print('PASS usmap dump wiring')

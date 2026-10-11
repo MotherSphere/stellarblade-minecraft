@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The avatar pack builder's sidecar. Publish one self-contained file per OS, for example:
+       dotnet publish tools/eve-extract/EveExtract.csproj -c Release -r linux-x64 -o build/eve-extract/linux-x64
+       CUE4Parse-Natives is never built (CUE4PARSE_SKIP_NATIVE): Oodle comes from the caller, and nothing else in it is
+       used. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>eve-extract</AssemblyName>
+    <RootNamespace>EveExtract</RootNamespace>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <!-- The submodule and the tests are not this program's sources. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);CUE4Parse/**;tests/**</DefaultItemExcludes>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <!-- SkiaSharp's native library (the PNG encoder) rides inside the file; it is extracted at the first start to
+         DOTNET_BUNDLE_EXTRACT_BASE_DIR (a folder that exists: Windows' host refuses one that does not), else $HOME/.net
+         or %TEMP%\.net. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <!-- No .pdb of CUE4Parse beside the published file. -->
+    <AllowedReferenceRelatedFileExtensions>none</AllowedReferenceRelatedFileExtensions>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="CUE4Parse/CUE4Parse/CUE4Parse.csproj" AdditionalProperties="CUE4PARSE_SKIP_NATIVE=1" />
+    <ProjectReference Include="CUE4Parse/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj" AdditionalProperties="CUE4PARSE_SKIP_NATIVE=1" />
+    <!-- Linux's Skia without fontconfig; Windows' comes with SkiaSharp itself. The version CUE4Parse pins. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.9" />
+    <!-- The licences option prints these: the notices of everything the published file carries. -->
+    <EmbeddedResource Include="../../THIRD-PARTY-NOTICES.md" LogicalName="THIRD-PARTY-NOTICES.md" />
+    <EmbeddedResource Include="CUE4Parse/NOTICE" LogicalName="CUE4Parse.NOTICE" />
+    <EmbeddedResource Include="CUE4Parse/LICENSE" LogicalName="CUE4Parse.LICENSE" />
+  </ItemGroup>
+
+  <!-- A self-contained build carries the .NET runtime: its licence and third-party notices too. -->
+  <Target Name="EmbedRuntimeNotices" AfterTargets="ResolveFrameworkReferences" Condition="'$(RuntimeIdentifier)' != ''">
+    <ItemGroup>
+      <EmbeddedResource Include="%(ResolvedRuntimePack.PackageDirectory)/LICENSE.TXT" LogicalName="dotnet.LICENSE"
+                        Condition="'%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.NETCore.App'" />
+      <EmbeddedResource Include="%(ResolvedRuntimePack.PackageDirectory)/THIRD-PARTY-NOTICES.TXT" LogicalName="dotnet.THIRD-PARTY-NOTICES"
+                        Condition="'%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.NETCore.App'" />
+    </ItemGroup>
+  </Target>
+
+  <!-- cue4parse.patch, the one marked change to the pinned CUE4Parse, applied once before CUE4Parse builds. A tree that
+       takes it neither forward nor in reverse is not the pinned commit, and the build stops. -->
+  <Target Name="PatchCUE4Parse" BeforeTargets="ResolveProjectReferences;_GenerateRestoreGraph;Restore">
+    <PropertyGroup>
+      <_CUE4ParseDir>$(MSBuildThisFileDirectory)CUE4Parse</_CUE4ParseDir>
+      <_CUE4ParsePatch>$(MSBuildThisFileDirectory)cue4parse.patch</_CUE4ParsePatch>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_CUE4ParseDir)/CUE4Parse/CUE4Parse.csproj')" Text="CUE4Parse is missing: run git submodule update --init tools/eve-extract/CUE4Parse" />
+    <Exec Command="git apply --reverse --check &quot;$(_CUE4ParsePatch)&quot;" WorkingDirectory="$(_CUE4ParseDir)" IgnoreExitCode="true" StandardOutputImportance="low" StandardErrorImportance="low">
+      <Output TaskParameter="ExitCode" PropertyName="_CUE4ParsePatched" />
+    </Exec>
+    <Exec Condition="'$(_CUE4ParsePatched)' != '0'" Command="git apply &quot;$(_CUE4ParsePatch)&quot;" WorkingDirectory="$(_CUE4ParseDir)" />
+  </Target>
+</Project>

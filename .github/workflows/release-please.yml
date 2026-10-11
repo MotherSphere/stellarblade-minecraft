@@ -88,7 +88,8 @@ jobs:
         run: |
           version=${TAG#v}
           expected=(stellar-bridge-installer-linux-x86_64 stellar-bridge-installer-windows-x86_64.exe
-            "stellar-bridge-$version.jar" xinput1_3.dll "StellarCollisionProbe-$version.zip" SHA256SUMS)
+            "stellar-bridge-$version.jar" xinput1_3.dll "StellarCollisionProbe-$version.zip"
+            eve-extract-linux-x64 eve-extract-win-x64.exe SHA256SUMS)
           if [[ -f assets/SHA256SUMS.sig ]]; then expected+=(SHA256SUMS.sig); fi
           for name in "${expected[@]}"; do
             [[ -f "assets/$name" ]] || { echo "::error::missing asset $name"; exit 1; }

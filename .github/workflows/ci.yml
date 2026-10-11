@@ -1,8 +1,10 @@
 # The offline checks on hosted runners, and the release build when release-please.yml calls it with a tag.
 # The Windows DLL job builds xinput1_3.dll natively and runs its portable tests; the Linux job runs tools/check.py with
 # that DLL in place, so the installer's tests embed and install the real pieces on fake trees, and stages that payload;
-# the Windows installer job builds and tests the installer for Windows with the same payload. The Windows bridge job
-# runs the Java suites and tools/check.py's windows component on Windows itself (locally: clang-cl/xwin plus Wine).
+# the Windows installer job builds and tests the installer for Windows with the same payload. The Linux job also builds
+# the pack builder's two EveExtract sidecars, which both installers pin (SBMC_EVE_EXTRACT) and a release attaches. The
+# Windows bridge job runs the Java suites and tools/check.py's windows component on Windows itself (locally:
+# clang-cl/xwin plus Wine).
 name: CI
 
 on:
@@ -115,6 +117,12 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+          # CUE4Parse, pinned in tools/eve-extract; its own submodule (ACL, for the natives EveExtract skips) is not needed.
+          submodules: true
+      # EveExtract: tools/check.py publishes both sidecars (linux-x64 and win-x64) from here.
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
       # tools/payload.py needs tomllib (Python 3.11+); the image's own Python is 3.10.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -149,6 +157,18 @@ jobs:
             { echo "::error::$TAG does not match installer/Cargo.toml and minecraft/build.gradle"; exit 1; }
       - name: Check
         run: python3 tools/check.py
+      # The two sidecars tools/check.py built, with the SHA256SUMS the installers pin.
+      - name: Check the EveExtract sidecars
+        run: |
+          cd build/eve-extract
+          sha256sum -c SHA256SUMS
+          [[ $(wc -l < SHA256SUMS) == 2 ]] && grep -q ' eve-extract-linux-x64$' SHA256SUMS && grep -q ' eve-extract-win-x64.exe$' SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eve-extract
+          path: build/eve-extract/
+          if-no-files-found: error
+          retention-days: 3
       # The payload both installers embed: the Lua mod, the DLL, the JAR and Fabric API of this commit.
       - name: Stage the payload
         run: python3 tools/payload.py "$PWD/build/payload"
@@ -166,7 +186,8 @@ jobs:
           profile=debug
           if [[ -n $TAG ]]; then
             profile=release
-            SBMC_PAYLOAD="$PWD/build/payload" cargo build --release --locked --manifest-path installer/Cargo.toml
+            SBMC_PAYLOAD="$PWD/build/payload" SBMC_EVE_EXTRACT="$PWD/build/eve-extract" \
+              cargo build --release --locked --manifest-path installer/Cargo.toml
           fi
           out=$("installer/target/$profile/stellar-bridge-installer" --version)
           echo "$out"
@@ -181,6 +202,7 @@ jobs:
           mkdir build/release
           cp installer/target/release/stellar-bridge-installer build/release/stellar-bridge-installer-linux-x86_64
           cp "minecraft/build/libs/stellar-bridge-$version.jar" build/native-windows/xinput1_3.dll build/release/
+          cp build/eve-extract/eve-extract-linux-x64 build/eve-extract/eve-extract-win-x64.exe build/release/
           git archive --format=zip --prefix=StellarCollisionProbe/ --mtime="$(git log -1 --format=%cI)" \
             -o "build/release/StellarCollisionProbe-$version.zip" HEAD:stellar/Mods/StellarCollisionProbe
           ls -l build/release
@@ -200,6 +222,8 @@ jobs:
       TAG: ${{ inputs.ref }}
       # The payload the Linux job staged and its installer embeds; the tests then install the real pieces too.
       SBMC_PAYLOAD: ${{ github.workspace }}/build/payload
+      # The EveExtract sidecars the Linux job built, which the installer pins.
+      SBMC_EVE_EXTRACT: ${{ github.workspace }}/build/eve-extract
     steps:
       # The vendored binaries and the licence texts the exe embeds keep their committed bytes.
       - run: git config --global core.autocrlf false
@@ -223,6 +247,27 @@ jobs:
         with:
           name: payload
           path: build/payload
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: eve-extract
+          path: build/eve-extract
+      # The Windows sidecar on Windows itself: help, licences, and the exit codes of bad arguments and of a missing input.
+      # The Linux job smoke-tested the Linux build only (no Wine there). Nothing here reads game files.
+      - name: EveExtract smoke test
+        run: |
+          exe=build/eve-extract/eve-extract-win-x64.exe
+          tmp=$(cygpath -m "$RUNNER_TEMP")
+          mkdir -p "$tmp/eve-extract-bundle"
+          export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$tmp/eve-extract-bundle"
+          # Read whole, not piped to grep -q: an early close would fail the writer under pipefail.
+          help=$("$exe" --help) && [[ $help == *'never downloaded'* ]]
+          licences=$("$exe" --licenses) && [[ $licences == *'Apache License'* ]]
+          set +e
+          "$exe"; usage=$?
+          "$exe" --paks "$tmp/absent" --usmap x --oodle y --out "$tmp/eve-extract-out" json X; missing=$?
+          set -e
+          [[ $usage == 2 && $missing == 3 && ! -e $tmp/eve-extract-out ]] ||
+            { echo "::error::eve-extract exit codes: $usage (expected 2), $missing (expected 3)"; exit 1; }
       - name: Lint and test
         working-directory: installer
         run: |
