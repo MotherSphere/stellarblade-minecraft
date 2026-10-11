@@ -475,7 +475,7 @@ pub enum Pack {
 }
 
 /// Parses `pack.txt` exactly as `Wardrobe.manifest` does: the Paks folder and "bytes mtime-ns" by path under it.
-fn pack_manifest(text: &str) -> Option<(PathBuf, BTreeMap<String, String>)> {
+pub(crate) fn pack_manifest(text: &str) -> Option<(PathBuf, BTreeMap<String, String>)> {
     let body = text
         .strip_prefix("SBAVPACK 1\nPAKS ")?
         .strip_suffix("\nEND\n")?;
@@ -505,7 +505,7 @@ fn pack_manifest(text: &str) -> Option<(PathBuf, BTreeMap<String, String>)> {
 }
 
 /// The `.pak`, `.utoc` and `.ucas` files under `paks` as `pack.py` lists them: "bytes mtime-ns" by path.
-fn pak_sources(paks: &Path) -> Result<BTreeMap<String, String>> {
+pub(crate) fn pak_sources(paks: &Path) -> Result<BTreeMap<String, String>> {
     let root = platform::canonicalize(paks)?;
     let mut found = BTreeMap::new();
     let visit = |dir: &Path, found: &mut BTreeMap<String, String>| -> Result<Vec<PathBuf>> {

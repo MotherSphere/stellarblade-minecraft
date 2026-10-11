@@ -37,12 +37,14 @@ libc = "0.2.177"
 [target.'cfg(windows)'.dependencies]
 # The process list with command lines and working folders (Windows has no /proc).
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
-# Read-only registry lookups (Steam), 8.3 short paths, drive and volume checks, the console; already in the tree.
+# Read-only registry lookups (Steam), 8.3 short paths, drive and volume checks, the console, free memory; already in
+# the tree.
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Registry",
+    "Win32_System_SystemInformation",
 ] }
 
 [build-dependencies]

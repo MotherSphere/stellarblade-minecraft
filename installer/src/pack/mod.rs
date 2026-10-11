@@ -5,5 +5,9 @@
 
 pub mod bake;
 pub mod catalog;
+pub mod extract;
+#[cfg(test)]
+mod fixture;
 pub mod manifest;
 pub mod owned;
+pub mod run;

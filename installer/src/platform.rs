@@ -478,6 +478,26 @@ pub fn save_dirs(_prefix: Option<&Path>, home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
+/// The memory free for new work, in bytes: `MemAvailable` from `/proc/meminfo`. `None` when unreadable.
+#[cfg(unix)]
+pub fn available_memory() -> Option<u64> {
+    let text = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = text.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The memory free for new work, in bytes: the available physical memory. `None` when unreadable.
+#[cfg(windows)]
+pub fn available_memory() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: an all-zero MEMORYSTATUSEX is valid; dwLength is set as the call requires.
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: `status` is a valid, writable MEMORYSTATUSEX with its length set.
+    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullAvailPhys)
+}
+
 /// The user's home directory: `HOME` on Linux, the profile folder (`USERPROFILE`) on Windows.
 pub fn home() -> Result<PathBuf> {
     let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
