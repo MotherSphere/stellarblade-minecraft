@@ -551,7 +551,11 @@ fn assemble(
     let export = Export::scan(&work.join("export"))?;
     for (name, path) in wanted_icons {
         match export.find(path, ".png") {
-            Some(source) => bake::icon(source, tmp, name)?,
+            Some(source) => {
+                if let Err(error) = bake::icon(source, tmp, name) {
+                    warnings.push(format!("icon {name} skipped: {error:#}"));
+                }
+            }
             None => warnings.push(format!("icon {name}: not exported")),
         }
     }
@@ -1076,5 +1080,52 @@ public class ReadPack {
             wardrobe.contains("\tCH_P_EVE_78\t"),
             "the catalog still lists every item"
         );
+    }
+
+    /// Section names come from the game's meshes, which mods can change: one that is a path never writes outside
+    /// the pack. Its material is skipped with a warning and the build goes on.
+    #[test]
+    fn section_names_that_are_paths_stay_in_the_pack() {
+        let setup = Setup::new();
+        let build = setup.build(true);
+        let elsewhere = setup.paks.parent().unwrap().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let absolute = elsewhere.join("abs").to_str().unwrap().to_string();
+        let sections = ["../escaped", absolute.as_str()];
+        fs::write(
+            setup.game.join("avatar/EVE_HR_01.sbav"),
+            crate::pack::manifest::tests::mesh(20, &sections),
+        )
+        .unwrap();
+        let list = fs::read_to_string(setup.game.join("avatar/meshes.txt")).unwrap();
+        let mut list: String = list
+            .lines()
+            .filter(|l| !l.starts_with("MATERIAL EVE_HR_01.sbav "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        for section in sections {
+            list += &format!(
+                "MATERIAL EVE_HR_01.sbav {section} /Game/Art/Mat/MI_EVE_HR_01_TypeA.MI_EVE_HR_01_TypeA\n"
+            );
+        }
+        fs::write(setup.game.join("avatar/meshes.txt"), list).unwrap();
+        let report = go(&setup, &build, None, &|| Ok(())).0.unwrap();
+        let outside: Vec<_> = [build.home.as_path(), elsewhere.as_path()]
+            .iter()
+            .flat_map(|d| fs::read_dir(d).unwrap().flatten())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".png"))
+            .collect();
+        assert!(outside.is_empty(), "{outside:?}");
+        let warnings = &report.checks.warnings;
+        for section in sections {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.starts_with(&format!("material {section} skipped"))
+                        && w.contains("not a plain file name")),
+                "{warnings:?}"
+            );
+        }
     }
 }

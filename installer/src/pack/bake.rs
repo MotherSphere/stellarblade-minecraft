@@ -296,8 +296,18 @@ pub fn open(path: &Path) -> Result<RgbaImage> {
         .to_rgba8())
 }
 
-/// `pack.py`'s `save`: wider than `limit` (on either side) → `limit` wide, Lanczos; then a PNG in `folder`.
+/// `pack.py`'s `save`: wider than `limit` (on either side) → `limit` wide, Lanczos; then a PNG in `folder`. `name`
+/// comes from game data (section slots, icons), which mods can change: anything but a plain file name is refused.
 pub fn save(image: &RgbaImage, folder: &Path, name: &str, limit: u32) -> Result<()> {
+    let mut parts = Path::new(name).components();
+    if name.contains(['/', '\\', ':'])
+        || !matches!(
+            (parts.next(), parts.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
+    {
+        bail!("{name:?} is not a plain file name");
+    }
     let (w, h) = image.dimensions();
     let resized;
     let image = if w.max(h) > limit {
