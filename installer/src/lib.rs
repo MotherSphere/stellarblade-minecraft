@@ -12,6 +12,7 @@ pub mod ledger;
 pub mod log;
 pub mod mods;
 pub mod ops;
+pub mod pack;
 pub mod payload;
 pub mod pins;
 pub mod platform;

@@ -19,7 +19,8 @@ anyhow = "1.0.104"
 colony-ui = "0.1.6"
 iced = { version = "0.14.0", features = ["tokio", "sipper"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+# preserve_order: the game's JSON dumps are read in file order, as the Python tools did (already on in the tree).
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 # 0.11 has no LowerHex on digests: see safety::hex.
 sha2 = "0.11.0"
 # The system language where no LANG is set (Windows); already in the tree through iced's text stack.
