@@ -415,7 +415,7 @@ fn assemble(
     }
 
     let mesh_list = fs::read_to_string(scan.join("meshes.txt")).unwrap_or_default();
-    let materials = materials(&mesh_list, &mut warnings);
+    let materials = materials(&mesh_list, &names, &mut warnings);
 
     let mut meshes: BTreeMap<String, (u32, Vec<String>)> = BTreeMap::new();
     for entry in fs::read_dir(tmp)? {
@@ -697,16 +697,25 @@ fn assemble(
 
 /// Section material name → the material's object path, from `meshes.txt`. Names collide across folders, so materials
 /// and their textures are read by object path, but the pack has one texture per name: it keeps the core meshes'
-/// material (EVE's default suit draws `MI_Basebody_V02_F2`, which `CH_P_EVE_ReferenceBody` names too), else the first
-/// listed, and warns about the other.
-fn materials(list: &str, warnings: &mut Vec<String>) -> HashMap<String, String> {
+/// material (EVE's default suit draws `MI_Basebody_V02_F2`, which `CH_P_EVE_ReferenceBody` names too), else that of a
+/// mesh this build packs (`wanted`, by name: one it does not pack is never exported), else the first listed, and warns
+/// about the other.
+fn materials(
+    list: &str,
+    wanted: &BTreeSet<&str>,
+    warnings: &mut Vec<String>,
+) -> HashMap<String, String> {
     let core: HashSet<String> = CORE_MESHES
         .iter()
         .map(|m| format!("{}.sbav", last(m)))
         .collect();
     let mut lines: Vec<&str> = list.lines().collect();
-    // Stable: the core meshes' lines first, each group in its listed order.
-    lines.sort_by_key(|l| !l.split(' ').nth(1).is_some_and(|f| core.contains(f)));
+    // Stable: the core meshes' lines first, then the wanted ones', each group in its listed order.
+    lines.sort_by_key(|l| {
+        let file = l.split(' ').nth(1).unwrap_or_default();
+        let name = file.strip_suffix(".sbav").unwrap_or(file);
+        (!core.contains(file), !wanted.contains(name))
+    });
     let mut materials: HashMap<String, String> = HashMap::new();
     for line in lines {
         let Some((name, path)) = line
@@ -1021,7 +1030,7 @@ public class ReadPack {
             MATERIAL CH_P_EVE_52_TypeB.sbav Body /Game/Suit/M_Body.M_Body\n\
             MATERIAL CH_P_EVE_52_TypeB.sbav Skin /Game/Suit/M_Skin.M_Skin\n";
         let mut warnings = Vec::new();
-        let found = materials(list, &mut warnings);
+        let found = materials(list, &BTreeSet::new(), &mut warnings);
         assert_eq!(found["Body"], "/Game/Suit/M_Body.M_Body");
         assert_eq!(found["Skin"], "/Game/Suit/M_Skin.M_Skin");
         assert_eq!(
@@ -1157,6 +1166,25 @@ public class ReadPack {
             !untextured.contains_key("CH_P_EVE_Face_Jali3"),
             "{untextured:?}"
         );
+    }
+
+    /// An owned mesh whose material shares its name with an unowned mesh's, listed first: the owned one's is baked.
+    #[test]
+    fn a_material_clash_keeps_the_wanted_meshes_one() {
+        let setup = Setup::new();
+        let content = setup.game.join("export/SB/Content/Art");
+        fs::create_dir_all(content.join("Mat2")).unwrap();
+        fs::copy(
+            content.join("Mat/M_Suit.json"),
+            content.join("Mat2/M_Suit.json"),
+        )
+        .unwrap();
+        let build = setup.build(false);
+        own(&build, &[2000078]);
+        let report = go(&setup, &build, None, &|| Ok(())).0.unwrap();
+        let untextured = &report.checks.untextured_sections;
+        assert!(!untextured.contains_key("CH_P_EVE_78"), "{untextured:?}");
+        assert!(build.home.join("avatar/M_Suit.png").is_file());
     }
 
     /// Unticking "every outfit" builds from nothing: the every-outfit pack is no base for the owned one.
