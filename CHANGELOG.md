@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/MotherSphere/stellarblade-minecraft/compare/v0.3.0...v0.3.1) (2026-10-11)
+
+
+### Fixes
+
+* **installer:** name the UE4SS build players need ([276f10e](https://github.com/MotherSphere/stellarblade-minecraft/commit/276f10e6271a7f7f23054e2a2f52d3ccefe6a5ed))
+* **installer:** name the UE4SS build players need ([4ea5359](https://github.com/MotherSphere/stellarblade-minecraft/commit/4ea5359ddb382ef1abd783e8a6f4654ad381dbfd))
+
 ## [0.3.0](https://github.com/MotherSphere/stellarblade-minecraft/compare/v0.2.0...v0.3.0) (2026-10-11)
 
 
