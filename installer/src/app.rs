@@ -495,7 +495,7 @@ impl Ready {
             found.push("pack_row_disk");
         }
         if !self.running.is_empty() {
-            found.push("games_title");
+            found.push("pack_row_games");
         }
         if self.sidecar == inputs::Sidecar::Unpinned {
             found.push("err_no_sidecar");

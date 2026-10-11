@@ -1351,14 +1351,14 @@ pub fn pack_rows(ready: &Ready, every: bool) -> Vec<(Level, &'static str, String
     rows.push(if ready.running.is_empty() {
         (
             Level::Ok,
-            t("games_title"),
+            t("pack_row_games"),
             t("games_all_closed").to_string(),
         )
     } else {
         let names: Vec<&str> = ready.running.iter().map(|r| running_label(*r)).collect();
         (
             Level::Bad,
-            t("games_title"),
+            t("pack_row_games"),
             t_fmt("pack_games_running", &[("names", &names.join(", "))]),
         )
     });

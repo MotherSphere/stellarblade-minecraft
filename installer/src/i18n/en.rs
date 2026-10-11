@@ -638,6 +638,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("pack_row_usmap", "Game mappings (usmap)"),
     ("pack_row_owned", "Owned outfits"),
     ("pack_row_disk", "Free disk"),
+    ("pack_row_games", "Stellar Blade and Minecraft"),
     ("pack_row_memory", "Free memory"),
     ("pack_row_sidecar", "EveExtract"),
     ("pack_row_oodle", "Oodle"),

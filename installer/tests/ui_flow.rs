@@ -905,7 +905,7 @@ fn the_pack_builder_checks_asks_downloads_and_reports() {
     app.pack.ready.as_mut().unwrap().disk = Some(1 << 30);
     assert_eq!(
         app.pack.ready.as_ref().unwrap().blockers(false),
-        ["pack_row_disk", "games_title"]
+        ["pack_row_disk", "pack_row_games"]
     );
     fs::remove_dir_all(fake.proc_root.join("4242")).unwrap();
     drive(&mut app, Message::PackOpen);

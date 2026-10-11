@@ -689,6 +689,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("pack_row_usmap", "Correspondances du jeu (usmap)"),
     ("pack_row_owned", "Tenues possédées"),
     ("pack_row_disk", "Espace disque libre"),
+    ("pack_row_games", "Stellar Blade et Minecraft"),
     ("pack_row_memory", "Mémoire libre"),
     ("pack_row_sidecar", "EveExtract"),
     ("pack_row_oodle", "Oodle"),
