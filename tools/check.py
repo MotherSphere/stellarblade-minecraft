@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 from pathlib import Path
 import shlex
 import hashlib
@@ -19,12 +20,14 @@ EVE_EXTRACT = ROOT / 'build/eve-extract'
 SIDECARS = {'linux-x64': 'eve-extract-linux-x64', 'win-x64': 'eve-extract-win-x64.exe'}
 # On Windows itself (the CI's Windows test job): Gradle's batch wrapper, and the Windows checks without Wine.
 NATIVE_WINDOWS = os.name == 'nt'
+# A path crate in cargo tree's output: (/home/...) on Linux, (C:\...) on Windows.
+LOCAL_CRATE = re.compile(r'\((?:/|[A-Za-z]:[\\/])')
 
 
 def run(command, *, cwd=ROOT, quiet=False, env=None):
     command = [str(value) for value in command]
     print('$ ' + shlex.join(command), flush=True)
-    result = subprocess.run(command, cwd=cwd, text=True, capture_output=quiet, env=env)
+    result = subprocess.run(command, cwd=cwd, encoding='utf-8', errors='replace', capture_output=quiet, env=env)
     if result.returncode:
         if quiet:
             print(result.stdout, end='')
@@ -148,7 +151,7 @@ def eve_extract_smoke(command, env, drive=''):
                                  (3, inputs(), 'not a loadable Oodle library')):
             line = [str(value) for value in (*command, *args)]
             print('$ ' + shlex.join(line), flush=True)
-            result = subprocess.run(line, env=env, text=True, capture_output=True)
+            result = subprocess.run(line, env=env, encoding='utf-8', errors='replace', capture_output=True)
             if result.returncode != code or text not in result.stdout + result.stderr:
                 print(result.stdout, end='')
                 print(result.stderr, end='', file=sys.stderr)
@@ -164,7 +167,8 @@ def installer(crate):
     with tempfile.TemporaryDirectory(prefix='stellar-payload-') as scratch:
         env = dict(os.environ)
         staged = Path(scratch) / 'payload'
-        result = subprocess.run([sys.executable, ROOT / 'tools/payload.py', staged], text=True, capture_output=True)
+        result = subprocess.run([sys.executable, ROOT / 'tools/payload.py', staged], encoding='utf-8', errors='replace',
+                                capture_output=True)
         if result.returncode == 0:
             env['SBMC_PAYLOAD'] = str(staged)
         else:
@@ -186,10 +190,11 @@ def crate_notices(crate):
     missing = set()
     for target in ('x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc'):
         tree = subprocess.run(['cargo', 'tree', '--locked', '-e', 'normal', '--target', target, '--prefix', 'none',
-                               '-f', '{p}'], cwd=crate, text=True, capture_output=True, check=True).stdout
+                               '-f', '{p}'], cwd=crate, encoding='utf-8', errors='replace', capture_output=True,
+                              check=True).stdout
         for line in tree.splitlines():
             name, version = line.split()[:2]
-            if '(proc-macro)' not in line and '(/' not in line and f'{name} {version[1:]}' not in notices:
+            if '(proc-macro)' not in line and not LOCAL_CRATE.search(line) and f'{name} {version[1:]}' not in notices:
                 missing.add(f'{name} {version[1:]}')
     if missing:
         raise SystemExit('THIRD-PARTY-NOTICES.md does not list: ' + ', '.join(sorted(missing)))
