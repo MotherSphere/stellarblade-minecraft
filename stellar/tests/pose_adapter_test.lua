@@ -3,7 +3,7 @@ package.path='stellar/Mods/StellarCollisionProbe/Scripts/?.lua;'..package.path
 local function fname(text) return {type=function() return 'FName' end,ToString=function() return text end} end
 local function wrap(value) return {type=function() return 'RemoteUnrealParam' end,get=function() return value end} end
 local function tarray(items,wrapped)
-    return {type=function() return 'TArray' end,ForEach=function(_,callback)
+    return {type=function() return 'TArray' end,GetArrayNum=function() return #items end,ForEach=function(_,callback)
         for index,value in ipairs(items) do callback(index,wrap(wrapped and wrap(value) or value)) end
     end}
 end
@@ -89,6 +89,14 @@ local glow=engine.parameters({{handle=sword}})
 assert(#glow==2 and glow[1].slot=='Blade_Edge' and glow[1].name=='Opacity' and glow[1].element==1 and glow[1].index==9
     and glow[1].offset==0x168 and glow[1].floats==1 and glow[1].class==0x7f0000020000,'The scalar names its element')
 assert(glow[2].name=='Emissive_Color' and glow[2].floats==4 and glow[2].offset==0x178 and glow[2].element==0)
+-- The material key: each slot's material and a dynamic instance's array lengths, so a notify's first entry changes it
+-- without a walk of the arrays.
+local material_key=engine.material_key({handle=sword})
+assert(material_key=='MI '..tostring(0x7f0000010000)..' 2 1',material_key)
+local scalars=mid.ScalarParameterValues
+mid.ScalarParameterValues=tarray({{},{},{}})
+assert(engine.material_key({handle=sword})=='MI '..tostring(0x7f0000010000)..' 3 1','An added entry changes the key')
+mid.ScalarParameterValues=scalars
 -- Effects: an active pooled Niagara component attached under the sword is found; an inactive one is not.
 local niagaraClass=object('NiagaraComponent')
 local function effect(name,asset,active,socket)
@@ -104,6 +112,17 @@ sword.GetClass=function() return object('SkeletalMeshComponent') end
 package.loaded.UEHelpers.GetPlayer=function() return nil end
 local effects=engine.effects({{handle=sword}})
 assert(#effects==1 and effects[1]=='NS_A_Weapon_Signal_Sword[NiagaraComponent]@Sword:FX_WeaponFX_Begin',effects[1])
+-- EVE's own effect components join the walk unless it is attached only: the pose stream walks them on their own turn.
+local owned=effect('NC3','NS_PC_SpinTrail_01',true,'None')
+package.loaded.UEHelpers.GetPlayer=function()
+    return object('EVE',{K2_GetComponentsByClass=function(_,class) return tarray(class.name=='NiagaraComponent' and {owned} or {}) end})
+end
+local find_class=StaticFindObject
+StaticFindObject=function(path) local c=object('Class'); c.name=path:match('%.(%w+)$'); return c end
+assert(#engine.effects({{handle=sword}})==2 and #engine.effects({{handle=sword}},true)==1,'Attached only leaves out her own')
+local own=engine.effects({})
+assert(#own==1 and own[1]=='NS_PC_SpinTrail_01[NiagaraComponent]@Sword:None',own[1])
+StaticFindObject,package.loaded.UEHelpers.GetPlayer=find_class,function() return nil end
 -- Shows on EVE: a lifted hit-level check is restored right after the call (the build reads it there), a lifted
 -- stop-at-move only through the returned restore; a failed call restores both.
 local SHOW_PATH='/Game/Art/Show/Result/Result_Guard_Back.Result_Guard_Back'

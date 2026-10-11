@@ -82,8 +82,9 @@ assert(read('eve-pose-components.1'):find('\nCONTROLLER none\n',1,true))
 local logged={}
 local logging=Stream.new(engine,directory,function() return now end,function(line) logged[#logged+1]=line end,function() return place end)
 local active={'NS_A_WeaponFX_SwordFlame_01@SBSkeletalMeshComponent_1:FX_WeaponFX_Begin'}
-engine.effects=function() return active end
-RUN=string.rep('8',32); request(); logging.tick(); logging.tick()
+engine.effects=function(_,attached_only) return attached_only and active or {} end -- On the body; EVE's own have none.
+RUN=string.rep('8',32); request(); logging.tick(); logging.tick(); logging.tick()
+assert(#logged==1,'Every holder\'s walk counts: the body keeps the effect while EVE\'s own walk sees none: '..table.concat(logged,'\n'))
 active={}; logging.tick()
 engine.effects=function() error('Niagara unavailable') end
 logging.tick(); logging.tick()
@@ -205,6 +206,98 @@ engine.identities=function() return {eve} end
 RUN=string.rep('2',32); request(); worn.tick()
 assert(read('eve-pose-components.1'):find('\nCLOTH none\nEND ',1,true) and #cloth_log==2,'No ponytail, no cloth')
 engine.cloth=nil
+-- The reflection walks run all at once for a new run or composition, then take turns: per check one component's
+-- parameters, the known effects or the controller, and one effect walk (a component's attached effects or EVE's own),
+-- so no check holds Stellar Blade's game thread for long.
+local calls
+local function count(kind) local n=0 for _,c in ipairs(calls) do if c.kind==kind then n=n+1 end end return n end
+local glow_late=false
+local body={name='Body',object=0x7f0000001000,class=0x7f0000002000,mesh=0x7f0000003000,mesh_name='M'}
+local blade={name='Sword',object=0x7f0000041000,class=0x7f0000002000,mesh=0x7f0000043000,mesh_name='W'}
+engine.identities=function() return {body,blade,companion} end
+engine.controller=function() calls[#calls+1]={kind='controller'} end
+engine.parameters=function(list)
+    calls[#calls+1]={kind='parameters',list=list}
+    if glow_late and list[1]==blade then
+        return {{component=1,slot='Blade_Edge',name='Opacity',object=0x7f0000009000,class=0x7f000000a000,offset=0x168,element=2,index=4711,floats=1}}
+    end
+    return {}
+end
+engine.known_effects=function() calls[#calls+1]={kind='known'}; return {} end
+engine.effects=function(list,attached_only) calls[#calls+1]={kind='effects',list=list,attached_only=attached_only}; return {},{} end
+local timing_log,seconds={},0
+local paced=Stream.new(engine,directory,function() return now end,function(line) timing_log[#timing_log+1]=line end,
+    function() return place end,function() seconds=seconds+0.001; return seconds end)
+calls={}; RUN=string.rep('1',32); request(); paced.tick()
+assert(count('parameters')==3 and count('effects')==4 and count('known')==1 and count('controller')==1,'A new run looks everything up')
+local turns,pawn_walked={},false
+for _=1,8 do
+    calls={}; paced.tick()
+    assert(count('parameters')+count('known')+count('controller')==1 and count('effects')==1,'One lookup and one effect walk per check')
+    for _,c in ipairs(calls) do
+        if c.kind=='parameters' then assert(#c.list==1); turns[c.list[1].object]=true end
+        if c.kind=='effects' then
+            if #c.list==0 then pawn_walked=true else assert(#c.list==1 and c.attached_only==true,'A component alone, attached effects only') end
+        end
+    end
+end
+assert(turns[body.object] and turns[blade.object] and turns[companion.object] and pawn_walked,'Every holder gets its turn')
+-- A dynamic material instance created later, as the sword's first glow, is published within one round of turns.
+glow_late=true
+local glowing=false
+for _=1,5 do local _,m=paced.tick(); glowing=glowing or (m~=nil and m:find('1 material parameters',1,true)~=nil) end
+assert(glowing,'A late glow parameter is published')
+local function published_tables() return (read('eve-pose-components.0') or '')..(read('eve-pose-components.1') or '') end
+assert(published_tables():find('\nPARAMETER 1 2 Blade_Edge Opacity 00007f0000009000 ',1,true),'Looked up alone, the blade stays component 2')
+-- Every 50 checks, each step's mean and longest time.
+for _=1,50 do paced.tick() end
+local timing_line
+for _,line in ipairs(timing_log) do if line:find('^Pose stream timing') then timing_line=line end end
+assert(timing_line and timing_line:find('; identities 1.0/1.0 x50;',1,true) and timing_line:find('^Pose stream timing %(ms mean/max, runs%): tick %d')
+    and timing_line:find('; effects 1.0/1.0 x5%d;') and timing_line:find('; material keys -;',1,true),timing_line)
+-- With material keys, a component's parameters are walked again only when its key changes, one component a check;
+-- effect walks that fit the budget all run every check, as before the turns.
+local material={[body.object]='a',[blade.object]='b',[companion.object]='c'}
+engine.material_key=function(c) return material[c.object] end
+glow_late=false
+local keyed=Stream.new(engine,directory,function() return now end,function() end,function() return place end,function() return 0 end)
+calls={}; RUN=string.rep('0',32); request(); keyed.tick()
+assert(count('parameters')==3,'A new run looks every component up')
+for _=1,6 do
+    calls={}; keyed.tick()
+    assert(count('parameters')==0 and count('effects')==4,'Unchanged keys walk no parameters; cheap effect walks all run')
+end
+glow_late=true; material[body.object],material[blade.object]='a2','b2'
+local function looked_up() for _,c in ipairs(calls) do if c.kind=='parameters' then return c.list[1] end end end
+calls={}; keyed.tick()
+assert(count('parameters')==1 and looked_up()==body,'One changed component a check, the body first')
+calls={}; local _,keyed_glow=keyed.tick()
+assert(count('parameters')==1 and keyed_glow and keyed_glow:find('1 material parameters',1,true),tostring(keyed_glow))
+assert(published_tables():find('\nPARAMETER 1 2 Blade_Edge Opacity 00007f0000009000 ',1,true),'The blade is component 2')
+calls={}; keyed.tick()
+assert(count('parameters')==0,'Both keys are up to date')
+-- A failed lookup is retried on its turn even while its key stays the same.
+local failing=true
+engine.parameters=function(list) calls[#calls+1]={kind='parameters',list=list}; if failing then error('reflection hiccup') end; return {} end
+material[body.object]='a3'; keyed.tick(); failing=false
+local retried=false
+for _=1,6 do calls={}; keyed.tick(); retried=retried or count('parameters')==1 end
+assert(retried,'A failed lookup comes back on its turn')
+-- A replaced drone is a new composition, but only the new component's parameters are walked.
+local other={name='Drone.CharacterMesh0',object=0x7f0000051000,class=0x7f0000012000,mesh=0x7f0000013000,mesh_name='CH_NPC_Drone',drone=true}
+material[other.object]='d'
+engine.identities=function() return {body,blade,other} end
+calls={}; keyed.tick()
+assert(count('parameters')==1 and looked_up()==other and count('effects')==4,'Only the new drone is looked up; the walks all rerun')
+-- A table that fails to publish keeps its lookups: the next checks do not walk everything again.
+local names_ok=engine.names
+engine.names=function() error('a bone name the stream cannot carry') end
+calls={}; RUN=string.rep('b',32); request()
+assert(not pcall(keyed.tick) and count('parameters')==3,'A new run looks every component up')
+calls={}
+assert(not pcall(keyed.tick) and count('parameters')==0,'A failed publication does not repeat the lookups')
+engine.names=names_ok
+engine.material_key=nil
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
 print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log, effect layout, the drone and the ponytail\'s cloth')
