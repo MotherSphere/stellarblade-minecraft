@@ -170,7 +170,20 @@ public final class ControlHooksTest {
             assert ControlBridge.buttons(held, since, 0) == expected[k] : "EVE key " + k;
             held[24 + k] = false;
         }
-        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery, narrow movement authority and EVE's combat layout (skills, drone aim, sprint, walk)");
+        // An Alt+Tab holds two EVE keys by default (burst on Left Alt, scan on Tab). A focus loss blocks them, and GLFW
+        // reports their releases only once Minecraft lost focus: they stay blocked until the window is focused again, then
+        // go as soon as they are not held. A key still held when the window comes back stays blocked until released.
+        var alt = net.minecraft.client.util.InputUtil.Type.KEYSYM.createFromCode(org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_ALT);
+        var tab = net.minecraft.client.util.InputUtil.Type.KEYSYM.createFromCode(org.lwjgl.glfw.GLFW.GLFW_KEY_TAB);
+        var w = net.minecraft.client.util.InputUtil.Type.KEYSYM.createFromCode(org.lwjgl.glfw.GLFW.GLFW_KEY_W);
+        var blocked = new java.util.HashSet<>(java.util.List.of(alt, tab, w));
+        ControlBridge.unblockReleased(blocked, key -> false, false);
+        assert blocked.size() == 3 : "Nothing is released while another window has focus";
+        ControlBridge.unblockReleased(blocked, key -> key.equals(w), true);
+        assert blocked.equals(java.util.Set.of(w)) : "Focused again: Alt and Tab go, the held key stays: " + blocked;
+        ControlBridge.unblockReleased(blocked, key -> false, true);
+        assert blocked.isEmpty() : "and goes once released";
+        System.out.println("Controller hook tests passed: pinned input/look/menu boundaries, normal event delivery, narrow movement authority, EVE's combat layout (skills, drone aim, sprint, walk) and keys an Alt+Tab left blocked");
     }
     private static boolean hasMethod(ClassNode node, String name, String descriptor) {
         return node.methods.stream().anyMatch(method -> method.name.equals(name) && method.desc.equals(descriptor));
