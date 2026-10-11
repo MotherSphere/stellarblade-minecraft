@@ -206,9 +206,9 @@ engine.identities=function() return {eve} end
 RUN=string.rep('2',32); request(); worn.tick()
 assert(read('eve-pose-components.1'):find('\nCLOTH none\nEND ',1,true) and #cloth_log==2,'No ponytail, no cloth')
 engine.cloth=nil
--- The reflection walks run all at once for a new run or composition, then take turns: per check one component's
--- parameters, the known effects or the controller, and one effect walk (a component's attached effects or EVE's own),
--- so no check holds Stellar Blade's game thread for long.
+-- The lookups run all at once for a new run, then take turns: per check one component's parameters, one known effect
+-- path or the controller, and one effect walk (a component's attached effects or EVE's own) while walks are costly, so
+-- no check holds Stellar Blade's game thread for long.
 local calls
 local function count(kind) local n=0 for _,c in ipairs(calls) do if c.kind==kind then n=n+1 end end return n end
 local glow_late=false
@@ -223,17 +223,22 @@ engine.parameters=function(list)
     end
     return {}
 end
-engine.known_effects=function() calls[#calls+1]={kind='known'}; return {} end
+-- Three known effect paths: all at once for a new run, then one per turn (each lookup is a StaticFindObject of about 4 ms).
+engine.known_effects=function(index) calls[#calls+1]={kind='known',index=index}; return {},3 end
 engine.effects=function(list,attached_only) calls[#calls+1]={kind='effects',list=list,attached_only=attached_only}; return {},{} end
 local timing_log,seconds={},0
 local paced=Stream.new(engine,directory,function() return now end,function(line) timing_log[#timing_log+1]=line end,
     function() return place end,function() seconds=seconds+0.001; return seconds end)
 calls={}; RUN=string.rep('1',32); request(); paced.tick()
 assert(count('parameters')==3 and count('effects')==4 and count('known')==1 and count('controller')==1,'A new run looks everything up')
-local turns,pawn_walked={},false
-for _=1,8 do
+local function known_index() for _,c in ipairs(calls) do if c.kind=='known' then return c.index or 'all' end end end
+assert(known_index()=='all','A new run looks every known effect path up')
+local turns,pawn_walked,paths={},false,{}
+for _=1,20 do
     calls={}; paced.tick()
     assert(count('parameters')+count('known')+count('controller')==1 and count('effects')==1,'One lookup and one effect walk per check')
+    local index=known_index()
+    if index then assert(math.type(index)=='integer','One known effect path per turn'); paths[#paths+1]=index end
     for _,c in ipairs(calls) do
         if c.kind=='parameters' then assert(#c.list==1); turns[c.list[1].object]=true end
         if c.kind=='effects' then
@@ -242,6 +247,7 @@ for _=1,8 do
     end
 end
 assert(turns[body.object] and turns[blade.object] and turns[companion.object] and pawn_walked,'Every holder gets its turn')
+assert(table.concat(paths,' ')=='1 2 3 1','The known effect paths take turns, then start over: '..table.concat(paths,' '))
 -- A dynamic material instance created later, as the sword's first glow, is published within one round of turns.
 glow_late=true
 local glowing=false
@@ -289,6 +295,7 @@ material[other.object]='d'
 engine.identities=function() return {body,blade,other} end
 calls={}; keyed.tick()
 assert(count('parameters')==1 and looked_up()==other and count('effects')==4,'Only the new drone is looked up; the walks all rerun')
+assert(known_index()~='all','A new composition does not look every known effect path up again')
 -- A table that fails to publish keeps its lookups: the next checks do not walk everything again.
 local names_ok=engine.names
 engine.names=function() error('a bone name the stream cannot carry') end

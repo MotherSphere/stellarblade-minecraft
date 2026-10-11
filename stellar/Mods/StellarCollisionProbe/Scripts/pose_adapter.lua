@@ -329,13 +329,17 @@ function Adapter.new()
         local name=path:match('[^/]+$')
         KNOWN_EFFECTS[#KNOWN_EFFECTS+1]=FX..path..'.'..name
     end
-    function engine.known_effects()
+    -- With index, only that path: each StaticFindObject costs Stellar Blade's game thread about 4 ms (all 22 took about
+    -- 96 ms in game), so the pose stream looks one up per turn. Also returns how many paths there are.
+    function engine.known_effects(index)
         local loaded={}
-        for _,path in ipairs(KNOWN_EFFECTS) do
-            local asset=valid(StaticFindObject(path))
-            if asset then loaded[#loaded+1]={name=text(asset:GetFName()),object=asset:GetAddress()} end
+        for i,path in ipairs(KNOWN_EFFECTS) do
+            if not index or i==index then
+                local asset=valid(StaticFindObject(path))
+                if asset then loaded[#loaded+1]={name=text(asset:GetFName()),object=asset:GetAddress()} end
+            end
         end
-        return loaded
+        return loaded,#KNOWN_EFFECTS
     end
     -- Research for EVE's hit reactions and real defensive state: functions and properties named like combat on EVE's
     -- class chain and her components' classes, as 'function Class.Name' or 'property Class.Name'.

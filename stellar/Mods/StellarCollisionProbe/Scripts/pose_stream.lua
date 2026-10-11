@@ -33,13 +33,15 @@ function Stream.new(engine,directory,clock,log,link,timer)
     local combat_logged=false -- EVE's combat-named functions and properties, logged once per Lua lifetime (at most 300 lines).
     local drone_state,drone_lines=nil,0 -- Last logged drone state; at most 200 log lines per Lua lifetime.
     local cloth_logged -- The run whose cloth component was logged.
-    -- The reflection walks behind the table hold Stellar Blade's game thread (about 90 ms together for EVE and her
-    -- drone, mostly the parameter arrays of her dynamic material instances, so a check every 200 ms cost a third of its
-    -- frames). They run all at once for a new run or composition. Then a component's parameters are walked again only
-    -- when its material key changes (one component a check), the known effects and the controller take turns, and the
-    -- effect walks all run each check while they fit WALK_BUDGET_MS, else one holder a check for the next 100 checks.
+    -- The lookups behind the table hold Stellar Blade's game thread: about 100 ms together, so a check every 200 ms cost a
+    -- third of its frames; the timing line measured 96 ms of it in the 22 StaticFindObject calls of the known effects.
+    -- They run all at once for a new run (a new composition reruns all but the known effects and the parameters still
+    -- valid). Then a component's parameters are walked again only when its material key changes (one component a check),
+    -- one known effect path and the controller take turns, and the effect walks all run each check while they fit
+    -- WALK_BUDGET_MS, else one holder a check for the next 100 checks.
     local WALK_BUDGET_MS=4
     local turn,composition,walks_rotate_until=0,nil,0
+    local known_turn,known_paths=0,1 -- The known effect path the last turn looked up, and how many the engine has.
     local controller -- The last usable controller lookup.
     local lookups={} -- Component object -> its last material parameter lookup {ok=, items=, error=, key=, turn=}.
     local walked={} -- Component object, or 'pawn' for EVE's own effect components -> the labels its last walk saw.
@@ -148,7 +150,7 @@ function Stream.new(engine,directory,clock,log,link,timer)
         local new_run=composition==nil
         local fresh=new_run or table.concat(keys,'|')~=composition
         composition=table.concat(keys,'|')
-        -- This check's turns: a component's parameters (when it has no material key), then the known effects, then the
+        -- This check's turns: a component's parameters (when it has no material key), then one known effect path, then the
         -- controller; a component's attached effects, then EVE's own effect components (while the walks take turns).
         local lookup_turn,walk_turn=turn%(#list+2)+1,turn%(#list+1)+1
         if fresh or lookup_turn==#list+2 then
@@ -222,10 +224,15 @@ function Stream.new(engine,directory,clock,log,link,timer)
                 and found.asset%8==0 and found.template>0 and found.template<0x4000 and found.template%8==0
                 and found.active_byte>0 and found.active_byte<0x4000 and found.active_mask>0 and found.active_mask<256 then layout=found end
         end
-        if engine.known_effects and (fresh or lookup_turn==#list+1) then
+        -- All known effect paths for a new run, then one path per turn: each lookup is a StaticFindObject of about 4 ms.
+        if engine.known_effects and (new_run or lookup_turn==#list+1) then
             started=timer()
-            local ok,found=pcall(engine.known_effects)
-            if ok then remember(found) end
+            if not new_run then known_turn=known_turn%known_paths+1 end
+            local ok,found,paths=pcall(engine.known_effects,not new_run and known_turn or nil)
+            if ok then
+                remember(found)
+                if math.type(paths)=='integer' and paths>0 then known_paths=paths end
+            end
             took('known effects',started)
         end
         if effects and engine.effects then

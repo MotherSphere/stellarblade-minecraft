@@ -123,6 +123,15 @@ assert(#engine.effects({{handle=sword}})==2 and #engine.effects({{handle=sword}}
 local own=engine.effects({})
 assert(#own==1 and own[1]=='NS_PC_SpinTrail_01[NiagaraComponent]@Sword:None',own[1])
 StaticFindObject,package.loaded.UEHelpers.GetPlayer=find_class,function() return nil end
+-- Known effect assets: all loaded ones, or with an index only that path; with how many paths there are.
+local looked_for={}
+StaticFindObject=function(path) looked_for[#looked_for+1]=path; return path:find('NS_A_Weapon_Signal_Sword',1,true) and object('NS_A_Weapon_Signal_Sword') or nil end
+local all,paths=engine.known_effects()
+assert(paths==22 and #looked_for==22 and #all==1 and all[1].name=='NS_A_Weapon_Signal_Sword','All paths: '..#looked_for)
+looked_for={}
+local one,same=engine.known_effects(8)
+assert(same==22 and #looked_for==1 and looked_for[1]:find('NS_A_Weapon_Signal_Sword',1,true) and #one==1,'Only path 8: '..tostring(looked_for[1]))
+StaticFindObject=find_class
 -- Shows on EVE: a lifted hit-level check is restored right after the call (the build reads it there), a lifted
 -- stop-at-move only through the returned restore; a failed call restores both.
 local SHOW_PATH='/Game/Art/Show/Result/Result_Guard_Back.Result_Guard_Back'
