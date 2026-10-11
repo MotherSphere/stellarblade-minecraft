@@ -1,12 +1,39 @@
-The changes EveExtract makes to CUE4Parse (Apache-2.0), both in ExportSession.ResolveOutputPath. EveExtract.csproj
-applies them to the pinned submodule before it builds; each changed part carries a notice, as section 4(b) of the
-Apache License 2.0 asks. Upstream still has both at the pinned commit e4ea4ba8ec2b88d08b2066dfb8962863dccb36cc:
+The changes EveExtract makes to CUE4Parse (Apache-2.0). EveExtract.csproj applies them to the pinned submodule before it
+builds; each changed part carries a notice, as section 4(b) of the Apache License 2.0 asks. Upstream still has all of
+them at the pinned commit e4ea4ba8ec2b88d08b2066dfb8962863dccb36cc:
 
-- Every export path is checked to stay under the export folder before a folder is made or a file written: package
-  paths and object names come from game files, which mods can change.
-- Upstream turns every slash into a backslash, which on Linux writes files whose names hold backslashes; only Windows
-  gets them now.
+- ExportSession.ResolveOutputPath checks that every export path stays under the export folder before a folder is made
+  or a file written: package paths and object names come from game files, which mods can change.
+- ExportSession.ResolveOutputPath turned every slash into a backslash, which on Linux writes files whose names hold
+  backslashes; only Windows gets them now.
+- CUE4Parse.csproj no longer compiles Utils/CRC32.cs, DotNetZip's code under the MS-PL, which GPL-3.0 cannot take:
+  tools/eve-extract/CRC32.cs (GPL-3.0-or-later) takes its place. It no longer embeds the resources of other games
+  (Ace Combat 7's key, PUBG's and Borderlands 4's name maps, ProSpi's prebuilt decryptor DLL), which EveExtract never
+  reads and which come without a licence it could pass on.
+- CUE4Parse-Conversion.csproj no longer embeds the prebuilt Windows DLLs of Detex, tegra_swizzle and crunch: EveExtract
+  decodes with AssetRipper.TextureDecoder on every OS and reads no Switch-swizzled or crunched texture.
 
+diff --git a/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj b/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj
+index ba8fb53e..756064eb 100644
+--- a/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj
++++ b/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj
+@@ -22,13 +22,13 @@
+     <Folder Include="Resources" />
+   </ItemGroup>
+ 
++  <!-- Modified for EveExtract (tools/eve-extract/cue4parse.patch in Stellar Blade x Minecraft): the prebuilt Windows
++       DLLs of Detex, tegra_swizzle and crunch are not embedded. EveExtract decodes with AssetRipper.TextureDecoder on
++       every OS and reads neither Switch-swizzled nor crunched textures, and it carries no binary without its source. -->
+   <ItemGroup>
+     <None Remove="Resources\Detex.dll" />
+-    <EmbeddedResource Include="Resources\Detex.dll" />
+     <None Remove="Resources\tegra_swizzle_x64.dll" />
+-    <EmbeddedResource Include="Resources\tegra_swizzle_x64.dll" />
+     <None Remove="Resources\crunch.dll" />
+-    <EmbeddedResource Include="Resources\crunch.dll" />
+   </ItemGroup>
+ 
+ </Project>
 diff --git a/CUE4Parse-Conversion/ExportSession.cs b/CUE4Parse-Conversion/ExportSession.cs
 index 48e8e14b..dc8c8384 100644
 --- a/CUE4Parse-Conversion/ExportSession.cs
@@ -31,3 +58,32 @@ index 48e8e14b..dc8c8384 100644
      }
  
      public event PropertyChangedEventHandler? PropertyChanged;
+diff --git a/CUE4Parse/CUE4Parse.csproj b/CUE4Parse/CUE4Parse.csproj
+index 1f38d236..4e37da27 100644
+--- a/CUE4Parse/CUE4Parse.csproj
++++ b/CUE4Parse/CUE4Parse.csproj
+@@ -28,15 +28,16 @@
+     <PackageReference Include="ZstdSharp.Port" />
+   </ItemGroup>
+ 
++  <!-- Modified for EveExtract (tools/eve-extract/cue4parse.patch in Stellar Blade x Minecraft): Utils/CRC32.cs is
++       DotNetZip's (MS-PL, which the GPL cannot take), so EveExtract's own CRC32.cs replaces it; and the resources of
++       other games (Ace Combat 7's key, PUBG's and Borderlands 4's name maps, ProSpi's prebuilt decryptor DLL) are not
++       embedded: EveExtract reads none of those games, and they come without a licence it could pass on. -->
++  <ItemGroup>
++    <Compile Remove="Utils\CRC32.cs" />
++    <Compile Include="..\..\CRC32.cs" Link="Utils\CRC32.cs" />
++  </ItemGroup>
++
+   <ItemGroup>
+-    <None Remove="Resources\ACE7Key.bin" />
+-    <EmbeddedResource Include="Resources\ACE7Key.bin" />
+-    <None Remove="Resources\PUBGNameHashMap.json" />
+-    <EmbeddedResource Include="Resources\PUBGNameHashMap.json" />
+-    <None Remove="Resources\BL4SoundTagsMap.json" />
+-    <EmbeddedResource Include="Resources\BL4SoundTagsMap.json" />
+-    <None Remove="Resources\ProSpiDecryptor.dll" />
+-    <EmbeddedResource Include="Resources\ProSpiDecryptor.dll.gz" />
+     <None Remove="Resources\ShaderHashedNames.json" />
+     <EmbeddedResource Include="Resources\ShaderHashedNames.json" />
+   </ItemGroup>

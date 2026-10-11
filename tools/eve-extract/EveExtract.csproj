@@ -12,8 +12,8 @@
     <AssemblyName>eve-extract</AssemblyName>
     <RootNamespace>EveExtract</RootNamespace>
     <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
-    <!-- The submodule and the tests are not this program's sources. -->
-    <DefaultItemExcludes>$(DefaultItemExcludes);CUE4Parse/**;tests/**</DefaultItemExcludes>
+    <!-- The submodule and the tests are not this program's sources; CRC32.cs is built into CUE4Parse (cue4parse.patch). -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);CUE4Parse/**;tests/**;CRC32.cs</DefaultItemExcludes>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <PublishSingleFile>true</PublishSingleFile>

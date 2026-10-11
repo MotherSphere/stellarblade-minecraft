@@ -23,8 +23,9 @@ if (args is [] or ["--help"] or ["-h"])
 }
 if (args is ["--licenses"])
 {
-    Console.WriteLine("eve-extract is licensed under GPL-3.0-or-later. It includes CUE4Parse and CUE4Parse-Conversion, with one");
-    Console.WriteLine("marked change, the .NET runtime and the packages listed in THIRD-PARTY-NOTICES.md below.");
+    Console.WriteLine("eve-extract is licensed under GPL-3.0-or-later. It includes CUE4Parse and CUE4Parse-Conversion, with the");
+    Console.WriteLine("marked changes of cue4parse.patch, the .NET runtime and the packages listed in THIRD-PARTY-NOTICES.md");
+    Console.WriteLine("below.");
     foreach (var name in new[] { "THIRD-PARTY-NOTICES.md", "CUE4Parse.NOTICE", "CUE4Parse.LICENSE", "dotnet.LICENSE", "dotnet.THIRD-PARTY-NOTICES", "SkiaSharp.THIRD-PARTY-NOTICES" })
     {
         using var stream = typeof(Inputs).Assembly.GetManifestResourceStream(name);

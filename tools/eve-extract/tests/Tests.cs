@@ -1,5 +1,5 @@
-// Checks of Inputs.cs on synthetic folders and files made here; no game data. Run on Linux, and as a win-x64 program
-// under Wine by tools/check.py, where the mod-container lookup meets Windows separators.
+// Checks of Inputs.cs and CRC32.cs on synthetic folders and data made here; no game data. Run on Linux, and as a
+// win-x64 program under Wine by tools/check.py, where the mod-container lookup meets Windows separators.
 var failures = 0;
 void Check(bool condition, string what)
 {
@@ -93,6 +93,22 @@ try
     }
     Check(Inputs.Field("a\tb\r\nc") == "a b c" && Inputs.Field(null) == "", "fields hold no tab or line break");
     Check(Inputs.Help.Contains("--oodle") && Inputs.Help.Contains("never downloaded"), "the help names the inputs");
+
+    // CRC32.cs, which replaces DotNetZip's in CUE4Parse: the standard check value, and blocks that add up.
+    int Crc(params byte[][] blocks)
+    {
+        var crc = new CUE4Parse.Utils.CRC32();
+        foreach (var block in blocks) crc.SlurpBlock(block, 0, block.Length);
+        return crc.Crc32Result;
+    }
+    var digits = "123456789"u8.ToArray();
+    Check((uint) Crc(digits) == 0xCBF43926, "the CRC-32 of 123456789");
+    Check(Crc() == 0, "the CRC-32 of nothing");
+    var text = "The quick brown fox jumps over the lazy dog"u8.ToArray();
+    Check((uint) Crc(text) == 0x414FA339 && Crc(text[..10], text[10..11], [], text[11..]) == Crc(text), "the CRC-32 over several blocks");
+    var offset = new CUE4Parse.Utils.CRC32();
+    offset.SlurpBlock([0xFF, .. digits, 0xFF], 1, digits.Length);
+    Check((uint) offset.Crc32Result == 0xCBF43926, "the CRC-32 of a block's middle");
 }
 finally
 {
