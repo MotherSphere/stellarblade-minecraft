@@ -27,7 +27,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 # 0.11 has no LowerHex on digests: see safety::hex.
 sha2 = "0.11.0"
-# The pack builder's two downloads (EveExtract, Oodle after consent): rustls with ring, Mozilla's roots, no aws-lc.
+# The pack builder's one download (Oodle, after consent): rustls with ring, Mozilla's roots, no aws-lc.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 # The system language where no LANG is set (Windows); already in the tree through iced's text stack.
 sys-locale = "0.3.2"
