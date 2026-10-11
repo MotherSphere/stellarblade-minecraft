@@ -291,16 +291,18 @@ fn assemble(
     };
     say(Step::Tables, 0.05, "");
 
-    // The installed pack is the base when it was built from the same game files.
+    // The installed pack is the base when it was built from the same game files, and not with every outfit when
+    // this build takes the owned ones only.
     let sources =
         detect::pak_sources(&build.sidecar.paks).context("the Paks folder could not be listed")?;
+    let checks_file = build.home.join("avatar.checks.json");
     let base_manifest = fs::read_to_string(avatar.join("pack.txt")).ok();
     let base = base_manifest
         .as_deref()
         .and_then(detect::pack_manifest)
         .filter(|(_, built)| *built == sources)
+        .filter(|_| build.every || !manifest::last_every(&checks_file))
         .map(|_| avatar.to_path_buf());
-    let checks_file = build.home.join("avatar.checks.json");
     let retry = match base {
         Some(_) => manifest::last_untextured(&checks_file),
         None => BTreeMap::new(),
@@ -616,6 +618,7 @@ fn assemble(
             .collect(),
         meshes_changed_from_base: changed,
         wardrobe_items: rows.len(),
+        every: build.every,
         ..Checks::default()
     };
     for (name, (_, sections)) in &meshes {
@@ -1045,6 +1048,26 @@ public class ReadPack {
         assert!(!old.exists());
     }
 
+    /// The adapter's wardrobe list owning only `ids`.
+    fn own(build: &Build, ids: &[u64]) {
+        let list = build.home.join("bridge/eve-wardrobe.txt");
+        fs::create_dir_all(list.parent().unwrap()).unwrap();
+        let items: String = ids
+            .iter()
+            .map(|id| format!("ITEM {id} 4 0000000100000002000000030000000a 1 0 5\n"))
+            .collect();
+        let zeros = "0".repeat(32);
+        let count = ids.len();
+        fs::write(&list, format!("SBMC_WARDROBE 1\nSESSION {zeros}\nSEQ 7\nTIME 1\nRESULT listed\nCOUNT {count}\n{items}END 7\n")).unwrap();
+    }
+
+    fn pack_meshes(build: &Build) -> Vec<String> {
+        snapshot(&build.home.join("avatar"))
+            .into_keys()
+            .filter_map(|f| f.strip_suffix(".sbav").map(String::from))
+            .collect()
+    }
+
     #[test]
     fn owned_build_takes_the_adapter_list() {
         let setup = Setup::new();
@@ -1053,17 +1076,10 @@ public class ReadPack {
             go(&setup, &build, None, &|| Ok(())).0.is_err(),
             "no list and no save"
         );
-        let list = build.home.join("bridge/eve-wardrobe.txt");
-        fs::create_dir_all(list.parent().unwrap()).unwrap();
-        let item = "ITEM 2000077 4 0000000100000002000000030000000a 1 0 5";
-        let zeros = "0".repeat(32);
-        fs::write(&list, format!("SBMC_WARDROBE 1\nSESSION {zeros}\nSEQ 7\nTIME 1\nRESULT listed\nCOUNT 1\n{item}\nEND 7\n")).unwrap();
+        own(&build, &[2000077]);
         let report = go(&setup, &build, None, &|| Ok(())).0.unwrap();
         assert!(matches!(report.owned, Some((1, owned::Source::List(_)))));
-        let meshes: Vec<String> = snapshot(&build.home.join("avatar"))
-            .into_keys()
-            .filter_map(|f| f.strip_suffix(".sbav").map(String::from))
-            .collect();
+        let meshes = pack_meshes(&build);
         let expected = [
             "ACC_EAR_19M",
             "CH_NPC_Drone",
@@ -1081,6 +1097,24 @@ public class ReadPack {
             wardrobe.contains("\tCH_P_EVE_78\t"),
             "the catalog still lists every item"
         );
+    }
+
+    /// Unticking "every outfit" builds from nothing: the every-outfit pack is no base for the owned one.
+    #[test]
+    fn an_owned_build_after_every_outfit_drops_the_others() {
+        let setup = Setup::new();
+        let every = setup.build(true);
+        go(&setup, &every, None, &|| Ok(())).0.unwrap();
+        assert!(pack_meshes(&every).contains(&"CH_P_EVE_78".to_string()));
+        let owned = setup.build(false);
+        own(&owned, &[2000077]);
+        let report = go(&setup, &owned, None, &|| Ok(())).0.unwrap();
+        assert!(!report.incremental && !report.checks.every);
+        assert!(!pack_meshes(&owned).contains(&"CH_P_EVE_78".to_string()));
+        // Owned to every outfit stays incremental.
+        let report = go(&setup, &every, None, &|| Ok(())).0.unwrap();
+        assert!(report.incremental && report.checks.every);
+        assert!(pack_meshes(&every).contains(&"CH_P_EVE_78".to_string()));
     }
 
     /// Section names come from the game's meshes, which mods can change: one that is a path never writes outside

@@ -151,15 +151,25 @@ pub struct Checks {
     pub meshes_changed_from_base: Vec<String>,
     pub wardrobe_items: usize,
     pub warnings: Vec<String>,
+    /// Built with every outfit rather than the owned ones.
+    pub every: bool,
+}
+
+fn last_checks(checks: &Path) -> serde_json::Value {
+    fs::read(checks)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 /// The `untextured_sections` of the last build's checks, if any: their meshes are exported again.
 pub fn last_untextured(checks: &Path) -> BTreeMap<String, Vec<String>> {
-    fs::read(checks)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| serde_json::from_value(v["untextured_sections"].clone()).ok())
-        .unwrap_or_default()
+    serde_json::from_value(last_checks(checks)["untextured_sections"].clone()).unwrap_or_default()
+}
+
+/// Whether the last build took every outfit: an owned build cannot start from that pack, it would keep them all.
+pub fn last_every(checks: &Path) -> bool {
+    last_checks(checks)["every"].as_bool().unwrap_or(false)
 }
 
 #[cfg(test)]
