@@ -320,6 +320,25 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
     fs::create_dir(path)
 }
 
+/// Creates `path` and its parents; `path` itself is private (Linux: mode 0700, also set on one that exists; Windows:
+/// the inherited ACL). For the folders that keep game-derived or proprietary files (the pack builder's cache and work
+/// folder).
+pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match create_private_dir(path) {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+        result => result?,
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Makes a script runnable (`start.sh`).
 #[cfg(unix)]
 pub fn make_executable(path: &Path) -> io::Result<()> {
@@ -476,6 +495,61 @@ pub fn save_dirs(_prefix: Option<&Path>, home: &Path) -> Vec<PathBuf> {
     .into_iter()
     .map(|relative| home.join(relative))
     .collect()
+}
+
+/// The memory free for new work, in bytes: `MemAvailable` from `/proc/meminfo`. `None` when unreadable.
+#[cfg(unix)]
+pub fn available_memory() -> Option<u64> {
+    let text = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = text.lines().find(|l| l.starts_with("MemAvailable:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The memory free for new work, in bytes: the available physical memory. `None` when unreadable.
+#[cfg(windows)]
+pub fn available_memory() -> Option<u64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: an all-zero MEMORYSTATUSEX is valid; dwLength is set as the call requires.
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+    // SAFETY: `status` is a valid, writable MEMORYSTATUSEX with its length set.
+    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullAvailPhys)
+}
+
+/// The disk space free to this user where `path` is, or would be made (its nearest existing folder), in bytes.
+/// `None` when unreadable.
+pub fn available_disk(path: &Path) -> Option<u64> {
+    let dir = path.ancestors().find(|p| p.is_dir())?;
+    free_space(dir)
+}
+
+#[cfg(unix)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: an all-zero statvfs is valid to write into; `name` is a NUL-terminated path.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are valid for the call.
+    (unsafe { libc::statvfs(name.as_ptr(), &mut stat) } == 0)
+        .then(|| (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+}
+
+#[cfg(windows)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide = wide(dir);
+    let mut free = 0u64;
+    // SAFETY: `wide` is NUL-terminated; the one out pointer is valid, the others may be null.
+    (unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } != 0)
+        .then_some(free)
 }
 
 /// The user's home directory: `HOME` on Linux, the profile folder (`USERPROFILE`) on Windows.

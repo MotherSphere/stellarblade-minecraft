@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use colony_ui::paths;
 use sbmc_installer::app::{self, App, Ctx, Prefs, ServerCheck};
 use sbmc_installer::ledger::PROGRAM;
+use sbmc_installer::pack::inputs::{Sources, sidecar_notices};
 use sbmc_installer::payload::Payload;
 use sbmc_installer::{Kind, Refusal, i18n, log, pins, platform, safety, server, ui};
 
@@ -28,6 +29,9 @@ const FONT_LICENSES: [(&str, &str); 3] = [
         include_str!("../licenses/FontAwesome-OFL.txt"),
     ),
 ];
+
+/// The repository's third-party notices: the Rust crates, the fonts and every embedded piece, with their licences.
+const THIRD_PARTY_NOTICES: &str = include_str!("../../THIRD-PARTY-NOTICES.md");
 
 /// The logo at 64 px as raw RGBA, rendered from `assets/logo.svg` (see the README). On Wayland the compositor takes the
 /// icon from the `.desktop` file that matches the application id instead.
@@ -104,18 +108,26 @@ fn main() -> iced::Result {
     while let Some(arg) = args.next() {
         match arg.to_string_lossy().as_ref() {
             "--version" | "-V" => {
+                let sidecar = Sources::release()
+                    .sidecar
+                    .map_or("no EveExtract".into(), |s| {
+                        format!("EveExtract {}", s.sha256)
+                    });
                 match payload() {
                     Some(p) => println!(
-                        "stellar-bridge-installer {version} (bridge {}, Lua revision {})",
+                        "stellar-bridge-installer {version} (bridge {}, Lua revision {}, {sidecar})",
                         p.release,
                         p.lua_revision.map_or("unknown".into(), |r| r.to_string())
                     ),
-                    None => println!("stellar-bridge-installer {version} (no bridge payload)"),
+                    None => println!(
+                        "stellar-bridge-installer {version} (no bridge payload, {sidecar})"
+                    ),
                 }
                 return Ok(());
             }
             "--licenses" => {
                 println!("stellar-bridge-installer is licensed under GPL-3.0-or-later.");
+                println!("\n== THIRD-PARTY-NOTICES.md ==\n\n{THIRD_PARTY_NOTICES}");
                 for (name, text) in payload().map(|p| p.licenses).unwrap_or_default() {
                     println!("\n== {name} ==\n\n{}", String::from_utf8_lossy(&text));
                 }
@@ -127,6 +139,9 @@ fn main() -> iced::Result {
                     server::LAUNCHER_NOTICE,
                     server::LAUNCHER_LICENSE
                 );
+                if let Some(notices) = sidecar_notices() {
+                    println!("\n== EveExtract (the pack builder, embedded here) ==\n\n{notices}");
+                }
                 return Ok(());
             }
             "--help" | "-h" => {
@@ -140,7 +155,7 @@ fn main() -> iced::Result {
                      --accept-eula   With --server: write eula=true in a new eula.txt. Read Mojang's EULA first \
                      ({}): passing this option accepts it for that server\n      \
                      --uninstall     With --server: remove the bridge JAR; Fabric API and the server stay\n  \
-                     -V, --version       Print the version and the bridge release it carries\n      \
+                     -V, --version       Print the version, the bridge release and the EveExtract it carries\n      \
                      --licenses      Print the licences of the embedded pieces\n  -h, --help          Print this help\n\n\
                      The log goes to {} and to stderr (to stderr only in a dry run).",
                     pins::MINECRAFT_EULA,
@@ -206,6 +221,8 @@ fn main() -> iced::Result {
         std::process::exit(server_mode(&dir, accept_eula, uninstall, dry_run));
     }
     let prefs_file = prefs_file.filter(|_| !dry_run);
+    // The pack build's work folder; made only when a build starts.
+    let cache = paths::locate::cache_dir(PROGRAM).unwrap_or_else(|_| data.join("cache"));
     let ctx = Ctx {
         home,
         proc_root: PathBuf::from("/proc"),
@@ -216,6 +233,8 @@ fn main() -> iced::Result {
         payload: payload().map(Arc::new),
         dry_run,
         java: "java".into(),
+        cache,
+        sources: Sources::release(),
     };
 
     // A double-clicked exe on Windows got a console of its own: the window does not need it.

@@ -447,6 +447,38 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_java_version",
         "The server needs Java 21 or newer as `java` on the PATH (found: {path}). Install it, then try again.",
     ),
+    (
+        "err_download",
+        "The download from {path} failed. Check the connection, then try again.",
+    ),
+    (
+        "err_digest",
+        "{path} is not the file this release pins (its size or SHA-256 differs): it was not used.",
+    ),
+    (
+        "err_oodle_entry",
+        "{path} does not hold the Oodle library where the OodleUE release keeps it.",
+    ),
+    (
+        "err_usmap_invalid",
+        "{path} is not a usmap UE4SS writes (wrong header). Delete it, then press Ctrl+Numpad6 in Stellar Blade with a save loaded.",
+    ),
+    (
+        "err_no_usmap",
+        "No usmap for this Stellar Blade build yet. Start Stellar Blade with the bridge installed, load a save until EVE is in the world, then quit; or press Ctrl+Numpad6 in game.",
+    ),
+    (
+        "err_usmap_rejected",
+        "EveExtract could not read the game's item table with the usmap of build {path}: it does not describe this game build. Delete the .usmap in UE4SS's folder, start Stellar Blade, load a save, press Ctrl+Numpad6, quit, then build again.",
+    ),
+    (
+        "err_usmap_stale",
+        "{path} is older than Stellar Blade's program: UE4SS wrote it for an earlier game build. Delete it, start Stellar Blade, load a save, press Ctrl+Numpad6, quit, then build again.",
+    ),
+    (
+        "err_no_sidecar",
+        "This installer was built without EveExtract: use a release build to make the avatar pack.",
+    ),
     ("err_close_first", "Close {path} first"),
     (
         "err_save_backup_differs",
@@ -591,4 +623,159 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "server_done_removed",
         "Bridge JAR removed. Fabric API, the launcher, the start scripts, eula.txt and the worlds stay.",
     ),
+    // Avatar pack
+    ("screen_pack_ready", "Avatar pack"),
+    ("screen_pack_oodle", "Oodle"),
+    ("screen_pack_working", "Building"),
+    ("pack_build", "Build the avatar pack"),
+    ("pack_rebuild", "Rebuild the avatar pack"),
+    (
+        "pack_button_hint",
+        "Made on this PC from your own copy of Stellar Blade, read only. It never leaves this PC.",
+    ),
+    ("pack_title", "Build the avatar pack"),
+    (
+        "pack_body",
+        "Minecraft draws EVE from this pack: her meshes and textures, read from your Stellar Blade files with EveExtract, then baked here. A full build takes about 10 to 15 minutes and about 3 GB; owning fewer outfits makes it smaller and faster. Your installed pack stays as it is until the new one is complete.",
+    ),
+    ("pack_checking", "Checking what the build needs…"),
+    ("pack_row_usmap", "Game mappings (usmap)"),
+    ("pack_row_owned", "Owned outfits"),
+    ("pack_row_disk", "Free disk"),
+    ("pack_row_games", "Stellar Blade and Minecraft"),
+    ("pack_row_memory", "Free memory"),
+    ("pack_row_sidecar", "EveExtract"),
+    ("pack_row_oodle", "Oodle"),
+    (
+        "pack_build_untested",
+        "Not the build this release was tested on: the pack may miss items.",
+    ),
+    ("pack_owned_every", "Every outfit is built"),
+    ("pack_owned_list", "The adapter's wardrobe list of {date}"),
+    ("pack_owned_save", "Your newest save, of {date} (read only)"),
+    (
+        "pack_owned_none",
+        "No wardrobe list and no save found: play once with the bridge, or build every outfit",
+    ),
+    ("pack_disk_ok", "{free} free ({need} needed)"),
+    ("pack_disk_low", "{free} free: a build needs {need}"),
+    ("pack_memory_ok", "{free} free"),
+    (
+        "pack_memory_low",
+        "{free} free: the textures bake on one worker, slowly",
+    ),
+    ("pack_unknown", "Unknown"),
+    (
+        "pack_games_running",
+        "Running: {names}. Close them, then check again.",
+    ),
+    ("pack_sidecar_embedded", "Carried by this installer"),
+    ("pack_oodle_ready", "Ready (agreed on {date})"),
+    (
+        "pack_oodle_ask",
+        "Not on this PC yet: the next pages ask you",
+    ),
+    (
+        "pack_every",
+        "Build every outfit, not only the ones you own",
+    ),
+    (
+        "pack_every_hint",
+        "Bigger and slower, and lets your Minecraft draw friends' outfits in multiplayer.",
+    ),
+    ("pack_consent_title", "Your own game files"),
+    (
+        "pack_consent_body",
+        "The builder reads this PC's Stellar Blade, read only, with both games closed. It writes a private pack to {path}, which this project never uploads or shares: it is derived from your game files and stays on this PC. Nothing is written to the game folder.",
+    ),
+    (
+        "pack_consent_eula",
+        "Stellar Blade's licence agreement forbids modifying, reverse engineering or making derivative works of the game, and unauthorised mods. The bridge and this builder fall under it: you proceed at your own risk.",
+    ),
+    (
+        "pack_consent_check",
+        "I have closed Stellar Blade and Minecraft, I accept this risk, and I agree to build the pack from my own game files.",
+    ),
+    ("oodle_title", "Oodle"),
+    (
+        "oodle_body",
+        "Stellar Blade's game files are compressed with Oodle, which EveExtract needs to read them. Oodle is proprietary (Epic Games, RAD Game Tools): this project does not ship it. The builder can download it once from a third party's release that CUE4Parse also uses, then checks it against the pinned digest.",
+    ),
+    ("oodle_source", "Source"),
+    ("oodle_release", "Release"),
+    ("oodle_size", "Size"),
+    (
+        "oodle_eula",
+        "That release is provided under the Unreal Engine EULA, which you accept by using it:",
+    ),
+    ("oodle_download", "Download"),
+    ("oodle_have_title", "Use a file I have"),
+    (
+        "oodle_have_body",
+        "Or give the path of {file} from that release, already on this PC. It is used only if its SHA-256 is the one above.",
+    ),
+    ("oodle_have_placeholder", "Path to the zip"),
+    ("oodle_have_use", "Use this file"),
+    ("oodle_pick", "Type the path of the zip first."),
+    ("oodle_ready", "Oodle is ready"),
+    ("pack_working_title", "Building the avatar pack"),
+    (
+        "pack_working_body",
+        "Your installed pack stays as it is until the new one is complete. Cancel stops EveExtract and deletes the work folder.",
+    ),
+    ("pack_elapsed", "Elapsed: {time}"),
+    ("pack_cancelling", "Cancelling…"),
+    ("pack_step_inputs", "Preparing EveExtract and the usmap"),
+    ("pack_step_tables", "Reading the item tables"),
+    ("pack_step_meshes", "Reading the meshes"),
+    ("pack_step_export", "Exporting materials and textures"),
+    ("pack_step_bake", "Baking textures"),
+    ("pack_step_install", "Installing the new pack"),
+    ("pack_done_ok", "Avatar pack built in {time}"),
+    ("pack_done_failed", "Avatar pack: not built"),
+    (
+        "pack_result_meshes",
+        "{meshes} meshes, {items} wardrobe items, {files} files ({size})",
+    ),
+    ("pack_result_every", "Every outfit"),
+    (
+        "pack_result_owned_list",
+        "{count} owned outfits, from the adapter's wardrobe list of {date}",
+    ),
+    (
+        "pack_result_owned_save",
+        "{count} owned outfits, from your save of {date}",
+    ),
+    (
+        "pack_result_incremental",
+        "Built on the installed pack: {count} meshes exported, {baked} textures baked",
+    ),
+    (
+        "pack_result_full",
+        "Built from the start: {count} meshes exported, {baked} textures baked",
+    ),
+    (
+        "pack_result_untextured",
+        "{count} mesh section(s) have no texture; the next build tries them again",
+    ),
+    (
+        "pack_result_bones",
+        "{count} mesh(es) use more than 256 bones; Minecraft draws up to 512",
+    ),
+    (
+        "pack_result_missing",
+        "{count} wardrobe mesh(es) are not in your game files",
+    ),
+    (
+        "pack_result_note",
+        "Built from your game files as they are now: outfits you get after your last save appear after the next build.",
+    ),
+    ("pack_warnings", "Warnings ({count})"),
+    ("pack_log_tail", "The log's last lines"),
+    ("pack_cancelled", "Cancelled."),
+    (
+        "pack_failed",
+        "The build stopped. The log's last lines are below.",
+    ),
+    ("pack_unchanged", "Your previous pack is unchanged."),
 ];

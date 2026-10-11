@@ -12,6 +12,7 @@ pub mod ledger;
 pub mod log;
 pub mod mods;
 pub mod ops;
+pub mod pack;
 pub mod payload;
 pub mod pins;
 pub mod platform;
@@ -106,6 +107,14 @@ kinds! {
     ServerLoader => "err_server_loader",
     JavaVersion => "err_java_version",
     NoPayload => "no_payload",
+    DownloadFailed => "err_download",
+    DigestMismatch => "err_digest",
+    OodleEntry => "err_oodle_entry",
+    UsmapInvalid => "err_usmap_invalid",
+    NoUsmap => "err_no_usmap",
+    UsmapRejected => "err_usmap_rejected",
+    UsmapStale => "err_usmap_stale",
+    NoSidecar => "err_no_sidecar",
 }
 
 /// A refusal or failure of the core and the path (or name) it is about. The window shows it in its language through

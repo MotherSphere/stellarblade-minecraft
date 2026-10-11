@@ -5,3 +5,7 @@ __pycache__/
 /minecraft/logs/
 /logs/
 /installer/target/
+/tools/eve-extract/bin/
+/tools/eve-extract/obj/
+/tools/eve-extract/tests/bin/
+/tools/eve-extract/tests/obj/

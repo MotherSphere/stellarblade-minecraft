@@ -281,6 +281,7 @@ local lock
 local mobs
 local hud
 local world_render
+local usmap
 local last_hd_frame
 local configured,config = pcall(require,'bridge_config')
 if configured then
@@ -319,6 +320,20 @@ if configured then
     -- Stellar Blade's 3D world drawing, off while only the avatar stream needs EVE; every capture restores it first. It
     -- samples the ponytail's cloth state meanwhile.
     world_render=require('world_render').new(log,os.clock,require('pose_adapter').new().cloth)
+    -- The usmap the installer's avatar pack builder reads, written once by UE4SS when its folders hold none.
+    usmap=require('usmap').new({
+        ready=function()
+            local pawn,character=UE.GetPlayer(),StaticFindObject('/Script/SB.SBCharacter')
+            return valid(pawn) and valid(pawn:GetWorld()) and valid(character) and pawn:IsA(character)
+        end,
+        files=function() -- UE4SS's working folder: ue4ss/ beside the executable, or Win64 itself in the old layout.
+            local win64,names=IterateGameDirectories().Game.Binaries.Win64,{}
+            for _,folder in ipairs({win64.ue4ss or false,win64}) do
+                if folder then for _,file in pairs(folder.__files) do names[#names+1]=file.__name end end
+            end
+            return names
+        end,
+        dump=function() DumpUSMAP() end},os.clock,log)
 end
 local function cancel_hd(message)
     hd_session.cancel(message)
@@ -595,6 +610,7 @@ if bridge then
             if not asked then report_result('request',false,'Session requests paused: '..tostring(ask_error)) end
             local shown,hud_error=pcall(hud.tick) -- Nor do the HUD slots.
             if not shown then report_result('hud',false,'HUD slots paused: '..tostring(hud_error)) end
+            pcall(usmap.tick) -- Nor does the usmap dump, which logs its own result.
         end)
         pending=false
         if not ok then
@@ -661,4 +677,4 @@ if bridge then
     end)
 
 end
-log('Loaded revision 57; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. No geometry or capture created at startup.')
+log('Loaded revision 58; idle. Game-thread timers active. Coordinate basis: UE(X,Y,Z) -> MC(X,Z,Y). F1 bounded live capture, F2 depth still, F4 HD paired still, F5 Minecraft import, F6 status/timing, F7 diagnostic fixture, Shift+F7 texture probe, F8 enter, Shift+F8 native visuals, F9 obstacle, F11 return/cleanup; Minecraft /stellar import, enter and return run F5, F8 and F11. Console sbmc framehdpng selects the HD PNG baseline; sbmc exportbmp compares synchronous color exports; sbmc frameasync requests one pending HD frame; it shares one async attempt per Lua lifetime with sbmc exportasync. Minecraft /stellarview livehd controls continuous HD; F11 stops it and drains pending output. Minecraft /stellarview play additionally requires the matching game-local input adapter; console sbmc posetest records the EVE pose for about 15 seconds; Minecraft /stellaravatar live streams it through the native adapter and /stellaravatar play drives EVE without capture; native control permission is revoked outside the entered playable context. Without a .usmap in the UE4SS folders, UE4SS writes one once EVE is loaded, for the avatar pack builder. No geometry or capture created at startup.')

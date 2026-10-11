@@ -1,6 +1,7 @@
 //! The window's state machine on a fake home: every page of the wizard, a dedicated Prism instance, the games modal,
 //! repair, update, roll back, uninstall, the close guard, a dry run that leaves the tree byte for byte as it was, and
-//! the server operator's page.
+//! the server operator's page, and the avatar pack builder's pages (its ready check, consents, Oodle from a local
+//! server, failed builds and a dry run) with a fake EveExtract.
 //! Jobs run in place; every page is drawn after every message. Nothing outside the temporary folder is read or written.
 //! Linux only: the fake home has the Linux layout and a fake `/proc`; Windows detection reads the registry and the
 //! live process list, which a test cannot fake.
@@ -12,11 +13,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use sbmc_installer::app::{Action, App, Choice, Ctx, Message, Modal, Prefs, Role, Screen};
+use sbmc_installer::app::{self, Action, App, Choice, Ctx, Message, Modal, Prefs, Role, Screen};
 use sbmc_installer::detect::Override;
 use sbmc_installer::i18n::{self, Lang};
 use sbmc_installer::ledger::{self, Status};
 use sbmc_installer::ops::Step;
+use sbmc_installer::pack::inputs::{self, Embedded, Remote, Sources};
 use sbmc_installer::payload::Payload;
 use sbmc_installer::safety::{self, Running};
 use sbmc_installer::{
@@ -135,6 +137,17 @@ fn ctx(fake: &Fake, dry_run: bool) -> Ctx {
         payload: Some(payload(1)),
         dry_run,
         java: fake.home.join("bin/java").into_os_string(),
+        cache: fake.home.join("cache/Colony/Stellar Bridge"),
+        // Nothing listens there: a test that downloads serves its own files.
+        sources: Sources {
+            sidecar: None,
+            oodle: Remote {
+                url: "http://127.0.0.1:9/gcc-x64-release.zip".into(),
+                size: 1,
+                sha256: "0".repeat(64),
+            },
+            oodle_entry: "lib/liboodle-data-shared.so".into(),
+        },
     }
 }
 
@@ -768,4 +781,264 @@ fn a_server_operator_makes_a_server_folder() {
     drive(&mut late, Message::Begin(Action::Server));
     assert_eq!(late.screen, Screen::Server);
     assert!(!stale.exists());
+}
+
+/// A local HTTP server for `files` (path, bytes); anything else is a 404. Its base URL.
+fn serve(files: Vec<(&'static str, Vec<u8>)>) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap_or_default();
+            let mut header = String::new();
+            while reader.read_line(&mut header).is_ok_and(|n| n > 2) {
+                header.clear();
+            }
+            let path = request.split(' ').nth(1).unwrap_or_default();
+            let (status, body) = match files.iter().find(|(p, _)| *p == path) {
+                Some((_, body)) => ("200 OK", body.as_slice()),
+                None => ("404 Not Found", &b"not here"[..]),
+            };
+            let mut stream = &stream;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(body);
+        }
+    });
+    url
+}
+
+/// A zip like OodleUE's, with a stand-in library.
+fn oodle_zip() -> Vec<u8> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    writer
+        .start_file("lib/liboodle-data-shared.so", options)
+        .unwrap();
+    writer.write_all(b"not oodle").unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+/// A stand-in EveExtract: it stops as EveExtract does on an unusable Oodle while `<home>/oodle-fails` exists, else it
+/// finishes without reading anything (as with a usmap of another game build).
+fn sidecar_script(home: &Path) -> Vec<u8> {
+    format!(
+        "#!/bin/sh\nif [ -e '{0}/oodle-fails' ]; then echo 'eve-extract: oodle is not a loadable Oodle library' >&2; exit 3; fi\nprintf 'MOUNTED\\t1\\t1\\nDONE\\t0\\t0\\n'\n",
+        home.display()
+    )
+    .into_bytes()
+}
+
+fn usmap(fake: &Fake) -> PathBuf {
+    let path = fake.win64.join("ue4ss/Mappings.usmap");
+    write(&path, [0xC4, 0x30, 3, 0, 0, 0]);
+    path
+}
+
+/// The ready check's free disk, fixed: the test's own disk may have less than a build needs.
+fn roomy(app: &mut App) {
+    app.pack.ready.as_mut().unwrap().disk = Some(app::PACK_DISK);
+}
+
+#[test]
+fn the_pack_builder_checks_asks_downloads_and_reports() {
+    let _language = language();
+    let fake = fake();
+    let script: &'static [u8] = sidecar_script(&fake.home).leak();
+    let zip = oodle_zip();
+    let base = serve(vec![("/oodle/gcc-x64-release.zip", zip.clone())]);
+    let mut ctx = ctx(&fake, false);
+    ctx.sources.sidecar = Some(Embedded {
+        bytes: script,
+        sha256: safety::sha256_hex(script),
+    });
+    ctx.sources.oodle = Remote {
+        url: format!("{base}/oodle/gcc-x64-release.zip"),
+        size: zip.len() as u64,
+        sha256: safety::sha256_hex(&zip),
+    };
+    let (mut app, job) = App::new(ctx, english());
+    let sent = RefCell::new(Vec::new());
+    job.run(&|m| sent.borrow_mut().push(m));
+    for message in sent.into_inner() {
+        drive(&mut app, message);
+    }
+    drive(&mut app, Message::Start);
+    assert_eq!(app.screen, Screen::Detect);
+
+    // No usmap yet: the ready check says so and stops there.
+    drive(&mut app, Message::PackOpen);
+    assert_eq!(app.screen, Screen::PackReady);
+    let ready = app.pack.ready.as_ref().unwrap();
+    assert!(ready.usmap.is_err());
+    assert_eq!(
+        ready
+            .owned
+            .as_ref()
+            .map(|o| matches!(o, sbmc_installer::pack::owned::Source::Save(_))),
+        Some(true),
+        "the save is the owned items' source"
+    );
+    assert!(ready.sidecar);
+    assert!(ready.oodle.is_none() && ready.running.is_empty());
+    assert!(ready.blockers(false).contains(&"pack_row_usmap"));
+    drive(&mut app, Message::PackNext);
+    assert_eq!(app.screen, Screen::PackReady);
+
+    // UE4SS wrote one; a small disk and a running game stop the build too.
+    let usmap = usmap(&fake);
+    write(&fake.proc_root.join("4242/comm"), "SB-Win64-Shippi\n");
+    drive(&mut app, Message::PackOpen);
+    assert_eq!(app.pack.ready.as_ref().unwrap().usmap, Ok(usmap.clone()));
+    app.pack.ready.as_mut().unwrap().disk = Some(1 << 30);
+    assert_eq!(
+        app.pack.ready.as_ref().unwrap().blockers(false),
+        ["pack_row_disk", "pack_row_games"]
+    );
+    fs::remove_dir_all(fake.proc_root.join("4242")).unwrap();
+    drive(&mut app, Message::PackOpen);
+    roomy(&mut app);
+    assert!(app.pack.ready.as_ref().unwrap().blockers(false).is_empty());
+    drive(&mut app, Message::PackEvery(true));
+    drive(&mut app, Message::PackEvery(false));
+
+    // The consent, then Oodle's: a file that is not the pinned zip is refused.
+    drive(&mut app, Message::PackNext);
+    assert_eq!(app.screen, Screen::PackConsent);
+    drive(&mut app, Message::PackNext);
+    assert_eq!(app.screen, Screen::PackConsent, "the box is not ticked");
+    drive(&mut app, Message::PackConsent(true));
+    drive(&mut app, Message::PackNext);
+    assert_eq!(app.screen, Screen::PackOodle);
+    drive(&mut app, Message::OodleFetch(false));
+    assert_eq!(errors(&app), [i18n::t("oodle_pick")]);
+    let elsewhere = fake.home.join("Downloads/gcc-x64-release.zip");
+    write(&elsewhere, b"another zip");
+    drive(
+        &mut app,
+        Message::OodleFile(elsewhere.display().to_string()),
+    );
+    drive(&mut app, Message::OodleFetch(false));
+    assert_eq!(app.screen, Screen::PackOodle);
+    assert_eq!(
+        errors(&app).last().unwrap(),
+        &i18n::refusal(&Refusal::new(Kind::DigestMismatch, elsewhere.display()))
+    );
+
+    // Download agreed: Oodle comes from the (local) server, EveExtract is unpacked, the build starts, and EveExtract
+    // stops on its Oodle. The result says so, with the log's last lines; nothing was installed.
+    write(&fake.home.join("oodle-fails"), "");
+    let usmap_bytes = fs::read(&usmap).unwrap();
+    drive(&mut app, Message::OodleFetch(true));
+    assert_eq!(app.screen, Screen::PackDone);
+    assert!(!app.busy);
+    let result = app.pack.result.clone().unwrap();
+    assert!(!result.ok);
+    assert_eq!(result.lines[1], i18n::t("pack_unchanged"));
+    assert!(
+        result
+            .tail
+            .iter()
+            .any(|l| l.contains("not a loadable Oodle library")),
+        "{:?}",
+        result.tail
+    );
+    let builder = app.ctx.data.join("builder");
+    assert_eq!(
+        fs::read(builder.join(inputs::SIDECAR)).unwrap(),
+        script,
+        "EveExtract unpacked into the builder cache"
+    );
+    assert!(
+        builder.join("oodle/liboodle-data-shared.so").is_file()
+            && builder.join("oodle.json").is_file()
+    );
+    assert_eq!(
+        fs::read(builder.join("usmap/24463856.usmap")).unwrap(),
+        usmap_bytes
+    );
+    assert_eq!(
+        fs::read(&usmap).unwrap(),
+        usmap_bytes,
+        "UE4SS's usmap is only read"
+    );
+    let home = fake.home.join(".local/share/stellar-blade-minecraft");
+    assert!(!home.join("avatar").exists() && !home.join("avatar.tmp").exists());
+    assert!(!app.ctx.cache.join("pack-work").exists());
+
+    // Again: Oodle is ready, so the consent leads straight to the build. EveExtract reads no item table now (a
+    // usmap of another game build): the result says so and the cached copy goes.
+    fs::remove_file(fake.home.join("oodle-fails")).unwrap();
+    drive(&mut app, Message::Rescan);
+    drive(&mut app, Message::PackOpen);
+    roomy(&mut app);
+    let ready = app.pack.ready.as_ref().unwrap();
+    assert!(ready.oodle.is_some() && ready.sidecar);
+    drive(&mut app, Message::PackNext);
+    drive(&mut app, Message::PackConsent(true));
+    drive(&mut app, Message::PackNext);
+    assert_eq!(app.screen, Screen::PackDone);
+    let result = app.pack.result.clone().unwrap();
+    assert_eq!(
+        result.lines[0],
+        i18n::refusal(&Refusal::new(Kind::UsmapRejected, "24463856"))
+    );
+    assert!(!builder.join("usmap/24463856.usmap").exists());
+
+    // While a build runs, Cancel raises the flag the build checks.
+    app.busy = true;
+    app.screen = Screen::PackWorking;
+    drive(&mut app, Message::PackCancel);
+    assert!(app.pack.cancel.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[test]
+fn a_dry_run_pack_walks_to_its_result_in_french_and_writes_nothing() {
+    let _language = language();
+    let fake = fake();
+    usmap(&fake);
+    let before = safety::tree(&fake.home).unwrap();
+    let (mut app, job) = App::new(
+        ctx(&fake, true),
+        Prefs {
+            language: Some("fr".into()),
+            ..Prefs::default()
+        },
+    );
+    let sent = RefCell::new(Vec::new());
+    job.run(&|m| sent.borrow_mut().push(m));
+    for message in sent.into_inner() {
+        drive(&mut app, message);
+    }
+    drive(&mut app, Message::Start);
+    drive(&mut app, Message::PackOpen);
+    roomy(&mut app);
+    // This build carries no EveExtract: the ready check says so.
+    assert_eq!(
+        app.pack.ready.as_ref().unwrap().blockers(false),
+        ["err_no_sidecar"]
+    );
+    app.pack.ready.as_mut().unwrap().sidecar = true;
+    for message in [
+        Message::PackNext,
+        Message::PackConsent(true),
+        Message::PackNext,
+        Message::OodleFetch(true),
+    ] {
+        drive(&mut app, message);
+    }
+    assert_eq!(app.screen, Screen::PackDone);
+    let result = app.pack.result.clone().unwrap();
+    assert_eq!(result.lines, ["Simulation : rien n'a été écrit."]);
+    drive(&mut app, Message::Back);
+    i18n::set_lang(Lang::En);
+    assert_eq!(safety::tree(&fake.home).unwrap(), before);
+    assert!(!app.ctx.data.exists());
 }

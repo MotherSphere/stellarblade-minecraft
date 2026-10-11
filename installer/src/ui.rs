@@ -10,12 +10,15 @@ use iced::widget::{
 };
 use iced::{Alignment, Border, Color, Element, Fill, Length};
 
-use crate::app::{Action, App, Choice, Message, Modal, Role, Screen};
+use std::time::Duration;
+
+use crate::app::{Action, App, Choice, Message, Modal, Ready, Role, Screen, size, utc};
 use crate::detect::{Override, Pack};
 use crate::i18n::{self, Lang, t, t_fmt};
 use crate::launcher::{self, Kind};
 use crate::ledger::Status;
 use crate::ops::{self, Step};
+use crate::pack::{owned, run};
 use crate::safety::Running;
 use crate::{Ownership, detect, pins, platform};
 
@@ -241,6 +244,11 @@ fn screen_label(screen: Screen) -> &'static str {
         Screen::Working => t("screen_working"),
         Screen::Done => t("screen_done"),
         Screen::Server => t("screen_server"),
+        Screen::PackReady => t("screen_pack_ready"),
+        Screen::PackConsent => t("screen_consent"),
+        Screen::PackOodle => t("screen_pack_oodle"),
+        Screen::PackWorking => t("screen_pack_working"),
+        Screen::PackDone => t("screen_done"),
     }
 }
 
@@ -300,7 +308,12 @@ pub fn view(app: &App) -> El<'_> {
         widgets::nav_label(&typo, t("nav_steps")),
     ]
     .spacing(8);
-    for &screen in Screen::steps(app.role) {
+    let steps: &[Screen] = if app.screen.is_pack() {
+        &Screen::PACK
+    } else {
+        Screen::steps(app.role)
+    };
+    for &screen in steps {
         let current = screen == app.screen;
         sidebar = sidebar.push(
             text(screen_label(screen))
@@ -344,6 +357,11 @@ pub fn view(app: &App) -> El<'_> {
             Screen::Working => working(app, &typo),
             Screen::Done => done(app, &typo),
             Screen::Server => server_page(app, &typo),
+            Screen::PackReady => pack_ready_page(app, &typo),
+            Screen::PackConsent => pack_consent_page(app, &typo),
+            Screen::PackOodle => oodle_page(app, &typo),
+            Screen::PackWorking => pack_working_page(app, &typo),
+            Screen::PackDone => pack_done_page(app, &typo),
         };
         scrollable(container(page).padding(28).width(Fill))
             .height(Fill)
@@ -798,6 +816,26 @@ fn detect_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
     ]
     .spacing(12);
     page = page.push(actions);
+    // The avatar pack: built from this PC's own game files, whatever else is installed.
+    if app.role == Role::Eve && found.game.is_some() {
+        let label = if matches!(found.pack, Some(Pack::Missing) | None) {
+            t("pack_build")
+        } else {
+            t("pack_rebuild")
+        };
+        page = page.push(subheading(typo, t("row_pack"))).push(
+            row![
+                secondary(
+                    typo,
+                    label,
+                    (!app.detecting && !app.busy).then_some(Message::PackOpen)
+                ),
+                muted(typo, t("pack_button_hint")),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        );
+    }
     if found.installed() && found.current.is_some() {
         let has_previous = found
             .state
@@ -1199,6 +1237,395 @@ fn server_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
             label,
             (ready && !app.busy).then_some(Message::Begin(Action::Server)),
         ),
+    ))
+    .into()
+}
+
+pub fn pack_step_label(step: run::Step) -> &'static str {
+    match step {
+        run::Step::Inputs => t("pack_step_inputs"),
+        run::Step::Tables => t("pack_step_tables"),
+        run::Step::Meshes => t("pack_step_meshes"),
+        run::Step::Export => t("pack_step_export"),
+        run::Step::Bake => t("pack_step_bake"),
+        run::Step::Install => t("pack_step_install"),
+    }
+}
+
+/// `12:05`, or `1:02:03` past an hour.
+pub fn clock(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 3600 {
+        format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
+}
+
+/// The ready check's rows: their level, label and value.
+pub fn pack_rows(ready: &Ready, every: bool) -> Vec<(Level, &'static str, String)> {
+    let mut rows = Vec::new();
+    rows.push(match &ready.game {
+        None => (Level::Bad, t("row_game"), t("blocker_no_game").to_string()),
+        Some(game) => {
+            let build = game.build_id.clone().unwrap_or_else(|| "?".into());
+            let value = t_fmt("row_game_build", &[("build", &build)]);
+            if game.updating {
+                (
+                    Level::Bad,
+                    t("row_game"),
+                    format!("{value}\n{}", t("blocker_updating")),
+                )
+            } else if game.build_supported() {
+                (Level::Ok, t("row_game"), value)
+            } else {
+                (
+                    Level::Warn,
+                    t("row_game"),
+                    format!("{value}\n{}", t("pack_build_untested")),
+                )
+            }
+        }
+    });
+    rows.push(match &ready.usmap {
+        Ok(path) => (Level::Ok, t("pack_row_usmap"), path.display().to_string()),
+        Err(error) => (Level::Bad, t("pack_row_usmap"), error.clone()),
+    });
+    rows.push(match (&ready.owned, every) {
+        (_, true) => (
+            Level::Info,
+            t("pack_row_owned"),
+            t("pack_owned_every").to_string(),
+        ),
+        (Some(owned::Source::List(time)), _) => (
+            Level::Ok,
+            t("pack_row_owned"),
+            t_fmt("pack_owned_list", &[("date", &utc(*time))]),
+        ),
+        (Some(owned::Source::Save(time)), _) => (
+            Level::Ok,
+            t("pack_row_owned"),
+            t_fmt("pack_owned_save", &[("date", &utc(*time))]),
+        ),
+        (None, _) => (
+            Level::Bad,
+            t("pack_row_owned"),
+            t("pack_owned_none").to_string(),
+        ),
+    });
+    let need = size(crate::app::PACK_DISK);
+    rows.push(match ready.disk {
+        Some(free) if free < crate::app::PACK_DISK => (
+            Level::Bad,
+            t("pack_row_disk"),
+            t_fmt("pack_disk_low", &[("free", &size(free)), ("need", &need)]),
+        ),
+        Some(free) => (
+            Level::Ok,
+            t("pack_row_disk"),
+            t_fmt("pack_disk_ok", &[("free", &size(free)), ("need", &need)]),
+        ),
+        None => (
+            Level::Warn,
+            t("pack_row_disk"),
+            t("pack_unknown").to_string(),
+        ),
+    });
+    rows.push(match ready.memory {
+        Some(free) if free < crate::app::PACK_MEMORY => (
+            Level::Warn,
+            t("pack_row_memory"),
+            t_fmt("pack_memory_low", &[("free", &size(free))]),
+        ),
+        Some(free) => (
+            Level::Ok,
+            t("pack_row_memory"),
+            t_fmt("pack_memory_ok", &[("free", &size(free))]),
+        ),
+        None => (
+            Level::Info,
+            t("pack_row_memory"),
+            t("pack_unknown").to_string(),
+        ),
+    });
+    rows.push(if ready.running.is_empty() {
+        (
+            Level::Ok,
+            t("pack_row_games"),
+            t("games_all_closed").to_string(),
+        )
+    } else {
+        let names: Vec<&str> = ready.running.iter().map(|r| running_label(*r)).collect();
+        (
+            Level::Bad,
+            t("pack_row_games"),
+            t_fmt("pack_games_running", &[("names", &names.join(", "))]),
+        )
+    });
+    rows.push(if ready.sidecar {
+        (
+            Level::Ok,
+            t("pack_row_sidecar"),
+            t("pack_sidecar_embedded").to_string(),
+        )
+    } else {
+        (
+            Level::Bad,
+            t("pack_row_sidecar"),
+            t("err_no_sidecar").to_string(),
+        )
+    });
+    rows.push(match &ready.oodle {
+        Some(record) => (
+            Level::Ok,
+            t("pack_row_oodle"),
+            t_fmt(
+                "pack_oodle_ready",
+                &[(
+                    "date",
+                    &utc(std::time::UNIX_EPOCH + Duration::from_secs(record.consented)),
+                )],
+            ),
+        ),
+        None => (
+            Level::Info,
+            t("pack_row_oodle"),
+            t("pack_oodle_ask").to_string(),
+        ),
+    });
+    rows
+}
+
+fn pack_ready_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
+    let mut page = column![heading(typo, t("pack_title")), para(typo, t("pack_body"))].spacing(14);
+    let Some(ready) = &app.pack.ready else {
+        return page
+            .push(para(typo, t("pack_checking")))
+            .push(nav(typo, true, space().into()))
+            .into();
+    };
+    let mut rows = column![].spacing(10);
+    for (level, label, value) in pack_rows(ready, app.pack.every) {
+        rows = rows.push(status_row(typo, level, label, value));
+    }
+    page = page.push(card(rows)).push(
+        column![
+            checkbox(app.pack.every)
+                .label(t("pack_every"))
+                .on_toggle(Message::PackEvery)
+                .text_size(typo.sz(13)),
+            muted(typo, t("pack_every_hint")),
+        ]
+        .spacing(4),
+    );
+    let ok = ready.blockers(app.pack.every).is_empty();
+    page.push(
+        row![
+            secondary(typo, t("back"), Some(Message::Back)),
+            secondary(
+                typo,
+                t("rescan"),
+                (!app.pack.checking).then_some(Message::PackOpen)
+            ),
+            primary(typo, t("continue"), ok.then_some(Message::PackNext)),
+        ]
+        .spacing(12),
+    )
+    .into()
+}
+
+fn pack_consent_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
+    let mut page = column![heading(typo, t("pack_consent_title"))].spacing(12);
+    let Some(ready) = &app.pack.ready else {
+        return page.into();
+    };
+    let avatar = ready.home.join("avatar").display().to_string();
+    page = page
+        .push(para(
+            typo,
+            &t_fmt("pack_consent_body", &[("path", &avatar)]),
+        ))
+        .push(para(typo, t("pack_consent_eula")))
+        .push(code(typo, pins::SB_EULA));
+    page = page.push(
+        checkbox(app.pack.consent)
+            .label(t("pack_consent_check"))
+            .on_toggle(Message::PackConsent)
+            .text_size(typo.sz(13)),
+    );
+    let label = if app.ctx.dry_run {
+        t("dry_run_finish")
+    } else {
+        t("continue")
+    };
+    page.push(nav(
+        typo,
+        true,
+        primary(typo, label, app.pack.consent.then_some(Message::PackNext)),
+    ))
+    .into()
+}
+
+fn oodle_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
+    let oodle = &app.ctx.sources.oodle;
+    let file = app
+        .ctx
+        .sources
+        .oodle
+        .url
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    let mut page = column![
+        heading(typo, t("oodle_title")),
+        para(typo, t("oodle_body")),
+        card(
+            column![
+                status_row(typo, Level::Info, t("oodle_source"), oodle.url.clone()),
+                status_row(
+                    typo,
+                    Level::Info,
+                    t("oodle_release"),
+                    pins::OODLE_RELEASE.into()
+                ),
+                status_row(
+                    typo,
+                    Level::Info,
+                    t("oodle_size"),
+                    format!("{} B", oodle.size),
+                ),
+                status_row(typo, Level::Info, "SHA-256", oodle.sha256.clone()),
+            ]
+            .spacing(8)
+        ),
+        para(typo, t("oodle_eula")),
+        code(typo, pins::UE_EULA),
+    ]
+    .spacing(12);
+    let busy = app.pack.fetching.is_some();
+    if let Some(fraction) = app.pack.fetching {
+        page = page
+            .push(progress_bar(0.0..=1.0, fraction).girth(8))
+            .push(muted(typo, &format!("{:.0} %", fraction * 100.0)));
+    }
+    let label = if app.ctx.dry_run {
+        t("dry_run_finish")
+    } else {
+        t("oodle_download")
+    };
+    page = page
+        .push(
+            row![
+                secondary(typo, t("back"), (!busy).then_some(Message::Back)),
+                secondary(typo, t("cancel"), (!busy).then_some(Message::Rescan)),
+                primary(typo, label, (!busy).then_some(Message::OodleFetch(true))),
+            ]
+            .spacing(12),
+        )
+        .push(subheading(typo, t("oodle_have_title")))
+        .push(para(typo, &t_fmt("oodle_have_body", &[("file", file)])))
+        .push(
+            row![
+                text_input(t("oodle_have_placeholder"), &app.pack.oodle_file)
+                    .on_input(Message::OodleFile)
+                    .on_submit(Message::OodleFetch(false))
+                    .size(typo.sz(13))
+                    .padding(8),
+                secondary(
+                    typo,
+                    t("oodle_have_use"),
+                    (!busy).then_some(Message::OodleFetch(false))
+                ),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+    page.into()
+}
+
+fn pack_working_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
+    let (fraction, step, item) = app
+        .pack
+        .progress
+        .as_ref()
+        .map_or((0.0, t("pack_step_inputs"), ""), |p| {
+            (p.fraction, pack_step_label(p.step), p.item.as_str())
+        });
+    let cancelling = app.pack.cancel.load(std::sync::atomic::Ordering::Relaxed);
+    let mut page = column![
+        heading(typo, t("pack_working_title")),
+        para(typo, t("pack_working_body")),
+        progress_bar(0.0..=1.0, fraction).girth(10),
+        row![
+            text(format!("{:.0} %", fraction * 100.0))
+                .size(typo.sz(13))
+                .font(typo.medium)
+                .color(Palette::TEXT_PRIMARY()),
+            muted(
+                typo,
+                &t_fmt("pack_elapsed", &[("time", &clock(app.pack.elapsed()))])
+            ),
+        ]
+        .spacing(16),
+        status_row(typo, Level::Info, step, item.to_string()),
+    ]
+    .spacing(12);
+    if !app.pack.tail.is_empty() {
+        let start = app.pack.tail.len().saturating_sub(12);
+        page = page.push(card(lines(typo, app.pack.tail[start..].iter().cloned())));
+    }
+    page.push(action_button(
+        typo,
+        t(if cancelling {
+            "pack_cancelling"
+        } else {
+            "cancel"
+        }),
+        Tone::Danger,
+        (app.busy && !cancelling).then_some(Message::PackCancel),
+    ))
+    .into()
+}
+
+fn pack_done_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
+    let mut page = column![].spacing(12);
+    let Some(result) = &app.pack.result else {
+        return page.into();
+    };
+    let title = if result.ok {
+        t_fmt("pack_done_ok", &[("time", &clock(app.pack.elapsed()))])
+    } else {
+        t("pack_done_failed").to_string()
+    };
+    page = page.push(heading(typo, &title)).push(card(
+        Column::with_children(result.lines.iter().map(|l| para(typo, l))).spacing(6),
+    ));
+    if !result.warnings.is_empty() {
+        page = page
+            .push(subheading(
+                typo,
+                &t_fmt(
+                    "pack_warnings",
+                    &[("count", &result.warnings.len().to_string())],
+                ),
+            ))
+            .push(card(lines(typo, result.warnings.iter().take(40).cloned())));
+    }
+    if !result.tail.is_empty() {
+        page = page
+            .push(subheading(typo, t("pack_log_tail")))
+            .push(card(lines(typo, result.tail.iter().cloned())));
+    }
+    if let Some(log) = &app.ctx.log {
+        page = page.push(muted(
+            typo,
+            &t_fmt("log_at", &[("path", &log.display().to_string())]),
+        ));
+    }
+    page.push(primary(
+        typo,
+        t("back_to_status"),
+        (!app.busy).then_some(Message::Rescan),
     ))
     .into()
 }

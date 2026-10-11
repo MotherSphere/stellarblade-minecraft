@@ -480,6 +480,38 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_java_version",
         "Le serveur a besoin de Java 21 ou plus récent, en tant que `java` dans le PATH (trouvé : {path}). Installez-le, puis réessayez.",
     ),
+    (
+        "err_download",
+        "Le téléchargement depuis {path} a échoué. Vérifiez la connexion, puis réessayez.",
+    ),
+    (
+        "err_digest",
+        "{path} n'est pas le fichier que cette version épingle (taille ou SHA-256 différents) : il n'a pas été utilisé.",
+    ),
+    (
+        "err_oodle_entry",
+        "{path} ne contient pas la bibliothèque Oodle à l'endroit où la version d'OodleUE la range.",
+    ),
+    (
+        "err_usmap_invalid",
+        "{path} n'est pas un usmap écrit par UE4SS (en-tête incorrect). Supprimez-le, puis appuyez sur Ctrl+Pavé numérique 6 dans Stellar Blade avec une sauvegarde chargée.",
+    ),
+    (
+        "err_no_usmap",
+        "Pas encore d'usmap pour cette version de Stellar Blade. Lancez Stellar Blade avec le pont installé, chargez une sauvegarde jusqu'à ce qu'EVE soit dans le monde, puis quittez ; ou appuyez sur Ctrl+Pavé numérique 6 en jeu.",
+    ),
+    (
+        "err_usmap_rejected",
+        "EveExtract n'a pas pu lire la table des objets du jeu avec l'usmap de la version {path} : il ne décrit pas cette version du jeu. Supprimez le .usmap du dossier d'UE4SS, lancez Stellar Blade, chargez une sauvegarde, appuyez sur Ctrl+Pavé numérique 6, quittez, puis relancez la création.",
+    ),
+    (
+        "err_usmap_stale",
+        "{path} est plus ancien que le programme de Stellar Blade : UE4SS l'a écrit pour une version précédente du jeu. Supprimez-le, lancez Stellar Blade, chargez une sauvegarde, appuyez sur Ctrl+Pavé numérique 6, quittez, puis relancez la création.",
+    ),
+    (
+        "err_no_sidecar",
+        "Cet installateur a été compilé sans EveExtract : utilisez une version publiée pour créer le pack d'avatar.",
+    ),
     ("err_close_first", "Fermez d'abord {path}"),
     (
         "err_save_backup_differs",
@@ -639,4 +671,171 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "server_done_removed",
         "JAR du pont retiré. Fabric API, le lanceur, les scripts de lancement, eula.txt et les mondes restent.",
     ),
+    // Avatar pack
+    ("screen_pack_ready", "Pack d'avatar"),
+    ("screen_pack_oodle", "Oodle"),
+    ("screen_pack_working", "Création"),
+    ("pack_build", "Créer le pack d'avatar"),
+    ("pack_rebuild", "Recréer le pack d'avatar"),
+    (
+        "pack_button_hint",
+        "Créé sur ce PC à partir de votre propre copie de Stellar Blade, en lecture seule. Il ne quitte jamais ce PC.",
+    ),
+    ("pack_title", "Créer le pack d'avatar"),
+    (
+        "pack_body",
+        "Minecraft dessine EVE à partir de ce pack : ses maillages et ses textures, lus dans vos fichiers de Stellar Blade par EveExtract, puis préparés ici. Une création complète prend environ 10 à 15 minutes et environ 3 Go ; moins vous possédez de tenues, plus elle est petite et rapide. Votre pack installé reste tel quel jusqu'à ce que le nouveau soit complet.",
+    ),
+    (
+        "pack_checking",
+        "Vérification de ce dont la création a besoin…",
+    ),
+    ("pack_row_usmap", "Correspondances du jeu (usmap)"),
+    ("pack_row_owned", "Tenues possédées"),
+    ("pack_row_disk", "Espace disque libre"),
+    ("pack_row_games", "Stellar Blade et Minecraft"),
+    ("pack_row_memory", "Mémoire libre"),
+    ("pack_row_sidecar", "EveExtract"),
+    ("pack_row_oodle", "Oodle"),
+    (
+        "pack_build_untested",
+        "Ce n'est pas la version testée par cette version de l'installateur : il peut manquer des objets au pack.",
+    ),
+    ("pack_owned_every", "Toutes les tenues sont créées"),
+    (
+        "pack_owned_list",
+        "La liste de garde-robe de l'adaptateur du {date}",
+    ),
+    (
+        "pack_owned_save",
+        "Votre sauvegarde la plus récente, du {date} (en lecture seule)",
+    ),
+    (
+        "pack_owned_none",
+        "Ni liste de garde-robe ni sauvegarde trouvée : jouez une fois avec le pont, ou créez toutes les tenues",
+    ),
+    ("pack_disk_ok", "{free} libres ({need} nécessaires)"),
+    (
+        "pack_disk_low",
+        "{free} libres : une création a besoin de {need}",
+    ),
+    ("pack_memory_ok", "{free} libres"),
+    (
+        "pack_memory_low",
+        "{free} libres : les textures seront préparées par un seul processus, lentement",
+    ),
+    ("pack_unknown", "Inconnu"),
+    (
+        "pack_games_running",
+        "En cours : {names}. Fermez-les, puis vérifiez à nouveau.",
+    ),
+    ("pack_sidecar_embedded", "Inclus dans cet installateur"),
+    ("pack_oodle_ready", "Prêt (accepté le {date})"),
+    (
+        "pack_oodle_ask",
+        "Pas encore sur ce PC : les pages suivantes vous le demandent",
+    ),
+    (
+        "pack_every",
+        "Créer toutes les tenues, pas seulement celles que vous possédez",
+    ),
+    (
+        "pack_every_hint",
+        "Plus gros et plus lent, et permet à votre Minecraft de dessiner les tenues de vos amis en multijoueur.",
+    ),
+    ("pack_consent_title", "Vos propres fichiers de jeu"),
+    (
+        "pack_consent_body",
+        "Le créateur lit le Stellar Blade de ce PC, en lecture seule, les deux jeux fermés. Il écrit un pack privé dans {path}, que ce projet n'envoie ni ne partage jamais : il est dérivé de vos fichiers de jeu et reste sur ce PC. Rien n'est écrit dans le dossier du jeu.",
+    ),
+    (
+        "pack_consent_eula",
+        "Le contrat de licence de Stellar Blade interdit de modifier le jeu, de le désosser ou d'en faire des œuvres dérivées, ainsi que les mods non autorisés. Le pont et ce créateur en relèvent : vous continuez à vos risques.",
+    ),
+    (
+        "pack_consent_check",
+        "J'ai fermé Stellar Blade et Minecraft, j'accepte ce risque et j'accepte de créer le pack à partir de mes propres fichiers de jeu.",
+    ),
+    ("oodle_title", "Oodle"),
+    (
+        "oodle_body",
+        "Les fichiers de Stellar Blade sont compressés avec Oodle, dont EveExtract a besoin pour les lire. Oodle est propriétaire (Epic Games, RAD Game Tools) : ce projet ne le fournit pas. Le créateur peut le télécharger une fois depuis la publication d'un tiers, celle qu'utilise aussi CUE4Parse, puis le vérifie par son empreinte épinglée.",
+    ),
+    ("oodle_source", "Source"),
+    ("oodle_release", "Publication"),
+    ("oodle_size", "Taille"),
+    (
+        "oodle_eula",
+        "Cette publication est fournie sous l'EULA d'Unreal Engine, que vous acceptez en l'utilisant :",
+    ),
+    ("oodle_download", "Télécharger"),
+    ("oodle_have_title", "Utiliser un fichier que j'ai"),
+    (
+        "oodle_have_body",
+        "Ou indiquez le chemin de {file} de cette publication, déjà sur ce PC. Il n'est utilisé que si son SHA-256 est celui ci-dessus.",
+    ),
+    ("oodle_have_placeholder", "Chemin du zip"),
+    ("oodle_have_use", "Utiliser ce fichier"),
+    ("oodle_pick", "Saisissez d'abord le chemin du zip."),
+    ("oodle_ready", "Oodle est prêt"),
+    ("pack_working_title", "Création du pack d'avatar"),
+    (
+        "pack_working_body",
+        "Votre pack installé reste tel quel jusqu'à ce que le nouveau soit complet. Annuler arrête EveExtract et supprime le dossier de travail.",
+    ),
+    ("pack_elapsed", "Temps écoulé : {time}"),
+    ("pack_cancelling", "Annulation…"),
+    ("pack_step_inputs", "Préparation d'EveExtract et de l'usmap"),
+    ("pack_step_tables", "Lecture des tables d'objets"),
+    ("pack_step_meshes", "Lecture des maillages"),
+    ("pack_step_export", "Export des matériaux et des textures"),
+    ("pack_step_bake", "Préparation des textures"),
+    ("pack_step_install", "Installation du nouveau pack"),
+    ("pack_done_ok", "Pack d'avatar créé en {time}"),
+    ("pack_done_failed", "Pack d'avatar : non créé"),
+    (
+        "pack_result_meshes",
+        "{meshes} maillages, {items} objets de garde-robe, {files} fichiers ({size})",
+    ),
+    ("pack_result_every", "Toutes les tenues"),
+    (
+        "pack_result_owned_list",
+        "{count} tenues possédées, d'après la liste de garde-robe de l'adaptateur du {date}",
+    ),
+    (
+        "pack_result_owned_save",
+        "{count} tenues possédées, d'après votre sauvegarde du {date}",
+    ),
+    (
+        "pack_result_incremental",
+        "Créé à partir du pack installé : {count} maillages exportés, {baked} textures préparées",
+    ),
+    (
+        "pack_result_full",
+        "Créé depuis le début : {count} maillages exportés, {baked} textures préparées",
+    ),
+    (
+        "pack_result_untextured",
+        "{count} section(s) de maillage sans texture ; la prochaine création les réessaie",
+    ),
+    (
+        "pack_result_bones",
+        "{count} maillage(s) utilisent plus de 256 os ; Minecraft en dessine jusqu'à 512",
+    ),
+    (
+        "pack_result_missing",
+        "{count} maillage(s) de garde-robe absents de vos fichiers de jeu",
+    ),
+    (
+        "pack_result_note",
+        "Créé à partir de vos fichiers de jeu tels qu'ils sont maintenant : les tenues obtenues après votre dernière sauvegarde apparaîtront à la prochaine création.",
+    ),
+    ("pack_warnings", "Avertissements ({count})"),
+    ("pack_log_tail", "Les dernières lignes du journal"),
+    ("pack_cancelled", "Annulé."),
+    (
+        "pack_failed",
+        "La création s'est arrêtée. Les dernières lignes du journal sont ci-dessous.",
+    ),
+    ("pack_unchanged", "Votre pack précédent est inchangé."),
 ];
