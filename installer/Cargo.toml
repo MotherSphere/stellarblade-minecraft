@@ -18,6 +18,10 @@ anyhow = "1.0.104"
 # The shared Colony theme, fonts, Preferences kit, toast and Colony/<Program>/ paths.
 colony-ui = "0.1.6"
 iced = { version = "0.14.0", features = ["tokio", "sipper"] }
+# The pack builder's PNG reading and writing (its resizing is Pillow's, in pack::bake).
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+# The pack builder's bake workers.
+rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 # preserve_order: the game's JSON dumps are read in file order, as the Python tools did (already on in the tree).
 serde_json = { version = "1.0.151", features = ["preserve_order"] }

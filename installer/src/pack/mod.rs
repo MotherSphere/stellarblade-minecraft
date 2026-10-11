@@ -3,5 +3,7 @@
 //! CUE4Parse) reads the game's containers; this module reads the item tables and the owned items, bakes the
 //! textures, writes the manifests and swaps the new pack in. Nothing it reads or writes leaves the player's PC.
 
+pub mod bake;
 pub mod catalog;
+pub mod manifest;
 pub mod owned;
