@@ -141,7 +141,7 @@ SBMC_PAYLOAD=/path/to/new/payload SBMC_EVE_EXTRACT="$PWD/build/eve-extract" \
   cargo build --release --locked --manifest-path installer/Cargo.toml
 ```
 
-The binary is `installer/target/release/stellar-bridge-installer`. It embeds colony-ui's fonts, under the SIL Open Font License 1.1 (texts in `licenses/`), and Fabric's server launcher, under the Apache License 2.0 (`vendor/fabric-server/`); `--licenses` prints them all.
+The binary is `installer/target/release/stellar-bridge-installer`. It embeds colony-ui's fonts, under the SIL Open Font License 1.1 (texts in `licenses/`), and Fabric's server launcher, under the Apache License 2.0 (`vendor/fabric-server/`). `--licenses` prints them all with the repository's [third-party notices](../THIRD-PARTY-NOTICES.md), which name every Rust crate the binary is built from and its licence; `tools/check.py` fails when a crate in either release build is missing there.
 
 To add it to the desktop menu, install the binary, its desktop entry and the logo for your user:
 

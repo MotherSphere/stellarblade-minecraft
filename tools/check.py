@@ -175,6 +175,23 @@ def installer(crate):
         run(['cargo', 'build', '--locked'], cwd=crate, env=env)
         run(['cargo', 'clippy', '--locked', '--all-targets', '--', '-D', 'warnings'], cwd=crate, env=env)
         run(['cargo', 'test', '--locked'], cwd=crate, env=env)
+        crate_notices(crate)
+
+
+def crate_notices(crate):
+    """Every crate compiled into either release build (procedural macros leave no code) is named, with its version,
+    in THIRD-PARTY-NOTICES.md, which --licenses prints."""
+    notices = (ROOT / 'THIRD-PARTY-NOTICES.md').read_text(encoding='utf-8')
+    missing = set()
+    for target in ('x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc'):
+        tree = subprocess.run(['cargo', 'tree', '--locked', '-e', 'normal', '--target', target, '--prefix', 'none',
+                               '-f', '{p}'], cwd=crate, text=True, capture_output=True, check=True).stdout
+        for line in tree.splitlines():
+            name, version = line.split()[:2]
+            if '(proc-macro)' not in line and '(/' not in line and f'{name} {version[1:]}' not in notices:
+                missing.add(f'{name} {version[1:]}')
+    if missing:
+        raise SystemExit('THIRD-PARTY-NOTICES.md does not list: ' + ', '.join(sorted(missing)))
 
 
 def main():

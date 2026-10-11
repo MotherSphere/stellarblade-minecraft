@@ -30,6 +30,9 @@ const FONT_LICENSES: [(&str, &str); 3] = [
     ),
 ];
 
+/// The repository's third-party notices: the Rust crates, the fonts and every embedded piece, with their licences.
+const THIRD_PARTY_NOTICES: &str = include_str!("../../THIRD-PARTY-NOTICES.md");
+
 /// The logo at 64 px as raw RGBA, rendered from `assets/logo.svg` (see the README). On Wayland the compositor takes the
 /// icon from the `.desktop` file that matches the application id instead.
 const ICON_RGBA: &[u8] = include_bytes!("../assets/icon-64.rgba");
@@ -124,6 +127,7 @@ fn main() -> iced::Result {
             }
             "--licenses" => {
                 println!("stellar-bridge-installer is licensed under GPL-3.0-or-later.");
+                println!("\n== THIRD-PARTY-NOTICES.md ==\n\n{THIRD_PARTY_NOTICES}");
                 for (name, text) in payload().map(|p| p.licenses).unwrap_or_default() {
                     println!("\n== {name} ==\n\n{}", String::from_utf8_lossy(&text));
                 }
