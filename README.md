@@ -37,7 +37,7 @@ Stellar Blade × Minecraft lets you walk, fight and build in a Minecraft world a
 
 ## Status
 
-Experimental. It runs today on Linux, with one pinned Stellar Blade Steam build under Proton and Minecraft Java 1.21.1 with Fabric. The native Windows bridge (Windows 11, Windows 10 22H2 as a courtesy, both games on Windows, avatar mode) has its installer and is checked on a Windows CI runner, but has not yet been played on a real Windows PC. Avatar mode needs a private avatar pack, which the installer builds from your own game files; that build has been checked on a synthetic game, not yet on real game files. Back up your Stellar Blade saves.
+Experimental. It runs today on Linux, with one pinned Stellar Blade Steam build under Proton and Minecraft Java 1.21.1 with Fabric. The native Windows bridge (Windows 11, Windows 10 22H2 as a courtesy, both games on Windows, avatar mode) has its installer and is checked on a Windows CI runner, but has not yet been played on a real Windows PC. Avatar mode needs a private avatar pack, which the installer builds from your own game files; that build has run on real game files on Linux, but a pack it built has not yet been played in game, and it has not run on a real Windows PC. Back up your Stellar Blade saves.
 
 ## Credits and licence
 
