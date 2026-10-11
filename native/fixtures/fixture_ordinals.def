@@ -1,0 +1,6 @@
+; The overlay host's import library for the fixture adapter: by ordinal only, as
+; Stellar Blade imports xinput1_3.dll (the fixture DLL keeps its named exports).
+LIBRARY stellar_input_fixture.dll
+EXPORTS
+    XInputGetState @2 NONAME
+    XInputSetState @3 NONAME

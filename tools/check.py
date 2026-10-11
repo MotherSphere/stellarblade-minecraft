@@ -39,7 +39,8 @@ def windows(toolchain, wine):
     """The Windows DLL and its isolated checks. On Linux: built with clang-cl/xwin, run under Wine or Proton in a
     throwaway prefix. On Windows: built with Visual Studio's ClangCL toolset (the release DLL's), run directly. Each
     check runs in a throwaway working directory (the checks write files there) with a copy of the protocol fixtures;
-    the fake host runs beside both DLLs of the fixture build."""
+    the fake host runs beside both DLLs of the fixture build, then the overlay host, which imports the fixture DLL and
+    hot-patches its exports as Steam's overlay does."""
     builds = ((ROOT / 'build/native-windows', []), (ROOT / 'build/native-windows-fixture', ['-DSTELLAR_INPUT_BUILD_FIXTURE=ON']))
     for build, extra in builds:
         if NATIVE_WINDOWS:
@@ -56,13 +57,19 @@ def windows(toolchain, wine):
         (scratch / 'raw').mkdir()
         host = scratch / 'host'
         host.mkdir()
-        for name in ('stellar_input_fake_host.exe', 'xinput1_3.dll', 'stellar_input_fixture.dll'):
+        for name in ('stellar_input_fake_host.exe', 'stellar_input_overlay_host.exe', 'xinput1_3.dll',
+                     'stellar_input_fixture.dll'):
             shutil.copy2(outputs[1] / name, host)
         if NATIVE_WINDOWS:
             prefix, drive, env = [], '', None
         else:
             prefix, drive = [wine], 'Z:'
             env = {**os.environ, 'WINEPREFIX': str(scratch / 'prefix'), 'WINEDEBUG': '-all', 'DISPLAY': '', 'WAYLAND_DISPLAY': ''}
+            # Without a display Wine refuses top-level windows, which the overlay host needs, unless the prefix names its
+            # null display driver; the prefix's session then ends so the checks start one that reads it.
+            run([wine, 'reg', 'add', r'HKCU\Software\Wine\Drivers', '/v', 'Graphics', '/d', 'null', '/f'], cwd=scratch,
+                env=env, quiet=True)
+            run([Path(wine).with_name('wineserver'), '-w'], cwd=scratch, env=env, quiet=True)
         tests = sorted(path for output in outputs for path in output.glob('stellar_*_tests.exe'))
         if not tests:
             raise SystemExit('Windows checks are missing')
@@ -70,6 +77,7 @@ def windows(toolchain, wine):
             extra = [drive + str(scratch / 'raw')] if path.name == 'stellar_raw_hook_tests.exe' else []
             run([*prefix, path, *extra], cwd=scratch, env=env, quiet=True)
         run([*prefix, host / 'stellar_input_fake_host.exe'], cwd=host, env=env, quiet=True)
+        run([*prefix, host / 'stellar_input_overlay_host.exe'], cwd=host, env=env, quiet=True)
 
 
 def windows_outputs(build):

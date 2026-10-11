@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <dbt.h>
 
 #include "input.hpp"
 #include "pose_stream.hpp"
@@ -163,8 +164,9 @@ bool verify_host() {
   // A distinct fixture DLL only. Production has no environment/configuration
   // bypass.
   auto path = module_path(module);
-  if (path.substr(path.find_last_of(L"\\/") + 1) !=
-      L"stellar_input_fake_host.exe")
+  auto name = path.substr(path.find_last_of(L"\\/") + 1);
+  if (name != L"stellar_input_fake_host.exe" &&
+      name != L"stellar_input_overlay_host.exe")
     return false;
   auto entry = GetProcAddress(module, "FakeGameplayReturn");
   if (!entry)
@@ -225,6 +227,73 @@ bool read_directory(HMODULE self) {
     directory += L'\\';
   return true;
 }
+DWORD WINAPI direct_get_state(DWORD index, XINPUT_STATE *state);
+DWORD WINAPI direct_set_state(DWORD index, XINPUT_VIBRATION *vibration);
+// Points the host's imports of this DLL's XInputGetState and XInputSetState at
+// entries no overlay patches. Steam's overlay hot-patches the exports on
+// Windows and answers the game's slot-0 poll itself, as disconnected: Unreal
+// then never polls slot 0 again, and neither the pose stream nor forwarded
+// input runs. The entries behave as the exports, so an unverified host keeps a
+// plain passthrough. Returns how many imports it routed.
+int route_imports(HMODULE self) {
+  auto base = reinterpret_cast<unsigned char *>(GetModuleHandleW(nullptr));
+  auto dos = reinterpret_cast<IMAGE_DOS_HEADER *>(base);
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+    return 0;
+  auto pe = reinterpret_cast<IMAGE_NT_HEADERS64 *>(base + dos->e_lfanew);
+  if (pe->Signature != IMAGE_NT_SIGNATURE ||
+      pe->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    return 0;
+  auto &imports = pe->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+  auto own = module_path(self);
+  own = own.substr(own.find_last_of(L"\\/") + 1);
+  if (!imports.VirtualAddress || own.empty())
+    return 0;
+  int routed = 0;
+  for (auto d = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR *>(base + imports.VirtualAddress);
+       d->Name; ++d) {
+    if (!d->OriginalFirstThunk ||
+        !stellar_input::same_module(reinterpret_cast<const char *>(base + d->Name), own))
+      continue;
+    auto names = reinterpret_cast<IMAGE_THUNK_DATA64 *>(base + d->OriginalFirstThunk);
+    auto slots = reinterpret_cast<IMAGE_THUNK_DATA64 *>(base + d->FirstThunk);
+    for (; names->u1.AddressOfData; ++names, ++slots) {
+      bool by_ordinal = IMAGE_SNAP_BY_ORDINAL64(names->u1.Ordinal);
+      auto kind = stellar_input::routed_import(
+          by_ordinal, by_ordinal ? uint16_t(IMAGE_ORDINAL64(names->u1.Ordinal)) : 0,
+          by_ordinal ? std::string_view()
+                     : std::string_view(reinterpret_cast<IMAGE_IMPORT_BY_NAME *>(
+                                            base + names->u1.AddressOfData)->Name));
+      if (kind == stellar_input::Routed::none)
+        continue;
+      auto entry = kind == stellar_input::Routed::get_state
+                       ? reinterpret_cast<LONG64>(&direct_get_state)
+                       : reinterpret_cast<LONG64>(&direct_set_state);
+      auto *slot = reinterpret_cast<volatile LONG64 *>(&slots->u1.Function);
+      DWORD protection = 0, ignored = 0;
+      if (!VirtualProtect(const_cast<LONG64 *>(slot), sizeof(LONG64), PAGE_READWRITE, &protection))
+        continue;
+      InterlockedExchange64(slot, entry);
+      VirtualProtect(const_cast<LONG64 *>(slot), sizeof(LONG64), protection, &ignored);
+      ++routed;
+    }
+  }
+  return routed;
+}
+// Unreal polls a slot it saw disconnected again only after a device change,
+// and an overlay may have answered its first poll before the imports were
+// routed: posts one to this process's top-level windows.
+void nudge_device_change() {
+  EnumWindows(
+      [](HWND window, LPARAM) -> BOOL {
+        DWORD process = 0;
+        GetWindowThreadProcessId(window, &process);
+        if (process == GetCurrentProcessId())
+          PostMessageW(window, WM_DEVICECHANGE, DBT_DEVNODES_CHANGED, 0);
+        return TRUE;
+      },
+      0);
+}
 // A complete file in the bridge directory: written beside it, then renamed over it.
 bool write_text(const wchar_t *name, const std::string &bytes) {
   auto path = directory + name, temp = path + L".tmp";
@@ -246,10 +315,17 @@ void worker() {
   // calls report are rewritten on later passes anyway.
   std::string published, slot0, slot1, unsent_wardrobe;
   stellar_input::CallReport calls;
+  unsigned nudges = 0;
   // Input every 5 ms keeps forwarding latency low; permits, capture and pose
   // files keep their 20 ms period. Cached permit bytes are re-validated.
   for (unsigned iteration = 0;; ++iteration) {
     bool slow = iteration % 4 == 0;
+    // Until the gameplay poll shows up: a device change every 2 s, for a minute.
+    if (iteration % 400 == 0 && nudges < 30 &&
+        gameplay_calls.load(std::memory_order_relaxed) == 0) {
+      ++nudges;
+      nudge_device_change();
+    }
     auto input_bytes =
         read_file(directory + L"eve-input.txt", 4096).value_or("");
     if (slow) {
@@ -334,6 +410,8 @@ void initialize() {
     return;
   // Keep the DLL and its sole worker alive until process termination.
   verified = true;
+  // Again now: an overlay may have rewritten the imports since DllMain did.
+  route_imports(self);
 #ifndef STELLAR_INPUT_TEST_HOST
   // Windows 11 may ignore the game's timer resolution and slow it while it is
   // occluded and silent, as behind a fullscreen Minecraft: the worker's
@@ -416,13 +494,7 @@ DWORD get_state(DWORD index, XINPUT_STATE *state, void *caller) {
   }
   return status;
 }
-} // namespace
-// The return address MUST be captured in the exported entry, before any helper.
-extern "C" DWORD WINAPI XInputGetState(DWORD index, XINPUT_STATE *state) {
-  return get_state(index, state, _ReturnAddress());
-}
-extern "C" DWORD WINAPI XInputSetState(DWORD index,
-                                       XINPUT_VIBRATION *vibration) {
+DWORD set_state(DWORD index, XINPUT_VIBRATION *vibration) {
   std::call_once(initialize_once, initialize);
   if (!vibration)
     return ERROR_BAD_ARGUMENTS;
@@ -433,4 +505,29 @@ extern "C" DWORD WINAPI XInputSetState(DWORD index,
   }
   return backend_set ? backend_set(index, vibration)
                      : ERROR_DEVICE_NOT_CONNECTED;
+}
+// The routed imports' entries (route_imports). The return address MUST be
+// captured in the entry the host calls, before any helper.
+__declspec(noinline) DWORD WINAPI direct_get_state(DWORD index, XINPUT_STATE *state) {
+  return get_state(index, state, _ReturnAddress());
+}
+__declspec(noinline) DWORD WINAPI direct_set_state(DWORD index, XINPUT_VIBRATION *vibration) {
+  return set_state(index, vibration);
+}
+} // namespace
+// The return address MUST be captured in the exported entry, before any helper.
+extern "C" DWORD WINAPI XInputGetState(DWORD index, XINPUT_STATE *state) {
+  return get_state(index, state, _ReturnAddress());
+}
+extern "C" DWORD WINAPI XInputSetState(DWORD index,
+                                       XINPUT_VIBRATION *vibration) {
+  return set_state(index, vibration);
+}
+// The loader has bound the host's imports and runs no overlay code yet: route
+// them now, before the host's first poll. Only memory protection and the
+// import table, safe under the loader lock.
+extern "C" BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID) {
+  if (reason == DLL_PROCESS_ATTACH)
+    route_imports(self);
+  return TRUE;
 }

@@ -29,6 +29,28 @@ inline std::optional<uint64_t> redirect_call(uint64_t word, uint64_t word_at,
   return (word & ~(uint64_t(0xffffffff) << (shift + 8))) |
          uint64_t(uint32_t(to)) << (shift + 8);
 }
+// Whether an import descriptor's module name is the adapter's own file name,
+// ASCII case ignored (XINPUT1_3.dll against xinput1_3.dll).
+inline bool same_module(std::string_view imported, std::wstring_view own) {
+  if (imported.size() != own.size())
+    return false;
+  auto lower = [](unsigned c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; };
+  for (size_t i = 0; i < own.size(); ++i)
+    if (unsigned(own[i]) > 127 || lower(uint8_t(imported[i])) != lower(unsigned(own[i])))
+      return false;
+  return true;
+}
+enum class Routed { none, get_state, set_state };
+// Which of the host's imports from the adapter the adapter routes to its own
+// entries (proxy.cpp): XInputGetState and XInputSetState, by their xinput1_3
+// ordinals 2 and 3 or by name.
+inline Routed routed_import(bool by_ordinal, uint16_t ordinal, std::string_view name) {
+  if (by_ordinal)
+    return ordinal == 2 ? Routed::get_state : ordinal == 3 ? Routed::set_state : Routed::none;
+  return name == "XInputGetState" ? Routed::get_state
+         : name == "XInputSetState" ? Routed::set_state
+                                    : Routed::none;
+}
 struct Pad {
   uint32_t buttons = 0;
   int16_t lx = 0, ly = 0, rx = 0, ry = 0;
