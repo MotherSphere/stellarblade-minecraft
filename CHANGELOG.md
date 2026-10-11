@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.3.0](https://github.com/MotherSphere/stellarblade-minecraft/compare/v0.2.0...v0.3.0) (2026-10-11)
+
+
+### Features
+
+* build the avatar pack in the installer, on Linux and Windows ([abe19cb](https://github.com/MotherSphere/stellarblade-minecraft/commit/abe19cbac3a6963694b37668425eec75ae9b3915))
+* **eve-extract:** bring the pack builder's sidecar into the repository ([17c7c29](https://github.com/MotherSphere/stellarblade-minecraft/commit/17c7c29c77beb09ea0b14debe94c8905ca432db0))
+* **installer:** bake the avatar textures as pack.py does ([8cf5da9](https://github.com/MotherSphere/stellarblade-minecraft/commit/8cf5da979bf3a8a3fd3c527611c03be9830cff1c))
+* **installer:** build and swap the avatar pack with the EveExtract sidecar ([f354ebd](https://github.com/MotherSphere/stellarblade-minecraft/commit/f354ebd2bc1bf41d3c6c8c8652af69dfdecb7fa9))
+* **installer:** build the avatar pack from the status page ([700a219](https://github.com/MotherSphere/stellarblade-minecraft/commit/700a219b036f06b42459a505f20c478484a2df79))
+* **installer:** carry EveExtract instead of downloading it ([573303b](https://github.com/MotherSphere/stellarblade-minecraft/commit/573303b2c119ca519650aeb26aec525fdd5e026a))
+* **installer:** fetch and check the pack builder's inputs ([04021ef](https://github.com/MotherSphere/stellarblade-minecraft/commit/04021ef9e7c1c68d53908d09358d3e7abf0a2d0d))
+* **installer:** read the wardrobe catalog and the owned items ([b6dcdc3](https://github.com/MotherSphere/stellarblade-minecraft/commit/b6dcdc31ee6638c31eca8e707b68bd7d86900625))
+* **lua:** ask UE4SS for the usmap the pack builder reads ([f8932ba](https://github.com/MotherSphere/stellarblade-minecraft/commit/f8932ba8bfc677d76e3947ab36ec6654f9a9081a))
+
+
+### Fixes
+
+* **eve-extract:** build CUE4Parse without DotNetZip's CRC32 or unlicensed blobs ([9f3f11b](https://github.com/MotherSphere/stellarblade-minecraft/commit/9f3f11b8af37589c6075380c17ddd9549a475a15))
+* **eve-extract:** encode PNG with ImageSharp and ship no SkiaSharp native ([19429a7](https://github.com/MotherSphere/stellarblade-minecraft/commit/19429a7cb1201e6f0786d716e66797da3dbf0111))
+* **eve-extract:** print the notices of SkiaSharp's native library ([9640d4e](https://github.com/MotherSphere/stellarblade-minecraft/commit/9640d4e4be351d5a3ec20a9ae44adc53693d8d82))
+* **eve-extract:** read only the exit code of the patch check ([98173f5](https://github.com/MotherSphere/stellarblade-minecraft/commit/98173f51d1ad62b0de1464dd01f431d59305434d))
+* **eve-extract:** refuse export paths outside --out before writing ([49732fd](https://github.com/MotherSphere/stellarblade-minecraft/commit/49732fdfa4f82ebeaa42be7f5dfbbf7d17ae3140))
+* **installer:** bake a shared material name from a mesh the pack holds ([421428f](https://github.com/MotherSphere/stellarblade-minecraft/commit/421428f8c1df16ab8197dc15073b84c08103d0a9))
+* **installer:** keep every baked file inside the pack folder ([51bc604](https://github.com/MotherSphere/stellarblade-minecraft/commit/51bc604d82df185bfc3f4a9c5c711913d893dc50))
+* **installer:** keep the default suit's body material on a name clash ([86f88e3](https://github.com/MotherSphere/stellarblade-minecraft/commit/86f88e3c7ce032e3d97f34a8243b73725af3a3cc))
+* **installer:** keep the pack builder's cache and work folder private ([d0a85ac](https://github.com/MotherSphere/stellarblade-minecraft/commit/d0a85ac6f8181f375b5157e979f1f49420c6f9cb))
+* **installer:** name the games row of the pack ready check ([8196a02](https://github.com/MotherSphere/stellarblade-minecraft/commit/8196a028344219023cafbc3af0a889c0ccc31a15))
+* **installer:** print the embedded EveExtract's licence texts ([46b8104](https://github.com/MotherSphere/stellarblade-minecraft/commit/46b8104f22029e06c1b4c531378492f8ea198a7b))
+* **installer:** print the notices of its Rust crates and toolkit fonts ([5ee2134](https://github.com/MotherSphere/stellarblade-minecraft/commit/5ee2134c9a7b2031b8e71c969730f7bbc70eec55))
+* **installer:** rebuild from nothing after an every-outfit pack ([e792acc](https://github.com/MotherSphere/stellarblade-minecraft/commit/e792acc8dfec6db9da31ee23e48b45add3c14b81))
+* **installer:** refuse a usmap older than the game's program ([02a5c42](https://github.com/MotherSphere/stellarblade-minecraft/commit/02a5c421cb7040ebc208f0780b727130e50fa5fb))
+* **installer:** refuse corrupt nesting in the save reader ([1346d1b](https://github.com/MotherSphere/stellarblade-minecraft/commit/1346d1bf60d1a1d5b631e1b6ab42513cb48c4b87))
+
+
+### Documentation
+
+* bring the installer and release notes in line with the embedded sidecar ([8433780](https://github.com/MotherSphere/stellarblade-minecraft/commit/84337809cc95c944593dea60142992ebab5593c1))
+* build the avatar pack with the installer ([52a083a](https://github.com/MotherSphere/stellarblade-minecraft/commit/52a083a4b49777ebb0a3a952ed935fb369714bc3))
+* describe the avatar pack and how each player builds it ([8f14b84](https://github.com/MotherSphere/stellarblade-minecraft/commit/8f14b840aa1c52e0267d4ed5c1961b93926ac04a))
+* update the status now that the installer builds the pack ([f8ccb7d](https://github.com/MotherSphere/stellarblade-minecraft/commit/f8ccb7d62af688f9c4d5a3bc5b1e58c8446eafef))
+
 ## [0.2.0](https://github.com/MotherSphere/stellarblade-minecraft/compare/v0.1.0...v0.2.0) (2026-10-10)
 
 
