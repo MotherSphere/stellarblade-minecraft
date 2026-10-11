@@ -270,6 +270,20 @@ pub fn check_usmap(path: &Path) -> Result<()> {
         .with_context(|| Refusal::new(Kind::UsmapInvalid, path.display()))
 }
 
+/// [`check_usmap`] for UE4SS's own usmap, which must also be no older than the game's program: mappings come from its
+/// compiled code, and the Lua mod never replaces a usmap, so an older one was written for an earlier game build.
+pub fn check_game_usmap(win64: &Path, usmap: &Path) -> Result<()> {
+    check_usmap(usmap)?;
+    let modified = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).ok();
+    if let (Some(exe), Some(written)) =
+        (modified(&win64.join(crate::adapter::EXE)), modified(usmap))
+        && written < exe
+    {
+        bail!(Refusal::new(Kind::UsmapStale, usmap.display()));
+    }
+    Ok(())
+}
+
 /// The newest `*.usmap` in UE4SS's folders (`Win64/ue4ss`, or `Win64` in the old layout), where UE4SS writes it.
 pub fn usmap_in_game(win64: &Path) -> Option<PathBuf> {
     [win64.join("ue4ss"), win64.to_path_buf()]
@@ -297,7 +311,7 @@ pub fn cached_usmap(cache: &Path, build_id: Option<&str>) -> PathBuf {
 pub fn take_usmap(win64: &Path, build_id: Option<&str>, cache: &Path) -> Result<PathBuf> {
     let cached = cached_usmap(cache, build_id);
     if let Some(found) = usmap_in_game(win64) {
-        check_usmap(&found)?;
+        check_game_usmap(win64, &found)?;
         platform::create_private_dir_all(cache)?;
         fs::create_dir_all(cached.parent().context("no usmap folder")?)?;
         let part = cached.with_extension("usmap.part");
@@ -554,6 +568,24 @@ pub(crate) mod tests {
                 "{bad:?}"
             );
         }
+        // One older than the game's program was written for an earlier build: refused by name, not copied.
+        fs::remove_file(win64.join("Mappings.usmap")).unwrap();
+        fs::write(&usmap, [0xC4, 0x30, 3, 0, 1]).unwrap();
+        let exe = win64.join(crate::adapter::EXE);
+        fs::write(&exe, b"").unwrap();
+        let later = fs::metadata(&usmap).unwrap().modified().unwrap() + Duration::from_secs(60);
+        File::options()
+            .write(true)
+            .open(&exe)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let error = take_usmap(&win64, Some("24463856"), &cache).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<Refusal>().map(|r| r.kind),
+            Some(Kind::UsmapStale)
+        );
+        assert_eq!(fs::read(&cached).unwrap(), before);
         assert_eq!(
             cached_usmap(&cache, Some("../x")),
             cache.join("usmap/unknown.usmap")

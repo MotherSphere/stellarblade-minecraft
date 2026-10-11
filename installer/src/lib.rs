@@ -113,6 +113,7 @@ kinds! {
     UsmapInvalid => "err_usmap_invalid",
     NoUsmap => "err_no_usmap",
     UsmapRejected => "err_usmap_rejected",
+    UsmapStale => "err_usmap_stale",
     NoSidecar => "err_no_sidecar",
 }
 

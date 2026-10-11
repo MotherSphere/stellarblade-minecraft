@@ -472,6 +472,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "EveExtract could not read the game's item table with the usmap of build {path}: it does not describe this game build. Delete the .usmap in UE4SS's folder, start Stellar Blade, load a save, press Ctrl+Numpad6, quit, then build again.",
     ),
     (
+        "err_usmap_stale",
+        "{path} is older than Stellar Blade's program: UE4SS wrote it for an earlier game build. Delete it, start Stellar Blade, load a save, press Ctrl+Numpad6, quit, then build again.",
+    ),
+    (
         "err_no_sidecar",
         "This installer was built without EveExtract: use a release build to make the avatar pack.",
     ),

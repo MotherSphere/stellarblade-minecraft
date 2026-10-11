@@ -505,6 +505,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "EveExtract n'a pas pu lire la table des objets du jeu avec l'usmap de la version {path} : il ne décrit pas cette version du jeu. Supprimez le .usmap du dossier d'UE4SS, lancez Stellar Blade, chargez une sauvegarde, appuyez sur Ctrl+Pavé numérique 6, quittez, puis relancez la création.",
     ),
     (
+        "err_usmap_stale",
+        "{path} est plus ancien que le programme de Stellar Blade : UE4SS l'a écrit pour une version précédente du jeu. Supprimez-le, lancez Stellar Blade, chargez une sauvegarde, appuyez sur Ctrl+Pavé numérique 6, quittez, puis relancez la création.",
+    ),
+    (
         "err_no_sidecar",
         "Cet installateur a été compilé sans EveExtract : utilisez une version publiée pour créer le pack d'avatar.",
     ),

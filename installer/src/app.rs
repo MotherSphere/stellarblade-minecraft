@@ -511,7 +511,7 @@ pub fn pack_ready(ctx: &Ctx, game: Option<detect::Game>, home: PathBuf) -> Ready
     let usmap = match &game {
         None => Err(t("blocker_no_game").to_string()),
         Some(game) => inputs::usmap_in_game(&game.win64)
-            .map(|found| inputs::check_usmap(&found).map(|()| found))
+            .map(|found| inputs::check_game_usmap(&game.win64, &found).map(|()| found))
             .unwrap_or_else(|| {
                 let cached = inputs::cached_usmap(&cache, game.build_id.as_deref());
                 inputs::check_usmap(&cached)
