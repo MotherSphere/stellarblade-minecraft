@@ -194,7 +194,8 @@ pub fn run_with(
     remove(&old)?;
     remove(&tmp)?;
     remove(&build.work)?;
-    fs::create_dir_all(&build.work)?;
+    // The raw exports (game textures, tables, names) stay private to the player.
+    platform::create_private_dir_all(&build.work)?;
     if !build.home.exists() {
         fs::create_dir_all(
             build

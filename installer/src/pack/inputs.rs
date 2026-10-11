@@ -100,6 +100,8 @@ pub fn unpack_sidecar(sources: &Sources, cache: &Path) -> Result<PathBuf> {
     let Some(embedded) = &sources.sidecar else {
         bail!(Refusal::new(Kind::NoSidecar, ""));
     };
+    // Before every build: also makes a cache from an older installer private.
+    platform::create_private_dir_all(cache)?;
     let path = cache.join(SIDECAR);
     if matches(&path, &embedded.sha256) {
         return Ok(path);
@@ -107,7 +109,6 @@ pub fn unpack_sidecar(sources: &Sources, cache: &Path) -> Result<PathBuf> {
     if sha256_hex(embedded.bytes) != embedded.sha256 {
         bail!(Refusal::new(Kind::DigestMismatch, SIDECAR));
     }
-    fs::create_dir_all(cache)?;
     let part = cache.join(format!("{SIDECAR}.part"));
     fs::write(&part, embedded.bytes)?;
     platform::make_executable(&part)?;
@@ -210,7 +211,7 @@ pub fn fetch_oodle(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<PathBuf> {
-    fs::create_dir_all(cache)?;
+    platform::create_private_dir_all(cache)?;
     let zip = cache.join("oodle.zip");
     download(&sources.oodle, &zip, cancel, progress)?;
     let result = keep_oodle(sources, cache, &zip, &sources.oodle.url);
@@ -223,7 +224,7 @@ pub fn oodle_from_file(sources: &Sources, cache: &Path, zip: &Path) -> Result<Pa
     if !matches(zip, &sources.oodle.sha256) {
         bail!(Refusal::new(Kind::DigestMismatch, zip.display()));
     }
-    fs::create_dir_all(cache)?;
+    platform::create_private_dir_all(cache)?;
     keep_oodle(sources, cache, zip, "file")
 }
 
@@ -297,6 +298,7 @@ pub fn take_usmap(win64: &Path, build_id: Option<&str>, cache: &Path) -> Result<
     let cached = cached_usmap(cache, build_id);
     if let Some(found) = usmap_in_game(win64) {
         check_usmap(&found)?;
+        platform::create_private_dir_all(cache)?;
         fs::create_dir_all(cached.parent().context("no usmap folder")?)?;
         let part = cached.with_extension("usmap.part");
         fs::copy(&found, &part)?;
@@ -470,6 +472,16 @@ pub(crate) mod tests {
         assert_eq!(path, cache.join(SIDECAR));
         assert_eq!(fs::read(&path).unwrap(), program);
         assert!(!cache.join(format!("{SIDECAR}.part")).exists());
+        // The cache keeps Oodle and the usmap: private, also when an older installer made it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = || fs::metadata(&cache).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(), 0o700);
+            fs::set_permissions(&cache, fs::Permissions::from_mode(0o755)).unwrap();
+            unpack_sidecar(&sources, &cache).unwrap();
+            assert_eq!(mode(), 0o700);
+        }
 
         // A changed cached copy is unpacked again.
         fs::write(&path, b"changed").unwrap();

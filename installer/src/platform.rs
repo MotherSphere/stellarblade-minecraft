@@ -320,6 +320,25 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
     fs::create_dir(path)
 }
 
+/// Creates `path` and its parents; `path` itself is private (Linux: mode 0700, also set on one that exists; Windows:
+/// the inherited ACL). For the folders that keep game-derived or proprietary files (the pack builder's cache and work
+/// folder).
+pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match create_private_dir(path) {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+        result => result?,
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Makes a script runnable (`start.sh`).
 #[cfg(unix)]
 pub fn make_executable(path: &Path) -> io::Result<()> {
