@@ -1,5 +1,6 @@
 //! The window's state machine: welcome, detect (also the status page, with repair, roll back and uninstall), verify,
-//! target, consent, install with its step list and log, done; and for a server operator, the server folder page.
+//! target, consent, install with its step list and log, done; for a server operator, the server folder page; and from
+//! the status page, the avatar pack builder's pages: ready check, consent, Oodle, progress and result.
 //! [`App::step`] never blocks: detection, hashing and every operation run as a [`Job`] on a worker thread that reports
 //! back through messages. The UI smoke test drives `step` and runs each job in place on a fake tree.
 
@@ -8,7 +9,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Context as _;
 use colony_ui::preferences::{Change, StandardPreferences};
@@ -20,6 +22,8 @@ use crate::i18n::{self, Lang, t, t_fmt};
 use crate::launcher::{self, Instance, Kind, Launcher};
 use crate::ledger::{self, State, Status};
 use crate::ops::{self, Piece, Step, Target};
+use crate::pack::inputs::{self, Sources};
+use crate::pack::{extract, owned, run};
 use crate::payload::Payload;
 use crate::safety::{self, Running};
 use crate::server::{self, Folder, Layout};
@@ -44,6 +48,10 @@ pub struct Ctx {
     pub dry_run: bool,
     /// The Java a server folder's start scripts run: `java` outside tests.
     pub java: OsString,
+    /// `~/.cache/Colony/Stellar Bridge`: the pack build's work folder goes there.
+    pub cache: PathBuf,
+    /// Where the pack builder's EveExtract and Oodle come from: [`Sources::release`] outside tests.
+    pub sources: Sources,
 }
 
 impl Ctx {
@@ -96,6 +104,12 @@ pub enum Screen {
     Done,
     /// The server operator's page: the folder, what it holds, the EULA box.
     Server,
+    /// The avatar pack builder, from the status page: what it needs, then its consent, Oodle's, the build, the result.
+    PackReady,
+    PackConsent,
+    PackOodle,
+    PackWorking,
+    PackDone,
 }
 
 impl Screen {
@@ -114,6 +128,17 @@ impl Screen {
         Screen::Working,
         Screen::Done,
     ];
+    pub const PACK: [Screen; 5] = [
+        Screen::PackReady,
+        Screen::PackConsent,
+        Screen::PackOodle,
+        Screen::PackWorking,
+        Screen::PackDone,
+    ];
+
+    pub fn is_pack(self) -> bool {
+        Self::PACK.contains(&self)
+    }
 
     /// The pages the sidebar lists for `role`.
     pub fn steps(role: Role) -> &'static [Screen] {
@@ -175,6 +200,8 @@ pub struct Found {
     pub pieces: Vec<Piece>,
     pub pieces_error: Option<String>,
     pub pack: Option<Pack>,
+    /// The folder holding the avatar pack the status row is about (`detect::bridge_home`).
+    pub pack_home: PathBuf,
 }
 
 impl Found {
@@ -271,9 +298,8 @@ pub fn detect(ctx: &Ctx) -> Found {
     let flatpak = current
         .as_ref()
         .is_some_and(|t| t.bridge.starts_with(detect::bridge_home(&ctx.home, true)));
-    let pack = Some(detect::pack(
-        &detect::bridge_home(&ctx.home, flatpak).join("avatar"),
-    ));
+    let pack_home = detect::bridge_home(&ctx.home, flatpak);
+    let pack = Some(detect::pack(&pack_home.join("avatar")));
     Found {
         steam,
         game,
@@ -286,6 +312,7 @@ pub fn detect(ctx: &Ctx) -> Found {
         pieces,
         pieces_error,
         pack,
+        pack_home,
     }
 }
 
@@ -427,6 +454,293 @@ pub fn server_done_lines(outcome: &server::Outcome) -> Vec<String> {
     lines
 }
 
+/// Free disk a full pack build needs: the new pack, the installed one until the swap, and one batch of exports.
+pub const PACK_DISK: u64 = 8_000_000_000;
+/// Below this much free memory the bakes run on one worker, slowly.
+pub const PACK_MEMORY: u64 = 2_000_000_000;
+
+/// What the pack builder's ready check found. Reading it writes nothing.
+#[derive(Debug, Clone)]
+pub struct Ready {
+    pub game: Option<detect::Game>,
+    /// The folder holding `avatar/` and `bridge/`.
+    pub home: PathBuf,
+    /// The usmap the build would take (UE4SS's newest, else the cached copy for this build), or why there is none.
+    pub usmap: Result<PathBuf, String>,
+    /// Where the owned items would come from, and its time.
+    pub owned: Option<owned::Source>,
+    pub disk: Option<u64>,
+    pub memory: Option<u64>,
+    pub running: Vec<Running>,
+    pub sidecar: inputs::Sidecar,
+    pub oodle: Option<inputs::OodleRecord>,
+}
+
+impl Ready {
+    /// What stops the build, as string keys; empty when it can start.
+    pub fn blockers(&self, every: bool) -> Vec<&'static str> {
+        let mut found = Vec::new();
+        match &self.game {
+            None => found.push("blocker_no_game"),
+            Some(game) if game.updating => found.push("blocker_updating"),
+            Some(_) => {}
+        }
+        if self.usmap.is_err() {
+            found.push("pack_row_usmap");
+        }
+        if self.owned.is_none() && !every {
+            found.push("pack_row_owned");
+        }
+        if self.disk.is_some_and(|d| d < PACK_DISK) {
+            found.push("pack_row_disk");
+        }
+        if !self.running.is_empty() {
+            found.push("games_title");
+        }
+        if self.sidecar == inputs::Sidecar::Unpinned {
+            found.push("err_no_sidecar");
+        }
+        found
+    }
+}
+
+/// The ready check: the game, the usmap, the owned items' source, disk, memory, the games, EveExtract and Oodle.
+pub fn pack_ready(ctx: &Ctx, game: Option<detect::Game>, home: PathBuf) -> Ready {
+    let cache = inputs::cache(&ctx.data);
+    let usmap = match &game {
+        None => Err(t("blocker_no_game").to_string()),
+        Some(game) => inputs::usmap_in_game(&game.win64)
+            .map(|found| inputs::check_usmap(&found).map(|()| found))
+            .unwrap_or_else(|| {
+                let cached = inputs::cached_usmap(&cache, game.build_id.as_deref());
+                inputs::check_usmap(&cached)
+                    .map(|()| cached)
+                    .context(Refusal::new(Refused::NoUsmap, ""))
+            })
+            .map_err(|e| localized(&e)),
+    };
+    let list = home.join("bridge").join("eve-wardrobe.txt");
+    let list_time = fs::metadata(&list)
+        .and_then(|m| m.modified())
+        .ok()
+        .filter(|_| {
+            fs::read(&list).is_ok_and(|b| owned::from_list(&String::from_utf8_lossy(&b)).is_some())
+        });
+    let save = game.as_ref().and_then(|g| {
+        owned::newest_save(&platform::save_dirs(g.prefix.as_deref(), &ctx.home)).map(|(_, t)| t)
+    });
+    // As `owned::owned` chooses: the list when it is newer than the save.
+    let owned = match (list_time, save) {
+        (Some(list), save) if save.is_none_or(|s| list > s) => Some(owned::Source::List(list)),
+        (_, Some(save)) => Some(owned::Source::Save(save)),
+        _ => None,
+    };
+    let running = safety::running_at(&ctx.proc_root, false).unwrap_or_else(|error| {
+        log::line(&format!("pack: the process list was not read: {error:#}"));
+        vec![Running::StellarBlade, Running::Minecraft]
+    });
+    Ready {
+        usmap,
+        owned,
+        disk: [home.as_path(), ctx.cache.as_path()]
+            .iter()
+            .filter_map(|p| platform::available_disk(p))
+            .min(),
+        memory: platform::available_memory(),
+        running,
+        sidecar: inputs::sidecar(&ctx.sources, &cache),
+        oodle: inputs::oodle(&ctx.sources, &cache).map(|(_, record)| record),
+        game,
+        home,
+    }
+}
+
+/// What a pack build ended with, in the window's language.
+#[derive(Debug, Clone)]
+pub struct PackResult {
+    pub ok: bool,
+    pub lines: Vec<String>,
+    /// The build's warnings (materials or icons it skipped), as the log has them.
+    pub warnings: Vec<String>,
+    /// The log's last lines, kept when the build failed.
+    pub tail: Vec<String>,
+}
+
+/// One pack build and what it needs.
+pub struct PackWork {
+    pub ctx: Ctx,
+    pub game: detect::Game,
+    pub home: PathBuf,
+    pub every: bool,
+    pub cancel: Arc<AtomicBool>,
+}
+
+/// `2026-10-11 14:05 UTC`.
+pub fn utc(time: SystemTime) -> String {
+    let secs = time
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Howard Hinnant's civil_from_days.
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let minutes = secs % 86_400 / 60;
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
+        minutes / 60,
+        minutes % 60
+    )
+}
+
+/// `3.1 GB`.
+pub fn size(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
+}
+
+/// EveExtract and the usmap made ready, then the build; what it did or why it stopped, in the window's language.
+pub fn build_pack(work: &PackWork, send: &dyn Fn(Message)) -> PackResult {
+    let ctx = &work.ctx;
+    let cache = &inputs::cache(&ctx.data);
+    // The bakes report from their worker threads: progress goes through a channel this thread forwards.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let build = move || -> anyhow::Result<run::Report> {
+        let progress = |progress: run::Progress| {
+            let _ = sender.send(progress);
+        };
+        let step = |item: &str, fraction: f32| {
+            progress(run::Progress {
+                step: run::Step::Inputs,
+                item: item.to_string(),
+                fraction,
+            })
+        };
+        step("EveExtract", 0.0);
+        let mut shown = 0;
+        let program = inputs::fetch_sidecar(&ctx.sources, cache, &work.cancel, &mut |done, _| {
+            if done >> 20 > shown {
+                shown = done >> 20;
+                step(&format!("EveExtract ({shown} MB)"), 0.0);
+            }
+        })?;
+        step("usmap", 0.0);
+        let usmap = inputs::take_usmap(&work.game.win64, work.game.build_id.as_deref(), cache)?;
+        let (oodle, _) = inputs::oodle(&ctx.sources, cache).context("Oodle is not ready")?;
+        let build = run::Build {
+            sidecar: extract::Sidecar {
+                program,
+                paks: work.game.dir.join("SB").join("Content").join("Paks"),
+                usmap,
+                oodle,
+                bundle: Some(cache.join("bundle")),
+            },
+            home: work.home.clone(),
+            work: ctx.cache.join("pack-work"),
+            save_dirs: platform::save_dirs(work.game.prefix.as_deref(), &ctx.home),
+            culture: i18n::lang().tag().into(),
+            every: work.every,
+            build_id: work.game.build_id.clone(),
+        };
+        let closed = ctx.closed(false);
+        run::run(&build, &closed, &work.cancel, &progress)
+    };
+    let built = std::thread::scope(|scope| {
+        let worker = scope.spawn(build);
+        for progress in receiver {
+            send(Message::PackProgress(Box::new(progress)));
+        }
+        worker
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("the pack build panicked")))
+    });
+    match built {
+        Ok(report) => {
+            let checks = &report.checks;
+            let mut lines = vec![t_fmt(
+                "pack_result_meshes",
+                &[
+                    ("meshes", &checks.meshes.to_string()),
+                    ("items", &checks.wardrobe_items.to_string()),
+                    ("files", &checks.files.to_string()),
+                    ("size", &size(checks.bytes)),
+                ],
+            )];
+            lines.push(match &report.owned {
+                None => t("pack_result_every").to_string(),
+                Some((count, source)) => {
+                    let (key, time) = match source {
+                        owned::Source::List(time) => ("pack_result_owned_list", time),
+                        owned::Source::Save(time) => ("pack_result_owned_save", time),
+                    };
+                    t_fmt(key, &[("count", &count.to_string()), ("date", &utc(*time))])
+                }
+            });
+            lines.push(t_fmt(
+                if report.incremental {
+                    "pack_result_incremental"
+                } else {
+                    "pack_result_full"
+                },
+                &[
+                    ("count", &report.meshes_exported.to_string()),
+                    ("baked", &checks.baked.to_string()),
+                ],
+            ));
+            let sections: usize = checks.untextured_sections.values().map(Vec::len).sum();
+            for (count, key) in [
+                (sections, "pack_result_untextured"),
+                (checks.over_256_bones.len(), "pack_result_bones"),
+                (report.missing.len(), "pack_result_missing"),
+            ] {
+                if count > 0 {
+                    lines.push(t_fmt(key, &[("count", &count.to_string())]));
+                }
+            }
+            lines.push(t("pack_result_note").to_string());
+            for warning in &checks.warnings {
+                log::line(&format!("pack warning: {warning}"));
+            }
+            PackResult {
+                ok: true,
+                lines,
+                warnings: checks.warnings.clone(),
+                tail: Vec::new(),
+            }
+        }
+        Err(error) => {
+            let headline = if error.is::<extract::Cancelled>() {
+                t("pack_cancelled").to_string()
+            } else {
+                if error
+                    .downcast_ref::<Refusal>()
+                    .is_some_and(|r| r.kind == Refused::UsmapRejected)
+                {
+                    // That copy cannot read this game: the next build takes UE4SS's again, or asks for one.
+                    let _ =
+                        fs::remove_file(inputs::cached_usmap(cache, work.game.build_id.as_deref()));
+                }
+                if error.chain().any(|e| e.is::<Refusal>()) {
+                    localized(&error)
+                } else {
+                    t("pack_failed").to_string()
+                }
+            };
+            log::line(&format!("pack: {error:#}"));
+            PackResult {
+                ok: false,
+                lines: vec![headline, t("pack_unchanged").to_string()],
+                warnings: Vec::new(),
+                tail: log::recent(),
+            }
+        }
+    }
+}
+
 /// The result shown on the done page.
 #[derive(Debug, Clone)]
 pub struct Outcome {
@@ -479,6 +793,24 @@ pub enum Message {
     ServerChecked(String, Box<Result<ServerCheck, String>>),
     /// The operator accepts Mojang's EULA for a folder without `eula.txt`.
     ServerEula(bool),
+
+    /// The status page's pack button: the ready check starts.
+    PackOpen,
+    PackChecked(Box<Ready>),
+    /// Every outfit, not only the owned ones.
+    PackEvery(bool),
+    PackConsent(bool),
+    /// The ready check's or the consent page's Continue.
+    PackNext,
+    /// The Oodle zip the player has, as typed.
+    OodleFile(String),
+    /// Download Oodle (`true`), or take the typed zip.
+    OodleFetch(bool),
+    OodleProgress(f32),
+    OodleDone(Result<(), String>),
+    PackProgress(Box<run::Progress>),
+    PackCancel,
+    PackFinished(Box<PackResult>),
 }
 
 /// Blocking work, run off the UI thread by [`spawn`] and in place by the tests.
@@ -494,6 +826,19 @@ pub enum Job {
         typed: String,
         java: OsString,
     },
+    /// The pack builder's ready check; writes nothing.
+    PackCheck {
+        ctx: Ctx,
+        game: Box<Option<detect::Game>>,
+        home: PathBuf,
+    },
+    /// Oodle into the builder cache: downloaded (the player agreed), or from the zip they have.
+    Oodle {
+        ctx: Ctx,
+        file: Option<PathBuf>,
+        cancel: Arc<AtomicBool>,
+    },
+    Pack(Box<PackWork>),
 }
 
 /// An operation and everything it needs.
@@ -552,6 +897,29 @@ impl Job {
                     .map_err(|e| localized(&e));
                 send(Message::ServerChecked(typed, Box::new(checked)));
             }
+            Job::PackCheck { ctx, game, home } => send(Message::PackChecked(Box::new(pack_ready(
+                &ctx, *game, home,
+            )))),
+            Job::Oodle { ctx, file, cancel } => {
+                let cache = inputs::cache(&ctx.data);
+                let fetched = match file {
+                    Some(zip) => inputs::oodle_from_file(&ctx.sources, &cache, &zip),
+                    None => {
+                        let mut shown = 0;
+                        inputs::fetch_oodle(&ctx.sources, &cache, &cancel, &mut |done, total| {
+                            let percent = done * 100 / total.unwrap_or(u64::MAX).max(1);
+                            if percent > shown {
+                                shown = percent;
+                                send(Message::OodleProgress(percent as f32 / 100.0));
+                            }
+                        })
+                    }
+                };
+                send(Message::OodleDone(
+                    fetched.map(|_| ()).map_err(|e| localized(&e)),
+                ));
+            }
+            Job::Pack(work) => send(Message::PackFinished(Box::new(build_pack(&work, send)))),
         }
     }
 }
@@ -665,6 +1033,34 @@ pub fn spawn(job: Job) -> Task<Message> {
     Task::run(receiver, |message| message)
 }
 
+/// The avatar pack pages' state.
+#[derive(Default)]
+pub struct PackFlow {
+    pub ready: Option<Ready>,
+    pub checking: bool,
+    pub every: bool,
+    pub consent: bool,
+    pub oodle_file: String,
+    /// An Oodle download or check runs, this far.
+    pub fetching: Option<f32>,
+    pub cancel: Arc<AtomicBool>,
+    pub progress: Option<run::Progress>,
+    pub started: Option<Instant>,
+    /// The build's time, once it ended.
+    pub took: Option<Duration>,
+    /// The log's last lines while the build runs.
+    pub tail: Vec<String>,
+    pub result: Option<PackResult>,
+}
+
+impl PackFlow {
+    pub fn elapsed(&self) -> Duration {
+        self.took
+            .or_else(|| self.started.map(|s| s.elapsed()))
+            .unwrap_or_default()
+    }
+}
+
 pub struct App {
     pub ctx: Ctx,
     pub prefs: Prefs,
@@ -707,6 +1103,7 @@ pub struct App {
     pub server: Option<Result<ServerCheck, String>>,
     pub server_checking: bool,
     pub server_eula: bool,
+    pub pack: PackFlow,
 }
 
 impl App {
@@ -752,6 +1149,7 @@ impl App {
             server: None,
             server_checking: false,
             server_eula: false,
+            pack: PackFlow::default(),
         };
         (app, job)
     }
@@ -775,7 +1173,8 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let close = window::close_requests().map(Message::CloseRequested);
-        if matches!(self.modal, Some(Modal::Games(_))) || !self.toasts.is_empty() {
+        let building = self.busy && self.screen == Screen::PackWorking;
+        if matches!(self.modal, Some(Modal::Games(_))) || !self.toasts.is_empty() || building {
             let tick = iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick);
             Subscription::batch([close, tick])
         } else {
@@ -792,6 +1191,10 @@ impl App {
             Message::CloseRequested(_) => {
                 if self.busy {
                     self.close_pending = true;
+                    if self.screen == Screen::PackWorking {
+                        // The build stops at its next check and leaves the installed pack as it was.
+                        self.pack.cancel.store(true, Ordering::Relaxed);
+                    }
                     self.error(t("still_writing"));
                     Task::none()
                 } else {
@@ -799,7 +1202,7 @@ impl App {
                 }
             }
             message => {
-                let finished = matches!(message, Message::Finished(_));
+                let finished = matches!(message, Message::Finished(_) | Message::PackFinished(_));
                 let job = self.step(message);
                 if finished && self.close_pending {
                     return iced::exit();
@@ -1043,6 +1446,9 @@ impl App {
             Screen::Target => Screen::Detect,
             Screen::Consent => Screen::Target,
             Screen::Server => Screen::Welcome,
+            Screen::PackReady => Screen::Detect,
+            Screen::PackConsent => Screen::PackReady,
+            Screen::PackOodle => Screen::PackConsent,
             other => other,
         }
     }
@@ -1164,6 +1570,59 @@ impl App {
             typed: typed.to_string(),
             java: self.ctx.java.clone(),
         })
+    }
+
+    /// The pack build, once both consents are given and Oodle is ready; refused while a game runs.
+    fn launch_pack(&mut self) -> Option<Job> {
+        let ready = self.pack.ready.as_ref()?;
+        let game = ready.game.clone()?;
+        let home = ready.home.clone();
+        self.pack.result = None;
+        self.pack.took = None;
+        if self.ctx.dry_run {
+            self.pack.result = Some(PackResult {
+                ok: true,
+                lines: vec![t("dry_run_nothing_written").to_string()],
+                warnings: Vec::new(),
+                tail: Vec::new(),
+            });
+            self.screen = Screen::PackDone;
+            return None;
+        }
+        match safety::running_at(&self.ctx.proc_root, false) {
+            Ok(running) if running.is_empty() => {}
+            Ok(running) => {
+                self.pending = None;
+                self.modal = Some(Modal::Games(running));
+                return None;
+            }
+            Err(error) => {
+                self.error(localized(&error));
+                return None;
+            }
+        }
+        self.busy = true;
+        self.screen = Screen::PackWorking;
+        self.pack.cancel = Arc::default();
+        self.pack.started = Some(Instant::now());
+        self.pack.progress = None;
+        self.pack.tail.clear();
+        log::line(&format!(
+            "Starting the pack build in {} ({})",
+            home.display(),
+            if self.pack.every {
+                "every outfit"
+            } else {
+                "owned outfits"
+            }
+        ));
+        Some(Job::Pack(Box::new(PackWork {
+            ctx: self.ctx.clone(),
+            game,
+            home,
+            every: self.pack.every,
+            cancel: self.pack.cancel.clone(),
+        })))
     }
 
     /// Checks the games, then starts `action` or waits for them in the games modal.
@@ -1454,6 +1913,10 @@ impl App {
                 Some(Modal::Confirm(action, _)) => return self.launch(action),
                 // Unlocked once everything is closed; launch checks again.
                 Some(Modal::Games(running)) if running.is_empty() => {
+                    if self.screen.is_pack() {
+                        self.modal = None;
+                        return self.launch_pack();
+                    }
                     return self.pending.and_then(|action| self.launch(action));
                 }
                 _ => {}
@@ -1536,8 +1999,273 @@ impl App {
                 }
             }
             Message::ServerEula(checked) => self.server_eula = checked,
+
+            Message::PackOpen => {
+                if self.busy || self.detecting {
+                    return None;
+                }
+                let found = self.found.as_ref()?;
+                self.screen = Screen::PackReady;
+                self.pack.ready = None;
+                self.pack.checking = true;
+                return Some(Job::PackCheck {
+                    ctx: self.ctx.clone(),
+                    game: Box::new(found.game.clone()),
+                    home: found.pack_home.clone(),
+                });
+            }
+            Message::PackChecked(ready) => {
+                self.pack.checking = false;
+                log::line(&format!(
+                    "Pack ready check: usmap {}, owned {:?}, disk {:?}, memory {:?}, running {:?}, EveExtract {:?}, Oodle {}",
+                    if ready.usmap.is_ok() {
+                        "found"
+                    } else {
+                        "missing"
+                    },
+                    ready.owned,
+                    ready.disk,
+                    ready.memory,
+                    ready.running,
+                    ready.sidecar,
+                    if ready.oodle.is_some() {
+                        "ready"
+                    } else {
+                        "not yet"
+                    },
+                ));
+                self.pack.ready = Some(*ready);
+            }
+            Message::PackEvery(checked) => self.pack.every = checked,
+            Message::PackConsent(checked) => self.pack.consent = checked,
+            Message::PackNext => match self.screen {
+                Screen::PackReady
+                    if self
+                        .pack
+                        .ready
+                        .as_ref()
+                        .is_some_and(|r| r.blockers(self.pack.every).is_empty()) =>
+                {
+                    self.pack.consent = false;
+                    self.screen = Screen::PackConsent;
+                }
+                Screen::PackConsent if self.pack.consent => {
+                    if self.pack.ready.as_ref().is_some_and(|r| r.oodle.is_some()) {
+                        return self.launch_pack();
+                    }
+                    self.screen = Screen::PackOodle;
+                }
+                _ => {}
+            },
+            Message::OodleFile(path) => self.pack.oodle_file = path,
+            Message::OodleFetch(download) => {
+                if self.pack.fetching.is_some() || self.screen != Screen::PackOodle {
+                    return None;
+                }
+                if self.ctx.dry_run {
+                    return self.launch_pack();
+                }
+                let file = (!download).then(|| PathBuf::from(self.pack.oodle_file.trim()));
+                if file.as_ref().is_some_and(|f| f.as_os_str().is_empty()) {
+                    self.error(t("oodle_pick"));
+                    return None;
+                }
+                log::line(&match &file {
+                    Some(zip) => format!("Oodle: the player's zip {}", zip.display()),
+                    None => format!(
+                        "Oodle: download agreed, from {}",
+                        self.ctx.sources.oodle.url
+                    ),
+                });
+                self.pack.fetching = Some(0.0);
+                self.pack.cancel = Arc::default();
+                return Some(Job::Oodle {
+                    ctx: self.ctx.clone(),
+                    file,
+                    cancel: self.pack.cancel.clone(),
+                });
+            }
+            Message::OodleProgress(fraction) => self.pack.fetching = Some(fraction),
+            Message::OodleDone(result) => {
+                self.pack.fetching = None;
+                match result {
+                    Ok(()) => {
+                        self.info(t("oodle_ready"));
+                        return self.launch_pack();
+                    }
+                    Err(error) => self.error(error),
+                }
+            }
+            Message::PackProgress(progress) => {
+                self.pack.progress = Some(*progress);
+                self.pack.tail = log::recent();
+            }
+            Message::PackCancel => {
+                if self.busy && self.screen == Screen::PackWorking {
+                    log::line("pack: cancel asked");
+                    self.pack.cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            Message::PackFinished(result) => {
+                self.busy = false;
+                self.pack.took = Some(self.pack.elapsed());
+                for line in &result.lines {
+                    log::line(line);
+                }
+                if !result.ok {
+                    self.error(result.lines.first().cloned().unwrap_or_default());
+                }
+                self.pack.result = Some(*result);
+                self.screen = Screen::PackDone;
+                // The status page shows the new pack.
+                return self.rescan();
+            }
             Message::Copy(_) | Message::CloseRequested(_) => {}
         }
         None
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::pack::fixture;
+    use crate::pack::inputs::Remote;
+
+    /// The window's build on the synthetic game, through EveExtract's real process contract: a pinned sidecar next to
+    /// the installer (this test binary, behind a script), the usmap from UE4SS's folder, Oodle from a zip the player
+    /// has. Then the same build again, cancelled before it starts.
+    #[test]
+    fn the_window_builds_the_pack_through_the_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        let base = platform::canonicalize(root.path()).unwrap();
+        let game_data = base.join("game-data");
+        fixture::game(&game_data);
+        let dir = base.join("StellarBlade");
+        let win64 = dir.join("SB/Binaries/Win64");
+        fixture::paks(&dir.join("SB/Content/Paks"));
+        fs::create_dir_all(win64.join("ue4ss")).unwrap();
+        fs::write(win64.join("ue4ss/Mappings.usmap"), [0xC4, 0x30, 3, 0]).unwrap();
+        let script = fixture::sidecar_script(&game_data);
+        let bin = base.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join(inputs::SIDECAR), &script).unwrap();
+        platform::make_executable(&bin.join(inputs::SIDECAR)).unwrap();
+        let zip = inputs::tests::zip_with("lib/liboodle-data-shared.so", b"fake oodle");
+        let mut sources = inputs::tests::sources(
+            "http://127.0.0.1:9/never".into(),
+            &zip,
+            Some(Remote {
+                url: "http://127.0.0.1:9/never".into(),
+                size: None,
+                sha256: safety::sha256_hex(&script),
+            }),
+        );
+        sources.beside = Some(bin.clone());
+        fs::create_dir_all(base.join("proc")).unwrap();
+        let ctx = Ctx {
+            home: base.join("home"),
+            proc_root: base.join("proc"),
+            data: base.join("data"),
+            log: None,
+            prefs_file: None,
+            pin: String::new(),
+            payload: None,
+            dry_run: false,
+            java: "java".into(),
+            cache: base.join("cache"),
+            sources,
+        };
+        fs::write(base.join("oodle.zip"), &zip).unwrap();
+        inputs::oodle_from_file(
+            &ctx.sources,
+            &inputs::cache(&ctx.data),
+            &base.join("oodle.zip"),
+        )
+        .unwrap();
+        let game = detect::Game {
+            steam_root: base.join("steam"),
+            steam_kind: platform::SteamKind::Native,
+            library: base.clone(),
+            exe: win64.join(crate::adapter::EXE),
+            win64: win64.clone(),
+            dir,
+            build_id: Some(pins::SB_BUILD_ID.into()),
+            updating: false,
+            prefix: None,
+            saves: None,
+            proton: None,
+            launch_options: Vec::new(),
+        };
+        let home = detect::bridge_home(&ctx.home, false);
+        let ready = pack_ready(&ctx, Some(game.clone()), home.clone());
+        assert_eq!(
+            ready.sidecar,
+            inputs::Sidecar::Found(bin.join(inputs::SIDECAR))
+        );
+        assert!(ready.usmap.is_ok() && ready.oodle.is_some() && ready.running.is_empty());
+        assert_eq!(ready.owned, None, "no list and no save");
+        assert_eq!(
+            ready
+                .blockers(true)
+                .into_iter()
+                .filter(|b| *b != "pack_row_disk")
+                .count(),
+            0
+        );
+
+        let work = PackWork {
+            ctx: ctx.clone(),
+            game,
+            home: home.clone(),
+            every: true,
+            cancel: Arc::default(),
+        };
+        let messages = std::sync::Mutex::new(Vec::new());
+        let result = build_pack(&work, &|m| messages.lock().unwrap().push(m));
+        assert!(result.ok, "{:?}\n{:?}", result.lines, result.tail);
+        assert_eq!(detect::pack(&home.join("avatar")), Pack::Fresh);
+        assert_eq!(result.lines.last().unwrap(), t("pack_result_note"));
+        assert!(!result.warnings.is_empty());
+        let steps: Vec<run::Step> = messages
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|m| match m {
+                Message::PackProgress(p) => Some(p.step),
+                _ => None,
+            })
+            .collect();
+        for step in [
+            run::Step::Inputs,
+            run::Step::Tables,
+            run::Step::Meshes,
+            run::Step::Export,
+            run::Step::Bake,
+            run::Step::Install,
+        ] {
+            assert!(steps.contains(&step), "{step:?} in {steps:?}");
+        }
+        assert!(inputs::cached_usmap(&inputs::cache(&ctx.data), Some(pins::SB_BUILD_ID)).is_file());
+        assert!(
+            !ctx.cache.join("pack-work").exists(),
+            "the work folder is gone"
+        );
+
+        // Cancelled: the installed pack stays.
+        let before = safety::tree(&home.join("avatar")).unwrap();
+        work.cancel.store(true, Ordering::Relaxed);
+        let result = build_pack(&work, &|_| {});
+        assert!(!result.ok);
+        assert_eq!(result.lines, [t("pack_cancelled"), t("pack_unchanged")]);
+        assert_eq!(safety::tree(&home.join("avatar")).unwrap(), before);
+    }
+
+    #[test]
+    fn dates_and_sizes() {
+        assert_eq!(utc(SystemTime::UNIX_EPOCH), "1970-01-01 00:00 UTC");
+        let time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_727_500);
+        assert_eq!(utc(time), "2026-10-11 14:05 UTC");
+        assert_eq!(size(3_120_000_000), "3.1 GB");
     }
 }

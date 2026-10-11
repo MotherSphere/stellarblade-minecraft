@@ -7,7 +7,7 @@ pub mod bake;
 pub mod catalog;
 pub mod extract;
 #[cfg(test)]
-mod fixture;
+pub(crate) mod fixture;
 pub mod inputs;
 pub mod manifest;
 pub mod owned;

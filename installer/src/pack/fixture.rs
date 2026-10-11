@@ -750,3 +750,52 @@ fn dump() {
         super::run::run_with(&build, &|| Ok(()), &cancel, &|_| {}, &mut fake).unwrap();
     }
 }
+
+/// Not a test: EveExtract over the synthetic game as a child process, for the window's build test. The arguments come
+/// one per line in `SBMC_FAKE_EVE_EXTRACT`, the game folder in `SBMC_FAKE_GAME` (see [`sidecar_script`]). It checks its
+/// inputs as EveExtract does (exit 3) and prints EveExtract's lines.
+#[test]
+#[ignore]
+fn fake_eve_extract() {
+    let (Ok(args), Ok(game)) = (
+        std::env::var("SBMC_FAKE_EVE_EXTRACT"),
+        std::env::var("SBMC_FAKE_GAME"),
+    ) else {
+        return;
+    };
+    let args: Vec<&str> = args.lines().collect();
+    let value = |flag: &str| {
+        let at = args.iter().position(|a| *a == flag).unwrap();
+        PathBuf::from(args[at + 1])
+    };
+    for flag in ["--paks", "--usmap", "--oodle"] {
+        if !value(flag).exists() {
+            eprintln!("eve-extract: no {flag} input");
+            std::process::exit(3);
+        }
+    }
+    assert!(
+        std::env::var_os("DOTNET_BUNDLE_EXTRACT_BASE_DIR").is_some_and(|d| Path::new(&d).is_dir())
+    );
+    let (mode, paths): (&str, Vec<String>) =
+        (args[8], args[9..].iter().map(|p| p.to_string()).collect());
+    let calls = std::sync::Mutex::new(Vec::new());
+    let out = value("--out");
+    let mut fake = extract(Path::new(&game), &out, &calls);
+    println!("MOUNTED\t3\t10");
+    fake(mode, &paths, &mut |line| println!("{line}")).unwrap();
+    println!("DONE\t0\t0");
+    std::process::exit(0);
+}
+
+/// A shell script that runs [`fake_eve_extract`] in this test binary over the synthetic game in `game`.
+#[cfg(unix)]
+pub fn sidecar_script(game: &Path) -> Vec<u8> {
+    let exe = std::env::current_exe().unwrap();
+    format!(
+        "#!/bin/sh\nexport SBMC_FAKE_EVE_EXTRACT=\"$(printf '%s\\n' \"$@\")\" SBMC_FAKE_GAME='{}'\nexec '{}' --ignored --exact --nocapture --test-threads 1 pack::fixture::fake_eve_extract\n",
+        game.display(),
+        exe.display()
+    )
+    .into_bytes()
+}

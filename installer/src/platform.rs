@@ -498,6 +498,41 @@ pub fn available_memory() -> Option<u64> {
     (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.ullAvailPhys)
 }
 
+/// The disk space free to this user where `path` is, or would be made (its nearest existing folder), in bytes.
+/// `None` when unreadable.
+pub fn available_disk(path: &Path) -> Option<u64> {
+    let dir = path.ancestors().find(|p| p.is_dir())?;
+    free_space(dir)
+}
+
+#[cfg(unix)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: an all-zero statvfs is valid to write into; `name` is a NUL-terminated path.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are valid for the call.
+    (unsafe { libc::statvfs(name.as_ptr(), &mut stat) } == 0)
+        .then(|| (stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+}
+
+#[cfg(windows)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let wide = wide(dir);
+    let mut free = 0u64;
+    // SAFETY: `wide` is NUL-terminated; the one out pointer is valid, the others may be null.
+    (unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } != 0)
+        .then_some(free)
+}
+
 /// The user's home directory: `HOME` on Linux, the profile folder (`USERPROFILE`) on Windows.
 pub fn home() -> Result<PathBuf> {
     let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };

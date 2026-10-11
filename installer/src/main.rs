@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use colony_ui::paths;
 use sbmc_installer::app::{self, App, Ctx, Prefs, ServerCheck};
 use sbmc_installer::ledger::PROGRAM;
+use sbmc_installer::pack::inputs::Sources;
 use sbmc_installer::payload::Payload;
 use sbmc_installer::{Kind, Refusal, i18n, log, pins, platform, safety, server, ui};
 
@@ -206,6 +207,8 @@ fn main() -> iced::Result {
         std::process::exit(server_mode(&dir, accept_eula, uninstall, dry_run));
     }
     let prefs_file = prefs_file.filter(|_| !dry_run);
+    // The pack build's work folder; made only when a build starts.
+    let cache = paths::locate::cache_dir(PROGRAM).unwrap_or_else(|_| data.join("cache"));
     let ctx = Ctx {
         home,
         proc_root: PathBuf::from("/proc"),
@@ -216,6 +219,8 @@ fn main() -> iced::Result {
         payload: payload().map(Arc::new),
         dry_run,
         java: "java".into(),
+        cache,
+        sources: Sources::release(),
     };
 
     // A double-clicked exe on Windows got a console of its own: the window does not need it.
