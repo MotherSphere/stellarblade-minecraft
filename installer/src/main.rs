@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use colony_ui::paths;
 use sbmc_installer::app::{self, App, Ctx, Prefs, ServerCheck};
 use sbmc_installer::ledger::PROGRAM;
-use sbmc_installer::pack::inputs::Sources;
+use sbmc_installer::pack::inputs::{Sources, sidecar_notices};
 use sbmc_installer::payload::Payload;
 use sbmc_installer::{Kind, Refusal, i18n, log, pins, platform, safety, server, ui};
 
@@ -135,13 +135,8 @@ fn main() -> iced::Result {
                     server::LAUNCHER_NOTICE,
                     server::LAUNCHER_LICENSE
                 );
-                if Sources::release().sidecar.is_some() {
-                    println!(
-                        "\n== EveExtract ==\n\nThe pack builder's EveExtract, embedded here, is licensed under \
-                         GPL-3.0-or-later and includes CUE4Parse (Apache-2.0), the .NET runtime (MIT) and the \
-                         packages in its THIRD-PARTY-NOTICES.md. `eve-extract --licenses` prints their texts; the \
-                         installer unpacks it into its data folder's builder/ before the first avatar pack build."
-                    );
+                if let Some(notices) = sidecar_notices() {
+                    println!("\n== EveExtract (the pack builder, embedded here) ==\n\n{notices}");
                 }
                 return Ok(());
             }

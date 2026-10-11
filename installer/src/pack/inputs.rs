@@ -86,6 +86,11 @@ impl Sources {
     }
 }
 
+/// The licence texts of the EveExtract this installer carries (what `eve-extract --licenses` prints), or `None`.
+pub fn sidecar_notices() -> Option<&'static str> {
+    SIDECAR_BUILD.map(|_| SIDECAR_NOTICES)
+}
+
 /// `<data>/builder`.
 pub fn cache(data: &Path) -> PathBuf {
     data.join("builder")
@@ -526,6 +531,9 @@ pub(crate) mod tests {
         assert!(sources.oodle_entry.ends_with(sources.oodle_file()));
         if let Some(sidecar) = &sources.sidecar {
             assert_eq!(sha256_hex(sidecar.bytes), sidecar.sha256);
+            // Its licence texts ride with it: CUE4Parse's NOTICE (Apache-2.0 section 4d) and SkiaSharp's natives'.
+            let notices = sidecar_notices().unwrap();
+            assert!(notices.contains("==> CUE4Parse.NOTICE") && notices.contains("libpng"));
         }
     }
 

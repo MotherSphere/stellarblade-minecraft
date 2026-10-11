@@ -4,8 +4,8 @@
 //!
 //! It also embeds the pack builder's EveExtract sidecar for the target OS: `SBMC_EVE_EXTRACT` names the folder that
 //! `tools/check.py` and CI fill with both sidecars and their `SHA256SUMS` (`sha256sum` lines). The target's sidecar goes
-//! in with its line's sha256, which the installer checks when it unpacks it. Without it the installer cannot build the
-//! avatar pack.
+//! in with its line's sha256, which the installer checks when it unpacks it, and with the folder's `NOTICES.txt` (what
+//! `eve-extract --licenses` prints), which `--licenses` prints. Without it the installer cannot build the avatar pack.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -60,11 +60,14 @@ fn main() {
     }
 }
 
-/// `SIDECAR_BUILD`: this target's EveExtract and its sha256 from `$SBMC_EVE_EXTRACT/SHA256SUMS`, or `None`.
+/// `SIDECAR_BUILD`: this target's EveExtract and its sha256 from `$SBMC_EVE_EXTRACT/SHA256SUMS`, or `None`; and
+/// `SIDECAR_NOTICES`, its licence texts.
 fn sidecar() -> String {
     println!("cargo:rerun-if-env-changed=SBMC_EVE_EXTRACT");
     let Some(dir) = env::var_os("SBMC_EVE_EXTRACT").filter(|d| !d.is_empty()) else {
-        return "pub(crate) static SIDECAR_BUILD: Option<(&[u8], &str)> = None;\n".into();
+        return "pub(crate) static SIDECAR_BUILD: Option<(&[u8], &str)> = None;\n\
+                pub(crate) static SIDECAR_NOTICES: &str = \"\";\n"
+            .into();
     };
     let name = if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         "eve-extract-win-x64.exe"
@@ -75,7 +78,13 @@ fn sidecar() -> String {
         .expect("SBMC_EVE_EXTRACT names the folder holding EveExtract's builds");
     let sums = dir.join("SHA256SUMS");
     let program = dir.join(name);
-    for path in [&sums, &program] {
+    let notices = dir.join("NOTICES.txt");
+    assert!(
+        notices.is_file(),
+        "{} is missing: tools/check.py writes it with the sidecars",
+        notices.display()
+    );
+    for path in [&sums, &program, &notices] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let text = fs::read_to_string(&sums).expect("SBMC_EVE_EXTRACT holds EveExtract's SHA256SUMS");
@@ -95,8 +104,10 @@ fn sidecar() -> String {
         sums.display()
     );
     let program = program.to_str().expect("UTF-8 EveExtract path");
+    let notices = notices.to_str().expect("UTF-8 EveExtract path");
     format!(
-        "pub(crate) static SIDECAR_BUILD: Option<(&[u8], &str)> = Some((include_bytes!({program:?}), {digest:?}));\n"
+        "pub(crate) static SIDECAR_BUILD: Option<(&[u8], &str)> = Some((include_bytes!({program:?}), {digest:?}));\n\
+         pub(crate) static SIDECAR_NOTICES: &str = include_str!({notices:?});\n"
     )
 }
 

@@ -195,6 +195,8 @@ jobs:
           sidecar=$(sed -n 's/^\([0-9a-f]\{64\}\)  eve-extract-linux-x64$/\1/p' build/eve-extract/SHA256SUMS)
           [[ $out == "$expected"* && $out == *", EveExtract $sidecar)" ]] ||
             { echo "::error::expected '$expected ..., EveExtract $sidecar)'"; exit 1; }
+          licences=$("installer/target/$profile/stellar-bridge-installer" --licenses)
+          [[ $licences == *'==> CUE4Parse.NOTICE'* ]] || { echo "::error::--licenses lacks EveExtract's notices"; exit 1; }
 
       # Release only, from here on.
       - name: Stage the release assets
@@ -292,6 +294,8 @@ jobs:
           sidecar=$(sed -n 's/^\([0-9a-f]\{64\}\)  eve-extract-win-x64\.exe$/\1/p' build/eve-extract/SHA256SUMS)
           [[ $out == "$expected"* && $out == *", EveExtract $sidecar)" ]] ||
             { echo "::error::expected '$expected ..., EveExtract $sidecar)'"; exit 1; }
+          licences=$("$EXE" --licenses)
+          [[ $licences == *'==> CUE4Parse.NOTICE'* ]] || { echo "::error::--licenses lacks EveExtract's notices"; exit 1; }
       - name: Stage the release asset
         if: inputs.ref
         run: |

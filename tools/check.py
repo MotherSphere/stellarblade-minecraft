@@ -13,8 +13,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-# The pack builder's sidecars and the SHA256SUMS over them; the installer build embeds its target's one with its digest
-# (SBMC_EVE_EXTRACT names this folder). The keys are .NET runtime identifiers, the values the release asset names.
+# The pack builder's sidecars, the SHA256SUMS over them and NOTICES.txt (their licence texts); the installer build
+# embeds its target's one with its digest and the notices (SBMC_EVE_EXTRACT names this folder). The keys are .NET runtime identifiers, the values the release asset names.
 EVE_EXTRACT = ROOT / 'build/eve-extract'
 SIDECARS = {'linux-x64': 'eve-extract-linux-x64', 'win-x64': 'eve-extract-win-x64.exe'}
 # On Windows itself (the CI's Windows test job): Gradle's batch wrapper, and the Windows checks without Wine.
@@ -94,6 +94,12 @@ def eve_extract(wine):
         shutil.rmtree(publish)
         sums.append(f'{hashlib.sha256((EVE_EXTRACT / name).read_bytes()).hexdigest()}  {name}\n')
     (EVE_EXTRACT / 'SHA256SUMS').write_text(''.join(sums))
+    # What the sidecar's --licenses prints, the same for both: the installers embed it with their sidecar and print it.
+    with tempfile.TemporaryDirectory(prefix='stellar-eve-extract-bundle-') as bundle:
+        own = EVE_EXTRACT / SIDECARS['win-x64' if NATIVE_WINDOWS else 'linux-x64']
+        notices = subprocess.run([own, '--licenses'], env={**env, 'DOTNET_BUNDLE_EXTRACT_BASE_DIR': bundle},
+                                 capture_output=True, encoding='utf-8', check=True).stdout
+    (EVE_EXTRACT / 'NOTICES.txt').write_text(notices, encoding='utf-8', newline='\n')
     if not NATIVE_WINDOWS:
         eve_extract_smoke([EVE_EXTRACT / SIDECARS['linux-x64']], env)
     if not NATIVE_WINDOWS and not wine:
