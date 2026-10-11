@@ -105,7 +105,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("row_ue4ss_known", "Une version connue pour fonctionner"),
     (
         "row_ue4ss_untested",
-        "Une version non testée : elle peut fonctionner",
+        "Une version non testée : elle peut fonctionner (testée : Stellar Blade UE4SS 1.3, mod 2952 de Nexus Mods)",
     ),
     ("row_override", "Surcharge xinput1_3"),
     ("row_override_registry", "Définie dans le préfixe Proton"),
@@ -179,7 +179,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "blocker_no_ue4ss",
-        "UE4SS est introuvable : installez-le d'abord (l'installateur ne l'installe jamais).",
+        "UE4SS est introuvable : installez d'abord Stellar Blade UE4SS 1.3 (mod 2952 de Nexus Mods) ; l'installateur ne l'installe jamais.",
     ),
     (
         "blocker_ue4ss_mods",
