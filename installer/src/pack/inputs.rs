@@ -531,9 +531,12 @@ pub(crate) mod tests {
         assert!(sources.oodle_entry.ends_with(sources.oodle_file()));
         if let Some(sidecar) = &sources.sidecar {
             assert_eq!(sha256_hex(sidecar.bytes), sidecar.sha256);
-            // Its licence texts ride with it: CUE4Parse's NOTICE (Apache-2.0 section 4d) and SkiaSharp's natives'.
+            // Its licence texts ride with it: CUE4Parse's NOTICE (Apache-2.0 section 4d) and the .NET runtime's.
             let notices = sidecar_notices().unwrap();
-            assert!(notices.contains("==> CUE4Parse.NOTICE") && notices.contains("libpng"));
+            assert!(
+                notices.contains("==> CUE4Parse.NOTICE")
+                    && notices.contains("==> dotnet.THIRD-PARTY-NOTICES")
+            );
         }
     }
 

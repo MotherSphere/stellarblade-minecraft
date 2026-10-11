@@ -18,9 +18,8 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
-    <!-- SkiaSharp's native library (the PNG encoder) rides inside the file; it is extracted at the first start to
-         DOTNET_BUNDLE_EXTRACT_BASE_DIR (a folder that exists: Windows' host refuses one that does not), else $HOME/.net
-         or %TEMP%\.net. -->
+    <!-- No native library rides with the file (SkiaSharp's is left out below). Should one come back, it stays inside
+         the file and is extracted at the first start to DOTNET_BUNDLE_EXTRACT_BASE_DIR, which callers set. -->
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>none</DebugType>
@@ -31,15 +30,14 @@
   <ItemGroup>
     <ProjectReference Include="CUE4Parse/CUE4Parse/CUE4Parse.csproj" AdditionalProperties="CUE4PARSE_SKIP_NATIVE=1" />
     <ProjectReference Include="CUE4Parse/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj" AdditionalProperties="CUE4PARSE_SKIP_NATIVE=1" />
-    <!-- Linux's Skia without fontconfig; Windows' comes with SkiaSharp itself. The version CUE4Parse pins. -->
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.9" GeneratePathProperty="true" />
+    <!-- No SkiaSharp native library: it carries the Adobe DNG SDK, whose licence the GPL cannot take, and the PNG
+         encoder is ImageSharp (cue4parse.patch). SkiaSharp brings these two in; nothing of them is published. -->
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.9" ExcludeAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="2.88.9" ExcludeAssets="all" />
     <!-- The licences option prints these: the notices of everything the published file carries. -->
     <EmbeddedResource Include="../../THIRD-PARTY-NOTICES.md" LogicalName="THIRD-PARTY-NOTICES.md" />
     <EmbeddedResource Include="CUE4Parse/NOTICE" LogicalName="CUE4Parse.NOTICE" />
     <EmbeddedResource Include="CUE4Parse/LICENSE" LogicalName="CUE4Parse.LICENSE" />
-    <!-- The notices of what SkiaSharp's native library bundles (Skia, libpng, FreeType, HarfBuzz, the DNG SDK...); the
-         Windows package's file is the same. -->
-    <EmbeddedResource Include="$(PkgSkiaSharp_NativeAssets_Linux_NoDependencies)/THIRD-PARTY-NOTICES.txt" LogicalName="SkiaSharp.THIRD-PARTY-NOTICES" />
   </ItemGroup>
 
   <!-- A self-contained build carries the .NET runtime: its licence and third-party notices too. -->

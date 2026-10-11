@@ -268,7 +268,7 @@ jobs:
           help=$("$exe" --help)
           [[ $help == *'never downloaded'* ]]
           licences=$("$exe" --licenses)
-          [[ $licences == *'Apache License'* && $licences == *libpng* ]]
+          [[ $licences == *'Apache License'* && $licences == *'==> dotnet.THIRD-PARTY-NOTICES'* ]]
           set +e
           "$exe"; usage=$?
           "$exe" --paks "$tmp/absent" --usmap x --oodle y --out "$tmp/eve-extract-out" json X; missing=$?

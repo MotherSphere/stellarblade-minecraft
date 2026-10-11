@@ -20,8 +20,8 @@ pub struct Sidecar {
     pub paks: PathBuf,
     pub usmap: PathBuf,
     pub oodle: PathBuf,
-    /// Where the single-file build unpacks its native library (`DOTNET_BUNDLE_EXTRACT_BASE_DIR`); made when missing.
-    /// `None` leaves .NET's default (`$HOME/.net`, `%TEMP%\.net`).
+    /// Where a single-file build would unpack a native library (`DOTNET_BUNDLE_EXTRACT_BASE_DIR`); made when missing.
+    /// EveExtract carries none today. `None` leaves .NET's default (`$HOME/.net`, `%TEMP%\.net`).
     pub bundle: Option<PathBuf>,
 }
 

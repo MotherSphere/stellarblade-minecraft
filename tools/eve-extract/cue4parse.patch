@@ -12,6 +12,9 @@ them at the pinned commit e4ea4ba8ec2b88d08b2066dfb8962863dccb36cc:
   reads and which come without a licence it could pass on.
 - CUE4Parse-Conversion.csproj no longer embeds the prebuilt Windows DLLs of Detex, tegra_swizzle and crunch: EveExtract
   decodes with AssetRipper.TextureDecoder on every OS and reads no Switch-swizzled or crunched texture.
+- TextureEncoder encodes PNG with ImageSharp instead of SkiaSharp, through the same pixel conversion, so that
+  EveExtract ships without SkiaSharp's native library: that library carries the Adobe DNG SDK, whose licence (an
+  indemnity owed by commercial distributors, a choice of law) the GPL cannot take. JPEG, WebP and TGA still need it.
 
 diff --git a/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj b/CUE4Parse-Conversion/CUE4Parse-Conversion.csproj
 index ba8fb53e..756064eb 100644
@@ -58,6 +61,78 @@ index 48e8e14b..dc8c8384 100644
      }
  
      public event PropertyChangedEventHandler? PropertyChanged;
+diff --git a/CUE4Parse-Conversion/Textures/TextureEncoder.cs b/CUE4Parse-Conversion/Textures/TextureEncoder.cs
+index 5019f205..1349bb21 100644
+--- a/CUE4Parse-Conversion/Textures/TextureEncoder.cs
++++ b/CUE4Parse-Conversion/Textures/TextureEncoder.cs
+@@ -24,9 +24,10 @@ public static byte[] Encode(this CTexture bitmap, ETextureFormat format, bool sa
+             case ETextureFormat.Png:
+             {
+                 ext = "png";
+-                using var bmp = bitmap.ToSkBitmap();
+-                using var data = bmp.Encode(SKEncodedImageFormat.Png, quality);
+-                return data.ToArray();
++                // Modified for EveExtract (tools/eve-extract/cue4parse.patch in Stellar Blade x Minecraft): PNG through
++                // ImageSharp, so that EveExtract ships without SkiaSharp's native library, which carries the Adobe DNG
++                // SDK, under terms the GPL cannot take. The other formats still need that library.
++                return bitmap.ToPng();
+             }
+             case ETextureFormat.Jpeg:
+             {
+@@ -281,7 +282,42 @@ private static void WriteChannelRLE(MemoryStream stream, nint dataPtr, int scanl
+     public static SKBitmap ToSkBitmap(this CTexture texture)
+     {
+         var dataSpan = new ReadOnlySpan<byte>(texture.Data);
+-        var convertedData = nint.Zero;
++        var skColorType = ToPixels(texture, dataSpan, out var convertedData);
++        var info = new SKImageInfo(texture.Width, texture.Height, skColorType, SKAlphaType.Unpremul);
++        return InstallPixels(dataSpan, convertedData, info);
++    }
++
++    // Modified for EveExtract (tools/eve-extract/cue4parse.patch in Stellar Blade x Minecraft): the PNG of ToSkBitmap's
++    // pixels, encoded by ImageSharp. SKColorType is only an enum here: nothing calls SkiaSharp's native library.
++    public static unsafe byte[] ToPng(this CTexture texture)
++    {
++        var dataSpan = new ReadOnlySpan<byte>(texture.Data);
++        var colorType = ToPixels(texture, dataSpan, out var convertedData);
++        try
++        {
++            var count = texture.Width * texture.Height;
++            var pixels = convertedData == nint.Zero ? dataSpan : new ReadOnlySpan<byte>((void*) convertedData, count * 4);
++            using SixLabors.ImageSharp.Image image = colorType switch
++            {
++                SKColorType.Gray8 => SixLabors.ImageSharp.Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.L8>(pixels[..count], texture.Width, texture.Height),
++                SKColorType.Bgra8888 => SixLabors.ImageSharp.Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Bgra32>(pixels[..(count * 4)], texture.Width, texture.Height),
++                _ => SixLabors.ImageSharp.Image.LoadPixelData<SixLabors.ImageSharp.PixelFormats.Rgba32>(pixels[..(count * 4)], texture.Width, texture.Height),
++            };
++            using var stream = new MemoryStream();
++            SixLabors.ImageSharp.ImageExtensions.SaveAsPng(image, stream);
++            return stream.ToArray();
++        }
++        finally
++        {
++            if (convertedData != nint.Zero) MemoryUtils.NativeFree(convertedData);
++        }
++    }
++
++    // Modified for EveExtract (tools/eve-extract/cue4parse.patch in Stellar Blade x Minecraft): ToSkBitmap's pixel
++    // conversion, shared with ToPng. Returns the layout of the pixels: convertedData's when not zero, else data's.
++    private static SKColorType ToPixels(CTexture texture, ReadOnlySpan<byte> dataSpan, out nint convertedData)
++    {
++        convertedData = nint.Zero;
+ 
+         SKColorType skColorType = SKColorType.Rgba8888;
+         switch (texture.PixelFormat)
+@@ -332,8 +368,7 @@ public static SKBitmap ToSkBitmap(this CTexture texture)
+                 throw new NotImplementedException("Unsupported pixel format: " + texture.PixelFormat);
+         }
+ 
+-        var info = new SKImageInfo(texture.Width, texture.Height, skColorType, SKAlphaType.Unpremul);
+-        return InstallPixels(dataSpan, convertedData, info);
++        return skColorType;
+     }
+ 
+     [MethodImpl(MethodImplOptions.AggressiveInlining)]
 diff --git a/CUE4Parse/CUE4Parse.csproj b/CUE4Parse/CUE4Parse.csproj
 index 1f38d236..4e37da27 100644
 --- a/CUE4Parse/CUE4Parse.csproj

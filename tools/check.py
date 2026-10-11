@@ -124,7 +124,7 @@ def eve_extract_smoke(command, env, drive=''):
     inputs (2 and 3), and no output folder made. Paths reach a Windows build under Wine through drive Z:."""
     with tempfile.TemporaryDirectory(prefix='stellar-eve-extract-') as scratch:
         scratch = Path(scratch)
-        # Where the bundle unpacks SkiaSharp's native library; the Windows host needs the folder to exist.
+        # Where the bundle would unpack a native library (it carries none); the Windows host needs the folder to exist.
         (scratch / 'bundle').mkdir()
         env = {**env, 'DOTNET_BUNDLE_EXTRACT_BASE_DIR': drive + str(scratch / 'bundle')}
         paks = scratch / 'Paks'
@@ -141,7 +141,7 @@ def eve_extract_smoke(command, env, drive=''):
                     drive + str(scratch / 'oodle'), '--out', drive + str(work), mode, 'SB/Content/Data/ItemTable']
 
         for code, args, text in ((0, ['--help'], 'never downloaded'), (2, [], 'eve-extract --paks'),
-                                 (0, ['--licenses'], 'Apache License'), (0, ['--licenses'], 'libpng'), (2, inputs(mode='inventory'), 'the mode must be'),
+                                 (0, ['--licenses'], 'Apache License'), (0, ['--licenses'], '==> dotnet.THIRD-PARTY-NOTICES'), (2, inputs(mode='inventory'), 'the mode must be'),
                                  (3, inputs(paks=scratch / 'absent'), 'no Paks folder'),
                                  (3, inputs(usmap='future.usmap'), 'not a readable usmap'),
                                  (3, inputs(), 'not a loadable Oodle library')):

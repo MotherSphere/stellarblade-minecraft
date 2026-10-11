@@ -35,7 +35,7 @@ What the builder keeps, and where:
 
 | What | Linux | Windows |
 |---|---|---|
-| Builder cache: EveExtract (unpacked from the installer), `oodle/` and `oodle.json`, `usmap/<build id>.usmap`, `bundle/` (where EveExtract unpacks its native library) | `~/.local/share/Colony/Stellar Bridge/builder/` | `%LOCALAPPDATA%\Colony\Stellar Bridge\builder\` |
+| Builder cache: EveExtract (unpacked from the installer), `oodle/` and `oodle.json`, `usmap/<build id>.usmap`, `bundle/` (where EveExtract would unpack a native library; it carries none) | `~/.local/share/Colony/Stellar Bridge/builder/` | `%LOCALAPPDATA%\Colony\Stellar Bridge\builder\` |
 | Work folder (EveExtract's output, deleted batch by batch and at the end) | `~/.cache/Colony/Stellar Bridge/pack-work/` | `%LOCALAPPDATA%\Colony\Stellar Bridge\cache\pack-work\` |
 | The new pack until the swap, then the pack | `avatar.tmp`, then `avatar` in the avatar folder below | the same |
 
