@@ -1099,6 +1099,66 @@ public class ReadPack {
         );
     }
 
+    /// Gives `mesh` one more section, `section`, whose material sits at `/Game/Art/<folder>/`, with that material's
+    /// JSON (a copy of the fixture's `from`).
+    fn add_section(setup: &Setup, mesh: &str, section: &str, folder: &str, from: &str) {
+        let (_, _, bones, sections) = crate::pack::fixture::MESHES
+            .iter()
+            .find(|m| m.0 == mesh)
+            .unwrap();
+        let mut sections = sections.to_vec();
+        sections.push(section);
+        fs::write(
+            setup.game.join(format!("avatar/{mesh}.sbav")),
+            crate::pack::manifest::tests::mesh(*bones, &sections),
+        )
+        .unwrap();
+        let list = setup.game.join("avatar/meshes.txt");
+        let mut text = fs::read_to_string(&list).unwrap();
+        text += &format!("MATERIAL {mesh}.sbav {section} /Game/Art/{folder}/{section}.{section}\n");
+        fs::write(&list, text).unwrap();
+        let content = setup.game.join("export/SB/Content/Art");
+        fs::create_dir_all(content.join(folder)).unwrap();
+        fs::copy(
+            content.join(format!("Mat/{from}.json")),
+            content.join(format!("{folder}/{section}.json")),
+        )
+        .unwrap();
+    }
+
+    /// A non-core mesh exported in an earlier batch than the face names one of the face's materials: the face's
+    /// material is still baked, from the face's own batch.
+    #[test]
+    fn a_core_material_clash_across_batches_keeps_the_core_one() {
+        let setup = Setup::new();
+        add_section(
+            &setup,
+            "CH_P_EVE_78",
+            "MI_EVE_Head_V02_Jali",
+            "Mat3",
+            "M_Suit",
+        );
+        let build = setup.build(true);
+        let (report, calls) = go(&setup, &build, None, &|| Ok(()));
+        let report = report.unwrap();
+        let batches: Vec<&Vec<String>> = calls
+            .iter()
+            .filter(|(m, p)| m == "export" && p.iter().any(|p| p.contains("/Character/")))
+            .map(|(_, p)| p)
+            .collect();
+        let batch = |name: &str| {
+            batches
+                .iter()
+                .position(|b| b.iter().any(|p| p.ends_with(name)))
+        };
+        assert!(batch("/CH_P_EVE_78") < batch("/CH_P_EVE_Face_Jali3"));
+        let untextured = &report.checks.untextured_sections;
+        assert!(
+            !untextured.contains_key("CH_P_EVE_Face_Jali3"),
+            "{untextured:?}"
+        );
+    }
+
     /// Unticking "every outfit" builds from nothing: the every-outfit pack is no base for the owned one.
     #[test]
     fn an_owned_build_after_every_outfit_drops_the_others() {

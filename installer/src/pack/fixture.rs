@@ -590,12 +590,13 @@ pub fn paks(dir: &Path) {
     write(&dir.join("~mods/Outfit_P.pak"), "mod");
 }
 
-fn copy_tree(from: &Path, to: &Path) {
+/// Copies the files under `from` that `keep` takes (by their path under `root`, '/'-joined).
+fn copy_tree(root: &Path, from: &Path, to: &Path, keep: &dyn Fn(&str) -> bool) {
     for entry in fs::read_dir(from).unwrap().flatten() {
         let target = to.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
+            copy_tree(root, &entry.path(), &target, keep);
+        } else if keep(&crate::safety::slash(entry.path().strip_prefix(root).unwrap()).unwrap()) {
             fs::create_dir_all(to).unwrap();
             fs::copy(entry.path(), target).unwrap();
         }
@@ -667,7 +668,23 @@ pub fn extract<'a>(
                 }
             }
             "export" => {
-                copy_tree(&game.join("export"), &work.join("export"));
+                // As EveExtract: a mesh brings the materials its sections name, no other; textures and icons are
+                // copied whole (the bakes find them by their references).
+                let list = fs::read_to_string(game.join("avatar/meshes.txt"))?;
+                let materials: Vec<String> = list
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("MATERIAL "))
+                    .filter_map(|l| l.split_once(' '))
+                    .filter(|(mesh, _)| paths.iter().any(|p| *mesh == format!("{}.sbav", last(p))))
+                    .filter_map(|(_, rest)| rest.rsplit_once(' '))
+                    .filter_map(|(_, path)| path.strip_prefix("/Game/"))
+                    .filter_map(|path| path.rsplit_once('.'))
+                    .map(|(path, _)| format!("SB/Content/{path}.json"))
+                    .collect();
+                let export = game.join("export");
+                copy_tree(&export, &export, &work.join("export"), &|file| {
+                    !file.ends_with(".json") || materials.iter().any(|m| m == file)
+                });
                 paths
                     .iter()
                     .for_each(|p| line(&format!("OK\t{p}.{}\t{}.png", last(p), last(p))));
