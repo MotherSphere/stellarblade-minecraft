@@ -264,8 +264,11 @@ jobs:
           mkdir -p "$tmp/eve-extract-bundle"
           export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$tmp/eve-extract-bundle"
           # Read whole, not piped to grep -q: an early close would fail the writer under pipefail.
-          help=$("$exe" --help) && [[ $help == *'never downloaded'* ]]
-          licences=$("$exe" --licenses) && [[ $licences == *'Apache License'* ]]
+          # A plain assignment stops the step when the program fails; one inside an && list would not.
+          help=$("$exe" --help)
+          [[ $help == *'never downloaded'* ]]
+          licences=$("$exe" --licenses)
+          [[ $licences == *'Apache License'* && $licences == *libpng* ]]
           set +e
           "$exe"; usage=$?
           "$exe" --paks "$tmp/absent" --usmap x --oodle y --out "$tmp/eve-extract-out" json X; missing=$?
