@@ -117,6 +117,10 @@ public final class ControlStateTest {
         var hooked = new ControlState.Calls(TIME, 0, 0, 3600, 60);
         assert hooked.status(TIME).contains("not recognized") && !new ControlState.Calls(TIME, 0, 0, 3, 9).status(TIME).contains("not recognized")
                 : "Only another caller at the game's poll rate points at a hook";
+        // An overlay that answered Unreal's first poll as disconnected: Unreal never polls again, so no gameplay call ever.
+        assert new ControlState.Calls(TIME, 0, 0, 2, 0).status(TIME).contains("never reached")
+                && !new ControlState.Calls(TIME, 44, 0, 2, 0).status(TIME).contains("never reached")
+                && !hooked.status(TIME).contains("never reached") : "Only a gameplay poll never seen points at an overlay's answer";
         for (String bad : new String[] {calls.replace("SBMC_XINPUT_CALLS 1", "SBMC_XINPUT_CALLS 2"), calls.replace("END\n", ""),
                 calls.replace("GAMEPLAY 44 60", "GAMEPLAY 44"), calls.replace("OTHER 4 3", "OTHER 4294967296 3"),
                 calls.replace("TIME 1791200001000", "TIME 0"), calls.replace("\nEND\n", "\nEND\nEXTRA\n"), calls.replace("OTHER", "GAMEPLAY")})
