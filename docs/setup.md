@@ -11,13 +11,13 @@ Use a separate private creative or survival Minecraft world, or a server of frie
 
 ## Build and check
 
-Run all offline checks from the repository root with Java 21, Lua, Python, CMake, a C++17 compiler and a Rust toolchain (1.90 or newer, with clippy and rustfmt) available. Set `JAVA_HOME` to a Java 21 installation when it is not the default, then run:
+Run all offline checks from the repository root with Java 21, Lua, Python, CMake, a C++17 compiler and a Rust toolchain (1.90 or newer, with clippy and rustfmt) available, plus the .NET 10 SDK for the pack builder's sidecar (without `dotnet` that step reports `SKIP eve-extract`). Fetch the sidecar's pinned CUE4Parse once with `git submodule update --init tools/eve-extract/CUE4Parse`. Set `JAVA_HOME` to a Java 21 installation when it is not the default, then run:
 
 ```sh
 python tools/check.py
 ```
 
-This checks Lua syntax and lifecycle tests, Python installation tools, portable native tests, the Fabric build, the terrain and EVE text exchanged between Java and Lua, and last the Rust installer (formatting, build, clippy and tests, including installs by the Python tools removed by the installer and the reverse; Cargo fetches its crates on the first build). When the JAR and the Windows DLL are built, the installer step embeds them with the Lua mod and Fabric API, and its tests install those real pieces on fake trees. The JAR and the Windows DLL are reproducible (no archive timestamps, `/Brepro`): rebuilding a commit gives the same hashes, so an installed artifact can be checked against its commit. The Gradle wrapper pins Gradle 8.14.5, Loom 1.11.8 and Yarn 1.21.1+build.3. Host CMake output goes to `build/native-host`; Minecraft output goes to `minecraft/build`; installer output goes to `installer/target`. Use `--only lua`, `--only python`, `--only installer`, `--only native` or `--only minecraft` for one component. The runner builds artifacts without installing them or launching games. CI runs the same check on every pull request, with the `windows` component on a Windows runner instead, and builds the releases ([releases and CI](releasing.md)).
+This checks Lua syntax and lifecycle tests, Python installation tools, portable native tests, the Fabric build, the terrain and EVE text exchanged between Java and Lua, [EveExtract](../tools/eve-extract/README.md) (its input checks, both self-contained builds into `build/eve-extract` with their `SHA256SUMS`, and a smoke test of each on synthetic inputs, the Windows one under Wine when `--wine` is given), and last the Rust installer (formatting, build, clippy and tests, including installs by the Python tools removed by the installer and the reverse; Cargo fetches its crates on the first build). When the JAR and the Windows DLL are built, the installer step embeds them with the Lua mod and Fabric API, and its tests install those real pieces on fake trees. The JAR and the Windows DLL are reproducible (no archive timestamps, `/Brepro`): rebuilding a commit gives the same hashes, so an installed artifact can be checked against its commit. The Gradle wrapper pins Gradle 8.14.5, Loom 1.11.8 and Yarn 1.21.1+build.3. Host CMake output goes to `build/native-host`; Minecraft output goes to `minecraft/build`; installer output goes to `installer/target`. Use `--only lua`, `--only python`, `--only installer`, `--only native`, `--only minecraft` or `--only eve-extract` for one component. The runner builds artifacts without installing them or launching games. CI runs the same check on every pull request, with the `windows` component on a Windows runner instead, and builds the releases ([releases and CI](releasing.md)).
 
 Build the Windows x64 DLL separately with an installed clang-cl/xwin Windows SDK toolchain:
 
@@ -82,9 +82,22 @@ The scripts refuse existing foreign or modified content and record ownership man
 
 Proton must load the native adapter. Retain existing overrides and add `xinput1_3=n,b` to the game's `WINEDLLOVERRIDES`, or set the equivalent game-specific Wine registry override to `native,builtin`. The installers do not change overrides or Steam options. Do not replace `dinput8.dll`, `dwmapi.dll` or UE4SS to install this adapter.
 
-Avatar mode also needs the private avatar pack in `~/.local/share/stellar-blade-minecraft/avatar` (or `-Dstellarbridge.avatar=<dir>`), built from your own game installation and never part of this repository; see [the avatar view](diagnostics.md#avatar-view-experimental). Without it, `/stellaravatar` reports that the pack holds no EVE mesh; the capture views still work on Linux.
+Avatar mode also needs the private avatar pack ([below](#avatar-pack)). Without it, `/stellaravatar` reports that the pack holds no EVE mesh; the capture views still work on Linux.
 
 Follow the [main session sequence](playing.md#start-a-session). All bridge components start inactive.
+
+## Avatar pack
+
+Minecraft draws EVE from the avatar pack: her meshes (`.sbav`), baked textures (PNG), `wardrobe.txt` and `pack.txt`, in `~/.local/share/stellar-blade-minecraft/avatar` (`%USERPROFILE%\.local\share\stellar-blade-minecraft\avatar` on Windows, or `-Dstellarbridge.avatar=<dir>`). Each player builds it from their own copy of Stellar Blade with the installer's pack builder. It is never part of this repository, never shipped and never uploaded: it is derived from your game files and stays on your PC. See [the avatar view](diagnostics.md#avatar-view-experimental) for how Minecraft uses it.
+
+The builder runs [EveExtract](../tools/eve-extract/README.md), a sidecar released with the installer, which reads the game's containers read-only with both games closed; the installer then bakes the pack. It needs two files this project never ships:
+
+- **The usmap**, the game build's type mappings. The Lua mod (revision 58 and newer) asks UE4SS to write it once, the first time EVE is loaded in a world while UE4SS's folder holds no `.usmap`; UE4SS's log then has a `Mappings: wrote ...` line ([where the file goes](../protocol/README.md#mappings-for-the-pack-builder)). If that fails, or after a game update, press Ctrl+Numpad6 in game (UE4SS's own dump key) with a save loaded, then quit.
+- **Oodle**, the decompressor Stellar Blade's containers use. It is proprietary (Epic Games' and RAD Game Tools', under the Unreal Engine EULA) and is never in this repository or its releases. The builder downloads it only after you agree, from the [OodleUE](https://github.com/WorkingRobot/OodleUE) release `2026-06-04-1357` that CUE4Parse itself uses, and checks its pinned SHA-256; or it takes a copy you already have.
+
+By default the pack holds the outfits you own (from the adapter's last wardrobe list, else a read-only copy of your newest save). Building every outfit instead takes longer and more disk, and lets you see friends' outfits in [multiplayer](multiplayer.md). Plan for about 7 GB of free disk during a full build.
+
+Stellar Blade's EULA forbids modifying, reverse engineering or making derivative works of the game, and "unauthorised mods" (https://store.steampowered.com/eula/3489700_eula_0). The bridge, and this builder that extracts your own game files into a local pack, fall under it: use them at your own risk.
 
 ## Windows
 
