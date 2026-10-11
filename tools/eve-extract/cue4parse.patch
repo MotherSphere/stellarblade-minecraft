@@ -1,13 +1,27 @@
-The one change EveExtract makes to CUE4Parse (Apache-2.0). EveExtract.csproj applies it to the pinned submodule
-before it builds; the changed line carries a notice, as section 4(b) of the Apache License 2.0 asks. Upstream still has
-the bug at the pinned commit e4ea4ba8ec2b88d08b2066dfb8962863dccb36cc.
+The changes EveExtract makes to CUE4Parse (Apache-2.0), both in ExportSession.ResolveOutputPath. EveExtract.csproj
+applies them to the pinned submodule before it builds; each changed part carries a notice, as section 4(b) of the
+Apache License 2.0 asks. Upstream still has both at the pinned commit e4ea4ba8ec2b88d08b2066dfb8962863dccb36cc:
+
+- Every export path is checked to stay under the export folder before a folder is made or a file written: package
+  paths and object names come from game files, which mods can change.
+- Upstream turns every slash into a backslash, which on Linux writes files whose names hold backslashes; only Windows
+  gets them now.
 
 diff --git a/CUE4Parse-Conversion/ExportSession.cs b/CUE4Parse-Conversion/ExportSession.cs
-index 48e8e14b..393c15f1 100644
+index 48e8e14b..dc8c8384 100644
 --- a/CUE4Parse-Conversion/ExportSession.cs
 +++ b/CUE4Parse-Conversion/ExportSession.cs
-@@ -169,7 +169,9 @@ internal string ResolveOutputPath(string savePath, string ext, string? nameSuffi
-         var fullPath = Path.Combine(BaseDirectory.FullName, savePath) + nameSuffix + '.' + ext.ToLower();
+@@ -166,10 +166,17 @@ async ValueTask Process(IExporter exporter, CancellationToken token)
+ 
+     internal string ResolveOutputPath(string savePath, string ext, string? nameSuffix = null)
+     {
+-        var fullPath = Path.Combine(BaseDirectory.FullName, savePath) + nameSuffix + '.' + ext.ToLower();
++        // Modified for EveExtract (tools/eve-extract/cue4parse.patch in Stellar Blade x Minecraft): package paths and
++        // object names come from game files, which mods can change, so a path that leaves BaseDirectory is refused
++        // before anything is created or written.
++        var fullPath = Path.GetFullPath(Path.Combine(BaseDirectory.FullName, savePath) + nameSuffix + '.' + ext.ToLower());
++        if (!fullPath.StartsWith(Path.TrimEndingDirectorySeparator(BaseDirectory.FullName) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
++            throw new InvalidOperationException($"Refusing to write outside the export folder: {fullPath}");
          var dir = Path.GetDirectoryName(fullPath) ?? throw new InvalidOperationException($"Cannot determine directory for path: {fullPath}");
          Directory.CreateDirectory(dir);
 -        return fullPath.Replace('/', '\\');
