@@ -411,26 +411,8 @@ fn assemble(
         fs::copy(&from, &to)?;
     }
 
-    // Section material name → the material's object path. Names collide across folders, so materials and their
-    // textures are read by object path; the pack keeps the first of two same-named materials.
     let mesh_list = fs::read_to_string(scan.join("meshes.txt")).unwrap_or_default();
-    let mut materials: HashMap<String, String> = HashMap::new();
-    for line in mesh_list.lines() {
-        let Some((name, path)) = line
-            .strip_prefix("MATERIAL ")
-            .and_then(|rest| rest.split_once(' '))
-            .and_then(|(_, rest)| rest.rsplit_once(' '))
-        else {
-            continue;
-        };
-        let first = materials
-            .entry(name.to_string())
-            .or_insert_with(|| path.to_string());
-        let warning = format!("material name {name}: {path} and {first} share one pack texture");
-        if first != path && !warnings.contains(&warning) {
-            warnings.push(warning);
-        }
-    }
+    let materials = materials(&mesh_list, &mut warnings);
 
     let mut meshes: BTreeMap<String, (u32, Vec<String>)> = BTreeMap::new();
     for entry in fs::read_dir(tmp)? {
@@ -515,7 +497,14 @@ fn assemble(
             .iter()
             .filter_map(|p| meshes.get(last(p)))
             .flat_map(|(_, sections)| sections.iter())
-            .filter(|s| todo.contains(*s) && attempted.insert(s.to_string()))
+            // A material shared by name is baked from the one `materials` keeps, in the batch that exports it.
+            .filter(|s| {
+                todo.contains(*s)
+                    && materials
+                        .get(*s)
+                        .is_none_or(|path| export.find(path, ".json").is_some())
+                    && attempted.insert(s.to_string())
+            })
             .cloned()
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -696,6 +685,38 @@ fn assemble(
         meshes_exported: new.len(),
         missing,
     })
+}
+
+/// Section material name → the material's object path, from `meshes.txt`. Names collide across folders, so materials
+/// and their textures are read by object path, but the pack has one texture per name: it keeps the core meshes'
+/// material (EVE's default suit draws `MI_Basebody_V02_F2`, which `CH_P_EVE_ReferenceBody` names too), else the first
+/// listed, and warns about the other.
+fn materials(list: &str, warnings: &mut Vec<String>) -> HashMap<String, String> {
+    let core: HashSet<String> = CORE_MESHES
+        .iter()
+        .map(|m| format!("{}.sbav", last(m)))
+        .collect();
+    let mut lines: Vec<&str> = list.lines().collect();
+    // Stable: the core meshes' lines first, each group in its listed order.
+    lines.sort_by_key(|l| !l.split(' ').nth(1).is_some_and(|f| core.contains(f)));
+    let mut materials: HashMap<String, String> = HashMap::new();
+    for line in lines {
+        let Some((name, path)) = line
+            .strip_prefix("MATERIAL ")
+            .and_then(|rest| rest.split_once(' '))
+            .and_then(|(_, rest)| rest.rsplit_once(' '))
+        else {
+            continue;
+        };
+        let first = materials
+            .entry(name.to_string())
+            .or_insert_with(|| path.to_string());
+        let warning = format!("material name {name}: {path} and {first} share one pack texture");
+        if first != path && !warnings.contains(&warning) {
+            warnings.push(warning);
+        }
+    }
+    materials
 }
 
 /// Bake workers: one per 512 MiB of free memory, at most one per CPU.
@@ -982,6 +1003,25 @@ public class ReadPack {
             Some(&crate::Refusal::new(crate::Kind::UsmapRejected, "24463856"))
         );
         assert_eq!(snapshot(&avatar), before);
+    }
+
+    #[test]
+    fn same_named_materials_keep_the_core_meshes_one() {
+        let list = "MESH CH_P_EVE_ReferenceBody.sbav SB/Ref pak\n\
+            MATERIAL CH_P_EVE_ReferenceBody.sbav Body /Game/Ref/M_Body.M_Body\n\
+            MESH CH_P_EVE_52_TypeB.sbav SB/Suit pak\n\
+            MATERIAL CH_P_EVE_52_TypeB.sbav Body /Game/Suit/M_Body.M_Body\n\
+            MATERIAL CH_P_EVE_52_TypeB.sbav Skin /Game/Suit/M_Skin.M_Skin\n";
+        let mut warnings = Vec::new();
+        let found = materials(list, &mut warnings);
+        assert_eq!(found["Body"], "/Game/Suit/M_Body.M_Body");
+        assert_eq!(found["Skin"], "/Game/Suit/M_Skin.M_Skin");
+        assert_eq!(
+            warnings,
+            [
+                "material name Body: /Game/Ref/M_Body.M_Body and /Game/Suit/M_Body.M_Body share one pack texture"
+            ]
+        );
     }
 
     #[test]
