@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <windows.h>
+#include <timeapi.h>
 #include <xinput.h>
 using GetStateFn = DWORD(WINAPI *)(DWORD, XINPUT_STATE *);
 using SetStateFn = DWORD(WINAPI *)(DWORD, XINPUT_VIBRATION *);
@@ -67,6 +68,10 @@ void wait_ack(std::string state, int edge, int epoch = 1) {
   require(false, ("ACK " + state).c_str());
 }
 int main() {
+  // Stellar Blade asks for a 1 ms timer (timeBeginPeriod); without it, Windows
+  // 11 stretches the worker's Sleep(5) to 15.6 ms and its permit reads lag the
+  // handshake below.
+  timeBeginPeriod(1);
   DeleteFileA("eve-input.txt");
   DeleteFileA("eve-control-permit.0");
   DeleteFileA("eve-control-permit.1");
