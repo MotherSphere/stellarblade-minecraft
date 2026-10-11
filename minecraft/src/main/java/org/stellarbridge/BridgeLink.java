@@ -20,6 +20,12 @@ final class BridgeLink {
      */
     private record Request(long seq, String action, long sentNanos) { }
     private static final long ANSWER = 5_000_000_000L;
+    /**
+     * How long Windows may keep refusing the terrain or mob-wall heartbeat (Lua reads eve-mobs.txt every frame and
+     * terrain.txt on its timer) before the link ends; a refused one is written again at the next tick, well inside Lua's
+     * 5 s terrain freshness (see BridgeFiles.Refusals).
+     */
+    static final long BUSY_MS = 2000;
 
     final String session;
     final Vec3d origin;
@@ -27,8 +33,10 @@ final class BridgeLink {
     private final BridgeFiles files;
     private final PoseGate gate;
     private BridgeProtocol.Terrain terrain; // The newest snapshot; its TIME is never written.
+    private boolean terrainDue; // terrain.txt is to be written (a new revision, the heartbeat, or a refused write).
+    private final BridgeFiles.Refusals terrainRefusals = new BridgeFiles.Refusals(BUSY_MS), mobRefusals = new BridgeFiles.Refusals(BUSY_MS);
     private List<BridgeProtocol.Box> mobs = List.of();
-    private boolean mobsListed; // The last eve-mobs.txt listed at least one entity.
+    private boolean mobsListed; // The last eve-mobs.txt listed at least one entity, or the empty list is not written yet.
     private BridgeProtocol.Eve relayed; // The newest packet sent to the server.
     private Vec3d position; // EVE's feet (world) from the newest accepted packet, null while the link is not live.
     private int ticks;
@@ -54,14 +62,15 @@ final class BridgeLink {
         if (!snapshot.session().equals(session) || snapshot.seq() <= revision()) return;
         gate.published(snapshot.seq(), snapshot.bounds());
         terrain = snapshot;
+        terrainDue = true;
         writeTerrain(now);
     }
 
     /**
      * Each client tick at wall milliseconds now: EVE's position from the newest eve.N, judged as the server's gate judges
-     * it, then the heartbeats: terrain every 4 ticks, mob walls while listed every tick. Clients tick at the world's rate,
-     * so 4 ticks of a perfect dodge's slowdown outlast Lua's 0.6 s wall lease. Returns that packet's text when the server
-     * has not had it yet, else null.
+     * it, then the heartbeats: terrain every 4 ticks, mob walls while listed every tick, and any write Windows refused
+     * last time (see BUSY_MS). Clients tick at the world's rate, so 4 ticks of a perfect dodge's slowdown outlast Lua's
+     * 0.6 s wall lease. Returns that packet's text when the server has not had it yet, else null.
      */
     String tick(long now) throws IOException {
         String text = files.readEve(session);
@@ -70,15 +79,17 @@ final class BridgeLink {
         if (packet != null) relayed = packet;
         BridgeProtocol.Eve eve = gate.accept(packet, revision(), now / 1000);
         position = eve == null ? null : origin.add(eve.x(), eve.y(), eve.z());
-        if (++ticks % 4 == 0 && terrain != null) writeTerrain(now);
-        if (!mobs.isEmpty()) writeMobs(now);
+        if (++ticks % 4 == 0 && terrain != null) terrainDue = true;
+        if (terrainDue) writeTerrain(now);
+        if (!mobs.isEmpty() || mobsListed) writeMobs(now);
         return relay;
     }
 
     private void writeTerrain(long now) throws IOException {
         var t = terrain;
-        files.publish(BridgeProtocol.encodeTerrain(new BridgeProtocol.Terrain(t.session(), t.seq(), now / 1000, t.dimension(),
-                t.originX(), t.originY(), t.originZ(), t.bounds(), t.boxes())));
+        String packet = BridgeProtocol.encodeTerrain(new BridgeProtocol.Terrain(t.session(), t.seq(), now / 1000, t.dimension(),
+                t.originX(), t.originY(), t.originZ(), t.bounds(), t.boxes()));
+        terrainDue = !terrainRefusals.write(() -> files.publish(packet), now);
     }
 
     /**
@@ -92,8 +103,11 @@ final class BridgeLink {
 
     private void writeMobs(long now) throws IOException {
         if (position == null || mobs.isEmpty() && !mobsListed) return;
-        files.write("eve-mobs.txt", BridgeProtocol.encodeMobs(session, ++mobSeq, now, mobs));
-        mobsListed = !mobs.isEmpty();
+        List<BridgeProtocol.Box> listed = mobs;
+        String packet = BridgeProtocol.encodeMobs(session, mobSeq + 1, now, listed);
+        if (!mobRefusals.write(() -> files.write("eve-mobs.txt", packet), now)) return; // Again next tick.
+        mobSeq++;
+        mobsListed = !listed.isEmpty();
     }
 
     /** A combat verdict for Stellar Blade to answer (an index in BridgeProtocol.COMBAT_EVENTS), with the attacker's yaw or NaN. */

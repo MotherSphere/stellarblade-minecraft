@@ -640,6 +640,31 @@ public final class AvatarStreamTest {
                 Thread.sleep(3 * AvatarStream.KEEP_ALIVE_MS);
                 assert stopped.contains("\nSTATE stopped\n") && Files.readString(request).equals(stopped) : "A stopped request stays stopped";
             }
+            // Windows refuses the request's replacement while Lua reads it (an alt-tab can deschedule Stellar Blade's game
+            // thread mid-read): the heartbeat writes it again at the next refresh, and fails only after REQUEST_BUSY_MS.
+            var refusing = new boolean[1];
+            long begun = System.currentTimeMillis();
+            try (var busy = new AvatarStream(directory, "a1".repeat(16), begun, (from, to) -> {
+                if (refusing[0] && to.getFileName().toString().equals("eve-pose-request.txt"))
+                    throw new java.nio.file.AccessDeniedException(from + " -> " + to);
+                Files.move(from, to, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            })) {
+                refusing[0] = true;
+                busy.heartbeat(begun + 1000);
+                busy.heartbeat(begun + 1050);
+                assert Files.readString(request).contains("\nTIME " + begun + "\n") : "A refused request keeps the last one, and the stream lives";
+                refusing[0] = false;
+                busy.heartbeat(begun + 1100);
+                assert Files.readString(request).contains("\nTIME " + (begun + 1100) + "\n") : "Written again at the next refresh";
+                refusing[0] = true;
+                long failedAt = -1;
+                for (long at = begun + 2100; failedAt < 0 && at <= begun + 2100 + 2 * AvatarStream.REQUEST_BUSY_MS; at += 50) {
+                    try { busy.heartbeat(at); }
+                    catch (java.nio.file.AccessDeniedException persistent) { failedAt = at; }
+                }
+                assert failedAt == begun + 2100 + AvatarStream.REQUEST_BUSY_MS : "Refusals lasting REQUEST_BUSY_MS fail the heartbeat: " + failedAt;
+                refusing[0] = false;
+            }
         } finally {
             try (var files = Files.walk(directory)) { files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete()); }
         }
