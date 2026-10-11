@@ -18,7 +18,7 @@ use sbmc_installer::detect::Override;
 use sbmc_installer::i18n::{self, Lang};
 use sbmc_installer::ledger::{self, Status};
 use sbmc_installer::ops::Step;
-use sbmc_installer::pack::inputs::{self, Remote, Sources};
+use sbmc_installer::pack::inputs::{self, Embedded, Remote, Sources};
 use sbmc_installer::payload::Payload;
 use sbmc_installer::safety::{self, Running};
 use sbmc_installer::{
@@ -140,11 +140,10 @@ fn ctx(fake: &Fake, dry_run: bool) -> Ctx {
         cache: fake.home.join("cache/Colony/Stellar Bridge"),
         // Nothing listens there: a test that downloads serves its own files.
         sources: Sources {
-            beside: None,
             sidecar: None,
             oodle: Remote {
                 url: "http://127.0.0.1:9/gcc-x64-release.zip".into(),
-                size: Some(1),
+                size: 1,
                 sha256: "0".repeat(64),
             },
             oodle_entry: "lib/liboodle-data-shared.so".into(),
@@ -852,21 +851,17 @@ fn roomy(app: &mut App) {
 fn the_pack_builder_checks_asks_downloads_and_reports() {
     let _language = language();
     let fake = fake();
-    let script = sidecar_script(&fake.home);
+    let script: &'static [u8] = sidecar_script(&fake.home).leak();
     let zip = oodle_zip();
-    let base = serve(vec![
-        ("/v0.0.0/eve-extract-linux-x64", script.clone()),
-        ("/oodle/gcc-x64-release.zip", zip.clone()),
-    ]);
+    let base = serve(vec![("/oodle/gcc-x64-release.zip", zip.clone())]);
     let mut ctx = ctx(&fake, false);
-    ctx.sources.sidecar = Some(Remote {
-        url: format!("{base}/v0.0.0/eve-extract-linux-x64"),
-        size: None,
-        sha256: safety::sha256_hex(&script),
+    ctx.sources.sidecar = Some(Embedded {
+        bytes: script,
+        sha256: safety::sha256_hex(script),
     });
     ctx.sources.oodle = Remote {
         url: format!("{base}/oodle/gcc-x64-release.zip"),
-        size: Some(zip.len() as u64),
+        size: zip.len() as u64,
         sha256: safety::sha256_hex(&zip),
     };
     let (mut app, job) = App::new(ctx, english());
@@ -891,7 +886,7 @@ fn the_pack_builder_checks_asks_downloads_and_reports() {
         Some(true),
         "the save is the owned items' source"
     );
-    assert!(matches!(ready.sidecar, inputs::Sidecar::Download(_)));
+    assert!(ready.sidecar);
     assert!(ready.oodle.is_none() && ready.running.is_empty());
     assert!(ready.blockers(false).contains(&"pack_row_usmap"));
     drive(&mut app, Message::PackNext);
@@ -937,8 +932,8 @@ fn the_pack_builder_checks_asks_downloads_and_reports() {
         &i18n::refusal(&Refusal::new(Kind::DigestMismatch, elsewhere.display()))
     );
 
-    // Download agreed: Oodle and EveExtract come from the (local) server, the build starts, and EveExtract stops on
-    // its Oodle. The result says so, with the log's last lines; nothing was installed.
+    // Download agreed: Oodle comes from the (local) server, EveExtract is unpacked, the build starts, and EveExtract
+    // stops on its Oodle. The result says so, with the log's last lines; nothing was installed.
     write(&fake.home.join("oodle-fails"), "");
     let usmap_bytes = fs::read(&usmap).unwrap();
     drive(&mut app, Message::OodleFetch(true));
@@ -959,7 +954,7 @@ fn the_pack_builder_checks_asks_downloads_and_reports() {
     assert_eq!(
         fs::read(builder.join(inputs::SIDECAR)).unwrap(),
         script,
-        "EveExtract kept in the builder cache"
+        "EveExtract unpacked into the builder cache"
     );
     assert!(
         builder.join("oodle/liboodle-data-shared.so").is_file()
@@ -985,11 +980,7 @@ fn the_pack_builder_checks_asks_downloads_and_reports() {
     drive(&mut app, Message::PackOpen);
     roomy(&mut app);
     let ready = app.pack.ready.as_ref().unwrap();
-    assert!(ready.oodle.is_some());
-    assert_eq!(
-        ready.sidecar,
-        inputs::Sidecar::Found(builder.join(inputs::SIDECAR))
-    );
+    assert!(ready.oodle.is_some() && ready.sidecar);
     drive(&mut app, Message::PackNext);
     drive(&mut app, Message::PackConsent(true));
     drive(&mut app, Message::PackNext);
@@ -1029,13 +1020,12 @@ fn a_dry_run_pack_walks_to_its_result_in_french_and_writes_nothing() {
     drive(&mut app, Message::Start);
     drive(&mut app, Message::PackOpen);
     roomy(&mut app);
-    // This build pins no EveExtract: the ready check says so.
+    // This build carries no EveExtract: the ready check says so.
     assert_eq!(
         app.pack.ready.as_ref().unwrap().blockers(false),
         ["err_no_sidecar"]
     );
-    app.pack.ready.as_mut().unwrap().sidecar =
-        inputs::Sidecar::Found(fake.home.join("eve-extract"));
+    app.pack.ready.as_mut().unwrap().sidecar = true;
     for message in [
         Message::PackNext,
         Message::PackConsent(true),

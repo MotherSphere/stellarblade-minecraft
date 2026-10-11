@@ -18,7 +18,7 @@ use crate::i18n::{self, Lang, t, t_fmt};
 use crate::launcher::{self, Kind};
 use crate::ledger::Status;
 use crate::ops::{self, Step};
-use crate::pack::{inputs, owned, run};
+use crate::pack::{owned, run};
 use crate::safety::Running;
 use crate::{Ownership, detect, pins, platform};
 
@@ -1362,20 +1362,18 @@ pub fn pack_rows(ready: &Ready, every: bool) -> Vec<(Level, &'static str, String
             t_fmt("pack_games_running", &[("names", &names.join(", "))]),
         )
     });
-    rows.push(match &ready.sidecar {
-        inputs::Sidecar::Found(path) => {
-            (Level::Ok, t("pack_row_sidecar"), path.display().to_string())
-        }
-        inputs::Sidecar::Download(remote) => (
-            Level::Info,
+    rows.push(if ready.sidecar {
+        (
+            Level::Ok,
             t("pack_row_sidecar"),
-            t_fmt("pack_sidecar_download", &[("url", &remote.url)]),
-        ),
-        inputs::Sidecar::Unpinned => (
+            t("pack_sidecar_embedded").to_string(),
+        )
+    } else {
+        (
             Level::Bad,
             t("pack_row_sidecar"),
             t("err_no_sidecar").to_string(),
-        ),
+        )
     });
     rows.push(match &ready.oodle {
         Some(record) => (
@@ -1449,16 +1447,6 @@ fn pack_consent_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
         ))
         .push(para(typo, t("pack_consent_eula")))
         .push(code(typo, pins::SB_EULA));
-    if let inputs::Sidecar::Download(remote) = &ready.sidecar {
-        page = page.push(card(
-            column![
-                para(typo, t("pack_consent_sidecar")),
-                code(typo, &remote.url),
-                code(typo, &format!("SHA-256 {}", remote.sha256)),
-            ]
-            .spacing(6),
-        ));
-    }
     page = page.push(
         checkbox(app.pack.consent)
             .label(t("pack_consent_check"))
@@ -1504,7 +1492,7 @@ fn oodle_page<'a>(app: &'a App, typo: &Typography) -> El<'a> {
                     typo,
                     Level::Info,
                     t("oodle_size"),
-                    oodle.size.map_or_else(|| "?".into(), |s| format!("{s} B")),
+                    format!("{} B", oodle.size),
                 ),
                 status_row(typo, Level::Info, "SHA-256", oodle.sha256.clone()),
             ]

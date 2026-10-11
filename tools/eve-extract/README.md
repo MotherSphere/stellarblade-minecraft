@@ -89,6 +89,6 @@ DONE	1	1
 
 A driver counts `OK` and `FAIL` lines against the paths it passed (or, in `export`, uses them as progress ticks until `DONE`), streams them as they come, and kills the process to cancel: every file is written whole, and a cancelled `--out` is the caller's to delete.
 
-## Release assets and the installer's pin
+## In the installer and the release assets
 
-Each release carries `eve-extract-linux-x64` and `eve-extract-win-x64.exe`, listed in its `SHA256SUMS` ([releases](../../docs/releasing.md)). The installer build pins the sidecars of its own commit: `tools/check.py` and CI set `SBMC_EVE_EXTRACT` to the folder holding both files and their `SHA256SUMS` (`<sha256>  <name>` lines, the format of `sha256sum`, one per sidecar), which the installer's build script reads.
+Each installer carries the sidecar of its own OS and commit: `tools/check.py` and CI set `SBMC_EVE_EXTRACT` to the folder holding both files and their `SHA256SUMS` (`<sha256>  <name>` lines, the format of `sha256sum`, one per sidecar), and the installer's build script embeds its target's file with that line's SHA-256. The installer unpacks it into its builder cache and checks the digest before it runs it. Each release also carries `eve-extract-linux-x64` and `eve-extract-win-x64.exe`, listed in its `SHA256SUMS` ([releases](../../docs/releasing.md)), for running it by hand.

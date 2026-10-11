@@ -1,7 +1,7 @@
 //! The pack builder's inputs besides the game's own files, kept in the builder cache (`<data>/builder`):
 //!
-//! - **EveExtract**, the sidecar: next to the installer, else in the cache, else downloaded from this release's assets
-//!   after the player agrees. Each copy is used only when its sha256 is the one this build pins.
+//! - **EveExtract**, the sidecar: carried by the installer and unpacked into the cache the first time, and again
+//!   whenever the cached copy is not the one this build pins (sha256).
 //! - **Oodle**: downloaded from the pinned OodleUE release only after the player agrees, or taken from that release's
 //!   zip the player already has; the zip's sha256 must be the pinned one. Never shipped. The consent (date, source and
 //!   digests) is recorded beside the library.
@@ -19,12 +19,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use super::extract::Cancelled;
-use crate::safety::{hex, sha256_file};
+use crate::safety::{hex, sha256_file, sha256_hex};
 use crate::{Kind, Refusal, log, pins, platform};
 
-include!(concat!(env!("OUT_DIR"), "/sidecars.rs"));
+include!(concat!(env!("OUT_DIR"), "/sidecar.rs"));
 
-/// This OS's EveExtract, by its release asset name.
+/// This OS's EveExtract, by its release asset name, which is also its name in the cache.
 pub const SIDECAR: &str = if cfg!(windows) {
     "eve-extract-win-x64.exe"
 } else {
@@ -35,48 +35,42 @@ const USMAP_MAGIC: [u8; 2] = [0xC4, 0x30];
 const USMAP_VERSIONS: u8 = 5;
 /// The consent record beside the cached Oodle library.
 const OODLE_RECORD: &str = "oodle.json";
-/// A download without a pinned size stops here (the sidecar is about 45 MB).
-const MAX_DOWNLOAD: u64 = 512 << 20;
-
-/// A file to download, checked against its sha256 (and its size, when pinned) before it is used.
+/// A file to download, checked against its size and sha256 before it is used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Remote {
     pub url: String,
-    pub size: Option<u64>,
+    pub size: u64,
+    pub sha256: String,
+}
+
+/// A program the installer carries, with its pinned sha256.
+#[derive(Clone)]
+pub struct Embedded {
+    pub bytes: &'static [u8],
     pub sha256: String,
 }
 
 /// Where the inputs come from. [`Sources::release`] outside tests.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Sources {
-    /// The installer's own folder, searched first for the sidecar.
-    pub beside: Option<PathBuf>,
-    /// This OS's sidecar asset with its pinned sha256; `None` in a build without `SBMC_EVE_EXTRACT`.
-    pub sidecar: Option<Remote>,
+    /// This OS's EveExtract; `None` in a build without `SBMC_EVE_EXTRACT`.
+    pub sidecar: Option<Embedded>,
     pub oodle: Remote,
     /// The library's path inside the Oodle zip.
     pub oodle_entry: String,
 }
 
 impl Sources {
-    /// This release's: the sidecar asset of the installer's own version, and the pinned OodleUE zip for this OS.
+    /// This release's: the EveExtract it carries, and the pinned OodleUE zip for this OS.
     pub fn release() -> Sources {
-        let sidecar = SIDECARS
-            .iter()
-            .find(|(name, _)| *name == SIDECAR)
-            .map(|(name, sha256)| Remote {
-                url: format!("{}/v{}/{name}", pins::RELEASES, env!("CARGO_PKG_VERSION")),
-                size: None,
-                sha256: sha256.to_string(),
-            });
         Sources {
-            beside: std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(Path::to_path_buf)),
-            sidecar,
+            sidecar: SIDECAR_BUILD.map(|(bytes, sha256)| Embedded {
+                bytes,
+                sha256: sha256.into(),
+            }),
             oodle: Remote {
                 url: pins::OODLE.url.into(),
-                size: Some(pins::OODLE.size),
+                size: pins::OODLE.size,
                 sha256: pins::OODLE.sha256.into(),
             },
             oodle_entry: pins::OODLE.entry.into(),
@@ -97,59 +91,33 @@ pub fn cache(data: &Path) -> PathBuf {
     data.join("builder")
 }
 
-/// Where the sidecar is, or what must happen first.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Sidecar {
-    Found(PathBuf),
-    /// Not on this PC yet: downloaded at the build, after the consent page names it.
-    Download(Remote),
-    /// This build pins no sidecar (a build without `SBMC_EVE_EXTRACT`): the pack cannot be built.
-    Unpinned,
-}
-
 fn matches(path: &Path, sha256: &str) -> bool {
     path.is_file() && sha256_file(path, &mut |_| {}).is_ok_and(|d| d == sha256)
 }
 
-/// The sidecar next to the installer, else in `cache`, when its sha256 is the pinned one. Reads only.
-pub fn sidecar(sources: &Sources, cache: &Path) -> Sidecar {
-    let Some(remote) = &sources.sidecar else {
-        return Sidecar::Unpinned;
+/// This OS's EveExtract in `cache`: unpacked from the installer when the cached copy is missing or not the pinned one.
+pub fn unpack_sidecar(sources: &Sources, cache: &Path) -> Result<PathBuf> {
+    let Some(embedded) = &sources.sidecar else {
+        bail!(Refusal::new(Kind::NoSidecar, ""));
     };
-    for dir in sources.beside.iter().map(PathBuf::as_path).chain([cache]) {
-        let path = dir.join(SIDECAR);
-        if matches(&path, &remote.sha256) {
-            return Sidecar::Found(path);
-        }
-        if path.exists() {
-            log::line(&format!(
-                "pack: {} does not match this release's EveExtract; not used",
-                path.display()
-            ));
-        }
+    let path = cache.join(SIDECAR);
+    if matches(&path, &embedded.sha256) {
+        return Ok(path);
     }
-    Sidecar::Download(remote.clone())
-}
-
-/// The sidecar, downloaded into `cache` first when needed.
-pub fn fetch_sidecar(
-    sources: &Sources,
-    cache: &Path,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(u64, Option<u64>),
-) -> Result<PathBuf> {
-    match sidecar(sources, cache) {
-        Sidecar::Found(path) => Ok(path),
-        Sidecar::Unpinned => bail!(Refusal::new(Kind::NoSidecar, "")),
-        Sidecar::Download(remote) => {
-            fs::create_dir_all(cache)?;
-            let path = cache.join(SIDECAR);
-            download(&remote, &path, cancel, progress)?;
-            platform::make_executable(&path)?;
-            log::line(&format!("pack: EveExtract downloaded from {}", remote.url));
-            Ok(path)
-        }
+    if sha256_hex(embedded.bytes) != embedded.sha256 {
+        bail!(Refusal::new(Kind::DigestMismatch, SIDECAR));
     }
+    fs::create_dir_all(cache)?;
+    let part = cache.join(format!("{SIDECAR}.part"));
+    fs::write(&part, embedded.bytes)?;
+    platform::make_executable(&part)?;
+    fs::rename(&part, &path)?;
+    log::line(&format!(
+        "pack: EveExtract {} unpacked to {}",
+        embedded.sha256,
+        path.display()
+    ));
+    Ok(path)
 }
 
 /// Downloads `remote` to `to` through `<to>.part`: the file appears only once its size and sha256 match.
@@ -157,7 +125,7 @@ pub fn download(
     remote: &Remote,
     to: &Path,
     cancel: &AtomicBool,
-    progress: &mut dyn FnMut(u64, Option<u64>),
+    progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
     let failed = || Refusal::new(Kind::DownloadFailed, &remote.url);
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -169,10 +137,12 @@ pub fn download(
         .get(&remote.url)
         .call()
         .map_err(|e| anyhow::Error::new(e).context(failed()))?;
-    let limit = remote.size.unwrap_or(MAX_DOWNLOAD);
-    let total = remote.size.or_else(|| response.body().content_length());
     // One byte over the pinned size is enough to refuse it.
-    let mut reader = response.body_mut().with_config().limit(limit + 1).reader();
+    let mut reader = response
+        .body_mut()
+        .with_config()
+        .limit(remote.size + 1)
+        .reader();
     let part = to.with_file_name(format!(
         "{}.part",
         to.file_name().unwrap_or_default().to_string_lossy()
@@ -191,15 +161,15 @@ pub fn download(
                 break;
             }
             done += n as u64;
-            if done > limit {
+            if done > remote.size {
                 bail!(Refusal::new(Kind::DigestMismatch, &remote.url));
             }
             hasher.update(&buffer[..n]);
             file.write_all(&buffer[..n])?;
-            progress(done, total);
+            progress(done, remote.size);
         }
         file.sync_all()?;
-        if hex(&hasher.finalize()) != remote.sha256 || remote.size.is_some_and(|s| s != done) {
+        if hex(&hasher.finalize()) != remote.sha256 || remote.size != done {
             bail!(Refusal::new(Kind::DigestMismatch, &remote.url));
         }
         Ok(())
@@ -238,7 +208,7 @@ pub fn fetch_oodle(
     sources: &Sources,
     cache: &Path,
     cancel: &AtomicBool,
-    progress: &mut dyn FnMut(u64, Option<u64>),
+    progress: &mut dyn FnMut(u64, u64),
 ) -> Result<PathBuf> {
     fs::create_dir_all(cache)?;
     let zip = cache.join("oodle.zip");
@@ -390,13 +360,12 @@ pub(crate) mod tests {
         writer.finish().unwrap().into_inner()
     }
 
-    pub(crate) fn sources(oodle_url: String, zip: &[u8], sidecar: Option<Remote>) -> Sources {
+    pub(crate) fn sources(oodle_url: String, zip: &[u8], sidecar: Option<Embedded>) -> Sources {
         Sources {
-            beside: None,
             sidecar,
             oodle: Remote {
                 url: oodle_url,
-                size: Some(zip.len() as u64),
+                size: zip.len() as u64,
                 sha256: crate::safety::sha256_hex(zip),
             },
             oodle_entry: "lib/liboodle-data-shared.so".into(),
@@ -417,10 +386,7 @@ pub(crate) mod tests {
         })
         .unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"not really oodle");
-        assert_eq!(
-            seen.last(),
-            Some(&(zip.len() as u64, Some(zip.len() as u64)))
-        );
+        assert_eq!(seen.last(), Some(&(zip.len() as u64, zip.len() as u64)));
         let (found, record) = oodle(&sources, &cache).unwrap();
         assert_eq!(found, path);
         assert_eq!(record.source, url);
@@ -491,63 +457,49 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_sidecar_is_used_only_at_its_pin() {
-        let program = b"#!/bin/sh\necho eve-extract\n".to_vec();
-        let url = serve("/v0.3.0/eve-extract-linux-x64", program.clone());
+    fn the_sidecar_is_unpacked_only_at_its_pin() {
+        let program: &'static [u8] = b"#!/bin/sh\necho eve-extract\n";
         let dir = tempfile::tempdir().unwrap();
-        let (beside, cache) = (dir.path().join("bin"), dir.path().join("builder"));
-        let remote = Remote {
-            url: url.clone(),
-            size: None,
-            sha256: crate::safety::sha256_hex(&program),
+        let cache = dir.path().join("builder");
+        let embedded = Embedded {
+            bytes: program,
+            sha256: sha256_hex(program),
         };
-        let mut sources = sources(String::new(), b"", Some(remote.clone()));
-        sources.beside = Some(beside.clone());
-        assert_eq!(sidecar(&sources, &cache), Sidecar::Download(remote.clone()));
-        let fetched =
-            fetch_sidecar(&sources, &cache, &AtomicBool::new(false), &mut |_, _| {}).unwrap();
-        assert_eq!(fetched, cache.join(SIDECAR));
-        assert_eq!(fs::read(&fetched).unwrap(), program);
-        assert_eq!(sidecar(&sources, &cache), Sidecar::Found(fetched.clone()));
+        let mut sources = sources(String::new(), b"", Some(embedded.clone()));
+        let path = unpack_sidecar(&sources, &cache).unwrap();
+        assert_eq!(path, cache.join(SIDECAR));
+        assert_eq!(fs::read(&path).unwrap(), program);
+        assert!(!cache.join(format!("{SIDECAR}.part")).exists());
 
-        // Next to the installer, the pinned one comes first; another one there is ignored.
-        fs::create_dir_all(&beside).unwrap();
-        fs::write(beside.join(SIDECAR), b"another build").unwrap();
-        assert_eq!(sidecar(&sources, &cache), Sidecar::Found(fetched.clone()));
-        fs::write(beside.join(SIDECAR), &program).unwrap();
-        assert_eq!(
-            sidecar(&sources, &cache),
-            Sidecar::Found(beside.join(SIDECAR))
-        );
+        // A changed cached copy is unpacked again.
+        fs::write(&path, b"changed").unwrap();
+        assert_eq!(unpack_sidecar(&sources, &cache).unwrap(), path);
+        assert_eq!(fs::read(&path).unwrap(), program);
 
-        // A changed cached copy is downloaded again; a download that is not the pinned file is refused.
-        fs::remove_file(beside.join(SIDECAR)).unwrap();
-        fs::write(&fetched, b"changed").unwrap();
+        // Bytes that are not the pinned ones are refused and the cached copy is not replaced.
+        fs::write(&path, b"changed").unwrap();
         sources.sidecar.as_mut().unwrap().sha256 = "1".repeat(64);
-        let error =
-            fetch_sidecar(&sources, &cache, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+        let error = unpack_sidecar(&sources, &cache).unwrap_err();
         assert_eq!(
             error.downcast_ref::<Refusal>().map(|r| r.kind),
             Some(Kind::DigestMismatch)
         );
+        assert_eq!(fs::read(&path).unwrap(), b"changed");
         sources.sidecar = None;
-        assert_eq!(sidecar(&sources, &cache), Sidecar::Unpinned);
+        let error = unpack_sidecar(&sources, &cache).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<Refusal>().map(|r| r.kind),
+            Some(Kind::NoSidecar)
+        );
     }
 
     #[test]
-    fn the_release_pins_this_versions_assets() {
+    fn the_release_carries_its_pinned_sidecar() {
         let sources = Sources::release();
         assert!(sources.oodle.url.ends_with(".zip") && sources.oodle.sha256.len() == 64);
         assert!(sources.oodle_entry.ends_with(sources.oodle_file()));
         if let Some(sidecar) = &sources.sidecar {
-            assert_eq!(
-                sidecar.url,
-                format!(
-                    "https://github.com/MotherSphere/stellarblade-minecraft/releases/download/v{}/{SIDECAR}",
-                    env!("CARGO_PKG_VERSION")
-                )
-            );
-            assert_eq!(sidecar.sha256.len(), 64);
+            assert_eq!(sha256_hex(sidecar.bytes), sidecar.sha256);
         }
     }
 

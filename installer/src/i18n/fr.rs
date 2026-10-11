@@ -506,7 +506,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_no_sidecar",
-        "Cet installateur a été compilé sans les empreintes d'EveExtract : utilisez une version publiée pour créer le pack d'avatar.",
+        "Cet installateur a été compilé sans EveExtract : utilisez une version publiée pour créer le pack d'avatar.",
     ),
     ("err_close_first", "Fermez d'abord {path}"),
     (
@@ -725,10 +725,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "pack_games_running",
         "En cours : {names}. Fermez-les, puis vérifiez à nouveau.",
     ),
-    (
-        "pack_sidecar_download",
-        "Téléchargé au moment de la création depuis cette version : {url}",
-    ),
+    ("pack_sidecar_embedded", "Inclus dans cet installateur"),
     ("pack_oodle_ready", "Prêt (accepté le {date})"),
     (
         "pack_oodle_ask",
@@ -750,10 +747,6 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     (
         "pack_consent_eula",
         "Le contrat de licence de Stellar Blade interdit de modifier le jeu, de le désosser ou d'en faire des œuvres dérivées, ainsi que les mods non autorisés. Le pont et ce créateur en relèvent : vous continuez à vos risques.",
-    ),
-    (
-        "pack_consent_sidecar",
-        "EveExtract, l'extracteur de pack de ce projet (GPL-3.0-or-later, sans contenu du jeu), est téléchargé depuis cette version et vérifié par son SHA-256 épinglé :",
     ),
     (
         "pack_consent_check",

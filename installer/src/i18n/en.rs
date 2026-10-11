@@ -473,7 +473,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_no_sidecar",
-        "This installer was built without EveExtract's pins: use a release build to make the avatar pack.",
+        "This installer was built without EveExtract: use a release build to make the avatar pack.",
     ),
     ("err_close_first", "Close {path} first"),
     (
@@ -665,10 +665,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "pack_games_running",
         "Running: {names}. Close them, then check again.",
     ),
-    (
-        "pack_sidecar_download",
-        "Downloaded at the build from this release: {url}",
-    ),
+    ("pack_sidecar_embedded", "Carried by this installer"),
     ("pack_oodle_ready", "Ready (agreed on {date})"),
     (
         "pack_oodle_ask",
@@ -690,10 +687,6 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     (
         "pack_consent_eula",
         "Stellar Blade's licence agreement forbids modifying, reverse engineering or making derivative works of the game, and unauthorised mods. The bridge and this builder fall under it: you proceed at your own risk.",
-    ),
-    (
-        "pack_consent_sidecar",
-        "EveExtract, this project's pack extractor (GPL-3.0-or-later, no game content), is downloaded from this release and checked against its pinned SHA-256:",
     ),
     (
         "pack_consent_check",

@@ -105,13 +105,20 @@ fn main() -> iced::Result {
     while let Some(arg) = args.next() {
         match arg.to_string_lossy().as_ref() {
             "--version" | "-V" => {
+                let sidecar = Sources::release()
+                    .sidecar
+                    .map_or("no EveExtract".into(), |s| {
+                        format!("EveExtract {}", s.sha256)
+                    });
                 match payload() {
                     Some(p) => println!(
-                        "stellar-bridge-installer {version} (bridge {}, Lua revision {})",
+                        "stellar-bridge-installer {version} (bridge {}, Lua revision {}, {sidecar})",
                         p.release,
                         p.lua_revision.map_or("unknown".into(), |r| r.to_string())
                     ),
-                    None => println!("stellar-bridge-installer {version} (no bridge payload)"),
+                    None => println!(
+                        "stellar-bridge-installer {version} (no bridge payload, {sidecar})"
+                    ),
                 }
                 return Ok(());
             }
@@ -128,6 +135,14 @@ fn main() -> iced::Result {
                     server::LAUNCHER_NOTICE,
                     server::LAUNCHER_LICENSE
                 );
+                if Sources::release().sidecar.is_some() {
+                    println!(
+                        "\n== EveExtract ==\n\nThe pack builder's EveExtract, embedded here, is licensed under \
+                         GPL-3.0-or-later and includes CUE4Parse (Apache-2.0), the .NET runtime (MIT) and the \
+                         packages in its THIRD-PARTY-NOTICES.md. `eve-extract --licenses` prints their texts; the \
+                         installer unpacks it into its data folder's builder/ before the first avatar pack build."
+                    );
+                }
                 return Ok(());
             }
             "--help" | "-h" => {
@@ -141,7 +156,7 @@ fn main() -> iced::Result {
                      --accept-eula   With --server: write eula=true in a new eula.txt. Read Mojang's EULA first \
                      ({}): passing this option accepts it for that server\n      \
                      --uninstall     With --server: remove the bridge JAR; Fabric API and the server stay\n  \
-                     -V, --version       Print the version and the bridge release it carries\n      \
+                     -V, --version       Print the version, the bridge release and the EveExtract it carries\n      \
                      --licenses      Print the licences of the embedded pieces\n  -h, --help          Print this help\n\n\
                      The log goes to {} and to stderr (to stderr only in a dry run).",
                     pins::MINECRAFT_EULA,

@@ -33,11 +33,6 @@ pub const JAVA_MIN: u32 = 21;
 /// Mojang's licence for the Minecraft server, linked wherever the operator may accept it.
 pub const MINECRAFT_EULA: &str = "https://aka.ms/MinecraftEULA";
 
-/// Where this release's assets download from: the pack builder's EveExtract sidecar is one of them. Its sha256 is
-/// pinned at build time (`SBMC_EVE_EXTRACT`, see `build.rs`).
-pub const RELEASES: &str =
-    "https://github.com/MotherSphere/stellarblade-minecraft/releases/download";
-
 /// Oodle, which Stellar Blade's containers are compressed with: proprietary (Epic Games, RAD Game Tools), never shipped
 /// or hosted by this project, downloaded only after the player agrees. The OodleUE release CUE4Parse itself uses
 /// (Oodle 2.9.16); the zip's size and sha256 are GitHub's published digests for the asset, read with

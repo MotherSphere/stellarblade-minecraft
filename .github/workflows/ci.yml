@@ -2,9 +2,9 @@
 # The Windows DLL job builds xinput1_3.dll natively and runs its portable tests; the Linux job runs tools/check.py with
 # that DLL in place, so the installer's tests embed and install the real pieces on fake trees, and stages that payload;
 # the Windows installer job builds and tests the installer for Windows with the same payload. The Linux job also builds
-# the pack builder's two EveExtract sidecars, which both installers pin (SBMC_EVE_EXTRACT) and a release attaches. The
-# Windows bridge job runs the Java suites and tools/check.py's windows component on Windows itself (locally:
-# clang-cl/xwin plus Wine).
+# the pack builder's two EveExtract sidecars: each installer embeds its OS's one (SBMC_EVE_EXTRACT), and a release
+# attaches both for running by hand. The Windows bridge job runs the Java suites and tools/check.py's windows component
+# on Windows itself (locally: clang-cl/xwin plus Wine).
 name: CI
 
 on:
@@ -157,7 +157,7 @@ jobs:
             { echo "::error::$TAG does not match installer/Cargo.toml and minecraft/build.gradle"; exit 1; }
       - name: Check
         run: python3 tools/check.py
-      # The two sidecars tools/check.py built, with the SHA256SUMS the installers pin.
+      # The two sidecars tools/check.py built, with the SHA256SUMS whose digests the installers embed with them.
       - name: Check the EveExtract sidecars
         run: |
           cd build/eve-extract
@@ -178,8 +178,8 @@ jobs:
           path: build/payload/
           if-no-files-found: error
           retention-days: 3
-      # --version loads the payload: every file's sha256, the Fabric API pin and the DLL's PE header. Outside a release
-      # it runs the debug build tools/check.py made with the same payload.
+      # --version loads the payload (every file's sha256, the Fabric API pin and the DLL's PE header) and names the
+      # embedded sidecar's sha256. Outside a release it runs the debug build tools/check.py made with the same payload.
       - name: Smoke test
         run: |
           version=$(sed -n 's/^version = "\(.*\)" # x-release-please-version$/\1/p' installer/Cargo.toml)
@@ -192,7 +192,9 @@ jobs:
           out=$("installer/target/$profile/stellar-bridge-installer" --version)
           echo "$out"
           expected="stellar-bridge-installer $version (bridge $version+$(git rev-parse --short=7 HEAD), Lua revision"
-          [[ $out == "$expected"* ]] || { echo "::error::expected '$expected ...'"; exit 1; }
+          sidecar=$(sed -n 's/^\([0-9a-f]\{64\}\)  eve-extract-linux-x64$/\1/p' build/eve-extract/SHA256SUMS)
+          [[ $out == "$expected"* && $out == *", EveExtract $sidecar)" ]] ||
+            { echo "::error::expected '$expected ..., EveExtract $sidecar)'"; exit 1; }
 
       # Release only, from here on.
       - name: Stage the release assets
@@ -222,7 +224,7 @@ jobs:
       TAG: ${{ inputs.ref }}
       # The payload the Linux job staged and its installer embeds; the tests then install the real pieces too.
       SBMC_PAYLOAD: ${{ github.workspace }}/build/payload
-      # The EveExtract sidecars the Linux job built, which the installer pins.
+      # The EveExtract sidecars the Linux job built: the installer embeds the Windows one.
       SBMC_EVE_EXTRACT: ${{ github.workspace }}/build/eve-extract
     steps:
       # The vendored binaries and the licence texts the exe embeds keep their committed bytes.
@@ -287,7 +289,9 @@ jobs:
           out=$("$EXE" --version)
           echo "$out"
           expected="stellar-bridge-installer $version (bridge $version+$(git rev-parse --short=7 HEAD), Lua revision"
-          [[ $out == "$expected"* ]] || { echo "::error::expected '$expected ...'"; exit 1; }
+          sidecar=$(sed -n 's/^\([0-9a-f]\{64\}\)  eve-extract-win-x64\.exe$/\1/p' build/eve-extract/SHA256SUMS)
+          [[ $out == "$expected"* && $out == *", EveExtract $sidecar)" ]] ||
+            { echo "::error::expected '$expected ..., EveExtract $sidecar)'"; exit 1; }
       - name: Stage the release asset
         if: inputs.ref
         run: |

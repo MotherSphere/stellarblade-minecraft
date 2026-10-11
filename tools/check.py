@@ -13,8 +13,8 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-# The pack builder's sidecars and the SHA256SUMS over them, which the installer build pins (SBMC_EVE_EXTRACT names
-# this folder). The keys are .NET runtime identifiers, the values the release asset names.
+# The pack builder's sidecars and the SHA256SUMS over them; the installer build embeds its target's one with its digest
+# (SBMC_EVE_EXTRACT names this folder). The keys are .NET runtime identifiers, the values the release asset names.
 EVE_EXTRACT = ROOT / 'build/eve-extract'
 SIDECARS = {'linux-x64': 'eve-extract-linux-x64', 'win-x64': 'eve-extract-win-x64.exe'}
 # On Windows itself (the CI's Windows test job): Gradle's batch wrapper, and the Windows checks without Wine.
@@ -162,7 +162,7 @@ def installer(crate):
             env['SBMC_PAYLOAD'] = str(staged)
         else:
             print('installer: building without a payload: ' + (result.stderr or result.stdout).strip(), flush=True)
-        # The sidecars the eve-extract step built, for the installer to pin.
+        # The sidecars the eve-extract step built: the installer embeds this OS's one.
         if (EVE_EXTRACT / 'SHA256SUMS').is_file():
             env['SBMC_EVE_EXTRACT'] = str(EVE_EXTRACT)
         run(['cargo', 'fmt', '--check'], cwd=crate)
@@ -172,7 +172,7 @@ def installer(crate):
 
 
 def main():
-    # The installer comes last: it embeds the JAR and DLL the steps before it build, and pins the sidecars.
+    # The installer comes last: it embeds the JAR, the DLL and the sidecar the steps before it build.
     components = ('lua', 'python', 'native', 'minecraft', 'windows', 'eve-extract', 'installer')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--only', choices=components, help='Run one component instead of the complete check')

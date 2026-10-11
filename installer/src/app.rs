@@ -472,7 +472,8 @@ pub struct Ready {
     pub disk: Option<u64>,
     pub memory: Option<u64>,
     pub running: Vec<Running>,
-    pub sidecar: inputs::Sidecar,
+    /// Whether this installer carries EveExtract (a build without `SBMC_EVE_EXTRACT` does not).
+    pub sidecar: bool,
     pub oodle: Option<inputs::OodleRecord>,
 }
 
@@ -497,7 +498,7 @@ impl Ready {
         if !self.running.is_empty() {
             found.push("pack_row_games");
         }
-        if self.sidecar == inputs::Sidecar::Unpinned {
+        if !self.sidecar {
             found.push("err_no_sidecar");
         }
         found
@@ -548,7 +549,7 @@ pub fn pack_ready(ctx: &Ctx, game: Option<detect::Game>, home: PathBuf) -> Ready
             .min(),
         memory: platform::available_memory(),
         running,
-        sidecar: inputs::sidecar(&ctx.sources, &cache),
+        sidecar: ctx.sources.sidecar.is_some(),
         oodle: inputs::oodle(&ctx.sources, &cache).map(|(_, record)| record),
         game,
         home,
@@ -603,7 +604,7 @@ pub fn size(bytes: u64) -> String {
     format!("{:.1} GB", bytes as f64 / 1e9)
 }
 
-/// EveExtract and the usmap made ready, then the build; what it did or why it stopped, in the window's language.
+/// EveExtract unpacked and the usmap taken, then the build; what it did or why it stopped, in the window's language.
 pub fn build_pack(work: &PackWork, send: &dyn Fn(Message)) -> PackResult {
     let ctx = &work.ctx;
     let cache = &inputs::cache(&ctx.data);
@@ -621,13 +622,7 @@ pub fn build_pack(work: &PackWork, send: &dyn Fn(Message)) -> PackResult {
             })
         };
         step("EveExtract", 0.0);
-        let mut shown = 0;
-        let program = inputs::fetch_sidecar(&ctx.sources, cache, &work.cancel, &mut |done, _| {
-            if done >> 20 > shown {
-                shown = done >> 20;
-                step(&format!("EveExtract ({shown} MB)"), 0.0);
-            }
-        })?;
+        let program = inputs::unpack_sidecar(&ctx.sources, cache)?;
         step("usmap", 0.0);
         let usmap = inputs::take_usmap(&work.game.win64, work.game.build_id.as_deref(), cache)?;
         let (oodle, _) = inputs::oodle(&ctx.sources, cache).context("Oodle is not ready")?;
@@ -907,7 +902,7 @@ impl Job {
                     None => {
                         let mut shown = 0;
                         inputs::fetch_oodle(&ctx.sources, &cache, &cancel, &mut |done, total| {
-                            let percent = done * 100 / total.unwrap_or(u64::MAX).max(1);
+                            let percent = done * 100 / total.max(1);
                             if percent > shown {
                                 shown = percent;
                                 send(Message::OodleProgress(percent as f32 / 100.0));
@@ -2130,11 +2125,11 @@ impl App {
 mod tests {
     use super::*;
     use crate::pack::fixture;
-    use crate::pack::inputs::Remote;
+    use crate::pack::inputs::Embedded;
 
-    /// The window's build on the synthetic game, through EveExtract's real process contract: a pinned sidecar next to
-    /// the installer (this test binary, behind a script), the usmap from UE4SS's folder, Oodle from a zip the player
-    /// has. Then the same build again, cancelled before it starts.
+    /// The window's build on the synthetic game, through EveExtract's real process contract: a pinned sidecar the
+    /// installer carries and unpacks (this test binary, behind a script), the usmap from UE4SS's folder, Oodle from a zip
+    /// the player has. Then the same build again, cancelled before it starts.
     #[test]
     fn the_window_builds_the_pack_through_the_sidecar() {
         let root = tempfile::tempdir().unwrap();
@@ -2146,22 +2141,16 @@ mod tests {
         fixture::paks(&dir.join("SB/Content/Paks"));
         fs::create_dir_all(win64.join("ue4ss")).unwrap();
         fs::write(win64.join("ue4ss/Mappings.usmap"), [0xC4, 0x30, 3, 0]).unwrap();
-        let script = fixture::sidecar_script(&game_data);
-        let bin = base.join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        fs::write(bin.join(inputs::SIDECAR), &script).unwrap();
-        platform::make_executable(&bin.join(inputs::SIDECAR)).unwrap();
+        let script: &'static [u8] = fixture::sidecar_script(&game_data).leak();
         let zip = inputs::tests::zip_with("lib/liboodle-data-shared.so", b"fake oodle");
-        let mut sources = inputs::tests::sources(
+        let sources = inputs::tests::sources(
             "http://127.0.0.1:9/never".into(),
             &zip,
-            Some(Remote {
-                url: "http://127.0.0.1:9/never".into(),
-                size: None,
-                sha256: safety::sha256_hex(&script),
+            Some(Embedded {
+                bytes: script,
+                sha256: safety::sha256_hex(script),
             }),
         );
-        sources.beside = Some(bin.clone());
         fs::create_dir_all(base.join("proc")).unwrap();
         let ctx = Ctx {
             home: base.join("home"),
@@ -2199,10 +2188,7 @@ mod tests {
         };
         let home = detect::bridge_home(&ctx.home, false);
         let ready = pack_ready(&ctx, Some(game.clone()), home.clone());
-        assert_eq!(
-            ready.sidecar,
-            inputs::Sidecar::Found(bin.join(inputs::SIDECAR))
-        );
+        assert!(ready.sidecar);
         assert!(ready.usmap.is_ok() && ready.oodle.is_some() && ready.running.is_empty());
         assert_eq!(ready.owned, None, "no list and no save");
         assert_eq!(
