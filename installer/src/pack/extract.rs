@@ -1,7 +1,8 @@
-//! The EveExtract sidecar: `EveExtract --paks <dir> --usmap <file> --oodle <file> --out <dir> <mode> [paths...]`. It
-//! mounts the game's containers read-only, writes only under `--out` and prints one line per item (`OK`/`FAIL <path>`
-//! for `export`, `raw` and `json`; a summary line per mesh for `avatar`). Exit 0: the run finished, even when some
-//! items failed; 3: an input is missing; anything else: it could not mount or start.
+//! The EveExtract sidecar (`tools/eve-extract`): `eve-extract --paks <dir> --usmap <file> --oodle <file> --out <dir>
+//! <mode> [paths...]`. It mounts the game's containers read-only, writes only under `--out` and prints one
+//! tab-separated line per event: `MOUNTED`, `MODS`, `OK <item> <detail>` or `FAIL <item> <reason>` per item, `DONE`
+//! last. Exit 0: the run finished, even when some items failed; 2: bad arguments; 3: an input is missing or unusable;
+//! 1: it stopped. On 1 to 3 its stderr holds one `eve-extract: <reason>` line.
 
 use anyhow::{Result, bail};
 use std::ffi::OsString;
@@ -19,6 +20,9 @@ pub struct Sidecar {
     pub paks: PathBuf,
     pub usmap: PathBuf,
     pub oodle: PathBuf,
+    /// Where the single-file build unpacks its native library (`DOTNET_BUNDLE_EXTRACT_BASE_DIR`); made when missing.
+    /// `None` leaves .NET's default (`$HOME/.net`, `%TEMP%\.net`).
+    pub bundle: Option<PathBuf>,
 }
 
 /// Why a build stopped early on request.
@@ -62,12 +66,43 @@ impl Sidecar {
     ) -> Result<()> {
         let mut command = Command::new(&self.program);
         command.args(self.arguments(out, mode, paths));
-        match lines(command, cancel, line)? {
+        if let Some(bundle) = &self.bundle {
+            std::fs::create_dir_all(bundle)?;
+            command.env("DOTNET_BUNDLE_EXTRACT_BASE_DIR", bundle);
+        }
+        let mut reason = String::new();
+        let mut each = |text: &str| {
+            // Failures and the mount summary go to the log; every line goes on to the caller.
+            if ["FAIL\t", "MOUNTED\t", "MODS\t", "DONE\t"]
+                .iter()
+                .any(|k| text.starts_with(k))
+            {
+                crate::log::line(&format!("EveExtract {mode}: {}", text.replace('\t', " ")));
+            }
+            line(text)
+        };
+        let code = lines(command, cancel, &mut each, &mut |text| {
+            if let Some(why) = text.strip_prefix("eve-extract: ") {
+                reason = why.to_string();
+            }
+        })?;
+        match code {
             0 => Ok(()),
-            3 => bail!("EveExtract {mode}: an input is missing (Paks, usmap or Oodle)"),
-            code => bail!("EveExtract {mode} failed (exit {code})"),
+            3 => bail!("EveExtract {mode}: an input is missing or unusable: {reason}"),
+            code => bail!("EveExtract {mode} failed (exit {code}): {reason}"),
         }
     }
+}
+
+/// The item of an `OK` or `FAIL` line, `None` for any other line.
+pub fn item(line: &str) -> Option<(bool, &str)> {
+    let mut fields = line.split('\t');
+    let ok = match fields.next()? {
+        "OK" => true,
+        "FAIL" => false,
+        _ => return None,
+    };
+    Some((ok, fields.next()?))
 }
 
 /// Kills the child when dropped: a cancelled or failed build leaves no extractor behind.
@@ -80,9 +115,14 @@ impl Drop for Guard {
     }
 }
 
-/// Runs `command`, hands each stdout line to `line` as it comes, and returns the exit code. Stderr goes to the log.
-/// When `cancel` is raised the child is killed and the result is [`Cancelled`].
-pub fn lines(mut command: Command, cancel: &AtomicBool, line: &mut dyn FnMut(&str)) -> Result<i32> {
+/// Runs `command`, hands each stdout line to `line` as it comes, and returns the exit code. Stderr lines go to the log
+/// and to `error`. When `cancel` is raised the child is killed and the result is [`Cancelled`].
+pub fn lines(
+    mut command: Command,
+    cancel: &AtomicBool,
+    line: &mut dyn FnMut(&str),
+    error: &mut dyn FnMut(&str),
+) -> Result<i32> {
     crate::platform::quiet(&mut command);
     let mut child = Guard(
         command
@@ -123,7 +163,10 @@ pub fn lines(mut command: Command, cancel: &AtomicBool, line: &mut dyn FnMut(&st
         }
         match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok((0, text)) => line(&text),
-            Ok((_, text)) => crate::log::line(&format!("EveExtract: {text}")),
+            Ok((_, text)) => {
+                crate::log::line(&format!("EveExtract: {text}"));
+                error(&text);
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -142,10 +185,10 @@ mod tests {
     #[ignore]
     fn child() {
         if let Ok(mode) = std::env::var("SBMC_FAKE_SIDECAR") {
-            println!("mounted 3 containers, 10 files");
-            println!("OK   a");
-            println!("FAIL b");
-            eprintln!("a warning");
+            println!("MOUNTED\t3\t10");
+            println!("OK\ta\ta.json");
+            println!("FAIL\tb\tno game file");
+            eprintln!("eve-extract: a warning");
             if mode == "hang" {
                 std::thread::sleep(Duration::from_secs(60));
             }
@@ -169,21 +212,26 @@ mod tests {
     #[test]
     fn lines_stream_and_exit_codes_come_back() {
         let mut seen = Vec::new();
-        let code = lines(command("ok"), &AtomicBool::new(false), &mut |l| {
-            seen.push(l.to_string())
-        })
+        let mut errors = Vec::new();
+        let code = lines(
+            command("ok"),
+            &AtomicBool::new(false),
+            &mut |l| seen.push(l.to_string()),
+            &mut |l| errors.push(l.to_string()),
+        )
         .unwrap();
         assert_eq!(code, 0);
-        assert!(
-            seen.contains(&"OK   a".to_string()) && seen.contains(&"FAIL b".to_string()),
-            "{seen:?}"
-        );
-        assert!(
-            !seen.contains(&"a warning".to_string()),
-            "stderr goes to the log"
-        );
+        let items: Vec<_> = seen.iter().filter_map(|l| item(l)).collect();
+        assert_eq!(items, [(true, "a"), (false, "b")], "{seen:?}");
+        assert_eq!(errors, ["eve-extract: a warning"], "stderr is apart");
         assert_eq!(
-            lines(command("missing"), &AtomicBool::new(false), &mut |_| {}).unwrap(),
+            lines(
+                command("missing"),
+                &AtomicBool::new(false),
+                &mut |_| {},
+                &mut |_| {}
+            )
+            .unwrap(),
             3
         );
     }
@@ -193,11 +241,16 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let raise = cancel.clone();
         let started = std::time::Instant::now();
-        let error = lines(command("hang"), &cancel, &mut |l| {
-            if l.starts_with("FAIL") {
-                raise.store(true, Ordering::Relaxed);
-            }
-        })
+        let error = lines(
+            command("hang"),
+            &cancel,
+            &mut |l| {
+                if l.starts_with("FAIL") {
+                    raise.store(true, Ordering::Relaxed);
+                }
+            },
+            &mut |_| {},
+        )
         .unwrap_err();
         assert!(error.is::<Cancelled>());
         assert!(
@@ -213,6 +266,7 @@ mod tests {
             paks: "P".into(),
             usmap: "U".into(),
             oodle: "O".into(),
+            bundle: None,
         };
         let args = sidecar.arguments(Path::new("W"), "json", &["a".into(), "b".into()]);
         let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();

@@ -447,6 +447,34 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_java_version",
         "The server needs Java 21 or newer as `java` on the PATH (found: {path}). Install it, then try again.",
     ),
+    (
+        "err_download",
+        "The download from {path} failed. Check the connection, then try again.",
+    ),
+    (
+        "err_digest",
+        "{path} is not the file this release pins (its size or SHA-256 differs): it was not used.",
+    ),
+    (
+        "err_oodle_entry",
+        "{path} does not hold the Oodle library where the OodleUE release keeps it.",
+    ),
+    (
+        "err_usmap_invalid",
+        "{path} is not a usmap UE4SS writes (wrong header). Delete it, then press Ctrl+Numpad6 in Stellar Blade with a save loaded.",
+    ),
+    (
+        "err_no_usmap",
+        "No usmap for this Stellar Blade build yet. Start Stellar Blade with the bridge installed, load a save until EVE is in the world, then quit; or press Ctrl+Numpad6 in game.",
+    ),
+    (
+        "err_usmap_rejected",
+        "EveExtract could not read the game's item table with the usmap of build {path}: it does not describe this game build. Delete the .usmap in UE4SS's folder, start Stellar Blade, load a save, press Ctrl+Numpad6, quit, then build again.",
+    ),
+    (
+        "err_no_sidecar",
+        "This installer was built without EveExtract's pins: use a release build to make the avatar pack.",
+    ),
     ("err_close_first", "Close {path} first"),
     (
         "err_save_backup_differs",

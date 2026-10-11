@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::bake::{self, Export};
 use super::catalog;
-use super::extract::{Cancelled, Sidecar};
+use super::extract::{self, Cancelled, Sidecar};
 use super::manifest::{self, Checks, last};
 use super::owned;
 use crate::{Guard, detect, log, platform};
@@ -111,10 +111,14 @@ pub struct Build {
     /// Every wardrobe outfit, not only the owned ones: a bigger, slower build that lets this player's Minecraft draw
     /// friends' outfits in multiplayer.
     pub every: bool,
+    /// The game's Steam build id, which the usmap describes; named when EveExtract cannot read the item table.
+    pub build_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
+    /// EveExtract and the usmap are made ready (the window's step, before the build itself).
+    Inputs,
     Tables,
     Meshes,
     Export,
@@ -239,8 +243,18 @@ fn assemble(
 
     // The item tables and names, in the player's language with English as the fallback.
     say(Step::Tables, 0.0, "");
+    // The item table read through the usmap is its check: a usmap of another game build cannot read it.
     let tables: Vec<String> = catalog::TABLES.iter().map(|t| t.to_string()).collect();
-    extract("json", &tables, &mut |_| {})?;
+    let mut read = false;
+    extract("json", &tables, &mut |line| {
+        read |= extract::item(line) == Some((true, catalog::TABLES[0]));
+    })?;
+    if !read {
+        bail!(crate::Refusal::new(
+            crate::Kind::UsmapRejected,
+            build.build_id.as_deref().unwrap_or("?")
+        ));
+    }
     let mut cultures = vec![build.culture.as_str()];
     if build.culture != "en" {
         cultures.push("en");
@@ -346,13 +360,12 @@ fn assemble(
     for batch in every.chunks(AVATAR_BATCH) {
         check()?;
         extract("avatar", batch, &mut |line| {
-            if line.contains(" bones, ") || line.starts_with("FAIL ") {
+            if let Some((_, item)) = extract::item(line) {
                 scanned += 1;
-                let item = line.split(':').next().unwrap_or_default();
                 say(
                     Step::Meshes,
                     0.05 + 0.10 * scanned as f32 / every.len() as f32,
-                    item,
+                    last(item),
                 );
             }
         })?;
@@ -959,6 +972,15 @@ public class ReadPack {
         }
         let (result, calls) = go(&setup, &build, None, &|| bail!("Stellar Blade is running"));
         assert!(result.is_err() && calls.is_empty());
+        assert_eq!(snapshot(&avatar), before);
+        // A usmap of another game build: EveExtract cannot read the item table, and the build names that.
+        fs::remove_file(setup.game.join("json/ItemTable.uasset.json")).unwrap();
+        let (result, _) = go(&setup, &build, None, &|| Ok(()));
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<crate::Refusal>(),
+            Some(&crate::Refusal::new(crate::Kind::UsmapRejected, "24463856"))
+        );
         assert_eq!(snapshot(&avatar), before);
     }
 

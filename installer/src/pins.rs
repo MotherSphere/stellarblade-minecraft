@@ -32,3 +32,43 @@ pub const FABRIC_SERVER_LAUNCHER_SHA256: &str =
 pub const JAVA_MIN: u32 = 21;
 /// Mojang's licence for the Minecraft server, linked wherever the operator may accept it.
 pub const MINECRAFT_EULA: &str = "https://aka.ms/MinecraftEULA";
+
+/// Where this release's assets download from: the pack builder's EveExtract sidecar is one of them. Its sha256 is
+/// pinned at build time (`SBMC_EVE_EXTRACT`, see `build.rs`).
+pub const RELEASES: &str =
+    "https://github.com/MotherSphere/stellarblade-minecraft/releases/download";
+
+/// Oodle, which Stellar Blade's containers are compressed with: proprietary (Epic Games, RAD Game Tools), never shipped
+/// or hosted by this project, downloaded only after the player agrees. The OodleUE release CUE4Parse itself uses
+/// (Oodle 2.9.16); the zip's size and sha256 are GitHub's published digests for the asset, read with
+/// `gh api repos/WorkingRobot/OodleUE/releases/tags/2026-06-04-1357`.
+pub const OODLE_RELEASE: &str =
+    "https://github.com/WorkingRobot/OodleUE/releases/tag/2026-06-04-1357";
+/// The Unreal Engine EULA, which the OodleUE release says its use falls under.
+pub const UE_EULA: &str = "https://www.unrealengine.com/eula";
+
+/// One OS's Oodle zip and the library EveExtract loads from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OodleZip {
+    pub url: &'static str,
+    pub size: u64,
+    pub sha256: &'static str,
+    /// The library's path inside the zip; its file name is the cached library's.
+    pub entry: &'static str,
+}
+
+pub const OODLE: OodleZip = if cfg!(windows) {
+    OodleZip {
+        url: "https://github.com/WorkingRobot/OodleUE/releases/download/2026-06-04-1357/clang-cl-x64-release.zip",
+        size: 5_286_990,
+        sha256: "37f816a3e8f5a65a11f6defc8c28c0508287602767741ba4803c6a21a62a877b",
+        entry: "bin/oodle-data-shared.dll",
+    }
+} else {
+    OodleZip {
+        url: "https://github.com/WorkingRobot/OodleUE/releases/download/2026-06-04-1357/gcc-x64-release.zip",
+        size: 1_924_782,
+        sha256: "458c66945ea6124d4f6fcf64cec5601ab230f61f6677a6ecab6cca621a9d0e11",
+        entry: "lib/liboodle-data-shared.so",
+    }
+};

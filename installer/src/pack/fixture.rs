@@ -625,9 +625,9 @@ pub fn extract<'a>(
                     let source = game.join("json").join(&name);
                     if source.exists() {
                         write(&work.join("json").join(&name), fs::read(source)?);
-                        line(&format!("OK   {path}"));
+                        line(&format!("OK\t{path}\t{name}"));
                     } else {
-                        line(&format!("FAIL {path}: no game file"));
+                        line(&format!("FAIL\t{path}\tno game file"));
                     }
                 }
             }
@@ -637,9 +637,9 @@ pub fn extract<'a>(
                     match fs::read(game.join(format!("raw/{culture}.locres"))) {
                         Ok(bytes) => {
                             write(&work.join("raw/Game.locres"), bytes);
-                            line(&format!("OK   {path}"));
+                            line(&format!("OK\t{path}\tGame.locres"));
                         }
-                        Err(_) => line(&format!("FAIL {path}")),
+                        Err(_) => line(&format!("FAIL\t{path}\tno game file")),
                     }
                 }
             }
@@ -648,7 +648,7 @@ pub fn extract<'a>(
                 for path in paths {
                     let name = last(path);
                     let Ok(bytes) = fs::read(game.join(format!("avatar/{name}.sbav"))) else {
-                        line(&format!("FAIL {path}: no game file"));
+                        line(&format!("FAIL\t{path}\tno game file"));
                         continue;
                     };
                     write(&work.join(format!("avatar/{name}.sbav")), bytes);
@@ -662,13 +662,15 @@ pub fn extract<'a>(
                     }
                     write(&work.join("avatar/meshes.txt"), mine);
                     line(&format!(
-                        "{name}: 3 bones, 1 vertices, 1 triangles, 1 sections, 0 morphs (0 deltas)"
+                        "OK\t{path}\t{name}.sbav: 3 bones, 1 vertices, 1 triangles, 1 sections, 0 morphs (0 deltas)"
                     ));
                 }
             }
             "export" => {
                 copy_tree(&game.join("export"), &work.join("export"));
-                paths.iter().for_each(|p| line(&format!("OK   {p}")));
+                paths
+                    .iter()
+                    .for_each(|p| line(&format!("OK\t{p}.{}\t{}.png", last(p), last(p))));
             }
             other => anyhow::bail!("fake EveExtract: no mode {other}"),
         }
@@ -705,12 +707,14 @@ impl Setup {
                 paks: self.paks.clone(),
                 usmap: "Mappings.usmap".into(),
                 oodle: "oodle".into(),
+                bundle: None,
             },
             home: base.join("home"),
             work: base.join("work"),
             save_dirs: vec![base.join("SaveGames")],
             culture: "fr".into(),
             every,
+            build_id: Some("24463856".into()),
         }
     }
 }
@@ -730,12 +734,14 @@ fn dump() {
                 paks: dir.join("Paks"),
                 usmap: "Mappings.usmap".into(),
                 oodle: "oodle".into(),
+                bundle: None,
             },
             home: dir.join("home"),
             work: dir.join("work"),
             save_dirs: vec![],
             culture: "fr".into(),
             every: true,
+            build_id: None,
         };
         let calls = std::sync::Mutex::new(Vec::new());
         let game_dir = dir.join("game");

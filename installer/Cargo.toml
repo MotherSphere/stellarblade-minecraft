@@ -27,8 +27,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 # 0.11 has no LowerHex on digests: see safety::hex.
 sha2 = "0.11.0"
+# The pack builder's two downloads (EveExtract, Oodle after consent): rustls with ring, Mozilla's roots, no aws-lc.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 # The system language where no LANG is set (Windows); already in the tree through iced's text stack.
 sys-locale = "0.3.2"
+# Oodle's library out of its release zip, read only: deflate and deflate64, the methods .NET's ZipArchive (which
+# CUE4Parse reads that zip with) supports besides stored.
+zip = { version = "9.0.0", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64"] }
 
 [target.'cfg(unix)'.dependencies]
 # getuid for the private bridge directory check; already in the tree through iced.

@@ -480,6 +480,34 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_java_version",
         "Le serveur a besoin de Java 21 ou plus récent, en tant que `java` dans le PATH (trouvé : {path}). Installez-le, puis réessayez.",
     ),
+    (
+        "err_download",
+        "Le téléchargement depuis {path} a échoué. Vérifiez la connexion, puis réessayez.",
+    ),
+    (
+        "err_digest",
+        "{path} n'est pas le fichier que cette version épingle (taille ou SHA-256 différents) : il n'a pas été utilisé.",
+    ),
+    (
+        "err_oodle_entry",
+        "{path} ne contient pas la bibliothèque Oodle à l'endroit où la version d'OodleUE la range.",
+    ),
+    (
+        "err_usmap_invalid",
+        "{path} n'est pas un usmap écrit par UE4SS (en-tête incorrect). Supprimez-le, puis appuyez sur Ctrl+Pavé numérique 6 dans Stellar Blade avec une sauvegarde chargée.",
+    ),
+    (
+        "err_no_usmap",
+        "Pas encore d'usmap pour cette version de Stellar Blade. Lancez Stellar Blade avec le pont installé, chargez une sauvegarde jusqu'à ce qu'EVE soit dans le monde, puis quittez ; ou appuyez sur Ctrl+Pavé numérique 6 en jeu.",
+    ),
+    (
+        "err_usmap_rejected",
+        "EveExtract n'a pas pu lire la table des objets du jeu avec l'usmap de la version {path} : il ne décrit pas cette version du jeu. Supprimez le .usmap du dossier d'UE4SS, lancez Stellar Blade, chargez une sauvegarde, appuyez sur Ctrl+Pavé numérique 6, quittez, puis relancez la création.",
+    ),
+    (
+        "err_no_sidecar",
+        "Cet installateur a été compilé sans les empreintes d'EveExtract : utilisez une version publiée pour créer le pack d'avatar.",
+    ),
     ("err_close_first", "Fermez d'abord {path}"),
     (
         "err_save_backup_differs",

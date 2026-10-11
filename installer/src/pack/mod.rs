@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod extract;
 #[cfg(test)]
 mod fixture;
+pub mod inputs;
 pub mod manifest;
 pub mod owned;
 pub mod run;

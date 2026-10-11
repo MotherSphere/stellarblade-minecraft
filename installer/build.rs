@@ -1,6 +1,10 @@
 //! Embeds the bridge payload staged by `tools/payload.py` in the folder named by `SBMC_PAYLOAD`. Without it the
 //! installer builds with an empty payload and refuses to install. `payload.json` lists every file's sha256; the
 //! installer checks them when it loads the payload (`payload::Payload::embedded`).
+//!
+//! It also pins the pack builder's EveExtract sidecars of this commit: `SBMC_EVE_EXTRACT` names the folder that
+//! `tools/check.py` and CI fill with both sidecars and their `SHA256SUMS` (`sha256sum` lines). Without it the pins are
+//! empty and the installer cannot build the avatar pack.
 
 use std::fmt::Write;
 use std::path::Path;
@@ -49,9 +53,45 @@ fn main() {
     code.push_str("];\n");
     let out = Path::new(&env::var_os("OUT_DIR").unwrap()).to_path_buf();
     fs::write(out.join("payload.rs"), code).unwrap();
+    fs::write(out.join("sidecars.rs"), sidecars()).unwrap();
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         windows_resources(&out);
     }
+}
+
+/// `SIDECARS`: the release asset name and sha256 of each EveExtract build listed in `$SBMC_EVE_EXTRACT/SHA256SUMS`.
+fn sidecars() -> String {
+    println!("cargo:rerun-if-env-changed=SBMC_EVE_EXTRACT");
+    let mut code = String::from("pub(crate) static SIDECARS: &[(&str, &str)] = &[\n");
+    if let Some(dir) = env::var_os("SBMC_EVE_EXTRACT").filter(|d| !d.is_empty()) {
+        let sums = Path::new(&dir).join("SHA256SUMS");
+        println!("cargo:rerun-if-changed={}", sums.display());
+        let text = fs::read_to_string(&sums)
+            .expect("SBMC_EVE_EXTRACT names the folder holding EveExtract's SHA256SUMS");
+        for line in text.lines() {
+            // `<sha256>  <name>`, or `<sha256> *<name>` (binary mode).
+            let (digest, name) = line
+                .split_once("  ")
+                .or_else(|| line.split_once(" *"))
+                .unwrap_or_else(|| panic!("Not a sha256sum line in {}: {line}", sums.display()));
+            assert!(
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')),
+                "Not a lowercase sha256 in {}: {line}",
+                sums.display()
+            );
+            assert!(
+                name.starts_with("eve-extract-") && !name.contains(['/', '\\']),
+                "Not an EveExtract asset name in {}: {line}",
+                sums.display()
+            );
+            writeln!(code, "    ({name:?}, {digest:?}),").unwrap();
+        }
+    }
+    code.push_str("];\n");
+    code
 }
 
 /// The Windows exe's icon, version information (this crate's version) and manifest (asInvoker: never elevated).
