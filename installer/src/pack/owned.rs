@@ -69,7 +69,12 @@ enum Extra {
 struct Save<'a> {
     b: &'a [u8],
     p: usize,
+    /// Structs open around the current position.
+    depth: usize,
 }
+
+/// Far deeper than any Stellar Blade save nests; a crafted one deeper would overflow the stack.
+const MAX_DEPTH: usize = 64;
 
 impl Save<'_> {
     fn bytes(&mut self, n: usize) -> Result<&[u8]> {
@@ -144,13 +149,28 @@ impl Save<'_> {
         if let Some(&(_, size)) = BINARY.iter().find(|(name, _)| Some(*name) == kind) {
             return Ok(Value::Bytes(self.bytes(size)?.to_vec()));
         }
+        if self.depth == MAX_DEPTH {
+            bail!("save: structs nested too deep");
+        }
+        self.depth += 1;
+        let out = self.properties();
+        self.depth -= 1;
+        out
+    }
+
+    fn properties(&mut self) -> Result<Value> {
         let mut out = HashMap::new();
         while let Some(tag) = self.tag()? {
-            let end = self.p;
+            let stop = self.p.checked_add(tag.size).context("save: bad size")?;
+            let value = self.value(&tag);
+            // A value that ran past its declared size is corrupt: without this, nested structs with sizes too small
+            // would be read again and again as their parents' next fields.
+            if self.p > stop {
+                bail!("save: {} overruns its size", tag.name);
+            }
             // What does not decode is kept as None and skipped by its size.
-            let value = self.value(&tag).unwrap_or(Value::None);
-            out.insert(tag.name, value);
-            self.p = end.checked_add(tag.size).context("save: bad size")?;
+            out.insert(tag.name, value.unwrap_or(Value::None));
+            self.p = stop;
         }
         Ok(Value::Struct(out))
     }
@@ -218,7 +238,11 @@ pub fn read_save(bytes: &[u8]) -> Result<Value> {
     if bytes.len() < 16 || &bytes[..4] != b"EVAS" || &bytes[8..12] != b"GVAS" {
         bail!("not a Stellar Blade save");
     }
-    let mut r = Save { b: bytes, p: 12 };
+    let mut r = Save {
+        b: bytes,
+        p: 12,
+        depth: 0,
+    };
     if r.i32()? != 2 {
         bail!("unexpected GVAS version");
     }
@@ -584,6 +608,37 @@ mod tests {
         bad[8] = b'X';
         assert!(read_save(&bad).is_err());
         assert!(read_save(&save_bytes()[..60]).is_err());
+    }
+
+    /// Structs nested `depth` deep whose declared sizes are 0, as a corrupt or crafted save may hold.
+    fn nested_save(depth: usize) -> Vec<u8> {
+        let mut g = Gvas(save_bytes());
+        g.0.truncate(g.0.len() - 9);
+        for _ in 0..depth {
+            g.fstr("Nested");
+            g.fstr("StructProperty");
+            g.0.extend([0; 8]);
+            g.fstr("SBStruct");
+            g.0.extend([0; 17]);
+        }
+        for _ in 0..=depth {
+            g.none();
+        }
+        g.0
+    }
+
+    #[test]
+    fn corrupt_nesting_is_refused_quickly() {
+        // Read as the window's build reads it: off the main thread, with a spawned thread's stack.
+        std::thread::spawn(|| {
+            for depth in [32, 2_000, 50_000] {
+                let started = std::time::Instant::now();
+                assert!(read_save(&nested_save(depth)).is_err(), "{depth}");
+                assert!(started.elapsed().as_secs() < 5, "{depth}");
+            }
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
