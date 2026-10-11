@@ -223,7 +223,8 @@ engine.parameters=function(list)
     end
     return {}
 end
--- Three known effect paths: all at once for a new run, then one per turn (each lookup is a StaticFindObject of about 4 ms).
+-- Three known effect paths: one a check from a new run until each was looked up, then one per turn (each lookup is a
+-- StaticFindObject of about 7 ms; all at once froze the game at every stream start).
 engine.known_effects=function(index) calls[#calls+1]={kind='known',index=index}; return {},3 end
 engine.effects=function(list,attached_only) calls[#calls+1]={kind='effects',list=list,attached_only=attached_only}; return {},{} end
 local timing_log,seconds={},0
@@ -232,7 +233,11 @@ local paced=Stream.new(engine,directory,function() return now end,function(line)
 calls={}; RUN=string.rep('1',32); request(); paced.tick()
 assert(count('parameters')==3 and count('effects')==4 and count('known')==1 and count('controller')==1,'A new run looks everything up')
 local function known_index() for _,c in ipairs(calls) do if c.kind=='known' then return c.index or 'all' end end end
-assert(known_index()=='all','A new run looks every known effect path up')
+assert(known_index()==1,'A new run looks the first known effect path up')
+for path=2,3 do
+    calls={}; paced.tick()
+    assert(known_index()==path and count('known')==1,'then one path a check until each was looked up')
+end
 local turns,pawn_walked,paths={},false,{}
 for _=1,20 do
     calls={}; paced.tick()
@@ -305,6 +310,23 @@ calls={}
 assert(not pcall(keyed.tick) and count('parameters')==0,'A failed publication does not repeat the lookups')
 engine.names=names_ok
 engine.material_key=nil
+-- Windows refuses to open the request for an instant while Minecraft replaces it: the run goes on with its last request
+-- instead of going idle and starting over; a request older than the lease still idles it.
+local steady=Stream.new(engine,directory,function() return now end,function() end,function() return place end)
+calls={}; RUN=string.rep('2',32); request(); steady.tick()
+local first=steady.generation()
+assert(known_index()==1)
+calls={}; os.remove(directory..'/eve-pose-request.txt')
+local kept_ok,kept=steady.tick()
+assert(kept_ok and kept==nil and steady.generation()==first and known_index()==2,'An unreadable request keeps the run: '..tostring(kept))
+calls={}; request()
+local _,back=steady.tick()
+assert(back==nil and steady.generation()==first and known_index()==3,'Readable again, nothing starts over')
+os.remove(directory..'/eve-pose-request.txt')
+now=now+4
+local _,gone=steady.tick()
+assert(gone=='Pose stream idle.','A request older than the lease still idles the run')
+now=now-4
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
 print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log, effect layout, the drone and the ponytail\'s cloth')

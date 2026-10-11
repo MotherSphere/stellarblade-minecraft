@@ -153,7 +153,7 @@ final class BridgeLink {
         LOG.info("Session request {} {}: no answer", request.seq(), request.action());
         String action = request.action();
         request = null;
-        return "Stellar Blade did not answer /stellar " + action + ". Check that it runs Lua revision 60, or use its key.";
+        return "Stellar Blade did not answer /stellar " + action + ". Check that it runs Lua revision 61, or use its key.";
     }
 
     /** The link ended: Stellar Blade's inputs from it go; it drops the link when the heartbeats stop. */

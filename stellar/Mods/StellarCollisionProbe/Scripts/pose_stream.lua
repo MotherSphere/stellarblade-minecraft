@@ -35,13 +35,16 @@ function Stream.new(engine,directory,clock,log,link,timer)
     local cloth_logged -- The run whose cloth component was logged.
     -- The lookups behind the table hold Stellar Blade's game thread: about 100 ms together, so a check every 200 ms cost a
     -- third of its frames; the timing line measured 96 ms of it in the 22 StaticFindObject calls of the known effects.
-    -- They run all at once for a new run (a new composition reruns all but the known effects and the parameters still
-    -- valid). Then a component's parameters are walked again only when its material key changes (one component a check),
-    -- one known effect path and the controller take turns, and the effect walks all run each check while they fit
-    -- WALK_BUDGET_MS, else one holder a check for the next 100 checks.
+    -- They run all at once for a new run, except the known effects: one path a check until all were looked up (about 7 ms
+    -- each; all at once froze the game about 200 ms at every stream start). A new composition reruns all but the known
+    -- effects and the parameters still valid. Then a component's parameters are walked again only when its material key
+    -- changes (one component a check), one known effect path and the controller take turns, and the effect walks all run
+    -- each check while they fit WALK_BUDGET_MS, else one holder a check for the next 100 checks.
     local WALK_BUDGET_MS=4
     local turn,composition,walks_rotate_until=0,nil,0
     local known_turn,known_paths=0,1 -- The known effect path the last turn looked up, and how many the engine has.
+    local seeding=0 -- Known effect paths still to look up one a check since the run started.
+    local last_request -- The run's last readable request, kept while the file is briefly unreadable.
     local controller -- The last usable controller lookup.
     local lookups={} -- Component object -> its last material parameter lookup {ok=, items=, error=, key=, turn=}.
     local walked={} -- Component object, or 'pawn' for EVE's own effect components -> the labels its last walk saw.
@@ -224,15 +227,18 @@ function Stream.new(engine,directory,clock,log,link,timer)
                 and found.asset%8==0 and found.template>0 and found.template<0x4000 and found.template%8==0
                 and found.active_byte>0 and found.active_byte<0x4000 and found.active_mask>0 and found.active_mask<256 then layout=found end
         end
-        -- All known effect paths for a new run, then one path per turn: each lookup is a StaticFindObject of about 4 ms.
-        if engine.known_effects and (new_run or lookup_turn==#list+1) then
+        -- One known effect path a check from a new run until each was looked up once, then one per turn: each lookup is a
+        -- StaticFindObject of about 7 ms.
+        if new_run then known_turn,seeding=0,nil end
+        if engine.known_effects and (seeding==nil or seeding>0 or lookup_turn==#list+1) then
             started=timer()
-            if not new_run then known_turn=known_turn%known_paths+1 end
-            local ok,found,paths=pcall(engine.known_effects,not new_run and known_turn or nil)
+            known_turn=known_turn%known_paths+1
+            local ok,found,paths=pcall(engine.known_effects,known_turn)
             if ok then
                 remember(found)
                 if math.type(paths)=='integer' and paths>0 then known_paths=paths end
             end
+            seeding=math.max((seeding or known_paths)-1,0)
             took('known effects',started)
         end
         if effects and engine.effects then
@@ -375,13 +381,18 @@ function Stream.new(engine,directory,clock,log,link,timer)
     -- Call a few times per second. Returns true, or true plus a message when the published composition changes.
     function api.tick()
         local request=Stream.parse_request(read('eve-pose-request.txt',512))
+        -- Windows refuses to open the request for an instant while Minecraft replaces it: keep the run's last request,
+        -- whose TIME still ages out past LEASE_MS, rather than going idle for one check and starting the run over.
+        if not request and run and last_request and last_request.run==run then request=last_request end
         local now=clock()*1000
         if not request or not request.active or math.abs(now-request.time)>LEASE_MS then
             binding=nil
             timing={}
+            last_request=nil
             if run then run,signature,published,composition=nil,nil,nil,nil; return true,'Pose stream idle.' end
             return true
         end
+        last_request=request
         local started=timer()
         local result=table.pack(check(request))
         took('tick',started)
