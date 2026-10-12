@@ -183,9 +183,16 @@ pub fn ownership(mods: &Path) -> Result<Ownership> {
     })
 }
 
-/// Writes `name` in `dir` through a hidden temporary name and a rename, so Minecraft never sees a partial JAR.
+/// Writes `name` in `dir` through a hidden temporary name and a rename, so Minecraft never sees a partial JAR. A
+/// temporary left by a killed run is replaced; anything but a regular file there is refused.
 pub(crate) fn write_atomic(dir: &Path, name: &str, data: &[u8]) -> Result<()> {
     let temporary = dir.join(format!(".{name}.part"));
+    match fs::symlink_metadata(&temporary) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+        Ok(m) if m.is_file() => fs::remove_file(&temporary)?,
+        Ok(_) => bail!(Refusal::new(Kind::NotRegular, temporary.display())),
+    }
     let written = (|| -> Result<()> {
         let mut file = fs::OpenOptions::new()
             .write(true)

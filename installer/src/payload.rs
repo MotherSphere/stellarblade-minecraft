@@ -135,8 +135,10 @@ impl Payload {
         let mut lua = Tree::new();
         match deploy::ownership(dir)? {
             Ownership::Owned => {
+                // The listed files only: a temporary a killed repair left is not part of the set.
+                let listed = deploy::manifest(dir)?.files;
                 lua = deploy::read_tree(&dir.join(deploy::MOD_NAME))?;
-                lua.remove(deploy::MANIFEST);
+                lua.retain(|relative, _| listed.contains_key(relative));
                 lua.remove(deploy::CONFIG);
             }
             Ownership::Absent => {}

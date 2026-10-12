@@ -188,6 +188,23 @@ pub fn install(
     Ok(destination)
 }
 
+/// Drops from `files` the temporaries a killed repair left beside listed files (`Scripts/.main.lua.part`, written by
+/// `mods::write_atomic`): the next repair of that file replaces its temporary, and an update or uninstall removes the
+/// folder with it.
+fn without_temporaries(files: &mut BTreeMap<String, String>, listed: &BTreeMap<String, String>) {
+    files.retain(|relative, _| {
+        let (folder, name) = relative.rsplit_once('/').unwrap_or(("", relative));
+        let Some(name) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".part")) else {
+            return true;
+        };
+        let listed_name = match folder {
+            "" => name.to_string(),
+            folder => format!("{folder}/{name}"),
+        };
+        !listed.contains_key(&listed_name)
+    });
+}
+
 /// Who owns `mods_dir/StellarCollisionProbe`.
 pub fn ownership(mods_dir: &Path) -> Result<Ownership> {
     let destination = mods_dir.join(MOD_NAME);
@@ -220,6 +237,9 @@ pub fn ownership(mods_dir: &Path) -> Result<Ownership> {
     }
     let manifest: Option<Manifest> =
         serde_json::from_slice(&fs::read(destination.join(MANIFEST))?).ok();
+    if let Some(manifest) = &manifest {
+        without_temporaries(&mut files, &manifest.files);
+    }
     Ok(if manifest == Some(Manifest::of(files, directories)) {
         Ownership::Owned
     } else {
@@ -243,6 +263,7 @@ pub fn drifted(mods_dir: &Path) -> Result<Vec<(String, String)>> {
     let root = mods_dir.join(MOD_NAME);
     let (mut files, directories) = inventory(&root)?;
     files.remove(MANIFEST);
+    without_temporaries(&mut files, &manifest.files);
     if directories != manifest.directories {
         bail!(Refusal::new(Kind::ChangedLuaFolders, root.display()));
     }

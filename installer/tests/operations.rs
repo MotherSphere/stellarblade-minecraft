@@ -1029,3 +1029,59 @@ fn repair_after_an_interrupted_update_is_not_nothing_to_repair() {
         "an interrupted update reported as nothing to repair: {repaired:?}"
     );
 }
+
+/// A run killed between creating a temporary JAR and renaming it leaves `.<name>.part` behind; the next update must
+/// still go through.
+#[test]
+fn a_stray_part_file_from_a_killed_run_does_not_fail_the_next_update() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let stray = w.target.minecraft_mods.join(format!(".{}.part", v2.jar.0));
+    fs::write(&stray, "partial").unwrap();
+    let updated = ops::install(&w.env(), &w.target, &v2);
+    assert!(updated.is_ok(), "{:#}", updated.unwrap_err());
+    assert!(all_current(&w, &v2));
+}
+
+/// A repair killed between creating a temporary Lua script and renaming it leaves `.<name>.part` inside the mod
+/// folder; it must not make the mod "modified" for good.
+#[test]
+fn a_stray_part_file_from_a_killed_lua_repair_does_not_block_the_update() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let stray = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/.bridge.lua.part");
+    fs::write(&stray, "partial").unwrap();
+    let updated = ops::install(&w.env(), &w.target, &v2);
+    assert!(updated.is_ok(), "{:#}", updated.unwrap_err());
+    assert!(all_current(&w, &v2));
+    // The kept set is the listed files only: a rollback does not install the stray.
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+    assert!(
+        !w.game()
+            .mods
+            .join(deploy::MOD_NAME)
+            .join("Scripts/.bridge.lua.part")
+            .exists()
+    );
+}
+
+/// A repair killed while writing the adapter DLL leaves `.xinput1_3.dll.part` beside the game; the next repair puts
+/// the DLL back the first time.
+#[test]
+fn a_stray_part_file_from_a_killed_adapter_repair_does_not_fail_the_next_repair() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    fs::write(w.win64().join(adapter::DLL), "damaged").unwrap();
+    fs::write(w.win64().join(format!(".{}.part", adapter::DLL)), "partial").unwrap();
+    let repaired = ops::repair(&w.env(), &w.target, &v1);
+    assert!(repaired.is_ok(), "{:#}", repaired.unwrap_err());
+    assert!(all_current(&w, &v1));
+}
