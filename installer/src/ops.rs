@@ -739,7 +739,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                 if changed_by_hand(target) {
                     (env.step)(Step::KeepPrevious);
                     let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
-                    ledger::keep_changed(&env.data, &old_release, &items)?;
+                    ledger::keep_previous(&env.data, &old_release, &items)?;
                 }
                 kept
             }

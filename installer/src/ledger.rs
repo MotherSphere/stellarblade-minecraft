@@ -84,23 +84,20 @@ pub fn save(path: &Path, state: &State) -> Result<()> {
 
 /// Copies the owned set about to be replaced (the Lua mod folder, the adapter files, the JARs) into
 /// `previous/<release>/`. About 1 MB: the avatar pack is never copied. The set kept before stays beside it until the
-/// run succeeds and [`commit_previous`] drops it, so a failed run that was restored still rolls back to it.
+/// run succeeds and [`commit_previous`] drops it, so a failed run that was restored still rolls back to it. A set with
+/// files changed by hand cannot be installed again: it goes to `changed/<release>` (see [`set_aside`]), never over a set
+/// in `previous/` that Roll back may go to.
 pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
     let staging = stage(data, release, items)?;
+    if Payload::from_previous(&staging).is_err() {
+        return set_aside_as(data, &staging, release);
+    }
     let kept = data.join("previous").join(release);
     if kept.exists() {
         discard(data, &kept)?;
     }
     fs::rename(&staging, &kept)?;
     Ok(kept)
-}
-
-/// Copies the owned set holding files changed by hand straight to `changed/<release>` (see [`set_aside`]): what a run
-/// finishing an interrupted one keeps before replacing it, since that set is partly the interrupted run's own and Roll
-/// back goes to the set kept before.
-pub fn keep_changed(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
-    let staging = stage(data, release, items)?;
-    set_aside_as(data, &staging, release)
 }
 
 /// Copies `items` into `previous/.<release>.partial`, which the next run clears when this one is killed.
