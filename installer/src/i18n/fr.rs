@@ -139,7 +139,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("piece_current", "Installé, cette version"),
     (
         "piece_other_release",
-        "Installé, une autre version : Mettre à jour la remplace",
+        "Installé, mais pas tel que cette version le pose (autre version ou build du jeu, ou fichier manquant) : Mettre à jour le remplace",
     ),
     (
         "piece_replaceable",
@@ -165,7 +165,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("pack_fresh", "Présent et à jour"),
     (
         "state_interrupted",
-        "Une opération sur {release} a été interrompue : installez à nouveau pour la terminer, ou revenez en arrière",
+        "Une opération sur {release} a été interrompue : mettez à jour ou désinstallez à nouveau pour la terminer, ou revenez en arrière",
     ),
     ("state_installed", "{release} installé"),
     ("state_removed", "Désinstallé (dernière version {release})"),
@@ -583,7 +583,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_interrupted",
-        "Une opération a été interrompue : installez à nouveau pour la terminer ; la réparation ne peut pas la terminer",
+        "Une opération a été interrompue : mettez à jour ou désinstallez à nouveau pour la terminer ; la réparation ne peut pas la terminer",
     ),
     (
         "err_run_update",

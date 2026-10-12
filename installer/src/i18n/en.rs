@@ -133,7 +133,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("piece_current", "Installed, this release"),
     (
         "piece_other_release",
-        "Installed, another release: Update replaces it",
+        "Installed, not as this release puts it (another release or game build, or a file missing): Update replaces it",
     ),
     (
         "piece_replaceable",
@@ -159,7 +159,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("pack_fresh", "Present and up to date"),
     (
         "state_interrupted",
-        "A run of {release} was interrupted: Install again to finish it, or Roll back",
+        "A run over {release} was interrupted: Update or Uninstall again to finish it, or Roll back",
     ),
     ("state_installed", "Installed {release}"),
     ("state_removed", "Uninstalled (last release {release})"),
@@ -544,7 +544,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("err_still_modified", "{path} is still not as installed"),
     (
         "err_interrupted",
-        "A run was interrupted: Install again to finish it; Repair cannot finish it",
+        "A run was interrupted: Update or Uninstall again to finish it; Repair cannot finish it",
     ),
     (
         "err_run_update",

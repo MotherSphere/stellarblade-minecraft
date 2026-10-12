@@ -1084,7 +1084,8 @@ pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Refu
     let guarded = Guarded::take(target, own_jars(target, None)?)?;
     let path = state_path(env);
     let mut state = ledger::load(&path);
-    // Recorded first: a run stopped midway leaves pieces removed, which Install again finishes and Repair refuses.
+    // Recorded first: a run stopped midway leaves pieces removed, which Uninstall or Update again finishes and Repair
+    // refuses.
     if let Some(state) = &mut state {
         state.status = Status::InProgress;
         ledger::save(&path, state)?;
