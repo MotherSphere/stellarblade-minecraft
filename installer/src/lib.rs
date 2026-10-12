@@ -98,6 +98,7 @@ kinds! {
     StillModified => "err_still_modified",
     RunUpdate => "err_run_update",
     Interrupted => "err_interrupted",
+    PieceMissing => "err_piece_missing",
     InvalidRelease => "err_invalid_release",
     CannotKeep => "err_cannot_keep",
     JavaArgument => "err_java_argument",

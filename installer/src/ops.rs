@@ -930,6 +930,9 @@ pub fn repair(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<PathB
     gates(target, env)?;
     let guarded = Guarded::take(target, own_jars(target, Some(payload))?)?;
     let plan = repair_plan(env, target, payload)?;
+    if plan.is_empty() {
+        return Ok(Vec::new());
+    }
     (env.step)(Step::Repair);
     for (path, bytes) in &plan {
         (env.closed)()?;
@@ -956,11 +959,24 @@ pub fn repair_plan(
     target: &Target,
     payload: &Payload,
 ) -> Result<Vec<(PathBuf, Vec<u8>)>> {
-    // An interrupted run left pieces removed or half replaced, with no manifest saying what they should be.
-    if let Some(state) = ledger::load(&state_path(env))
-        && state.status == Status::InProgress
-    {
-        bail!(Refusal::new(Kind::Interrupted, ""));
+    match ledger::load(&state_path(env)).map(|s| s.status) {
+        // An interrupted run left pieces removed or half replaced, with no manifest saying what they should be.
+        Some(Status::InProgress) => bail!(Refusal::new(Kind::Interrupted, "")),
+        // What an Uninstall left in place (files changed by hand) is the user's.
+        Some(Status::Removed) => return Ok(Vec::new()),
+        // A recorded piece gone as a whole has no manifest left to repair from: Install puts it back.
+        Some(Status::Installed) => {
+            if let Some(piece) = verify(env, target, payload)?
+                .into_iter()
+                .find(|p| p.ownership == Ownership::Absent)
+            {
+                bail!(Refusal::new(
+                    Kind::PieceMissing,
+                    piece_path(target, piece.name).display()
+                ));
+            }
+        }
+        None => {}
     }
     let mut plan: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut add = |dir: &Path,
@@ -1035,17 +1051,23 @@ pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Refu
     (env.step)(Step::Checks);
     (env.closed)()?;
     let guarded = Guarded::take(target, own_jars(target, None)?)?;
+    let path = state_path(env);
+    let mut state = ledger::load(&path);
+    // Recorded first: a run stopped midway leaves pieces removed, which Install again finishes and Repair refuses.
+    if let Some(state) = &mut state {
+        state.status = Status::InProgress;
+        ledger::save(&path, state)?;
+    }
     (env.step)(Step::Remove);
     Moved::find(env, target).remove(env.closed)?;
     let refusals = remove_owned(env, target, !remove_fabric, false)?;
     (env.step)(Step::Verify);
     guarded.unchanged(target)?;
-    let path = state_path(env);
-    if let Some(mut state) = ledger::load(&path)
-        && refusals.is_empty()
-    {
+    // Removed also with pieces left in place: they changed by hand, and are the user's now.
+    if let Some(state) = &mut state {
         state.status = Status::Removed;
-        ledger::save(&path, &state)?;
+        state.kept = None;
+        ledger::save(&path, state)?;
     }
     Ok(refusals)
 }

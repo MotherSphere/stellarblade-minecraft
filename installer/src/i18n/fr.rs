@@ -589,6 +589,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_run_update",
         "{path} diffère de ce que contient cet installateur : lancez plutôt la mise à jour",
     ),
+    (
+        "err_piece_missing",
+        "{path} est absent : installez à nouveau pour le remettre",
+    ),
     ("err_invalid_release", "Nom de version invalide : {path}"),
     ("err_cannot_keep", "Impossible de conserver {path}"),
     (

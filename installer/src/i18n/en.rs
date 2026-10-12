@@ -550,6 +550,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "err_run_update",
         "{path} differs from what this installer carries: run the update instead",
     ),
+    (
+        "err_piece_missing",
+        "{path} is missing: Install again to put it back",
+    ),
     ("err_invalid_release", "Invalid release name: {path}"),
     ("err_cannot_keep", "Cannot keep {path}"),
     (

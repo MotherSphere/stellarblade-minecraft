@@ -374,11 +374,8 @@ fn refusals_happen_before_any_write() {
         w.target.minecraft_mods.join(pins::FABRIC_API_FILE).exists(),
         "kept for other mods"
     );
-    assert_eq!(
-        state(&w).status,
-        Status::Installed,
-        "not removed while a piece remains"
-    );
+    // The rest is gone: the piece left in place changed by hand and is the user's now.
+    assert_eq!(state(&w).status, Status::Removed);
 }
 
 #[test]
@@ -2118,7 +2115,6 @@ enum Outcome {
     Done {
         release: Option<u32>,
         repaired: usize,
-        refusals: usize,
     },
     Failed(String),
     Killed,
@@ -2239,22 +2235,18 @@ impl Explorer<'_> {
             Act::Install => ops::install(&env, &w.target, payload).map(|s| Outcome::Done {
                 release: release_number(&s.release),
                 repaired: 0,
-                refusals: 0,
             }),
             Act::Rollback => ops::rollback(&env, &w.target).map(|s| Outcome::Done {
                 release: release_number(&s.release),
                 repaired: 0,
-                refusals: 0,
             }),
             Act::Repair => ops::repair(&env, &w.target, payload).map(|r| Outcome::Done {
                 release: None,
                 repaired: r.len(),
-                refusals: 0,
             }),
-            Act::Uninstall => ops::uninstall(&env, &w.target, false).map(|r| Outcome::Done {
+            Act::Uninstall => ops::uninstall(&env, &w.target, false).map(|_| Outcome::Done {
                 release: None,
                 repaired: 0,
-                refusals: r.len(),
             }),
         }));
         let outcome = match run {
@@ -2377,12 +2369,12 @@ impl Explorer<'_> {
                     m.tree = release_number(&s.release).map(|r| (r, w.files()));
                 }
             }
-            (Outcome::Done { refusals: 0, .. }, Act::Uninstall) => {
+            // Also with pieces left in place: changed by hand, they are the user's now.
+            (Outcome::Done { .. }, Act::Uninstall) => {
                 m.back = m.rollback_targets();
                 m.pending = None;
                 m.tree = None;
             }
-            (Outcome::Done { .. }, Act::Uninstall) => {}
             (Outcome::Failed(_) | Outcome::Killed, _) => {
                 if let Outcome::Failed(error) = &outcome {
                     if matches!(fault, Fault::None) {
@@ -2451,8 +2443,12 @@ impl Explorer<'_> {
                     }
                 }
                 if status == Some(Status::InProgress) {
+                    // An Uninstall keeps nothing: Roll back can only go to what it left complete.
                     if m.pending.is_none() {
-                        m.pending = Some(clean_before);
+                        m.pending = Some(match act {
+                            Act::Uninstall => disk_release(w),
+                            _ => clean_before,
+                        });
                     }
                 } else if m.pending.take().is_some() {
                     // An interrupted run put back as it was before it.
@@ -2501,7 +2497,14 @@ impl Explorer<'_> {
             }
             (Some(s), Ok(pieces)) if s.status == Status::InProgress => drop(pieces),
             (_, Ok(pieces)) => {
-                if let Some(piece) = pieces.iter().find(|p| p.ownership != Ownership::Absent) {
+                // Files changed by hand an Uninstall left in place are the user's.
+                let left = |p: &ops::Piece| {
+                    status == Some(Status::Removed) && matches!(p.ownership, Ownership::Modified(_))
+                };
+                if let Some(piece) = pieces
+                    .iter()
+                    .find(|p| p.ownership != Ownership::Absent && !left(p))
+                {
                     self.fail(
                         "I5",
                         format!(
