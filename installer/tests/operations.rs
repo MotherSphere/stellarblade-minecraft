@@ -789,3 +789,75 @@ fn a_game_started_during_a_repair_stops_it() {
     assert_eq!(fs::read(&script).unwrap(), v1.lua["Scripts/bridge.lua"]);
     assert_eq!(fs::read(&jar).unwrap(), b"damaged");
 }
+
+/// A game found running at the first removal stops an update before anything changed: the previous state is intact,
+/// so the failure must not say it could not be restored, nor leave the record "in progress".
+#[test]
+fn an_update_stopped_before_any_change_keeps_the_record_installed() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let files = w.files();
+    // The checks pass, then the game is found running at the first removal and stays running.
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() >= 2 {
+            anyhow::bail!("Stellar Blade started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    let error = ops::install(&env, &w.target, &payload(2)).unwrap_err();
+    assert_eq!(w.files(), files, "nothing changed on disk");
+    assert!(all_current(&w, &v1));
+    assert!(
+        !format!("{error:#}").contains("could not be restored"),
+        "{error:#}"
+    );
+    assert_eq!(state(&w).status, Status::Installed);
+}
+
+/// A protected file that changes during an update (Minecraft's options.txt here; Steam Cloud on the saves alike) is
+/// reported, but once the old files are all back the restore itself succeeded.
+#[test]
+fn a_protected_change_during_an_update_still_reports_the_restore() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let options = w
+        .target
+        .minecraft_mods
+        .parent()
+        .unwrap()
+        .join("options.txt");
+    let calls = Cell::new(0);
+    let meddles = || {
+        calls.set(calls.get() + 1);
+        if calls.get() == 2 {
+            fs::write(&options, "fov:1.0\n").unwrap();
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &meddles,
+        ..w.env()
+    };
+    let error = ops::install(&env, &w.target, &payload(2)).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("Protected files changed"),
+        "{error:#}"
+    );
+    assert!(all_current(&w, &v1), "the previous set is fully back");
+    assert!(
+        !format!("{error:#}").contains("could not be restored"),
+        "{error:#}"
+    );
+    assert_eq!(
+        (state(&w).status, state(&w).release),
+        (Status::Installed, "0.1.0+test".into())
+    );
+}

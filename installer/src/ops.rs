@@ -432,6 +432,39 @@ fn left_behind(env: &Env, target: &Target) -> Result<()> {
     Ok(())
 }
 
+/// Puts the state before a failed install back: the kept set in `previous`, or nothing for a first install. Judged by
+/// what is on disk, not by whether each step ran: a run stopped before its first change (a game found running at the
+/// first removal, a locked file) is already back and needs no write, and a protected file or the saves changing
+/// meanwhile is the install's own failure, not the restore's.
+fn restore(env: &Env, target: &Target, previous: Option<&Path>) -> Result<()> {
+    let kept = previous
+        .map(|previous| Payload::from_previous(previous, env.pin))
+        .transpose()?;
+    let back = || -> Result<bool> {
+        let pieces = verify(env, target, kept.as_ref().unwrap_or(&Payload::default()))?;
+        Ok(match &kept {
+            Some(_) => pieces.iter().all(|p| p.current),
+            None => pieces.iter().all(|p| p.ownership == Ownership::Absent),
+        })
+    };
+    if back()? {
+        return Ok(());
+    }
+    if let Some((_, refusal)) = remove_owned(env, target, false)?.into_iter().next() {
+        bail!(refusal);
+    }
+    if let Some(kept) = &kept {
+        put(env, target, kept)?;
+    }
+    if !back()? {
+        bail!(Refusal::new(
+            Kind::MismatchAfterWrite,
+            previous.unwrap_or(Path::new("")).display()
+        ));
+    }
+    Ok(())
+}
+
 /// Installs `payload` on `target`, replacing an owned older install (an update). Foreign or modified pieces stop it
 /// before anything changes. Records "in progress" first, makes the first-install save backup, keeps the replaced set in
 /// `previous/`, then writes and verifies; on any failure it removes what it wrote and puts the kept set back.
@@ -488,17 +521,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
             (env.step)(Step::Restore);
-            let restored = remove_owned(env, target, false).and_then(|refusals| {
-                if let Some((_, refusal)) = refusals.into_iter().next() {
-                    bail!(refusal);
-                }
-                if let Some(previous) = &previous {
-                    let kept = Payload::from_previous(previous, env.pin)?;
-                    put(env, target, &kept)?;
-                    check(env, target, &kept, &guarded)?;
-                }
-                Ok(())
-            });
+            let restored = restore(env, target, previous.as_deref());
             return Err(match restored {
                 Ok(()) => {
                     state.status = if previous.is_some() {
