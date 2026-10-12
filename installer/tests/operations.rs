@@ -1549,3 +1549,82 @@ fn finishing_an_interrupted_reinstall_keeps_the_rollback_set() {
     });
     assert!(all_current(&w, &v1));
 }
+
+/// already back: it needs no restore from the changed set, which cannot be installed again.
+#[test]
+fn an_update_over_a_changed_piece_stopped_before_any_change_is_restored() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "edited").unwrap();
+    let files = w.files();
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() >= 2 {
+            anyhow::bail!("Stellar Blade started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    let error = ops::install(&env, &w.target, &v2).unwrap_err();
+    assert_eq!(w.files(), files, "nothing changed on disk");
+    let message = format!("{error:#}");
+    let status = state(&w).status;
+    let rollback = ops::rollback(&w.env(), &w.target).map(|_| all_current(&w, &v1));
+    assert!(
+        !message.contains("could not be restored")
+            && status == Status::Installed
+            && matches!(rollback, Ok(true)),
+        "message: {message}\nstatus: {status:?}\nrollback: {:?}",
+        rollback.map_err(|e| format!("{e:#}"))
+    );
+}
+
+/// already back: the Lua mod was never at the new place.
+#[test]
+fn an_update_to_a_moved_mods_folder_stopped_before_any_change_is_restored() {
+    let w = world();
+    let win64 = w.win64();
+    write(&win64.join("UE4SS.dll"), "UE4SS 2.x");
+    write(&win64.join("Mods/mods.txt"), "OtherMod : 1\n");
+    let old = Target {
+        game: Some(Game {
+            ue4ss: win64.clone(),
+            mods: win64.join("Mods"),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    ops::install(&w.env(), &old, &payload(1)).unwrap();
+    let files = w.files();
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() >= 2 {
+            anyhow::bail!("Stellar Blade started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    let error = ops::install(&env, &w.target, &payload(2)).unwrap_err();
+    assert_eq!(w.files(), files, "nothing changed on disk");
+    let message = format!("{error:#}");
+    assert!(
+        !message.contains("could not be restored") && state(&w).status == Status::Installed,
+        "{message}\n{:?}",
+        state(&w).status
+    );
+}

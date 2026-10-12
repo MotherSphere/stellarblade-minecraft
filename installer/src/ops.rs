@@ -576,10 +576,25 @@ fn resumed(env: &Env, state: &State) -> Option<Kept> {
     }
 }
 
+/// Each path's content (`None` when missing; a folder by its files), to tell whether a run changed them.
+fn contents(paths: &[PathBuf]) -> Result<Vec<Option<BTreeMap<String, String>>>> {
+    paths
+        .iter()
+        .map(|path| match fs::symlink_metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+            Ok(m) if m.is_dir() => safety::tree(path).map(Some),
+            Ok(_) => Ok(Some(BTreeMap::from([(
+                String::new(),
+                sha256_file(path, &mut |_| {})?,
+            )]))),
+        })
+        .collect()
+}
+
 /// Puts the state before a failed install back: the kept set in `previous`, or nothing for a first install. Judged by
-/// what is on disk, not by whether each step ran: a run stopped before its first change (a game found running at the
-/// first removal, a locked file) is already back and needs no write, and a protected file or the saves changing
-/// meanwhile is the install's own failure, not the restore's.
+/// what is on disk, not by whether each step ran: pieces already as kept need no write, and a protected file or the
+/// saves changing meanwhile is the install's own failure, not the restore's.
 fn restore(env: &Env, target: &Target, previous: Option<&Path>, disabled: bool) -> Result<()> {
     let kept = previous.map(Payload::from_previous).transpose()?;
     let back = || -> Result<bool> {
@@ -665,6 +680,11 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                 owned.push(path);
             }
         }
+        // What the first removal changes, as it was: a run that fails and finds it so changed nothing. Only when this
+        // run replaces an installed set: a resumed run starts from a partial one.
+        let untouched = (resumed.is_none() && !owned.is_empty())
+            .then(|| contents(&owned))
+            .transpose()?;
         let kept = match resumed {
             Some(kept) => kept,
             None => {
@@ -704,7 +724,15 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
             (env.step)(Step::Restore);
-            let restored = restore(env, target, previous.as_deref(), disabled);
+            // Stopped before its first change (a game found running at the first removal, a locked file): already back,
+            // also when the kept set cannot be installed again (files changed by hand) or the old place is elsewhere.
+            let restored = if untouched
+                .is_some_and(|before| contents(&owned).is_ok_and(|now| now == before))
+            {
+                Ok(())
+            } else {
+                restore(env, target, previous.as_deref(), disabled)
+            };
             return Err(match restored {
                 Ok(()) => {
                     state.status = if previous.is_some() {
