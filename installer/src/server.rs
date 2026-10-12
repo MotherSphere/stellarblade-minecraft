@@ -291,12 +291,13 @@ pub fn install(
         if ops::jar_current(&mods_dir, &before.bridge, payload)? {
             outcome.unchanged = true;
         } else {
+            let disabled = mods::bridge_disabled(&mods_dir)?;
             // ponytail: a failure between the two leaves no bridge JAR; running the install again puts it back.
             mods::remove(&mods_dir, false, closed)?;
-            mods::install(&mods_dir, jar, &payload.fabric_api, closed)?;
+            mods::install(&mods_dir, jar, &payload.fabric_api, disabled, closed)?;
         }
     } else {
-        mods::install(&mods_dir, jar, &payload.fabric_api, closed)?;
+        mods::install(&mods_dir, jar, &payload.fabric_api, false, closed)?;
     }
     let eula = before.dir.join("eula.txt");
     if accept_eula && fs::symlink_metadata(&eula).is_err() {
@@ -342,6 +343,7 @@ fn create(dir: &Path, payload: &Payload, accept_eula: bool, closed: Guard) -> Re
             &staging.join("mods"),
             (&payload.jar.0, &payload.jar.1),
             &payload.fabric_api,
+            false,
             closed,
         )?;
         if accept_eula {

@@ -1085,3 +1085,28 @@ fn a_stray_part_file_from_a_killed_adapter_repair_does_not_fail_the_next_repair(
     assert!(repaired.is_ok(), "{:#}", repaired.unwrap_err());
     assert!(all_current(&w, &v1));
 }
+
+/// A bridge JAR the user disabled in Prism stays disabled through an update: the new release replaces it under the
+/// disabled name instead of turning it back on.
+#[test]
+fn an_update_keeps_a_disabled_bridge_jar_disabled() {
+    let w = world();
+    let v1 = payload(1);
+    let mut v2 = payload(2);
+    v2.jar.0 = "stellar-bridge-0.2.0.jar".into();
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let mods_dir = &w.target.minecraft_mods;
+    fs::rename(
+        mods_dir.join(&v1.jar.0),
+        mods_dir.join(format!("{}{}", v1.jar.0, mods::DISABLED)),
+    )
+    .unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(
+        !mods_dir.join(&v2.jar.0).exists(),
+        "the update turned the disabled bridge JAR back on"
+    );
+    let disabled = mods_dir.join(format!("{}{}", v2.jar.0, mods::DISABLED));
+    assert_eq!(fs::read(&disabled).unwrap(), v2.jar.1);
+    assert!(all_current(&w, &v2));
+}

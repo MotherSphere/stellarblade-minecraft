@@ -215,6 +215,7 @@ fn own_jars(target: &Target, payload: Option<&Payload>) -> Result<Vec<String>> {
         }
     }
     if let Some(payload) = payload {
+        own.push(format!("{}{}", payload.jar.0, mods::DISABLED));
         own.push(payload.jar.0.clone());
         let mut names = fs::read_dir(&target.minecraft_mods)?;
         if !names.any(|e| e.is_ok_and(|e| mods::is_fabric_api(&e.file_name().to_string_lossy()))) {
@@ -336,14 +337,16 @@ fn ensure_bridge(bridge: &Path, closed: Guard) -> Result<()> {
     Ok(())
 }
 
-/// Writes every piece `payload` carries: Fabric API and the JAR, then the Lua mod, then the adapter.
-fn put(env: &Env, target: &Target, payload: &Payload) -> Result<()> {
+/// Writes every piece `payload` carries: Fabric API and the JAR (`disabled` as the replaced one was), then the Lua
+/// mod, then the adapter.
+fn put(env: &Env, target: &Target, payload: &Payload, disabled: bool) -> Result<()> {
     if !payload.jar.1.is_empty() {
         (env.step)(Step::Minecraft);
         mods::install(
             &target.minecraft_mods,
             (&payload.jar.0, &payload.jar.1),
             &payload.fabric_api,
+            disabled,
             env.closed,
         )?;
     }
@@ -453,7 +456,7 @@ fn resumed(env: &Env, state: &State) -> Option<PathBuf> {
 /// what is on disk, not by whether each step ran: a run stopped before its first change (a game found running at the
 /// first removal, a locked file) is already back and needs no write, and a protected file or the saves changing
 /// meanwhile is the install's own failure, not the restore's.
-fn restore(env: &Env, target: &Target, previous: Option<&Path>) -> Result<()> {
+fn restore(env: &Env, target: &Target, previous: Option<&Path>, disabled: bool) -> Result<()> {
     let kept = previous
         .map(|previous| Payload::from_previous(previous, env.pin))
         .transpose()?;
@@ -471,7 +474,7 @@ fn restore(env: &Env, target: &Target, previous: Option<&Path>) -> Result<()> {
         bail!(refusal);
     }
     if let Some(kept) = &kept {
-        put(env, target, kept)?;
+        put(env, target, kept, disabled)?;
     }
     if !back()? {
         bail!(Refusal::new(
@@ -531,13 +534,15 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             state.previous = previous.clone();
             ledger::save(&path, &state)?;
         }
+        // A bridge JAR the user disabled in the launcher stays disabled.
+        let disabled = mods::bridge_disabled(&target.minecraft_mods)?;
         (env.step)(Step::Remove);
         let done = remove_owned(env, target, false)
-            .and_then(|_| put(env, target, payload))
+            .and_then(|_| put(env, target, payload, disabled))
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
             (env.step)(Step::Restore);
-            let restored = restore(env, target, previous.as_deref());
+            let restored = restore(env, target, previous.as_deref(), disabled);
             return Err(match restored {
                 Ok(()) => {
                     state.status = if previous.is_some() {
@@ -614,7 +619,10 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
         if !foreign_fabric {
             plan.writes.push(mods_dir.join(pins::FABRIC_API_FILE));
         }
-        plan.writes.push(mods_dir.join(&payload.jar.0));
+        let disabled = exists && mods::bridge_disabled(mods_dir)?;
+        let suffix = if disabled { mods::DISABLED } else { "" };
+        plan.writes
+            .push(mods_dir.join(format!("{}{suffix}", payload.jar.0)));
     }
     if let Some(game) = &target.game {
         if !target.bridge.exists() {

@@ -209,12 +209,22 @@ pub(crate) fn write_atomic(dir: &Path, name: &str, data: &[u8]) -> Result<()> {
     written
 }
 
-/// Adds the bridge JAR to `mods`, and Fabric API when the folder has no `fabric-api-*.jar`. The manifest comes first
-/// and the bridge JAR last, each after `closed`; any failure removes what this call created.
+/// Whether the listed bridge JAR in `mods` is there under its disabled name (Prism's Disable): an update keeps it so.
+pub fn bridge_disabled(mods: &Path) -> Result<bool> {
+    Ok(ownership(mods)? == Ownership::Owned
+        && present(mods)?
+            .iter()
+            .any(|(name, path)| is_bridge_jar(name) && path.to_string_lossy().ends_with(DISABLED)))
+}
+
+/// Adds the bridge JAR to `mods` (under its disabled name with `disabled`; the manifest lists the plain name either
+/// way), and Fabric API when the folder has no `fabric-api-*.jar`. The manifest comes first and the bridge JAR last,
+/// each after `closed`; any failure removes what this call created.
 pub fn install(
     mods: &Path,
     jar: (&str, &[u8]),
     fabric_api: &[u8],
+    disabled: bool,
     closed: Guard,
 ) -> Result<PathBuf> {
     let mods = folder(mods)?;
@@ -235,11 +245,19 @@ pub fn install(
         outputs.push((pins::FABRIC_API_FILE, fabric_api));
     }
     outputs.push(jar);
-    if let Some((name, _)) = outputs
+    let on_disk = |name: &str| {
+        if disabled && name == jar.0 {
+            format!("{name}{DISABLED}")
+        } else {
+            name.to_string()
+        }
+    };
+    if let Some(path) = outputs
         .iter()
-        .find(|(name, _)| mods.join(name).exists() || mods.join(name).is_symlink())
+        .map(|(name, _)| mods.join(on_disk(name)))
+        .find(|path| path.exists() || path.is_symlink())
     {
-        bail!(Refusal::new(Kind::Replace, mods.join(name).display()));
+        bail!(Refusal::new(Kind::Replace, path.display()));
     }
     let manifest = Manifest {
         owner: OWNER.into(),
@@ -259,7 +277,8 @@ pub fn install(
         created.push(mods.join(MANIFEST));
         for (name, data) in &outputs {
             closed()?;
-            write_atomic(&mods, name, data)?;
+            let name = on_disk(name);
+            write_atomic(&mods, &name, data)?;
             created.push(mods.join(name));
         }
         Ok(())
@@ -315,7 +334,7 @@ mod tests {
     #[test]
     fn adds_fabric_api_only_when_missing_and_removes_only_its_own() {
         let (_root, mods) = mods();
-        install(&mods, JAR, b"fabric", &open).unwrap();
+        install(&mods, JAR, b"fabric", false, &open).unwrap();
         assert_eq!(
             fs::read(mods.join(pins::FABRIC_API_FILE)).unwrap(),
             b"fabric"
@@ -324,7 +343,7 @@ mod tests {
         remove(&mods, false, &open).unwrap();
         assert_eq!(names(&mods).unwrap(), vec!["sodium.jar"]);
         fs::write(mods.join("fabric-api-0.116.18+1.21.1.jar"), "theirs").unwrap();
-        install(&mods, JAR, b"fabric", &open).unwrap();
+        install(&mods, JAR, b"fabric", false, &open).unwrap();
         assert_eq!(manifest(&mods).unwrap().files.len(), 1);
         remove(&mods, false, &open).unwrap();
         assert_eq!(names(&mods).unwrap().len(), 2, "their Fabric API stays");
@@ -333,14 +352,14 @@ mod tests {
     #[test]
     fn kept_fabric_api_is_left_to_the_user() {
         let (_root, mods) = mods();
-        install(&mods, JAR, b"fabric", &open).unwrap();
+        install(&mods, JAR, b"fabric", false, &open).unwrap();
         remove(&mods, true, &open).unwrap();
         assert_eq!(
             names(&mods).unwrap(),
             vec![pins::FABRIC_API_FILE, "sodium.jar"]
         );
         assert_eq!(ownership(&mods).unwrap(), Ownership::Absent);
-        install(&mods, JAR, b"fabric", &open).unwrap();
+        install(&mods, JAR, b"fabric", false, &open).unwrap();
         assert_eq!(manifest(&mods).unwrap().files.len(), 1, "theirs now");
     }
 
@@ -349,11 +368,11 @@ mod tests {
         let (_root, mods) = mods();
         fs::write(mods.join("stellar-bridge-0.0.9.jar"), "by hand").unwrap();
         assert!(matches!(ownership(&mods).unwrap(), Ownership::Foreign(_)));
-        assert!(install(&mods, JAR, b"fabric", &open).is_err());
+        assert!(install(&mods, JAR, b"fabric", false, &open).is_err());
         assert!(remove(&mods, false, &open).is_err());
         assert_eq!(names(&mods).unwrap().len(), 2);
         fs::remove_file(mods.join("stellar-bridge-0.0.9.jar")).unwrap();
-        install(&mods, JAR, b"fabric", &open).unwrap();
+        install(&mods, JAR, b"fabric", false, &open).unwrap();
         fs::write(mods.join(JAR.0), "changed").unwrap();
         assert!(matches!(ownership(&mods).unwrap(), Ownership::Modified(_)));
         assert_eq!(
@@ -376,7 +395,7 @@ mod tests {
     #[test]
     fn prism_updates_and_disables_stay_removable() {
         let (_root, mods) = mods();
-        install(&mods, JAR, b"fabric", &open).unwrap();
+        install(&mods, JAR, b"fabric", false, &open).unwrap();
         // Prism's updater swaps the Fabric API we added for a newer one.
         fs::remove_file(mods.join(pins::FABRIC_API_FILE)).unwrap();
         fs::write(mods.join("fabric-api-0.116.18+1.21.1.jar"), "newer").unwrap();
@@ -400,7 +419,7 @@ mod tests {
 
         // A missing bridge JAR is repairable; a removed Fabric API with no other one comes back too.
         fs::remove_file(mods.join("fabric-api-0.116.18+1.21.1.jar")).unwrap();
-        install(&mods, JAR, b"fabric", &open).unwrap();
+        install(&mods, JAR, b"fabric", false, &open).unwrap();
         fs::remove_file(mods.join(JAR.0)).unwrap();
         fs::remove_file(mods.join(pins::FABRIC_API_FILE)).unwrap();
         assert_eq!(ownership(&mods).unwrap(), Ownership::Owned);
@@ -414,7 +433,7 @@ mod tests {
     fn running_game_or_failed_write_leaves_nothing() {
         let (_root, mods) = mods();
         let running = || -> Result<()> { bail!("Close Minecraft first") };
-        assert!(install(&mods, JAR, b"fabric", &running).is_err());
+        assert!(install(&mods, JAR, b"fabric", false, &running).is_err());
         let calls = std::cell::Cell::new(0);
         let starts = || -> Result<()> {
             calls.set(calls.get() + 1);
@@ -424,13 +443,13 @@ mod tests {
                 Ok(())
             }
         };
-        assert!(install(&mods, JAR, b"fabric", &starts).is_err());
+        assert!(install(&mods, JAR, b"fabric", false, &starts).is_err());
         assert_eq!(names(&mods).unwrap(), vec!["sodium.jar"]);
-        assert!(install(&mods, ("other.jar", b"x"), b"fabric", &open).is_err());
+        assert!(install(&mods, ("other.jar", b"x"), b"fabric", false, &open).is_err());
         let empty = tempfile::tempdir().unwrap();
         let bare = platform::canonicalize(empty.path()).unwrap();
         assert!(
-            install(&bare, JAR, b"", &open).is_err(),
+            install(&bare, JAR, b"", false, &open).is_err(),
             "no Fabric API to add"
         );
     }
