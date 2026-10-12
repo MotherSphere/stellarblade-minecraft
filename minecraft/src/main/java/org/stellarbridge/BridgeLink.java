@@ -26,6 +26,12 @@ final class BridgeLink {
      * 5 s terrain freshness (see BridgeFiles.Refusals).
      */
     static final long BUSY_MS = 2000;
+    /**
+     * How long a combat verdict Windows refused is written again at each tick (Lua reads eve-combat.txt every frame):
+     * Lua answers one only within 2.5 s of its TIME, and a hit reaction or perfect dodge any later would only look wrong.
+     * Past it the verdict is dropped with a warning; the link lives.
+     */
+    static final long VERDICT_MS = 1000;
 
     final String session;
     final Vec3d origin;
@@ -34,7 +40,9 @@ final class BridgeLink {
     private final PoseGate gate;
     private BridgeProtocol.Terrain terrain; // The newest snapshot; its TIME is never written.
     private boolean terrainDue; // terrain.txt is to be written (a new revision, the heartbeat, or a refused write).
-    private final BridgeFiles.Refusals terrainRefusals = new BridgeFiles.Refusals(BUSY_MS), mobRefusals = new BridgeFiles.Refusals(BUSY_MS);
+    private final BridgeFiles.Refusals terrainRefusals = new BridgeFiles.Refusals(BUSY_MS), mobRefusals = new BridgeFiles.Refusals(BUSY_MS),
+            verdictRefusals = new BridgeFiles.Refusals(VERDICT_MS);
+    private String verdict; // A combat verdict Windows refused, written again at each tick until VERDICT_MS.
     private List<BridgeProtocol.Box> mobs = List.of();
     private boolean mobsListed; // The last eve-mobs.txt listed at least one entity, or the empty list is not written yet.
     private BridgeProtocol.Eve relayed; // The newest packet sent to the server.
@@ -79,6 +87,10 @@ final class BridgeLink {
         if (packet != null) relayed = packet;
         BridgeProtocol.Eve eve = gate.accept(packet, revision(), now / 1000);
         position = eve == null ? null : origin.add(eve.x(), eve.y(), eve.z());
+        if (verdict != null) {
+            try { writeVerdict(now); }
+            catch (IOException failure) { LOG.warn("Combat event not delivered to Stellar Blade: {}", failure.toString()); }
+        }
         if (++ticks % 4 == 0 && terrain != null) terrainDue = true;
         if (terrainDue) writeTerrain(now);
         if (!mobs.isEmpty() || mobsListed) writeMobs(now);
@@ -112,7 +124,15 @@ final class BridgeLink {
 
     /** A combat verdict for Stellar Blade to answer (an index in BridgeProtocol.COMBAT_EVENTS), with the attacker's yaw or NaN. */
     void verdict(int event, double yaw, long now) throws IOException {
-        files.write("eve-combat.txt", BridgeProtocol.encodeCombat(session, ++combatSeq, now, BridgeProtocol.COMBAT_EVENTS.get(event), yaw));
+        verdict = BridgeProtocol.encodeCombat(session, ++combatSeq, now, BridgeProtocol.COMBAT_EVENTS.get(event), yaw);
+        writeVerdict(now);
+    }
+
+    /** The pending verdict as it was sent (a newer one replaces it); dropped once written or past VERDICT_MS. */
+    private void writeVerdict(long now) throws IOException {
+        String packet = verdict;
+        try { if (verdictRefusals.write(() -> files.write("eve-combat.txt", packet), now)) verdict = null; }
+        catch (IOException failure) { verdict = null; throw failure; }
     }
 
     /** The lock-on target's centre (world) for Stellar Blade, null once released. */

@@ -160,12 +160,31 @@ public final class BridgeLinkTest {
             refused.clear();
             later.tick(t2 + 3250);
             assert time(flakyDirectory, "eve-mobs.txt") == t2 + 3250 : "A later refusal got its own grace, then the walls went through";
+
+            // Lua reads eve-combat.txt every frame too: a refused verdict is written again, as it was, at the next ticks;
+            // one Windows keeps refusing past VERDICT_MS is dropped with a warning, never the link.
+            BridgeLink fights = new BridgeLink(flaky, A, origin, "minecraft:overworld");
+            long t3 = t + 30_000;
+            refused.add("eve-combat.txt");
+            fights.verdict(BridgeProtocol.COMBAT_EVENTS.indexOf("parry"), 90, t3);
+            fights.tick(t3 + 50);
+            assert !Files.exists(flakyDirectory.resolve("eve-combat.txt")) : "Still refused";
+            refused.clear();
+            fights.tick(t3 + 100);
+            assert time(flakyDirectory, "eve-combat.txt") == t3
+                    && Files.readString(flakyDirectory.resolve("eve-combat.txt")).contains("EVENT parry 90.0\n") : "Written once Lua lets go";
+            refused.add("eve-combat.txt");
+            fights.verdict(BridgeProtocol.COMBAT_EVENTS.indexOf("parry"), 45, t3 + 2000);
+            for (long at = t3 + 2050; at <= t3 + 2000 + 2 * BridgeLink.VERDICT_MS; at += 50) fights.tick(at);
+            refused.clear();
+            fights.tick(t3 + 2000 + 2 * BridgeLink.VERDICT_MS + 50);
+            assert time(flakyDirectory, "eve-combat.txt") == t3 : "Dropped past VERDICT_MS, and the link ticked through it";
         } finally {
             try (var paths = Files.walk(temporary)) {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
             }
         }
-        System.out.println("Bridge link tests passed: client clock on every file, relay once, skewed server judged by its sender's clock, per-player relays isolated, teleports out of the window, refused heartbeats written again until BUSY_MS");
+        System.out.println("Bridge link tests passed: client clock on every file, relay once, skewed server judged by its sender's clock, per-player relays isolated, teleports out of the window, refused heartbeats written again until BUSY_MS, refused verdicts until VERDICT_MS");
     }
 
     private static long time(Path directory, String name) throws Exception {
