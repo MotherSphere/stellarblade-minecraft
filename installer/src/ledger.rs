@@ -86,6 +86,25 @@ pub fn save(path: &Path, state: &State) -> Result<()> {
 /// `previous/<release>/`. About 1 MB: the avatar pack is never copied. The set kept before stays beside it until the
 /// run succeeds and [`commit_previous`] drops it, so a failed run that was restored still rolls back to it.
 pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
+    let staging = stage(data, release, items)?;
+    let kept = data.join("previous").join(release);
+    if kept.exists() {
+        discard(data, &kept)?;
+    }
+    fs::rename(&staging, &kept)?;
+    Ok(kept)
+}
+
+/// Copies the owned set holding files changed by hand straight to `changed/<release>` (see [`set_aside`]): what a run
+/// finishing an interrupted one keeps before replacing it, since that set is partly the interrupted run's own and Roll
+/// back goes to the set kept before.
+pub fn keep_changed(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
+    let staging = stage(data, release, items)?;
+    set_aside_as(data, &staging, release)
+}
+
+/// Copies `items` into `previous/.<release>.partial`, which the next run clears when this one is killed.
+fn stage(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
     if release.is_empty() || release.contains(['/', '\\']) || release.starts_with('.') {
         bail!(Refusal::new(Kind::InvalidRelease, release));
     }
@@ -106,12 +125,7 @@ pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<Path
         fs::remove_dir_all(&staging)?;
         return Err(error);
     }
-    let kept = previous.join(release);
-    if kept.exists() {
-        discard(data, &kept)?;
-    }
-    fs::rename(&staging, &kept)?;
-    Ok(kept)
+    Ok(staging)
 }
 
 /// After a successful run, once `state.json` records it: `kept`, the Roll back set, becomes the only set in `previous/`.
@@ -143,10 +157,17 @@ fn discard(data: &Path, set: &Path) -> Result<()> {
 /// Moves a kept set with files changed by hand, which cannot be installed again, to `changed/<release>` (`-2`, `-3`…
 /// when taken). No run deletes it: they are the user's files.
 pub fn set_aside(data: &Path, kept: &Path) -> Result<PathBuf> {
+    set_aside_as(
+        data,
+        kept,
+        &kept.file_name().unwrap_or_default().to_string_lossy(),
+    )
+}
+
+fn set_aside_as(data: &Path, kept: &Path, name: &str) -> Result<PathBuf> {
     let changed = data.join("changed");
     fs::create_dir_all(&changed)?;
-    let name = kept.file_name().unwrap_or_default().to_string_lossy();
-    let mut aside = changed.join(&*name);
+    let mut aside = changed.join(name);
     for n in 2.. {
         if fs::symlink_metadata(&aside).is_err() {
             break;

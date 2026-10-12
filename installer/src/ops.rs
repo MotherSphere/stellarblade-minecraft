@@ -122,6 +122,13 @@ pub fn changed_files(target: &Target) -> Vec<PathBuf> {
     files
 }
 
+/// Whether a file of ours on `target` holds content changed by hand: changed, not only missing.
+fn changed_by_hand(target: &Target) -> bool {
+    changed_files(target)
+        .iter()
+        .any(|path| fs::symlink_metadata(path).is_ok())
+}
+
 /// Where a piece is on `target`: what a failure about it names.
 fn piece_path(target: &Target, name: &str) -> PathBuf {
     match (name, &target.game) {
@@ -726,7 +733,16 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             .then(|| contents(&owned))
             .transpose()?;
         let kept = match resumed.clone() {
-            Some(kept) => kept,
+            Some(kept) => {
+                // Nothing is kept for Roll back, but a file changed by hand since the run stopped is the user's: the set
+                // holding it goes to changed/, as the consent page says.
+                if changed_by_hand(target) {
+                    (env.step)(Step::KeepPrevious);
+                    let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
+                    ledger::keep_changed(&env.data, &old_release, &items)?;
+                }
+                kept
+            }
             None => {
                 let kept = if owned.is_empty() {
                     Kept::Nothing
@@ -844,7 +860,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
 pub struct Plan {
     /// Files and folders created or replaced, in the order they are written; empty when the release is in place.
     pub writes: Vec<PathBuf>,
-    /// Owned files the install replaces, kept in `previous/` first.
+    /// Owned files the install replaces, kept in `previous/` first; none when it finishes an interrupted run.
     pub replaced: Vec<PathBuf>,
     /// Files of ours that changed or went missing since they were installed (by hand, an antivirus): the install
     /// replaces them, keeping the changed ones first, in `changed/` once done.
@@ -896,13 +912,19 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
         }
     }
     plan.writes.push(state_path(env));
-    plan.replaced = owned_paths(target, true)?;
-    plan.replaced.extend(Moved::find(env, target).paths());
-    plan.changed = changed_files(target);
     let state = ledger::load(&state_path(env)).unwrap_or_default();
-    if !plan.replaced.is_empty() && resumed(env, &state).is_none() {
-        plan.backups
-            .push(env.data.join("previous").join(old_release(&state)));
+    plan.changed = changed_files(target);
+    // Finishing an interrupted run keeps nothing for Roll back: that run kept the set it replaced. Only a set with
+    // files changed by hand since is kept, in changed/.
+    if resumed(env, &state).is_none() {
+        plan.replaced = owned_paths(target, true)?;
+        plan.replaced.extend(Moved::find(env, target).paths());
+        if !plan.replaced.is_empty() {
+            plan.backups
+                .push(env.data.join("previous").join(old_release(&state)));
+        }
+    } else if changed_by_hand(target) {
+        plan.backups.push(env.data.join("changed"));
     }
     let saves = target.game.as_ref().and_then(|g| g.saves.as_ref());
     if saves.is_some() && !state.save_backup.is_some_and(|b| b.is_dir()) {

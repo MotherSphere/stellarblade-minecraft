@@ -1864,6 +1864,62 @@ fn changed_files_kept_by_an_update_killed_before_its_verify_survive() {
     assert_eq!(kept_aside, 1, "the hand-changed main.lua was deleted");
 }
 
+/// An update killed before its verify, then a file changed by hand: Install again or Roll back finishes the interrupted
+/// run and replaces that file, which the consent page listed as kept in `changed/`. It is, and nothing claims it is
+/// kept for Roll back.
+#[test]
+fn a_file_changed_after_an_interrupted_update_is_kept_by_the_run_finishing_it() {
+    for rollback in [false, true] {
+        let w = world();
+        let (v1, v2, v3) = (payload(1), payload(2), payload(3));
+        ops::install(&w.env(), &w.target, &v1).unwrap();
+        ops::install(&w.env(), &w.target, &v2).unwrap();
+        let crash = |step: ops::Step| {
+            if step == ops::Step::Verify {
+                panic!("killed");
+            }
+        };
+        let env = Env {
+            step: &crash,
+            ..w.env()
+        };
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &v3);
+        }));
+        assert!(run.is_err());
+        let main = w
+            .game()
+            .mods
+            .join(deploy::MOD_NAME)
+            .join("Scripts/main.lua");
+        fs::write(&main, "my edit after the crash").unwrap();
+        let plan = ops::plan(&w.env(), &w.target, &v3).unwrap();
+        assert!(plan.changed.contains(&main));
+        assert!(
+            plan.replaced.is_empty(),
+            "nothing is kept for Roll back: {:?}",
+            plan.replaced
+        );
+        assert!(plan.backups.contains(&w.data.join("changed")));
+        if rollback {
+            ops::rollback(&w.env(), &w.target).unwrap();
+            assert!(all_current(&w, &v2));
+        } else {
+            ops::install(&w.env(), &w.target, &v3).unwrap();
+            assert!(all_current(&w, &v3));
+        }
+        let kept_aside = safety::tree(&w.data.join("changed"))
+            .unwrap_or_default()
+            .into_values()
+            .filter(|sha| *sha == safety::sha256_hex(b"my edit after the crash"))
+            .count();
+        assert_eq!(
+            kept_aside, 1,
+            "the hand-changed main.lua was deleted (rollback: {rollback})"
+        );
+    }
+}
+
 /// An update over a file changed by hand that fails and cannot be restored leaves the changed set in `previous/`:
 /// after an Uninstall, the next updates still do not delete it.
 #[test]
@@ -2628,6 +2684,41 @@ impl Explorer<'_> {
         (m, depth).hash(&mut hasher);
         if !self.seen.insert(std::hash::Hasher::finish(&hasher)) {
             return;
+        }
+        // While a run is interrupted, the user may change a file of ours by hand before choosing a recovery; once.
+        let interrupted = ledger::load(&self.w.data.join(ledger::STATE))
+            .is_some_and(|s| s.status == Status::InProgress);
+        let main = self
+            .w
+            .game()
+            .mods
+            .join(deploy::MOD_NAME)
+            .join("Scripts/main.lua");
+        let edit = b"my edit after the stop";
+        if interrupted && main.is_file() && !m.precious.contains(&safety::sha256_hex(edit)) {
+            put_disk(&self.w.home, &disk);
+            fs::write(&main, edit).unwrap();
+            let mut m = m.clone();
+            // An earlier edit it overwrote is gone by the user's hand, unless a run kept it.
+            let hashes = data_hashes(self.w);
+            m.precious.retain(|h| hashes.contains(h));
+            m.precious.push(safety::sha256_hex(edit));
+            // The release complete before the interrupted run is now only where that run kept it, if it got that far.
+            if let Some(Some(pre)) = m.pending {
+                let kept = fs::read_dir(self.w.data.join("previous"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .any(|e| {
+                        !e.file_name().to_string_lossy().starts_with('.')
+                            && Payload::from_previous(&e.path())
+                                .is_ok_and(|p| set_release(&p) == Some(pre))
+                    });
+                if !kept {
+                    m.pending = Some(None);
+                }
+            }
+            self.recover(&m, depth, &format!("{scenario} > edit main.lua"));
         }
         let installer = self.installer.clone();
         for act in [Act::Install, Act::Rollback, Act::Repair] {
