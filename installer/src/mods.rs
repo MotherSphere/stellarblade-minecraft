@@ -38,13 +38,6 @@ pub fn is_fabric_api(name: &str) -> bool {
 /// A visible JAR in `mods` named otherwise that declares the bridge's Fabric mod id: a copy renamed by hand, which
 /// Fabric would load beside ours and refuse as a duplicate. Unreadable or non-zip JARs are skipped.
 fn renamed_bridge(mods: &Path, names: &[String]) -> Option<String> {
-    let declares_bridge = |path: &Path| -> Option<bool> {
-        let mut archive = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
-        let entry = archive.by_name("fabric.mod.json").ok()?;
-        let info: serde_json::Value =
-            serde_json::from_reader(std::io::Read::take(entry, 64 * 1024)).ok()?;
-        Some(info["id"] == "stellar_bridge")
-    };
     names
         .iter()
         .find(|name| {
@@ -52,9 +45,50 @@ fn renamed_bridge(mods: &Path, names: &[String]) -> Option<String> {
                 && name.to_lowercase().ends_with(".jar")
                 && !is_bridge_jar(name)
                 && !is_fabric_api(name)
-                && declares_bridge(&mods.join(name)) == Some(true)
+                && declares_bridge(&mods.join(name))
         })
         .cloned()
+}
+
+/// What [`declares_bridge`] found, by path, with the size and modification time it was found at: a large modpack holds
+/// hundreds of JARs, and one review page asks about them a dozen times.
+// ponytail: grows with every JAR path seen in this process (a few hundred); drop entries if that ever matters.
+type Scanned = std::collections::BTreeMap<PathBuf, (u64, Option<std::time::SystemTime>, bool)>;
+static SCANNED: std::sync::Mutex<Scanned> = std::sync::Mutex::new(Scanned::new());
+
+fn declares_bridge(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    let stamp = (metadata.len(), metadata.modified().ok());
+    let mut scanned = SCANNED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&(len, modified, found)) = scanned.get(path)
+        && (len, modified) == stamp
+    {
+        return found;
+    }
+    let found = read_mod_id(path, stamp.0).as_deref() == Some("stellar_bridge");
+    scanned.insert(path.to_path_buf(), (stamp.0, stamp.1, found));
+    found
+}
+
+/// The Fabric mod id in the JAR at `path`, `len` bytes long.
+fn read_mod_id(path: &Path, len: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    // A zip ends with its end record (22 bytes and a comment of at most 64 KiB). Without one it is no zip, and the zip
+    // crate would read the whole file backwards looking for it.
+    let tail = len.min(22 + 0xFFFF);
+    file.seek(SeekFrom::Start(len - tail)).ok()?;
+    let mut end = vec![0; usize::try_from(tail).ok()?];
+    file.read_exact(&mut end).ok()?;
+    if !end.windows(4).any(|w| w == b"PK\x05\x06") {
+        return None;
+    }
+    let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
+    let entry = archive.by_name("fabric.mod.json").ok()?;
+    let info: serde_json::Value = serde_json::from_reader(entry.take(64 * 1024)).ok()?;
+    Some(info["id"].as_str()?.to_string())
 }
 
 /// The `mods` folder with links resolved: instance folders often live on another disk.
