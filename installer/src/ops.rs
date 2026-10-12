@@ -693,14 +693,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     fs::create_dir_all(&env.data)?;
     let resumed = resumed(env, &state);
     let before = state.previous.clone();
-    // The set this run kept, or the interrupted run it finishes: it decides where Roll back goes.
-    let finished = if pieces.iter().all(|p| p.current) {
+    // Nothing to write: an interrupted run killed after its last write is finished by recording it.
+    if pieces.iter().all(|p| p.current) {
         guarded.unchanged(target)?;
-        // An interrupted run killed after its last write: finishing it is recording what it kept.
-        match resumed {
-            Some(Kept::Set(kept)) => Some(kept),
-            _ => None,
-        }
     } else {
         let old_release = old_release(&state);
         state.status = Status::InProgress;
@@ -831,15 +826,10 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     }),
             });
         }
-        previous
-    };
-    if let Some(kept) = &finished {
-        state.previous = Some(kept.clone());
     }
-    // Roll back goes to the set this run kept, unless it cannot: files changed by hand (the commit below sets that set
-    // aside, where no later run deletes it), a piece missing, or the release installed now (Roll back of an
-    // interrupted update, a reinstall for a new game build, an install after Uninstall). It then keeps going to the
-    // set kept before, under the same condition.
+    // Roll back goes to the set this run kept (or the interrupted run it finishes), recorded as it was kept, unless it
+    // cannot: a piece missing, or the release installed now (Roll back of an interrupted update, a reinstall for a new
+    // game build, an install after Uninstall). It then keeps going to the set kept before, under the same condition.
     if let Some(set) = state
         .previous
         .clone()
@@ -857,9 +847,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     state.lua_revision = payload.lua_revision;
     ledger::save(&path, &state)?;
     // Only once recorded: stopped before, `previous/` holds only extra sets, which the next run clears.
-    if finished.is_some() {
-        ledger::commit_previous(&env.data, state.previous.as_deref())?;
-    }
+    ledger::commit_previous(&env.data, state.previous.as_deref())?;
     Ok(state)
 }
 

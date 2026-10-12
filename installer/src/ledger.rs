@@ -127,7 +127,11 @@ fn stage(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
 
 /// After a successful run, once `state.json` records it: `kept`, the Roll back set, becomes the only set in `previous/`.
 pub fn commit_previous(data: &Path, kept: Option<&Path>) -> Result<()> {
-    for entry in fs::read_dir(data.join("previous"))? {
+    let entries = match fs::read_dir(data.join("previous")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?,
+    };
+    for entry in entries {
         let path = entry?.path();
         if Some(path.as_path()) != kept {
             discard(data, &path)?;
