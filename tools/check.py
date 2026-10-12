@@ -13,6 +13,10 @@ import subprocess
 import sys
 import tempfile
 
+# Output decoded as UTF-8 (with U+FFFD for bad bytes) is printed back; on Windows a redirected stdout is the ANSI code
+# page, where that could raise and hide why a check failed.
+sys.stdout.reconfigure(errors='backslashreplace')
+
 ROOT = Path(__file__).resolve().parents[1]
 # The pack builder's sidecars, the SHA256SUMS over them and NOTICES.txt (their licence texts); the installer build
 # embeds its target's one with its digest and the notices (SBMC_EVE_EXTRACT names this folder). The keys are .NET runtime identifiers, the values the release asset names.
