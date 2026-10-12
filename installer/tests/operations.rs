@@ -2797,8 +2797,6 @@ fn model_scenario(start_state: Start, op: Op) -> Vec<Violation> {
 /// I5 `state.json` describes the disk: status, release, the Roll back set, `kept` only while in progress;
 /// I6 Repair never says "nothing to repair" while a recorded piece is missing or changed.
 #[test]
-#[ignore = "finds open bugs: a restore from a set kept without a piece, a Roll back set without a piece, a stopped or \
-            partial Uninstall still recorded installed, Roll back to the installed release after Uninstall"]
 fn every_failure_and_recovery_keeps_the_ledger_invariants() {
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
