@@ -12,6 +12,7 @@ use sbmc_installer::{Kind, Ownership, Refusal, adapter, deploy, launcher, mods, 
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -2000,4 +2001,855 @@ fn a_reinstall_killed_before_its_verify_keeps_the_older_rollback_set() {
 #[test]
 fn a_reinstall_killed_before_its_record_keeps_the_older_rollback_set() {
     reinstall_killed_at_keeps_the_older_rollback_set(ops::Step::Record);
+}
+
+// The ledger model: every start state, then one operation with a failure injected at every guard call and every step,
+// then every recovery the window offers, twice; the invariants are checked after each action.
+
+/// The panic standing for a kill: the process dies there, with nothing after it running.
+struct Killed;
+
+/// Everything under the fake home (relative path, bytes or `None` for a folder, mode), put back in place so a scenario
+/// restarts without rebuilding the world: the absolute paths in `state.json` and the manifests stay valid.
+type Disk = Vec<(PathBuf, Option<Vec<u8>>, u32)>;
+
+fn mode(metadata: &fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    return std::os::unix::fs::PermissionsExt::mode(&metadata.permissions());
+    #[cfg(not(unix))]
+    return u32::from(metadata.permissions().readonly());
+}
+
+fn take_disk(home: &Path) -> Disk {
+    fn walk(home: &Path, dir: &Path, disk: &mut Disk) {
+        let mut paths: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        paths.sort();
+        for path in paths {
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            assert!(!metadata.file_type().is_symlink(), "{}", path.display());
+            let relative = path.strip_prefix(home).unwrap().to_path_buf();
+            if metadata.is_dir() {
+                disk.push((relative, None, mode(&metadata)));
+                walk(home, &path, disk);
+            } else {
+                disk.push((relative, Some(fs::read(&path).unwrap()), mode(&metadata)));
+            }
+        }
+    }
+    let mut disk = Vec::new();
+    walk(home, home, &mut disk);
+    disk
+}
+
+fn put_disk(home: &Path, disk: &Disk) {
+    for entry in fs::read_dir(home).unwrap() {
+        let path = entry.unwrap().path();
+        if fs::symlink_metadata(&path).unwrap().is_dir() {
+            fs::remove_dir_all(&path).unwrap();
+        } else {
+            fs::remove_file(&path).unwrap();
+        }
+    }
+    for (relative, bytes, _) in disk {
+        match bytes {
+            None => fs::create_dir(home.join(relative)).unwrap(),
+            Some(bytes) => fs::write(home.join(relative), bytes).unwrap(),
+        }
+    }
+    #[cfg(unix)]
+    for (relative, _, mode) in disk.iter().rev() {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(home.join(relative), fs::Permissions::from_mode(*mode)).unwrap();
+    }
+}
+
+/// What the user expects, which the disk and `state.json` must keep matching.
+#[derive(Debug, Clone, Hash)]
+struct Model {
+    /// The releases Roll back may go to (`None`: no Roll back): the one installed before the last successful update.
+    back: Vec<Option<u32>>,
+    /// While a run is interrupted: the release complete on disk before it, if any. Roll back may undo that run.
+    pending: Option<Option<u32>>,
+    /// The disk last recorded as installed, with its release: a hand change there is the user's, not a broken install.
+    tree: Option<(u32, BTreeMap<String, String>)>,
+    /// Content changed by hand (its SHA-256), which no run deletes unless a confirm modal listed it.
+    precious: Vec<String>,
+}
+
+impl Model {
+    fn rollback_targets(&self) -> Vec<Option<u32>> {
+        let mut targets = self.back.clone();
+        if let Some(Some(pre)) = self.pending {
+            targets.push(Some(pre));
+        }
+        targets
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Act {
+    Install,
+    Rollback,
+    Repair,
+    Uninstall,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Fault {
+    None,
+    /// The guard refuses at its `at`th call (a game started), and after it unless `once` (it stays running).
+    Refuse {
+        at: usize,
+        once: bool,
+    },
+    /// The process is killed at the guard's `at`th call.
+    KillAtGuard(usize),
+    /// The process is killed at the `at`th step reported.
+    KillAtStep(usize),
+}
+
+enum Outcome {
+    Done {
+        release: Option<u32>,
+        repaired: usize,
+        refusals: usize,
+    },
+    Failed(String),
+    Killed,
+}
+
+fn release_number(release: &str) -> Option<u32> {
+    release.strip_prefix("0.")?.split('.').next()?.parse().ok()
+}
+
+/// The release a kept set holds, when it is exactly one of the test releases.
+fn set_release(set: &Payload) -> Option<u32> {
+    (1..=3).find(|n| {
+        let p = payload(*n);
+        set.jar == p.jar && set.lua == p.lua && set.dll == p.dll
+    })
+}
+
+/// The release the disk holds, every piece current.
+fn disk_release(w: &World) -> Option<u32> {
+    (1..=3).find(|n| {
+        ops::verify(&w.env(), &w.target, &payload(*n)).is_ok_and(|p| p.iter().all(|p| p.current))
+    })
+}
+
+fn kind(ownership: &Ownership) -> &'static str {
+    match ownership {
+        Ownership::Absent => "absent",
+        Ownership::Owned => "owned",
+        Ownership::Foreign(_) => "foreign",
+        Ownership::Modified(_) => "modified",
+    }
+}
+
+/// The release complete on disk, by the record: installed, every piece owned and unchanged (an adapter for an older
+/// executable included).
+fn clean_release(w: &World, state: &Option<ledger::State>) -> Option<u32> {
+    let state = state.as_ref().filter(|s| s.status == Status::Installed)?;
+    let release = release_number(&state.release)?;
+    ops::verify(&w.env(), &w.target, &payload(release))
+        .ok()?
+        .iter()
+        .all(|p| p.current || (p.name == ops::ADAPTER && p.ownership == Ownership::Owned))
+        .then_some(release)
+}
+
+fn data_hashes(w: &World) -> Vec<String> {
+    let mut hashes: Vec<String> = w.files().into_values().collect();
+    if w.data.is_dir() {
+        hashes.extend(safety::tree(&w.data).unwrap().into_values());
+    }
+    hashes
+}
+
+/// The same files, the adapter's record of the executable it was installed for aside: a restore puts the kept adapter
+/// back for the executable there now.
+fn same_but_pin(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> bool {
+    let strip = |files: &BTreeMap<String, String>| {
+        let mut files = files.clone();
+        files.retain(|path, _| !path.ends_with(adapter::MANIFEST));
+        files
+    };
+    strip(a) == strip(b)
+}
+
+struct Violation {
+    invariant: &'static str,
+    cause: String,
+    scenario: String,
+    detail: String,
+}
+
+struct Explorer<'a> {
+    w: &'a World,
+    /// The payload the installer running the recoveries carries.
+    installer: Payload,
+    seen: std::collections::HashSet<u64>,
+    found: Vec<Violation>,
+}
+
+impl Explorer<'_> {
+    fn fail(&mut self, invariant: &'static str, cause: String, scenario: &str, detail: String) {
+        self.found.push(Violation {
+            invariant,
+            cause,
+            scenario: scenario.to_string(),
+            detail,
+        });
+    }
+
+    fn run(&self, act: Act, payload: &Payload, fault: Fault) -> (Outcome, usize, usize) {
+        let w = self.w;
+        let (guards, steps) = (Cell::new(0), Cell::new(0));
+        let closed = || {
+            guards.set(guards.get() + 1);
+            match fault {
+                Fault::Refuse { at, once }
+                    if guards.get() == at || (!once && guards.get() > at) =>
+                {
+                    anyhow::bail!("Stellar Blade started")
+                }
+                Fault::KillAtGuard(at) if guards.get() == at => std::panic::panic_any(Killed),
+                _ => Ok(()),
+            }
+        };
+        let step = |_: ops::Step| {
+            steps.set(steps.get() + 1);
+            if matches!(fault, Fault::KillAtStep(at) if at == steps.get()) {
+                std::panic::panic_any(Killed)
+            }
+        };
+        let env = Env {
+            data: w.data.clone(),
+            closed: &closed,
+            pin: &w.pin,
+            step: &step,
+        };
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match act {
+            Act::Install => ops::install(&env, &w.target, payload).map(|s| Outcome::Done {
+                release: release_number(&s.release),
+                repaired: 0,
+                refusals: 0,
+            }),
+            Act::Rollback => ops::rollback(&env, &w.target).map(|s| Outcome::Done {
+                release: release_number(&s.release),
+                repaired: 0,
+                refusals: 0,
+            }),
+            Act::Repair => ops::repair(&env, &w.target, payload).map(|r| Outcome::Done {
+                release: None,
+                repaired: r.len(),
+                refusals: 0,
+            }),
+            Act::Uninstall => ops::uninstall(&env, &w.target, false).map(|r| Outcome::Done {
+                release: None,
+                repaired: 0,
+                refusals: r.len(),
+            }),
+        }));
+        let outcome = match run {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(error)) => Outcome::Failed(format!("{error:#}")),
+            Err(payload) if payload.is::<Killed>() => Outcome::Killed,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
+        (outcome, guards.get(), steps.get())
+    }
+
+    /// Runs `act` with `fault`, checks every invariant and moves the model on. Returns the guard and step counts.
+    fn act(
+        &mut self,
+        m: &mut Model,
+        act: Act,
+        payload: &Payload,
+        fault: Fault,
+        scenario: &str,
+    ) -> (usize, usize) {
+        let w = self.w;
+        let state_path = w.data.join(ledger::STATE);
+        let state_before = ledger::load(&state_path);
+        let clean_before = clean_release(w, &state_before);
+        let pieces_before = ops::verify(&w.env(), &w.target, payload).unwrap_or_default();
+        let files_before = w.files();
+        // What the confirm modal or consent page lists.
+        let listed: Vec<PathBuf> = match act {
+            Act::Install => ops::plan(&w.env(), &w.target, payload)
+                .map(|p| p.changed)
+                .unwrap_or_default(),
+            Act::Rollback => ops::changed_files(&w.target),
+            Act::Repair => ops::repair_plan(&w.env(), &w.target, payload)
+                .map(|p| p.into_iter().map(|(path, _)| path).collect())
+                .unwrap_or_default(),
+            Act::Uninstall => Vec::new(),
+        };
+        let precious_at: Vec<(String, Vec<String>)> = m
+            .precious
+            .iter()
+            .map(|h| {
+                let at = files_before
+                    .iter()
+                    .filter(|(_, sha)| *sha == h)
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                (h.clone(), at)
+            })
+            .collect();
+        let (outcome, guards, steps) = self.run(act, payload, fault);
+        let state = ledger::load(&state_path);
+        let status = state.as_ref().map(|s| s.status);
+        let class = match &outcome {
+            Outcome::Done { .. } => "done",
+            Outcome::Failed(_) => "failed",
+            Outcome::Killed => "killed",
+        };
+        let when = format!("after {act:?} ({class})");
+
+        match (&outcome, act) {
+            (Outcome::Done { release, .. }, Act::Install | Act::Rollback) => {
+                let release = release.unwrap_or(0);
+                if disk_release(w) != Some(release) {
+                    self.fail(
+                        "I1",
+                        format!("{when}: the disk is not the release it reports"),
+                        scenario,
+                        format!("reported v{release}, disk {:?}", disk_release(w)),
+                    );
+                }
+                if act == Act::Rollback && !m.rollback_targets().contains(&Some(release)) {
+                    self.fail(
+                        "I2",
+                        format!("{when}: Roll back reached another release"),
+                        scenario,
+                        format!(
+                            "reached v{release}, expected one of {:?}",
+                            m.rollback_targets()
+                        ),
+                    );
+                }
+                let pre = m.pending.unwrap_or(clean_before);
+                match pre {
+                    Some(pre) if pre != release => m.back = vec![Some(pre)],
+                    Some(_) => {}
+                    // The set it replaced cannot be installed again: Roll back keeps its target, unless it is
+                    // installed now.
+                    None => {
+                        m.back.retain(|b| *b != Some(release));
+                        if m.back.is_empty() {
+                            m.back.push(None);
+                        }
+                    }
+                }
+                m.pending = None;
+                m.tree = Some((release, w.files()));
+            }
+            (Outcome::Done { repaired, .. }, Act::Repair) => {
+                let recorded = state_before
+                    .as_ref()
+                    .is_some_and(|s| s.status != Status::Removed);
+                if let Some(piece) = pieces_before
+                    .iter()
+                    .find(|p| p.ownership != Ownership::Owned)
+                    && *repaired == 0
+                    && recorded
+                {
+                    self.fail(
+                        "I6",
+                        format!(
+                            "{when}: nothing to repair while the {} is {}",
+                            piece.name,
+                            kind(&piece.ownership)
+                        ),
+                        scenario,
+                        format!("record {:?}", state_before.as_ref().map(|s| s.status)),
+                    );
+                }
+                if let Some(s) = state.as_ref().filter(|s| s.status == Status::Installed) {
+                    m.tree = release_number(&s.release).map(|r| (r, w.files()));
+                }
+            }
+            (Outcome::Done { refusals: 0, .. }, Act::Uninstall) => {
+                m.back = m.rollback_targets();
+                m.pending = None;
+                m.tree = None;
+            }
+            (Outcome::Done { .. }, Act::Uninstall) => {}
+            (Outcome::Failed(_) | Outcome::Killed, _) => {
+                if let Outcome::Failed(error) = &outcome {
+                    if matches!(fault, Fault::None) {
+                        match act {
+                            Act::Install => self.fail(
+                                "I1",
+                                format!(
+                                    "Install again failed: {}",
+                                    error.split(": ").next().unwrap_or("")
+                                ),
+                                scenario,
+                                error.clone(),
+                            ),
+                            Act::Rollback
+                                if state_before
+                                    .as_ref()
+                                    .and_then(|s| s.previous.as_ref())
+                                    .is_some_and(|p| p.is_dir()) =>
+                            {
+                                self.fail(
+                                    "I2",
+                                    format!(
+                                        "the offered Roll back failed: {}",
+                                        error.split(": ").next().unwrap_or("")
+                                    ),
+                                    scenario,
+                                    error.clone(),
+                                )
+                            }
+                            _ => {}
+                        }
+                    }
+                    let restored =
+                        error.starts_with("Installation failed; the previous state was restored");
+                    let resumed = state_before
+                        .as_ref()
+                        .is_some_and(|s| s.status == Status::InProgress);
+                    // Finishing an interrupted run, the previous state is the release before that run.
+                    if restored
+                        && resumed
+                        && m.pending
+                            .is_some_and(|pre| pre.is_some() && disk_release(w) != pre)
+                    {
+                        self.fail("I1", format!("{when}: says restored but the release before the interrupted run is not back"), scenario, format!("disk {:?}, expected {:?}", disk_release(w), m.pending));
+                    }
+                    if restored && !resumed && !same_but_pin(&w.files(), &files_before) {
+                        let changed: Vec<_> = w
+                            .files()
+                            .into_iter()
+                            .filter(|(p, h)| files_before.get(p) != Some(h))
+                            .map(|(p, _)| p)
+                            .chain(
+                                files_before
+                                    .keys()
+                                    .filter(|p| !w.files().contains_key(*p))
+                                    .cloned(),
+                            )
+                            .collect();
+                        self.fail(
+                            "I1",
+                            format!("{when}: says restored but the files differ"),
+                            scenario,
+                            format!("{changed:?}"),
+                        );
+                    }
+                }
+                if status == Some(Status::InProgress) {
+                    if m.pending.is_none() {
+                        m.pending = Some(clean_before);
+                    }
+                } else if m.pending.take().is_some() {
+                    // An interrupted run put back as it was before it.
+                    m.tree = state
+                        .as_ref()
+                        .filter(|s| s.status == Status::Installed)
+                        .and_then(|s| release_number(&s.release))
+                        .map(|r| (r, w.files()));
+                }
+            }
+        }
+
+        // I5: the record describes the disk.
+        let pieces = ops::verify(&w.env(), &w.target, &self.installer);
+        match (&state, pieces) {
+            (_, Err(error)) => self.fail(
+                "I5",
+                format!("{when}: the pieces cannot be read"),
+                scenario,
+                format!("{error:#}"),
+            ),
+            (Some(s), Ok(_)) if s.status == Status::Installed => {
+                let release = release_number(&s.release).unwrap_or(0);
+                let as_recorded = m
+                    .tree
+                    .as_ref()
+                    .is_some_and(|(r, t)| *r == release && *t == w.files());
+                let pieces = ops::verify(&w.env(), &w.target, &crate::payload(release.max(1)))
+                    .unwrap_or_default();
+                if let Some(piece) = pieces
+                    .iter()
+                    .find(|p| !p.current && !matches!(p.ownership, Ownership::Modified(_)))
+                    && !as_recorded
+                {
+                    self.fail(
+                        "I5",
+                        format!(
+                            "{when}: recorded installed, but the {} is {} and not current",
+                            piece.name,
+                            kind(&piece.ownership)
+                        ),
+                        scenario,
+                        format!("record v{release}, disk {:?}", disk_release(w)),
+                    );
+                }
+            }
+            (Some(s), Ok(pieces)) if s.status == Status::InProgress => drop(pieces),
+            (_, Ok(pieces)) => {
+                if let Some(piece) = pieces.iter().find(|p| p.ownership != Ownership::Absent) {
+                    self.fail(
+                        "I5",
+                        format!(
+                            "{when}: recorded {:?}, but the {} is {}",
+                            status,
+                            piece.name,
+                            kind(&piece.ownership)
+                        ),
+                        scenario,
+                        String::new(),
+                    );
+                }
+            }
+        }
+        if let Some(s) = &state
+            && s.status != Status::InProgress
+            && s.kept.is_some()
+        {
+            self.fail(
+                "I5",
+                format!("{when}: a finished record still says what a run kept"),
+                scenario,
+                format!("{:?}", s.kept),
+            );
+        }
+
+        // I2, I3: Roll back goes to a complete set of the expected release, which is still there.
+        let targets = m.rollback_targets();
+        match state.as_ref().and_then(|s| s.previous.clone()) {
+            None if !targets.contains(&None) => self.fail(
+                "I3",
+                format!("{when}: no Roll back, expected {targets:?}"),
+                scenario,
+                String::new(),
+            ),
+            None => {}
+            Some(previous) => match Payload::from_previous(&previous) {
+                Err(error) => self.fail(
+                    "I3",
+                    format!("{when}: the Roll back set does not load"),
+                    scenario,
+                    format!("{}: {error:#}", previous.display()),
+                ),
+                Ok(set) => match set_release(&set) {
+                    None => self.fail(
+                        "I2",
+                        format!("{when}: the Roll back set is partial"),
+                        scenario,
+                        previous.display().to_string(),
+                    ),
+                    Some(n) if status == Some(Status::Installed) && disk_release(w) == Some(n) => {
+                        self.fail(
+                            "I2",
+                            format!("{when}: Roll back would go to the installed release"),
+                            scenario,
+                            format!("v{n}, expected one of {targets:?}"),
+                        )
+                    }
+                    Some(n) if !targets.contains(&Some(n)) => self.fail(
+                        "I2",
+                        format!("{when}: Roll back would go to another release"),
+                        scenario,
+                        format!("v{n}, expected one of {targets:?}"),
+                    ),
+                    Some(_) => {}
+                },
+            },
+        }
+
+        // I4: files changed by hand survive, unless a confirm modal that does not promise to keep them listed them.
+        let hashes = data_hashes(w);
+        let mut kept = Vec::new();
+        for (hash, at) in precious_at {
+            let consented =
+                act == Act::Repair && at.iter().any(|p| listed.iter().any(|l| l.ends_with(p)));
+            if hashes.contains(&hash) || consented {
+                if hashes.contains(&hash) {
+                    kept.push(hash);
+                }
+            } else {
+                self.fail(
+                    "I4",
+                    format!("{when}: a file changed by hand is gone"),
+                    scenario,
+                    format!("was at {at:?}; listed {listed:?}"),
+                );
+            }
+        }
+        m.precious = kept;
+        (guards, steps)
+    }
+
+    /// Every recovery the window offers from here, `depth` actions deep.
+    fn recover(&mut self, m: &Model, depth: u32, scenario: &str) {
+        if depth == 0 {
+            return;
+        }
+        let disk = take_disk(&self.w.home);
+        let mut hasher = std::hash::DefaultHasher::new();
+        for (path, bytes, _) in &disk {
+            if path.components().any(|c| c.as_os_str() == "save-backups") {
+                continue;
+            }
+            path.hash(&mut hasher);
+            if path.file_name().is_some_and(|n| n == ledger::STATE) {
+                let mut state = ledger::load(&self.w.home.join(path)).unwrap_or_default();
+                (state.updated, state.save_backup) = (0, None);
+                format!("{state:?}").hash(&mut hasher);
+            } else {
+                bytes.hash(&mut hasher);
+            }
+        }
+        (m, depth).hash(&mut hasher);
+        if !self.seen.insert(std::hash::Hasher::finish(&hasher)) {
+            return;
+        }
+        let installer = self.installer.clone();
+        for act in [Act::Install, Act::Rollback, Act::Repair] {
+            put_disk(&self.w.home, &disk);
+            let offered = ledger::load(&self.w.data.join(ledger::STATE))
+                .and_then(|s| s.previous)
+                .is_some_and(|p| p.is_dir());
+            if act == Act::Rollback && !offered {
+                continue;
+            }
+            let mut m = m.clone();
+            let scenario = format!("{scenario} > {act:?}");
+            self.act(&mut m, act, &installer, Fault::None, &scenario);
+            self.recover(&m, depth - 1, &scenario);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    Fresh,
+    V1,
+    V1V2,
+    V1V2LuaChanged,
+    V1V2DllChanged,
+    V1V2JarMissing,
+    Uninstalled,
+    /// A 0.3.1 installer killed midway through the update to v3: no `kept`, and 0.3.1 kept only the newest set.
+    V031Interrupted,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Op {
+    Update,
+    /// The installed release again, for a new game build.
+    Reinstall,
+    Repair,
+    Rollback,
+    Uninstall,
+}
+
+fn start(start: Start) -> (World, Model, u32) {
+    let w = world();
+    let mut m = Model {
+        back: vec![None],
+        pending: None,
+        tree: None,
+        precious: Vec::new(),
+    };
+    let mut latest = 1;
+    if !matches!(start, Start::Fresh) {
+        ops::install(&w.env(), &w.target, &payload(1)).unwrap();
+        m.tree = Some((1, w.files()));
+    }
+    if !matches!(start, Start::Fresh | Start::V1) {
+        ops::install(&w.env(), &w.target, &payload(2)).unwrap();
+        (m.back, latest) = (vec![Some(1)], 2);
+        m.tree = Some((2, w.files()));
+    }
+    let lua = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    match start {
+        Start::V1V2LuaChanged => {
+            fs::write(&lua, "my edit").unwrap();
+            m.precious.push(safety::sha256_hex(b"my edit"));
+        }
+        Start::V1V2DllChanged => {
+            let dll = [adapter::test_dll(), b"my build".to_vec()].concat();
+            fs::write(w.win64().join(adapter::DLL), &dll).unwrap();
+            m.precious.push(safety::sha256_hex(&dll));
+        }
+        Start::V1V2JarMissing => {
+            fs::remove_file(w.target.minecraft_mods.join(payload(2).jar.0)).unwrap()
+        }
+        Start::Uninstalled => {
+            assert!(
+                ops::uninstall(&w.env(), &w.target, false)
+                    .unwrap()
+                    .is_empty()
+            );
+            m.tree = None;
+        }
+        Start::V031Interrupted => {
+            let killed = |step: ops::Step| {
+                if step == ops::Step::LuaMod {
+                    std::panic::panic_any(Killed)
+                }
+            };
+            let env = Env {
+                step: &killed,
+                ..w.env()
+            };
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = ops::install(&env, &w.target, &payload(3));
+            }));
+            assert!(run.is_err());
+            let path = w.data.join(ledger::STATE);
+            let mut json: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            json.as_object_mut().unwrap().remove("kept");
+            json["previous"] = serde_json::json!(w.data.join("previous/0.2.0+test"));
+            fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+            fs::remove_dir_all(w.data.join("previous/0.1.0+test")).unwrap();
+            (m.back, m.pending, m.tree, latest) = (vec![None], Some(Some(2)), None, 3);
+        }
+        _ => {}
+    }
+    if matches!(
+        start,
+        Start::V1V2LuaChanged | Start::V1V2DllChanged | Start::V1V2JarMissing
+    ) {
+        m.tree = Some((2, w.files()));
+    }
+    (w, m, latest)
+}
+
+/// Explores one start state and operation; returns the violations.
+fn model_scenario(start_state: Start, op: Op) -> Vec<Violation> {
+    let (mut w, mut m, latest) = start(start_state);
+    if matches!(op, Op::Reinstall) {
+        fs::write(&w.game().exe, "test executable, next build").unwrap();
+        w.pin = safety::sha256_hex(b"test executable, next build");
+        if let Some((_, tree)) = &mut m.tree {
+            *tree = w.files();
+        }
+    }
+    let installer = payload(if matches!(op, Op::Update) { 3 } else { latest });
+    let act = match op {
+        Op::Update | Op::Reinstall => Act::Install,
+        Op::Repair => Act::Repair,
+        Op::Rollback => Act::Rollback,
+        Op::Uninstall => Act::Uninstall,
+    };
+    let base = take_disk(&w.home);
+    let mut explorer = Explorer {
+        w: &w,
+        installer: installer.clone(),
+        seen: Default::default(),
+        found: Vec::new(),
+    };
+    let mut faults = vec![Fault::None];
+    let mut n = 0;
+    while n < faults.len() {
+        let fault = faults[n];
+        n += 1;
+        put_disk(&w.home, &base);
+        let mut model = m.clone();
+        let scenario = format!("{start_state:?} / {op:?} [{fault:?}]");
+        let (guards, steps) = explorer.act(&mut model, act, &installer, fault, &scenario);
+        if matches!(fault, Fault::None) {
+            for at in 1..=guards {
+                faults.extend([
+                    Fault::Refuse { at, once: true },
+                    Fault::Refuse { at, once: false },
+                    Fault::KillAtGuard(at),
+                ]);
+            }
+            faults.extend((1..=steps).map(Fault::KillAtStep));
+        }
+        explorer.recover(&model, 2, &scenario);
+    }
+    explorer.found
+}
+
+/// The invariants every Update, Reinstall, Repair, Roll back and Uninstall keeps, whatever stops it, and through every
+/// recovery the window offers after it:
+/// I1 the disk is a release the record names, or Install again gets there; a restore that says so put every file back;
+/// I2 Roll back goes to the release installed before the last successful update (or undoes an interrupted run), never
+///    to a partial set, and does not fail when offered;
+/// I3 the set Roll back goes to is never deleted while it is the way back;
+/// I4 files changed by hand are never deleted, unless a Repair confirm modal listed them;
+/// I5 `state.json` describes the disk: status, release, the Roll back set, `kept` only while in progress;
+/// I6 Repair never says "nothing to repair" while a recorded piece is missing or changed.
+#[test]
+#[ignore = "finds open bugs: a restore from a set kept without a piece, a Roll back set without a piece, a stopped or \
+            partial Uninstall still recorded installed, Roll back to the installed release after Uninstall"]
+fn every_failure_and_recovery_keeps_the_ledger_invariants() {
+    static HOOK: std::sync::Once = std::sync::Once::new();
+    HOOK.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !info.payload().is::<Killed>() {
+                default(info)
+            }
+        }));
+    });
+    let starts = [
+        Start::Fresh,
+        Start::V1,
+        Start::V1V2,
+        Start::V1V2LuaChanged,
+        Start::V1V2DllChanged,
+        Start::V1V2JarMissing,
+        Start::Uninstalled,
+        Start::V031Interrupted,
+    ];
+    let ops = [
+        Op::Update,
+        Op::Reinstall,
+        Op::Repair,
+        Op::Rollback,
+        Op::Uninstall,
+    ];
+    let found: Vec<Violation> = std::thread::scope(|scope| {
+        let runs: Vec<_> = starts
+            .iter()
+            .flat_map(|s| ops.iter().map(move |o| (*s, *o)))
+            .map(|(s, o)| scope.spawn(move || model_scenario(s, o)))
+            .collect();
+        runs.into_iter().flat_map(|r| r.join().unwrap()).collect()
+    });
+    // One line per cause, with its shortest scenario.
+    let mut causes: BTreeMap<(&str, String), (usize, String, String)> = BTreeMap::new();
+    for v in found {
+        let entry = causes.entry((v.invariant, v.cause)).or_insert((
+            0,
+            v.scenario.clone(),
+            v.detail.clone(),
+        ));
+        entry.0 += 1;
+        if v.scenario.len() < entry.1.len() {
+            (entry.1, entry.2) = (v.scenario, v.detail);
+        }
+    }
+    let report: Vec<String> = causes
+        .iter()
+        .map(|((invariant, cause), (count, scenario, detail))| {
+            format!("{invariant} {cause} (x{count})\n    {scenario}\n    {detail}")
+        })
+        .collect();
+    assert!(
+        report.is_empty(),
+        "{} causes:\n{}",
+        report.len(),
+        report.join("\n")
+    );
 }
