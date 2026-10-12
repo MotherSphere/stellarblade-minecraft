@@ -553,7 +553,8 @@ fn old_release(state: &State) -> String {
 
 /// The set an interrupted run already kept, when the next run finishes it: the owned set on disk is then partial, so
 /// it must not replace the complete one. Only `previous/<release on record>` counts: an older kept set means the
-/// interrupted run stopped before it kept anything, and the set on disk is still complete.
+/// interrupted run stopped before it kept anything, and the set on disk is still complete. A finished run never records
+/// the set of the release it installed, so that name is the interrupted run's own (as the 0.3 installers record it).
 fn resumed(env: &Env, state: &State) -> Option<PathBuf> {
     let kept = env.data.join("previous").join(old_release(state));
     (state.status == Status::InProgress && state.previous.as_ref() == Some(&kept) && kept.is_dir())
@@ -697,16 +698,22 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             });
         }
         if let Some(kept) = &previous {
-            state.previous = if Payload::from_previous(kept).is_ok() {
-                ledger::commit_previous(&env.data, kept)?;
-                Some(kept.clone())
-            } else {
+            state.previous = match Payload::from_previous(kept) {
+                Ok(set) if set.release != payload.release => {
+                    ledger::commit_previous(&env.data, kept)?;
+                    Some(kept.clone())
+                }
+                // The release installed again (Roll back of an interrupted update, a reinstall for a new game
+                // build): its set adds nothing, and Roll back keeps going to the set kept before.
+                Ok(_) => {
+                    ledger::drop_previous(&env.data, kept, before.as_deref().filter(|b| b != kept))?
+                }
                 // A replaced piece had files changed by hand: that set cannot be installed again, so Roll back keeps
                 // going to the set kept before, unless that is what is installed now. The changed set stays beside
                 // it until the next successful run drops it.
-                before.filter(|b| {
+                Err(_) => before.filter(|b| {
                     Payload::from_previous(b).is_ok_and(|p| p.release != payload.release)
-                })
+                }),
             };
         }
     }

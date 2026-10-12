@@ -1423,3 +1423,48 @@ fn finishing_an_update_after_a_same_release_run_keeps_the_installed_set() {
     ops::rollback(&w.env(), &w.target).unwrap();
     assert!(all_current(&w, &v1));
 }
+
+/// Roll back after an interrupted update reinstalls the set that update kept; the set kept before it stays the next
+/// Roll back, as it was before the update.
+#[test]
+fn rolling_back_an_interrupted_update_keeps_the_older_rollback_set() {
+    let w = world();
+    let (v1, v2, v3) = (payload(1), payload(2), payload(3));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::LuaMod {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &v3);
+        }))
+        .is_err()
+    );
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v2));
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
+
+/// A Steam update changes the executable: the same release is installed again for it. That run's kept set is the
+/// release still installed, so Roll back keeps going to the set kept before.
+#[test]
+fn reinstalling_the_same_release_keeps_the_older_rollback_set() {
+    let mut w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    fs::write(&w.game().exe, "test executable, next build").unwrap();
+    w.pin = safety::sha256_hex(b"test executable, next build");
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(state(&w).previous.unwrap().ends_with("previous/0.1.0+test"));
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
