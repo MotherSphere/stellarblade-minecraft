@@ -41,7 +41,16 @@ public final class StellarBridge implements ClientModInitializer {
     private static KeyBinding playKey;
     private static final PlaySequence play = new PlaySequence(new PlaySequence.Client() {
         public boolean server() { return ClientPlayNetworking.canSend(BridgeNet.LinkRequest.ID); }
-        public void start() { ClientPlayNetworking.send(new BridgeNet.LinkRequest(BridgeNet.LinkRequest.START)); }
+        public String start() {
+            // BridgeServer.start's checks, so its refusal stops the sequence instead of a terrain timeout 10 s later.
+            var player = MinecraftClient.getInstance().player;
+            if (player == null || !player.isAlive() || player.isSpectator() || player.hasVehicle())
+                return "Start the bridge alive, in creative or survival, and not riding anything.";
+            if (!player.isOnGround() || Math.abs(player.getY() - Math.floor(player.getY())) > 0.05)
+                return "Stand on a full block floor before starting the bridge.";
+            ClientPlayNetworking.send(new BridgeNet.LinkRequest(BridgeNet.LinkRequest.START));
+            return null;
+        }
         public int revision() { return link == null ? -1 : link.revision(); }
         public String state() { return link == null ? "idle" : link.state(System.currentTimeMillis()); }
         public String request(String action) {

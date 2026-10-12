@@ -14,8 +14,8 @@ final class PlaySequence {
     interface Client {
         /** Whether the server runs Stellar Bridge. */
         boolean server();
-        /** Sends /stellar start's link request. */
-        void start();
+        /** Sends /stellar start's link request; returns why the server would refuse it (its own wording), or null. */
+        String start();
         /** The link's terrain revision: -1 without a link, 0 before its first terrain. */
         int revision();
         /** EVE's state in Stellar Blade for the link: idle, ready (imported) or entered. */
@@ -53,7 +53,11 @@ final class PlaySequence {
                 client.say("This server does not run Stellar Bridge; the link needs the mod on the server too.");
                 return true;
             }
-            client.start();
+            String refused = client.start();
+            if (refused != null) {
+                stop(refused);
+                return true;
+            }
         }
         next(Step.LINK, nanos);
         return true;

@@ -14,10 +14,13 @@ public final class PlaySequenceTest {
     private static final class Fake implements PlaySequence.Client {
         boolean server = true, placed, playing;
         int revision = -1;
-        String state = "idle", refusal;
+        String state = "idle", refusal, startRefusal;
         final List<String> did = new ArrayList<>(), said = new ArrayList<>();
         public boolean server() { return server; }
-        public void start() { did.add("start"); }
+        public String start() {
+            if (startRefusal == null) did.add("start");
+            return startRefusal;
+        }
         public int revision() { return revision; }
         public String state() { return state; }
         public String request(String action) {
@@ -136,6 +139,13 @@ public final class PlaySequenceTest {
         fake.server = false;
         play = new PlaySequence(fake);
         assert play.begin(0) && !play.running() && fake.did.isEmpty() && fake.said.size() == 1 : fake.said;
+
+        // A player the server would refuse (dead, spectator, riding, off a full block): its wording, no link request.
+        fake = new Fake();
+        fake.startRefusal = "Stand on a full block floor before starting the bridge.";
+        play = new PlaySequence(fake);
+        assert play.begin(0) && !play.running() && fake.did.isEmpty()
+                && fake.said.equals(List.of("Play as EVE stopped: " + fake.startRefusal)) : fake.said;
 
         // A disconnect cancels it.
         fake = new Fake();
