@@ -798,9 +798,12 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                         (Some(_), None) => status_before,
                     };
                     if let Some(previous) = &previous {
-                        state.previous =
-                            ledger::previous_without(&env.data, previous, before.as_deref())?
-                                .filter(|p| goes_back(p, target, &state.release));
+                        state.previous = ledger::previous_without(
+                            &env.data,
+                            previous,
+                            before.as_deref(),
+                            |p| goes_back(p, target, &state.release),
+                        )?;
                     }
                     state.kept = None;
                     ledger::save(&path, &state)?;
@@ -837,8 +840,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         .clone()
         .filter(|p| !goes_back(p, target, &payload.release))
     {
-        state.previous = ledger::previous_without(&env.data, &set, before.as_deref())?
-            .filter(|p| goes_back(p, target, &payload.release));
+        state.previous = ledger::previous_without(&env.data, &set, before.as_deref(), |p| {
+            goes_back(p, target, &payload.release)
+        })?;
     }
     (env.step)(Step::Record);
     state.status = Status::Installed;
