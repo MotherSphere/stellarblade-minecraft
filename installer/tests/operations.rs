@@ -2184,10 +2184,15 @@ fn disk_hash(w: &World, disk: &Disk) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-/// The files of the pieces, by path: what the user sees of an install.
+/// The files of the pieces, by path: what the user sees of an install. What a killed write leaves (the Lua mod's staging
+/// folder, a `.part` file) is inert, and the next write clears it.
 fn written(w: &World) -> BTreeMap<String, String> {
     pieces(w)
         .into_iter()
+        .filter(|(path, _, _)| {
+            !path.components().any(|c| c.as_os_str() == deploy::STAGING)
+                && !path.to_string_lossy().ends_with(".part")
+        })
         .filter_map(|(path, bytes, _)| {
             Some((
                 path.to_string_lossy().replace('\\', "/"),
@@ -2323,6 +2328,18 @@ fn data_hashes(w: &World, files: &BTreeMap<String, String>) -> Vec<String> {
         hashes.extend(safety::tree(&w.data).unwrap().into_values());
     }
     hashes
+}
+
+/// The paths whose content differs between `a` and `b`, or that only one has.
+fn differ(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> Vec<String> {
+    let mut paths: Vec<String> = a
+        .keys()
+        .chain(b.keys())
+        .filter(|p| a.get(*p) != b.get(*p))
+        .cloned()
+        .collect();
+    paths.dedup();
+    paths
 }
 
 /// The same files, the adapter's record of the executable it was installed for aside: a restore puts the kept adapter
@@ -2619,34 +2636,30 @@ impl Explorer<'_> {
                     }
                     let restored =
                         error.starts_with("Installation failed; the previous state was restored");
-                    // A restore that records another status finished an interrupted run: the previous state is the
-                    // release before that run, its adapter for the executable it was installed for. Any other puts every
-                    // file back as it was.
+                    // A restore that records another status finished an interrupted run: recorded installed, the disk
+                    // is as last recorded installed, its adapter for the executable it was installed for. Any other
+                    // puts every file back as it was.
                     let finished = state_before.as_ref().map(|s| s.status) != status;
-                    if restored
-                        && finished
-                        && m.pending
-                            .is_some_and(|pre| pre.is_some() && clean_release(w, &state) != pre)
-                    {
-                        self.fail("I1", format!("{when}: says restored but the release before the interrupted run is not back"), scenario, format!("disk {:?}, expected {:?}", clean_release(w, &state), m.pending));
+                    let as_recorded = m.tree.as_ref().is_some_and(|(r, t)| {
+                        state
+                            .as_ref()
+                            .is_some_and(|s| release_number(&s.release) == Some(*r))
+                            && same_but_pin(&files, t)
+                    });
+                    if restored && finished && status == Some(Status::Installed) && !as_recorded {
+                        self.fail(
+                            "I1",
+                            format!("{when}: says restored but the disk is not as last recorded"),
+                            scenario,
+                            format!("{:?}", m.tree.as_ref().map(|(_, t)| differ(&files, t))),
+                        );
                     }
                     if restored && !finished && !same_but_pin(&files, files_before) {
-                        let changed: Vec<_> = files
-                            .iter()
-                            .filter(|(p, h)| files_before.get(*p) != Some(h))
-                            .map(|(p, _)| p.clone())
-                            .chain(
-                                files_before
-                                    .keys()
-                                    .filter(|p| !files.contains_key(*p))
-                                    .cloned(),
-                            )
-                            .collect();
                         self.fail(
                             "I1",
                             format!("{when}: says restored but the files differ"),
                             scenario,
-                            format!("{changed:?}"),
+                            format!("{:?}", differ(&files, files_before)),
                         );
                     }
                 }
@@ -3048,7 +3061,7 @@ fn start(start: Start) -> (World, Model, u32) {
             json["previous"] = serde_json::json!(w.data.join("previous/0.2.0+test"));
             fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
             fs::remove_dir_all(w.data.join("previous/0.1.0+test")).unwrap();
-            (m.back, m.pending, m.tree, latest) = (vec![None], Some(Some(2)), None, 3);
+            (m.back, m.pending, latest) = (vec![None], Some(Some(2)), 3);
         }
         _ => {}
     }
