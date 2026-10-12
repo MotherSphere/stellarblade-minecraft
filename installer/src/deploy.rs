@@ -295,10 +295,10 @@ pub fn remove(mods_dir: &Path, closed: Guard) -> Result<PathBuf> {
 }
 
 /// Removes the Lua mod also when files its manifest lists changed or went missing: an update replacing it, after
-/// keeping it in `previous/`. Unlisted files, changed folders and symbolic links still refuse it.
+/// keeping it in `previous/`. Only once [`crate::ops::replaceable`] said so: unlisted files, changed folders and
+/// symbolic links refuse it there.
 pub fn remove_drifted(mods_dir: &Path, closed: Guard) -> Result<PathBuf> {
     closed()?;
-    drifted(mods_dir)?;
     let destination = mods_dir.join(MOD_NAME);
     fs::remove_dir_all(&destination)?;
     Ok(destination)

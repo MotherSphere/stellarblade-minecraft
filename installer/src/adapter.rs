@@ -244,11 +244,11 @@ pub fn remove_at(win64: &Path, closed: Guard) -> Result<PathBuf> {
 }
 
 /// Removes the adapter also when files its manifest lists changed or went missing: an update replacing it, after
-/// keeping it in `previous/`. A listed path that is not a regular file still refuses it.
+/// keeping it in `previous/`. Only once [`crate::ops::replaceable`] said so: a listed path that is not a regular file
+/// refuses it there.
 pub fn remove_drifted(exe: &Path, closed: Guard) -> Result<PathBuf> {
     let destination = game_directory(exe)?;
     closed()?;
-    drifted(&destination)?;
     for name in [DLL, CONFIG, MANIFEST] {
         match fs::remove_file(destination.join(name)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
