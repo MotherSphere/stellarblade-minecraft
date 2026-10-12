@@ -624,7 +624,10 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         let resumed = resumed(env, &state);
         let before = state.previous.clone();
         state.status = Status::InProgress;
-        state.target = Some(target.clone());
+        // A place being left keeps its record until its pieces are gone: a run that stops before finds it again.
+        if moved.paths().is_empty() {
+            state.target = Some(target.clone());
+        }
         ledger::save(&path, &state)?;
         let saves = target.game.as_ref().and_then(|g| g.saves.as_deref());
         if let (Some(saves), false) = (
@@ -636,7 +639,13 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             ledger::save(&path, &state)?;
         }
         let mut owned = owned_paths(target, true)?;
-        owned.extend(moved.paths());
+        // A piece at both places (mods copied over by hand) is kept once: the one at `target`, which Roll back
+        // reinstalls there. The old copy is still removed.
+        for path in moved.paths() {
+            if !owned.iter().any(|o| o.file_name() == path.file_name()) {
+                owned.push(path);
+            }
+        }
         let mut previous = resumed;
         if previous.is_none() && !owned.is_empty() {
             (env.step)(Step::KeepPrevious);
@@ -650,6 +659,10 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         (env.step)(Step::Remove);
         let done = moved
             .remove(env.closed)
+            .and_then(|()| {
+                state.target = Some(target.clone());
+                ledger::save(&path, &state)
+            })
             .and_then(|()| remove_owned(env, target, false, true))
             .and_then(|_| put(env, target, payload, disabled))
             .and_then(|()| check(env, target, payload, &guarded));

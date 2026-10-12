@@ -1317,3 +1317,75 @@ fn an_update_over_a_changed_piece_keeps_the_older_rollback_set() {
     ops::rollback(&w.env(), &w.target).unwrap();
     assert!(all_current(&w, &v1));
 }
+
+/// A user moving to the newer UE4SS copied their mods over: both Mods folders hold our Lua mod. The update keeps one
+/// of them, installs at the new place and removes the old copy, and Roll back still works.
+#[test]
+fn a_lua_mod_in_both_mods_folders_is_kept_once_and_removed_from_the_old_one() {
+    let w = world();
+    let win64 = w.win64();
+    write(&win64.join("UE4SS.dll"), "UE4SS 2.x");
+    write(&win64.join("Mods/mods.txt"), "OtherMod : 1\n");
+    let old = Target {
+        game: Some(Game {
+            ue4ss: win64.clone(),
+            mods: win64.join("Mods"),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &old, &v1).unwrap();
+    safety::copy_tree(
+        &win64.join("Mods").join(deploy::MOD_NAME),
+        &w.game().mods.join(deploy::MOD_NAME),
+    )
+    .unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert_eq!(
+        deploy::ownership(&win64.join("Mods")).unwrap(),
+        Ownership::Absent
+    );
+    assert!(all_current(&w, &v2));
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
+
+/// An update to a moved Mods folder that stops before it cleared the old one: the record still names the old place,
+/// so Install again removes the Lua mod there.
+#[test]
+fn an_update_stopped_before_clearing_the_old_mods_folder_finds_it_again() {
+    let w = world();
+    let win64 = w.win64();
+    write(&win64.join("UE4SS.dll"), "UE4SS 2.x");
+    write(&win64.join("Mods/mods.txt"), "OtherMod : 1\n");
+    let old = Target {
+        game: Some(Game {
+            ue4ss: win64.clone(),
+            mods: win64.join("Mods"),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    ops::install(&w.env(), &old, &payload(1)).unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::KeepPrevious {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &payload(2));
+        }))
+        .is_err()
+    );
+    ops::install(&w.env(), &w.target, &payload(2)).unwrap();
+    assert_eq!(
+        deploy::ownership(&win64.join("Mods")).unwrap(),
+        Ownership::Absent
+    );
+}
