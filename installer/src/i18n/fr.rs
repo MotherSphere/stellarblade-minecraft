@@ -583,7 +583,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_interrupted",
-        "Une opération sur {path} a été interrompue : installez à nouveau pour la terminer, ou revenez en arrière ; la réparation ne peut pas la terminer",
+        "Une opération a été interrompue : installez à nouveau pour la terminer ; la réparation ne peut pas la terminer",
     ),
     (
         "err_run_update",

@@ -916,7 +916,7 @@ pub fn repair_plan(
     if let Some(state) = ledger::load(&state_path(env))
         && state.status == Status::InProgress
     {
-        bail!(Refusal::new(Kind::Interrupted, old_release(&state)));
+        bail!(Refusal::new(Kind::Interrupted, ""));
     }
     let mut plan: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut add = |dir: &Path,

@@ -1751,3 +1751,30 @@ fn a_changed_disabled_jar_is_listed_at_its_real_path() {
     assert_eq!(fs::read(&disabled).unwrap(), v1.jar.1);
     assert!(!mods_dir.join(&v1.jar.0).exists());
 }
+
+/// Repair after an interrupted first install names no internal folder.
+#[test]
+fn repair_after_an_interrupted_first_install_names_no_internal_folder() {
+    let w = world();
+    let calls = Cell::new(0);
+    let killed = || {
+        calls.set(calls.get() + 1);
+        if calls.get() == 3 {
+            panic!("killed");
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &killed,
+        ..w.env()
+    };
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ops::install(&env, &w.target, &payload(1))
+    }));
+    assert!(run.is_err());
+    assert_eq!(state(&w).status, Status::InProgress);
+    let error = ops::repair_plan(&w.env(), &w.target, &payload(1)).unwrap_err();
+    sbmc_installer::i18n::set_lang(sbmc_installer::i18n::Lang::En);
+    let text = sbmc_installer::i18n::error(&error);
+    assert!(!text.contains("untracked"), "{text}");
+}

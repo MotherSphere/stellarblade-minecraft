@@ -544,7 +544,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("err_still_modified", "{path} is still not as installed"),
     (
         "err_interrupted",
-        "A run of {path} was interrupted: Install again to finish it, or Roll back; Repair cannot finish it",
+        "A run was interrupted: Install again to finish it; Repair cannot finish it",
     ),
     (
         "err_run_update",
