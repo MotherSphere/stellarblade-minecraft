@@ -123,7 +123,7 @@ impl Payload {
     }
 
     /// A previous set kept by `ledger::keep_previous`, checked against the manifests saved with it.
-    pub fn from_previous(dir: &Path, pin: &str) -> Result<Payload> {
+    pub fn from_previous(dir: &Path) -> Result<Payload> {
         let release = dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -145,7 +145,7 @@ impl Payload {
             Ownership::Foreign(r) | Ownership::Modified(r) => changed(r)?,
         }
         let mut dll = Vec::new();
-        match adapter::ownership(dir, pin)? {
+        match adapter::ownership(dir)? {
             Ownership::Owned => dll = fs::read(dir.join(adapter::DLL))?,
             Ownership::Absent => {}
             Ownership::Foreign(r) | Ownership::Modified(r) => changed(r)?,

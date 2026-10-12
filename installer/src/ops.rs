@@ -164,7 +164,7 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
             ownership,
             current,
         });
-        let ownership = adapter::ownership(&game.win64(), env.pin)?;
+        let ownership = adapter::ownership(&game.win64())?;
         let current = if payload.dll.is_empty() {
             absent(&ownership)
         } else {
@@ -175,11 +175,10 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
                         (adapter::DLL, payload.dll.as_slice()),
                     ])
                 });
+                // Installed for another executable (before a Steam update): the update records the pinned one.
                 expected.is_ok_and(|e| {
-                    Some(e)
-                        == adapter::manifest(&game.win64(), env.pin)
-                            .ok()
-                            .map(|m| m.files)
+                    adapter::manifest(&game.win64())
+                        .is_ok_and(|m| m.files == e && m.executable == env.pin)
                 })
             }
         };
@@ -268,7 +267,7 @@ impl Guarded {
 }
 
 /// Paths of every owned piece: what an update keeps in `previous/` before replacing it, and what an uninstall removes.
-pub fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
+pub fn owned_paths(target: &Target) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let mods_dir = &target.minecraft_mods;
     // A dedicated instance about to be created, or a deleted one, has no mods folder: nothing is owned there.
@@ -280,7 +279,7 @@ pub fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
         if deploy::ownership(&game.mods)? == Ownership::Owned {
             paths.push(game.mods.join(deploy::MOD_NAME));
         }
-        if adapter::ownership(&game.win64(), env.pin)? == Ownership::Owned {
+        if adapter::ownership(&game.win64())? == Ownership::Owned {
             paths.extend(
                 [adapter::MANIFEST, adapter::CONFIG, adapter::DLL].map(|n| game.win64().join(n)),
             );
@@ -307,11 +306,9 @@ fn remove_owned(env: &Env, target: &Target, keep_fabric: bool) -> Result<Refusal
             }
         };
     if let Some(game) = &target.game {
-        take(
-            ADAPTER,
-            adapter::ownership(&game.win64(), env.pin)?,
-            &|| adapter::remove(&game.exe, env.pin, env.closed).map(drop),
-        )?;
+        take(ADAPTER, adapter::ownership(&game.win64())?, &|| {
+            adapter::remove(&game.exe, env.closed).map(drop)
+        })?;
         take(LUA, deploy::ownership(&game.mods)?, &|| {
             deploy::remove(&game.mods, env.closed).map(drop)
         })?;
@@ -425,7 +422,7 @@ fn left_behind(env: &Env, target: &Target) -> Result<()> {
         if owned(deploy::ownership(&game.mods)) {
             left.push(game.mods.join(deploy::MOD_NAME).display().to_string());
         }
-        if owned(adapter::ownership(&game.win64(), env.pin)) {
+        if owned(adapter::ownership(&game.win64())) {
             left.push(game.win64().join(adapter::DLL).display().to_string());
         }
     }
@@ -457,9 +454,7 @@ fn resumed(env: &Env, state: &State) -> Option<PathBuf> {
 /// first removal, a locked file) is already back and needs no write, and a protected file or the saves changing
 /// meanwhile is the install's own failure, not the restore's.
 fn restore(env: &Env, target: &Target, previous: Option<&Path>, disabled: bool) -> Result<()> {
-    let kept = previous
-        .map(|previous| Payload::from_previous(previous, env.pin))
-        .transpose()?;
+    let kept = previous.map(Payload::from_previous).transpose()?;
     let back = || -> Result<bool> {
         let pieces = verify(env, target, kept.as_ref().unwrap_or(&Payload::default()))?;
         Ok(match &kept {
@@ -525,7 +520,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             state.save_backup = Some(safety::backup_saves(saves, &env.data.join("save-backups"))?);
             ledger::save(&path, &state)?;
         }
-        let owned = owned_paths(env, target)?;
+        let owned = owned_paths(target)?;
         let mut previous = resumed;
         if previous.is_none() && !owned.is_empty() {
             (env.step)(Step::KeepPrevious);
@@ -638,7 +633,7 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
         }
     }
     plan.writes.push(state_path(env));
-    plan.replaced = owned_paths(env, target)?;
+    plan.replaced = owned_paths(target)?;
     let state = ledger::load(&state_path(env)).unwrap_or_default();
     if !plan.replaced.is_empty() && resumed(env, &state).is_none() {
         plan.backups
@@ -659,7 +654,7 @@ pub fn rollback(env: &Env, target: &Target) -> Result<State> {
         .previous
         .filter(|p| p.is_dir())
         .context(Refusal::new(Kind::NoPrevious, ""))?;
-    let payload = Payload::from_previous(&previous, env.pin)?;
+    let payload = Payload::from_previous(&previous)?;
     install(env, target, &payload)
 }
 
@@ -748,8 +743,8 @@ pub fn repair_plan(
         )?;
         add(
             &game.win64(),
-            adapter::ownership(&game.win64(), env.pin)?,
-            &|| adapter::drifted(&game.win64(), env.pin),
+            adapter::ownership(&game.win64())?,
+            &|| adapter::drifted(&game.win64()),
             &|name| match name {
                 adapter::DLL => Some(payload.dll.clone()),
                 adapter::CONFIG => adapter::directory_file(&target.bridge).ok(),

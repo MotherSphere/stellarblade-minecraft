@@ -66,6 +66,12 @@ class InputProxyTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.proxy.remove(self.exe)
         self.assertEqual(foreign.read_bytes(), b'changed')
 
+    def test_an_adapter_installed_for_an_older_build_is_still_removed(self):
+        self.install()
+        with mock.patch.object(self.proxy, 'SUPPORTED_HASH', '1' * 64):
+            self.proxy.remove(self.exe)
+        self.assertEqual(len(list(self.game.iterdir())), 3)
+
     def test_unsupported_game_or_dll_and_live_game_fail_before_writes(self):
         with mock.patch.object(self.proxy, 'running_game', return_value=True):
             with self.assertRaises(ValueError): self.install()

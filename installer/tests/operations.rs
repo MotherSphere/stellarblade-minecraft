@@ -236,7 +236,7 @@ fn install_update_rollback_and_uninstall() {
     assert!(all_current(&w, &v2));
     let previous = updated.previous.clone().unwrap();
     assert!(previous.ends_with("previous/0.1.0+test"));
-    let kept = Payload::from_previous(&previous, &w.pin).unwrap();
+    let kept = Payload::from_previous(&previous).unwrap();
     assert_eq!(
         (&kept.lua, &kept.dll, &kept.jar),
         (&v1.lua, &v1.dll, &v1.jar)
@@ -461,10 +461,7 @@ fn a_failed_update_puts_the_previous_set_back() {
     );
     assert_eq!(state(&w).status, Status::InProgress);
     let previous = state(&w).previous.unwrap();
-    assert_eq!(
-        Payload::from_previous(&previous, &w.pin).unwrap().jar,
-        v1.jar
-    );
+    assert_eq!(Payload::from_previous(&previous).unwrap().jar, v1.jar);
     // Once the game is closed, rolling back finishes the job.
     ops::rollback(&w.env(), &w.target).unwrap();
     assert!(all_current(&w, &v1));
@@ -885,7 +882,7 @@ fn finishing_an_interrupted_update_keeps_the_rollback_set() {
     ops::install(&env, &w.target, &v2).unwrap_err();
     assert_eq!(state(&w).status, Status::InProgress);
     assert_eq!(
-        Payload::from_previous(&state(&w).previous.unwrap(), &w.pin)
+        Payload::from_previous(&state(&w).previous.unwrap())
             .unwrap()
             .jar,
         v1.jar
@@ -893,7 +890,7 @@ fn finishing_an_interrupted_update_keeps_the_rollback_set() {
     // "Install again to finish it".
     ops::install(&w.env(), &w.target, &v2).unwrap();
     assert!(all_current(&w, &v2));
-    let kept = Payload::from_previous(&state(&w).previous.unwrap(), &w.pin).unwrap();
+    let kept = Payload::from_previous(&state(&w).previous.unwrap()).unwrap();
     assert_eq!(
         (&kept.jar, &kept.lua, &kept.dll),
         (&v1.jar, &v1.lua, &v1.dll),
@@ -1136,4 +1133,25 @@ fn a_renamed_bridge_jar_is_found_by_its_mod_id() {
         "installed a second stellar_bridge next to sbmc-bridge.jar"
     );
     assert_eq!(w.files(), files);
+}
+
+/// A Steam update changes the executable and the next release pins the new one: the adapter installed for the old pin
+/// is still ours (its files match its manifest) and the update replaces it.
+#[test]
+fn an_adapter_installed_for_an_older_pin_is_updated() {
+    let mut w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    fs::write(&w.game().exe, "test executable, next build").unwrap();
+    w.pin = safety::sha256_hex(b"test executable, next build");
+
+    assert_eq!(
+        adapter::ownership(&w.win64()).unwrap(),
+        Ownership::Owned,
+        "the adapter's files match its manifest"
+    );
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+    let manifest = adapter::manifest(&w.win64()).unwrap();
+    assert_eq!(manifest.executable, w.pin);
 }

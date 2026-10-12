@@ -1042,3 +1042,41 @@ fn a_dry_run_pack_walks_to_its_result_in_french_and_writes_nothing() {
     assert_eq!(safety::tree(&fake.home).unwrap(), before);
     assert!(!app.ctx.data.exists());
 }
+
+/// Installs the EVE side with `payload(1)` through the wizard and returns on the status page.
+fn install_eve(fake: &Fake) -> App {
+    let mut app = start(fake, false);
+    for message in [
+        Message::Start,
+        Message::Continue,
+        Message::Continue,
+        Message::Choose(Choice::NewInstance(0)),
+        Message::ToConsent,
+        Message::Consent(true),
+        Message::Begin(Action::Install),
+        Message::Rescan,
+    ] {
+        drive(&mut app, message);
+    }
+    assert!(errors(&app).is_empty(), "{:?}", errors(&app));
+    assert_eq!(app.primary_action(), ("action_up_to_date", false));
+    app
+}
+
+/// A Steam update and the next release's new pin: the adapter installed for the old executable must not block the
+/// update. Today it reads as an unknown manifest.
+#[test]
+fn a_new_executable_pin_does_not_block_the_update() {
+    let _language = language();
+    let fake = fake();
+    let mut app = install_eve(&fake);
+    write(
+        &fake.win64.join(adapter::EXE),
+        "test executable, next build",
+    );
+    app.ctx.pin = safety::sha256_hex(b"test executable, next build");
+    app.ctx.payload = Some(payload(2));
+    drive(&mut app, Message::Rescan);
+    assert_eq!(app.game_blocker(), None);
+    assert_eq!(app.primary_action(), ("action_update", true));
+}

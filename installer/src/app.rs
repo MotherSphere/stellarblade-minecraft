@@ -273,7 +273,7 @@ pub fn detect(ctx: &Ctx) -> Found {
                 let (mut pieces, mut error) = (Vec::new(), None);
                 for (name, ownership) in [
                     (ops::LUA, deploy::ownership(mods)),
-                    (ops::ADAPTER, adapter::ownership(&game.win64, &ctx.pin)),
+                    (ops::ADAPTER, adapter::ownership(&game.win64)),
                 ] {
                     match ownership {
                         Ok(Ownership::Absent) => {}
@@ -1423,7 +1423,7 @@ impl App {
         if let Some(game) = &target.game {
             add(ops::LUA, deploy::ownership(&game.mods));
             let win64 = game.exe.parent().unwrap_or(Path::new(""));
-            add(ops::ADAPTER, adapter::ownership(win64, &self.ctx.pin));
+            add(ops::ADAPTER, adapter::ownership(win64));
         }
         found
     }
@@ -1475,14 +1475,12 @@ impl App {
                     .ok_or(t("no_previous"))?;
                 let release = previous.file_name().unwrap_or_default().to_string_lossy();
                 let mut lines = vec![t_fmt("rollback_to", &[("release", &release)])];
-                lines.extend(show(
-                    ops::owned_paths(&env, &target).map_err(|e| localized(&e))?,
-                ));
+                lines.extend(show(ops::owned_paths(&target).map_err(|e| localized(&e))?));
                 Ok(lines)
             }
             Action::Uninstall => {
                 // Fabric API stays unless the box is ticked.
-                let removed = ops::owned_paths(&env, &target)
+                let removed = ops::owned_paths(&target)
                     .map_err(|e| localized(&e))?
                     .into_iter()
                     .filter(|path| {
