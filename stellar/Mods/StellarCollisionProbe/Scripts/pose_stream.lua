@@ -28,6 +28,7 @@ function Stream.new(engine,directory,clock,log,link,timer)
     timer=timer or os.clock
     local api={}
     local run,generation,signature,published,binding,streamed
+    local published_core -- The published table's signature without its effect assets.
     local effects,effect_lines='',0 -- Last logged active effects; at most 400 log lines per Lua lifetime.
     local layout,assets,asset_seen=nil,{},{} -- Effect reading layout; effect assets in first-seen order (at most 32).
     local combat_logged=false -- EVE's combat-named functions and properties, logged once per Lua lifetime (at most 300 lines).
@@ -305,9 +306,14 @@ function Stream.new(engine,directory,clock,log,link,timer)
         end
         parts[#parts+1]=layout and string.format('effects:%d:%d:%d:%d:%d:%d:%d',layout.children,layout.asset,layout.template,
             layout.active_byte,layout.active_mask,layout.niagara,layout.particle) or 'no effects'
+        local core=table.concat(parts,'|')
         for _,a in ipairs(assets) do parts[#parts+1]=a.name..':'..a.object end
         local next_signature=table.concat(parts,'|')
         if next_signature==signature then return true end
+        -- While the known effect paths are still looked up one a check from a new run, each one found would publish a
+        -- table and restart Minecraft's build: before EVE was first drawn, that held her back for the whole lookup (about
+        -- 5 s for 21 paths). Effects found meanwhile join the table once the lookups end.
+        if (seeding or 0)>0 and signature and core==published_core then return true end
         started=timer()
         -- The drone never stops EVE's stream: a drone component the stream cannot carry, or past one slot of floats, is
         -- left out (the drone's come last), with its parameters.
@@ -356,7 +362,7 @@ function Stream.new(engine,directory,clock,log,link,timer)
                     or 'Cloth: '..c.name..' state unavailable: '..tostring(s))
             end
         end
-        signature=next_signature
+        signature,published_core=next_signature,core
         published=generation
         return true,string.format('Pose stream generation %d: %d components%s%s%s%s.',generation,#list,
             place and ', anchored to the entered link' or ', no entered link',
