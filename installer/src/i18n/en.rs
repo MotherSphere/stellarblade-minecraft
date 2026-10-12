@@ -256,6 +256,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "consent_changed",
         "Changed or missing since they were installed: replaced, the changed ones kept aside (Roll back still returns to the release kept before, if any)",
     ),
+    (
+        "confirm_changed",
+        "Changed or missing since they were installed: replaced, the changed ones kept aside",
+    ),
     ("consent_backups", "Backups made first"),
     (
         "consent_eula",

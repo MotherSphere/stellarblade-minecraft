@@ -1490,6 +1490,12 @@ impl App {
                 lines.extend(show(
                     ops::owned_paths(&target, true).map_err(|e| localized(&e))?,
                 ));
+                lines.extend(show(ops::moved_paths(&env, &target)));
+                let changed = ops::changed_files(&target);
+                if !changed.is_empty() {
+                    lines.push(t("confirm_changed").into());
+                    lines.extend(show(changed));
+                }
                 Ok(lines)
             }
             Action::Uninstall => {
@@ -1504,6 +1510,7 @@ impl App {
                     })
                     .collect();
                 let mut lines = show(removed);
+                lines.extend(show(ops::moved_paths(&env, &target)));
                 for piece in &found.pieces {
                     if let Ownership::Foreign(r) | Ownership::Modified(r) = &piece.ownership {
                         lines.push(t_fmt(

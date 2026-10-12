@@ -1291,6 +1291,8 @@ fn an_adapter_left_beside_a_moved_executable_is_removed() {
     };
     ops::install(&w.env(), &old, &payload(1)).unwrap();
     assert_eq!(adapter::ownership(&old_win64).unwrap(), Ownership::Owned);
+    // What the confirm modals list beside the pieces at the target.
+    assert!(ops::moved_paths(&w.env(), &w.target).contains(&old_win64.join(adapter::DLL)));
     ops::install(&w.env(), &w.target, &payload(2)).unwrap();
     assert_eq!(adapter::ownership(&old_win64).unwrap(), Ownership::Absent);
     assert!(all_current(&w, &payload(2)));

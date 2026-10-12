@@ -384,13 +384,20 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
         b"jar v2"
     );
 
-    // Roll back to the kept release.
+    // Roll back to the kept release. A file changed since the update is listed before it is replaced.
+    fs::remove_file(&bridge_lua).unwrap();
     drive(&mut app, Message::Rescan);
     drive(&mut app, Message::Begin(Action::Rollback));
-    assert!(matches!(
-        app.modal,
-        Some(Modal::Confirm(Action::Rollback, _))
-    ));
+    match &app.modal {
+        Some(Modal::Confirm(Action::Rollback, lines)) => assert!(
+            lines.ends_with(&[
+                i18n::t("confirm_changed").to_string(),
+                bridge_lua.display().to_string()
+            ]),
+            "{lines:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
     drive(&mut app, Message::Proceed);
     assert!(app.outcome.as_ref().unwrap().ok, "{:?}", app.outcome);
     assert_eq!(

@@ -105,7 +105,7 @@ pub fn replaceable(target: &Target, name: &str) -> bool {
 }
 
 /// The files of ours that changed or went missing since they were installed, in the pieces an update replaces.
-fn changed_files(target: &Target) -> Vec<PathBuf> {
+pub fn changed_files(target: &Target) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut add = |dir: &Path, drift: Result<Vec<(String, String)>>| {
         files.extend(drift.into_iter().flatten().map(|(name, _)| dir.join(name)));
@@ -515,6 +515,12 @@ impl Moved {
         }
         Ok(())
     }
+}
+
+/// The recorded install's owned game-side pieces left at a moved place, which an install, a roll back or an uninstall
+/// at `target` removes there.
+pub fn moved_paths(env: &Env, target: &Target) -> Vec<PathBuf> {
+    Moved::find(env, target).paths()
 }
 
 /// Refuses a target that would leave the recorded install's owned pieces behind, where no later run would look.

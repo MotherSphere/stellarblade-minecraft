@@ -268,6 +268,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "consent_changed",
         "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés à part (Revenir en arrière ramène toujours la version conservée avant, s'il y en a une)",
     ),
+    (
+        "confirm_changed",
+        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés à part",
+    ),
     ("consent_backups", "Copies faites d'abord"),
     (
         "consent_eula",
