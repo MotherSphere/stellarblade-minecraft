@@ -118,6 +118,18 @@ public final class PlaySequenceTest {
         assert play.running() && fake.said.isEmpty() : "Each step has its own WAIT";
         play.tick(null, S + PlaySequence.WAIT + 1);
         assert !play.running() && !fake.did.contains("play") && fake.said.size() == 1 : fake.said;
+        // A sent import whose answer never comes (the link ended or was replaced, so BridgeLink's ANSWER never fires).
+        fake = new Fake();
+        fake.revision = 1;
+        play = new PlaySequence(fake);
+        play.begin(0);
+        play.tick(null, S);
+        assert fake.did.equals(List.of("import")) : fake.did;
+        play.tick(null, S + PlaySequence.WAIT);
+        assert play.running() && fake.said.isEmpty() : "Stellar Blade's answer gets the whole WAIT";
+        play.tick(null, S + PlaySequence.WAIT + 1);
+        assert !play.running() && fake.did.equals(List.of("import"))
+                && fake.said.equals(List.of("Play as EVE stopped: no answer from Stellar Blade to import within 10 s.")) : fake.said;
 
         // No server mod: one line, no link request.
         fake = new Fake();
