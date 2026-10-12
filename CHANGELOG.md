@@ -1,5 +1,78 @@
 # Changelog
 
+## [0.4.0](https://github.com/MotherSphere/stellarblade-minecraft/compare/v0.3.1...v0.4.0) (2026-10-12)
+
+
+### Features
+
+* **minecraft:** play as EVE with one key or /stellar play ([fb013d6](https://github.com/MotherSphere/stellarblade-minecraft/commit/fb013d629251f44d3483ec3ac21de94e9f0833a8))
+* play as EVE with one key ([8e7cc8c](https://github.com/MotherSphere/stellarblade-minecraft/commit/8e7cc8c0a972e3447cae2e07591213c1efced979))
+
+
+### Fixes
+
+* **installer:** clear previous/ after every recorded install ([30f00a5](https://github.com/MotherSphere/stellarblade-minecraft/commit/30f00a5ac5a950c6389f9cb23c4fe563cd57fda3))
+* **installer:** count a failed update that changed nothing as restored ([e54b60d](https://github.com/MotherSphere/stellarblade-minecraft/commit/e54b60dc6336cafda7ef9008f4e518d99a6b2cf0))
+* **installer:** fall back only to a Roll back set that can be used ([e77b266](https://github.com/MotherSphere/stellarblade-minecraft/commit/e77b2660a1cd6da98ecfb7098ac6cc9c0a66de9a))
+* **installer:** find a renamed bridge JAR by its Fabric mod id ([bf2eb4d](https://github.com/MotherSphere/stellarblade-minecraft/commit/bf2eb4d5c3030b6a9dfba407ddb7b5a656b56d10))
+* **installer:** finish clearing a moved Mods folder after a stopped update ([14c284e](https://github.com/MotherSphere/stellarblade-minecraft/commit/14c284eeaee04150bfe5332325e71d038acb6c32))
+* **installer:** judge a failed update's restore by what is on disk ([c994349](https://github.com/MotherSphere/stellarblade-minecraft/commit/c994349d0b2f2b03a85608c0233d72c2d24acb2d))
+* **installer:** keep a changed disabled bridge JAR disabled through an update ([4f38d85](https://github.com/MotherSphere/stellarblade-minecraft/commit/4f38d859c580daa57b300c738c09a460da27e184))
+* **installer:** keep a disabled bridge JAR disabled through an update ([0899267](https://github.com/MotherSphere/stellarblade-minecraft/commit/08992678c05ae45a1338a854e8600c25cb508c6f))
+* **installer:** keep a file changed after an interrupted run before finishing it ([fb8fd22](https://github.com/MotherSphere/stellarblade-minecraft/commit/fb8fd22cb19211bcb13cfa947eed80e407c48663))
+* **installer:** keep a set with hand-changed files in changed/, never over a Roll back set ([d35f35b](https://github.com/MotherSphere/stellarblade-minecraft/commit/d35f35b90ce817ec994ea1ed0123d18de43bf9d3))
+* **installer:** keep an adapter installed for an older executable owned ([05817a3](https://github.com/MotherSphere/stellarblade-minecraft/commit/05817a3032f8edeeb491d4457b8464a7f24c586f))
+* **installer:** keep the complete rollback set over one kept without a piece ([11bb74b](https://github.com/MotherSphere/stellarblade-minecraft/commit/11bb74b5763525ca651edb2b89187d2680766bf2))
+* **installer:** keep the hand-changed files an update replaced in changed/ ([a5d2f2d](https://github.com/MotherSphere/stellarblade-minecraft/commit/a5d2f2dda3e61222dfe4f11b38347e5ed53debe7))
+* **installer:** keep the older rollback set when an update replaces a changed piece ([ba3b1e2](https://github.com/MotherSphere/stellarblade-minecraft/commit/ba3b1e2e5190a1621d61134648ab568285303567))
+* **installer:** keep the older rollback set when the same release is installed again ([cbf9462](https://github.com/MotherSphere/stellarblade-minecraft/commit/cbf946228f536c91642674821a6aa608ba33dd7d))
+* **installer:** keep the rollback set through interrupted and failed updates ([ebb1313](https://github.com/MotherSphere/stellarblade-minecraft/commit/ebb1313502cf0799dcd5ccbfc924ebd6442516fc))
+* **installer:** let an update replace pieces whose listed files changed ([eb1cf05](https://github.com/MotherSphere/stellarblade-minecraft/commit/eb1cf0569d7eb9ef76fcef2300c63691891b68b4))
+* **installer:** list changed files and moved pieces in the Roll back and Uninstall modals ([3d9170f](https://github.com/MotherSphere/stellarblade-minecraft/commit/3d9170fccb324feb69d84e2d98dcf3e163d45e31))
+* **installer:** name a changed disabled bridge JAR by the path it is at ([a2ff7d9](https://github.com/MotherSphere/stellarblade-minecraft/commit/a2ff7d9420049c8a0d3f682eb5999398bf4fe392))
+* **installer:** name only a set Roll back can install, of another release ([78720f4](https://github.com/MotherSphere/stellarblade-minecraft/commit/78720f4b9810dd4fe57ee4f4a06bb91ae9cfdf44))
+* **installer:** name Update in the missing-piece refusal ([d5b4960](https://github.com/MotherSphere/stellarblade-minecraft/commit/d5b4960fc8b461101f8bcf929984ef63985190f9))
+* **installer:** read each mod JAR once when looking for a renamed bridge ([795565e](https://github.com/MotherSphere/stellarblade-minecraft/commit/795565eb61b6f03f8388472281b6a76cc025fd6f))
+* **installer:** record a stopped or partial Uninstall, and refuse Repair over a missing piece ([6b7d102](https://github.com/MotherSphere/stellarblade-minecraft/commit/6b7d10276db576d40331f60e21ba0e83ff2dc712))
+* **installer:** record the rollback set before previous/ changes, also when finishing a run ([74bae10](https://github.com/MotherSphere/stellarblade-minecraft/commit/74bae102becfe7dc57b3808b9a0bb818e5eb3ba2))
+* **installer:** record what an interrupted run kept, so finishing it keeps the rollback set ([1a7fd77](https://github.com/MotherSphere/stellarblade-minecraft/commit/1a7fd77e281581c1b50f2d20e6d12cf1049691d4))
+* **installer:** refuse Repair after an interrupted run ([693fd8b](https://github.com/MotherSphere/stellarblade-minecraft/commit/693fd8bcbd882f9ee7657d8decf36ce88364c4a8))
+* **installer:** remove an adapter left at a moved place by its folder ([c27728e](https://github.com/MotherSphere/stellarblade-minecraft/commit/c27728e99a3628a0458360f154feb2951c7c897b))
+* **installer:** remove recorded game-side pieces left at a moved place ([7a38f1b](https://github.com/MotherSphere/stellarblade-minecraft/commit/7a38f1b7efd7e2796aded4971c32d2ee5b462b12))
+* **installer:** restore a failed move where the record then points ([ecb2dd0](https://github.com/MotherSphere/stellarblade-minecraft/commit/ecb2dd0e99d2b3f648324e5ea9b5e6e883d33369))
+* **installer:** restore a failed update by copying the kept set back ([004e18a](https://github.com/MotherSphere/stellarblade-minecraft/commit/004e18a13a90f6070285f760458637294ecc639a))
+* **installer:** safe update, repair, roll back and uninstall ([7b80017](https://github.com/MotherSphere/stellarblade-minecraft/commit/7b80017fa16c61b84cd616a141a50edbb1708d19))
+* **installer:** say a run was interrupted without naming an internal folder ([9815945](https://github.com/MotherSphere/stellarblade-minecraft/commit/981594560af6d2ad4766e0f876bcdb157a34ed59))
+* **installer:** say Uninstall again finishes an interrupted Uninstall ([73d7e3e](https://github.com/MotherSphere/stellarblade-minecraft/commit/73d7e3e868c091d0c2f8fbce16a08d3d34a4084d))
+* **installer:** set aside a hand-changed set instead of deleting it from previous/ ([a002c51](https://github.com/MotherSphere/stellarblade-minecraft/commit/a002c5195eb9d1a2046b6f8507eecd2f7ec011b3))
+* **installer:** skip the restore only for a run stopped while removing ([9e5bb8c](https://github.com/MotherSphere/stellarblade-minecraft/commit/9e5bb8c036fd4b5932ea0f69ca0fa0469b80385b))
+* **installer:** tolerate temporaries left by a killed write ([2035936](https://github.com/MotherSphere/stellarblade-minecraft/commit/2035936fe902c01acd137318091059a287175dce))
+* **lua:** draw EVE before the known effects are all looked up ([f014218](https://github.com/MotherSphere/stellarblade-minecraft/commit/f014218310268f9b8d3fa14b165a8909370d1dbe))
+* **lua:** keep the pose stream through an unreadable request ([bdaf3e7](https://github.com/MotherSphere/stellarblade-minecraft/commit/bdaf3e7bd04e54fe60552ff5ae96530ccbd21219))
+* **lua:** look up one known effect path per pose stream turn ([d53923c](https://github.com/MotherSphere/stellarblade-minecraft/commit/d53923cc2c057ffb12013f21c34af644ff6a759d))
+* **lua:** stop the pose stream check from stalling Stellar Blade ([604a1b5](https://github.com/MotherSphere/stellarblade-minecraft/commit/604a1b55c7bd3f2fdecdd84f936b038383662cbc))
+* **minecraft:** keep the bridge link through Windows replace refusals ([2c8a031](https://github.com/MotherSphere/stellarblade-minecraft/commit/2c8a0315eceb9f74b088c1b168cdad641d50a56b))
+* **minecraft:** resume EVE's controls after an Alt+Tab ([ad82b5b](https://github.com/MotherSphere/stellarblade-minecraft/commit/ad82b5b416cf314b1c49a1c5eea19c0c2bfaa8bd))
+* **minecraft:** say when the gameplay poll never reached the adapter ([fe05df8](https://github.com/MotherSphere/stellarblade-minecraft/commit/fe05df8164efa410168252efc2ecbbba8a848645))
+* **minecraft:** stop Play as EVE when the server would refuse start ([2237cf5](https://github.com/MotherSphere/stellarblade-minecraft/commit/2237cf51c2db2a5dd1dc495eac642394f316ea9e))
+* **minecraft:** write a refused combat verdict again at the next ticks ([3d82394](https://github.com/MotherSphere/stellarblade-minecraft/commit/3d823947d4d7d453d15bffb31493fb158ac7b138))
+* **native:** route the game's XInput imports past overlay hooks ([0915e71](https://github.com/MotherSphere/stellarblade-minecraft/commit/0915e710462174d2e6fcff5ff4319a483deefc29))
+* run the bridge on real Windows 11 ([4656957](https://github.com/MotherSphere/stellarblade-minecraft/commit/4656957f84bee01c13ce2e943edaf8bdc23690d7))
+* **tools:** keep check.py's failure output printable on Windows ([d963b4a](https://github.com/MotherSphere/stellarblade-minecraft/commit/d963b4a6bf64c132de1f77b37e025e6ca81f01f6))
+* **tools:** let check.py read UTF-8 output and Windows path crates ([d7d1851](https://github.com/MotherSphere/stellarblade-minecraft/commit/d7d1851e461c9b13ac8bce050f3c6c982dc0e416))
+
+
+### Internals
+
+* **installer:** drop the drift re-check in remove_drifted ([7395d70](https://github.com/MotherSphere/stellarblade-minecraft/commit/7395d708be9b664f49e37f56d35b07ba4c4fa3f2))
+* **installer:** drop two checks that can never decide anything ([866274d](https://github.com/MotherSphere/stellarblade-minecraft/commit/866274dbe2556573a8e8b1ae7a53ba1b271eeb6d))
+
+
+### Documentation
+
+* **installer:** describe update, repair, roll back and uninstall as they now behave ([6b5e1fc](https://github.com/MotherSphere/stellarblade-minecraft/commit/6b5e1fc9f44394db316ef7abddab46f7afcfce1c))
+* start a session with the Play as EVE key ([a8719dc](https://github.com/MotherSphere/stellarblade-minecraft/commit/a8719dccc354db2432d2b8a8d947a5b1efac4ba9))
+
 ## [0.3.1](https://github.com/MotherSphere/stellarblade-minecraft/compare/v0.3.0...v0.3.1) (2026-10-11)
 
 

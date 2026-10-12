@@ -2,7 +2,7 @@ plugins {
     id 'fabric-loom' version '1.11.8'
 }
 
-version = '0.3.1' // x-release-please-version
+version = '0.4.0' // x-release-please-version
 group = 'org.stellarbridge'
 
 repositories { mavenCentral() }
