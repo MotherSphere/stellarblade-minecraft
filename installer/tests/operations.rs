@@ -569,12 +569,15 @@ fn python_installs_are_updated_and_kept() {
     );
     assert_eq!(without_manifest(&w), before);
 
+    // Their set has no bridge JAR, so Roll back, which would fail, is not offered.
     let state = ops::install(&w.env(), &w.target, &payload(2)).unwrap();
-    let previous = state.previous.unwrap();
-    assert!(previous.ends_with("previous/untracked"));
-    assert_eq!(deploy::ownership(&previous).unwrap(), Ownership::Owned);
+    assert_eq!(state.previous, None);
     let error = ops::rollback(&w.env(), &w.target).unwrap_err();
-    assert!(error.to_string().contains("no bridge JAR"), "{error:#}");
+    assert_eq!(
+        error.downcast_ref::<Refusal>().map(|r| r.kind),
+        Some(Kind::NoPrevious),
+        "{error:#}"
+    );
     assert!(
         ops::uninstall(&w.env(), &w.target, true)
             .unwrap()

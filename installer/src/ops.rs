@@ -628,6 +628,12 @@ fn installable(set: &Payload, target: &Target) -> bool {
     !set.jar.1.is_empty() && (target.game.is_none() || !(set.lua.is_empty() || set.dll.is_empty()))
 }
 
+/// Whether Roll back from the release `installed` can go to the kept `set`: [`install`] takes it on `target`, and it
+/// holds another release. Every set `state.json` names for Roll back passes this.
+fn goes_back(set: &Path, target: &Target, installed: &str) -> bool {
+    Payload::from_previous(set).is_ok_and(|p| installable(&p, target) && p.release != installed)
+}
+
 /// Installs `payload` on `target`, replacing an owned older install (an update). Foreign or modified pieces stop it
 /// before anything changes. Records "in progress" first, makes the first-install save backup, keeps the replaced set in
 /// `previous/`, then writes and verifies; on any failure it removes what it wrote and puts the kept set back.
@@ -656,12 +662,6 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     fs::create_dir_all(&env.data)?;
     let resumed = resumed(env, &state);
     let before = state.previous.clone();
-    // A complete set kept before, of another release: Roll back keeps going there rather than to a set it could not
-    // install.
-    let complete_before = before.clone().filter(|b| {
-        Payload::from_previous(b)
-            .is_ok_and(|p| installable(&p, target) && p.release != payload.release)
-    });
     // The set this run kept, or the interrupted run it finishes: it decides where Roll back goes.
     let finished = if pieces.iter().all(|p| p.current) {
         guarded.unchanged(target)?;
@@ -712,11 +712,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     (env.step)(Step::KeepPrevious);
                     let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
                     let set = ledger::keep_previous(&env.data, &old_release, &items)?;
-                    // A set with files changed by hand cannot be installed again, nor one without a piece: Roll back
-                    // keeps going to the one kept before.
-                    if Payload::from_previous(&set)
-                        .is_ok_and(|p| complete_before.is_none() || installable(&p, target))
-                    {
+                    // While this run is interrupted, Roll back undoes it, when it can: a set with files changed by hand
+                    // or without a piece cannot be installed again, so Roll back keeps going to the one kept before.
+                    if goes_back(&set, target, &payload.release) {
                         state.previous = Some(set.clone());
                     }
                     Kept::Set(set)
@@ -762,7 +760,8 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     };
                     if let Some(previous) = &previous {
                         state.previous =
-                            ledger::previous_without(&env.data, previous, before.as_deref())?;
+                            ledger::previous_without(&env.data, previous, before.as_deref())?
+                                .filter(|p| goes_back(p, target, &state.release));
                     }
                     state.kept = None;
                     ledger::save(&path, &state)?;
@@ -788,17 +787,19 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         previous
     };
     if let Some(kept) = &finished {
-        state.previous = match Payload::from_previous(kept) {
-            Ok(set) if complete_before.is_some() && !installable(&set, target) => complete_before,
-            Ok(set) if set.release != payload.release => Some(kept.clone()),
-            // The release installed again (Roll back of an interrupted update, a reinstall for a new game build): its
-            // set adds nothing, and Roll back keeps going to the set kept before.
-            Ok(_) => ledger::previous_without(&env.data, kept, before.as_deref())?,
-            // A replaced piece had files changed by hand: that set cannot be installed again, so Roll back keeps going
-            // to the set kept before, unless that is what is installed now. The commit below sets the changed set
-            // aside, where no later run deletes it.
-            Err(_) => complete_before,
-        };
+        state.previous = Some(kept.clone());
+    }
+    // Roll back goes to the set this run kept, unless it cannot: files changed by hand (the commit below sets that set
+    // aside, where no later run deletes it), a piece missing, or the release installed now (Roll back of an
+    // interrupted update, a reinstall for a new game build, an install after Uninstall). It then keeps going to the
+    // set kept before, under the same condition.
+    if let Some(set) = state
+        .previous
+        .clone()
+        .filter(|p| !goes_back(p, target, &payload.release))
+    {
+        state.previous = ledger::previous_without(&env.data, &set, before.as_deref())?
+            .filter(|p| goes_back(p, target, &payload.release));
     }
     (env.step)(Step::Record);
     state.status = Status::Installed;
