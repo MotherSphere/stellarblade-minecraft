@@ -1924,3 +1924,38 @@ fn a_changed_disabled_bridge_jar_stays_disabled_through_an_update() {
         "Fabric loads the bridge JAR the user disabled"
     );
 }
+
+/// An update over a deleted piece (the Lua mod gone with a UE4SS reinstall) keeps a set without it, which Roll back
+/// could not install: Roll back still goes to the complete set kept before.
+#[test]
+fn an_update_over_a_missing_piece_keeps_the_older_rollback_set() {
+    let w = world();
+    let (v1, v2, v3) = (payload(1), payload(2), payload(3));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    fs::remove_dir_all(w.game().mods.join(deploy::MOD_NAME)).unwrap();
+    ops::install(&w.env(), &w.target, &v3).unwrap();
+    assert!(all_current(&w, &v3));
+    let rolled = ops::rollback(&w.env(), &w.target);
+    assert!(rolled.is_ok(), "{:#}", rolled.unwrap_err());
+    assert!(all_current(&w, &v1));
+}
+
+/// An update over a deleted bridge JAR, listed on the review page, keeps its promise: Roll back still goes to the
+/// release kept before.
+#[test]
+fn an_update_over_a_missing_bridge_jar_keeps_the_older_rollback_set() {
+    let w = world();
+    let (v1, v2, v3) = (payload(1), payload(2), payload(3));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let jar = w.target.minecraft_mods.join(&v2.jar.0);
+    fs::remove_file(&jar).unwrap();
+    let plan = ops::plan(&w.env(), &w.target, &v3).unwrap();
+    assert_eq!(plan.changed, vec![jar.clone()]);
+    ops::install(&w.env(), &w.target, &v3).unwrap();
+    assert!(all_current(&w, &v3));
+    let rolled = ops::rollback(&w.env(), &w.target);
+    assert!(rolled.is_ok(), "{:#}", rolled.unwrap_err());
+    assert!(all_current(&w, &v1));
+}
