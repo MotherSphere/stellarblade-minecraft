@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 from pathlib import Path
 import shlex
 import hashlib
@@ -12,6 +13,10 @@ import subprocess
 import sys
 import tempfile
 
+# Output decoded as UTF-8 (with U+FFFD for bad bytes) is printed back; on Windows a redirected stdout is the ANSI code
+# page, where that could raise and hide why a check failed.
+sys.stdout.reconfigure(errors='backslashreplace')
+
 ROOT = Path(__file__).resolve().parents[1]
 # The pack builder's sidecars, the SHA256SUMS over them and NOTICES.txt (their licence texts); the installer build
 # embeds its target's one with its digest and the notices (SBMC_EVE_EXTRACT names this folder). The keys are .NET runtime identifiers, the values the release asset names.
@@ -19,12 +24,14 @@ EVE_EXTRACT = ROOT / 'build/eve-extract'
 SIDECARS = {'linux-x64': 'eve-extract-linux-x64', 'win-x64': 'eve-extract-win-x64.exe'}
 # On Windows itself (the CI's Windows test job): Gradle's batch wrapper, and the Windows checks without Wine.
 NATIVE_WINDOWS = os.name == 'nt'
+# A path crate in cargo tree's output: (/home/...) on Linux, (C:\...) on Windows.
+LOCAL_CRATE = re.compile(r'\((?:/|[A-Za-z]:[\\/])')
 
 
 def run(command, *, cwd=ROOT, quiet=False, env=None):
     command = [str(value) for value in command]
     print('$ ' + shlex.join(command), flush=True)
-    result = subprocess.run(command, cwd=cwd, text=True, capture_output=quiet, env=env)
+    result = subprocess.run(command, cwd=cwd, encoding='utf-8', errors='replace', capture_output=quiet, env=env)
     if result.returncode:
         if quiet:
             print(result.stdout, end='')
@@ -36,7 +43,8 @@ def windows(toolchain, wine):
     """The Windows DLL and its isolated checks. On Linux: built with clang-cl/xwin, run under Wine or Proton in a
     throwaway prefix. On Windows: built with Visual Studio's ClangCL toolset (the release DLL's), run directly. Each
     check runs in a throwaway working directory (the checks write files there) with a copy of the protocol fixtures;
-    the fake host runs beside both DLLs of the fixture build."""
+    the fake host runs beside both DLLs of the fixture build, then the overlay host, which imports the fixture DLL and
+    hot-patches its exports as Steam's overlay does."""
     builds = ((ROOT / 'build/native-windows', []), (ROOT / 'build/native-windows-fixture', ['-DSTELLAR_INPUT_BUILD_FIXTURE=ON']))
     for build, extra in builds:
         if NATIVE_WINDOWS:
@@ -53,13 +61,19 @@ def windows(toolchain, wine):
         (scratch / 'raw').mkdir()
         host = scratch / 'host'
         host.mkdir()
-        for name in ('stellar_input_fake_host.exe', 'xinput1_3.dll', 'stellar_input_fixture.dll'):
+        for name in ('stellar_input_fake_host.exe', 'stellar_input_overlay_host.exe', 'xinput1_3.dll',
+                     'stellar_input_fixture.dll'):
             shutil.copy2(outputs[1] / name, host)
         if NATIVE_WINDOWS:
             prefix, drive, env = [], '', None
         else:
             prefix, drive = [wine], 'Z:'
             env = {**os.environ, 'WINEPREFIX': str(scratch / 'prefix'), 'WINEDEBUG': '-all', 'DISPLAY': '', 'WAYLAND_DISPLAY': ''}
+            # Without a display Wine refuses top-level windows, which the overlay host needs, unless the prefix names its
+            # null display driver; the prefix's session then ends so the checks start one that reads it.
+            run([wine, 'reg', 'add', r'HKCU\Software\Wine\Drivers', '/v', 'Graphics', '/d', 'null', '/f'], cwd=scratch,
+                env=env, quiet=True)
+            run([Path(wine).with_name('wineserver'), '-w'], cwd=scratch, env=env, quiet=True)
         tests = sorted(path for output in outputs for path in output.glob('stellar_*_tests.exe'))
         if not tests:
             raise SystemExit('Windows checks are missing')
@@ -67,6 +81,7 @@ def windows(toolchain, wine):
             extra = [drive + str(scratch / 'raw')] if path.name == 'stellar_raw_hook_tests.exe' else []
             run([*prefix, path, *extra], cwd=scratch, env=env, quiet=True)
         run([*prefix, host / 'stellar_input_fake_host.exe'], cwd=host, env=env, quiet=True)
+        run([*prefix, host / 'stellar_input_overlay_host.exe'], cwd=host, env=env, quiet=True)
 
 
 def windows_outputs(build):
@@ -148,7 +163,7 @@ def eve_extract_smoke(command, env, drive=''):
                                  (3, inputs(), 'not a loadable Oodle library')):
             line = [str(value) for value in (*command, *args)]
             print('$ ' + shlex.join(line), flush=True)
-            result = subprocess.run(line, env=env, text=True, capture_output=True)
+            result = subprocess.run(line, env=env, encoding='utf-8', errors='replace', capture_output=True)
             if result.returncode != code or text not in result.stdout + result.stderr:
                 print(result.stdout, end='')
                 print(result.stderr, end='', file=sys.stderr)
@@ -164,7 +179,8 @@ def installer(crate):
     with tempfile.TemporaryDirectory(prefix='stellar-payload-') as scratch:
         env = dict(os.environ)
         staged = Path(scratch) / 'payload'
-        result = subprocess.run([sys.executable, ROOT / 'tools/payload.py', staged], text=True, capture_output=True)
+        result = subprocess.run([sys.executable, ROOT / 'tools/payload.py', staged], encoding='utf-8', errors='replace',
+                                capture_output=True)
         if result.returncode == 0:
             env['SBMC_PAYLOAD'] = str(staged)
         else:
@@ -186,10 +202,11 @@ def crate_notices(crate):
     missing = set()
     for target in ('x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc'):
         tree = subprocess.run(['cargo', 'tree', '--locked', '-e', 'normal', '--target', target, '--prefix', 'none',
-                               '-f', '{p}'], cwd=crate, text=True, capture_output=True, check=True).stdout
+                               '-f', '{p}'], cwd=crate, encoding='utf-8', errors='replace', capture_output=True,
+                              check=True).stdout
         for line in tree.splitlines():
             name, version = line.split()[:2]
-            if '(proc-macro)' not in line and '(/' not in line and f'{name} {version[1:]}' not in notices:
+            if '(proc-macro)' not in line and not LOCAL_CRATE.search(line) and f'{name} {version[1:]}' not in notices:
                 missing.add(f'{name} {version[1:]}')
     if missing:
         raise SystemExit('THIRD-PARTY-NOTICES.md does not list: ' + ', '.join(sorted(missing)))

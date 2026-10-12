@@ -237,11 +237,27 @@ function Adapter.new()
         end
         return found
     end
+    -- What a component's glow parameters depend on, read without walking the parameter arrays: each slot's material
+    -- object and, for a dynamic instance, the lengths of its parameter arrays (a notify appends an entry the first time
+    -- it sets one). The pose stream walks a component's parameters again only when this changes.
+    function engine.material_key(entry)
+        local component=entry.handle
+        local parts={}
+        for m=0,component:GetNumMaterials()-1 do
+            local material=valid(component:GetMaterial(m))
+            parts[#parts+1]=material and tostring(material:GetAddress()) or '-'
+            if material and text(valid(material:GetClass()):GetFName())=='MaterialInstanceDynamic' then
+                for _,array in ipairs(ARRAYS) do parts[#parts+1]=tostring(material[array[1]]:GetArrayNum()) end
+            end
+        end
+        return table.concat(parts,' ')
+    end
     -- Active particle effects (Cascade and Niagara components) on EVE: owned by her actor, or pooled by the world and
     -- attached to her skeletal components (up to three levels down). Returns log labels (asset, class, attach parent,
-    -- socket) and the effect assets seen, as {name=, object=}.
+    -- socket) and the effect assets seen, as {name=, object=}. attached_only leaves out her actor's own effect
+    -- components, so the pose stream can walk one holder per check.
     local EFFECT_CLASSES={'/Script/Engine.ParticleSystemComponent','/Script/Niagara.NiagaraComponent'}
-    function engine.effects(list)
+    function engine.effects(list,attached_only)
         local found,seen,assets={},{},{}
         local function note(component)
             local name=text(valid(component:GetClass()):GetFName())
@@ -266,7 +282,7 @@ function Adapter.new()
             end)
         end
         for _,entry in ipairs(list or {}) do pcall(walk,entry.handle,1) end
-        local pawn=valid(UE.GetPlayer())
+        local pawn=not attached_only and valid(UE.GetPlayer())
         for _,path in ipairs(EFFECT_CLASSES) do
             local class=pawn and valid(StaticFindObject(path))
             if class then each(pawn:K2_GetComponentsByClass(class),function(_,component)
@@ -313,13 +329,17 @@ function Adapter.new()
         local name=path:match('[^/]+$')
         KNOWN_EFFECTS[#KNOWN_EFFECTS+1]=FX..path..'.'..name
     end
-    function engine.known_effects()
+    -- With index, only that path: each StaticFindObject costs Stellar Blade's game thread about 4 ms (all 22 took about
+    -- 96 ms in game), so the pose stream looks one up per turn. Also returns how many paths there are.
+    function engine.known_effects(index)
         local loaded={}
-        for _,path in ipairs(KNOWN_EFFECTS) do
-            local asset=valid(StaticFindObject(path))
-            if asset then loaded[#loaded+1]={name=text(asset:GetFName()),object=asset:GetAddress()} end
+        for i,path in ipairs(KNOWN_EFFECTS) do
+            if not index or i==index then
+                local asset=valid(StaticFindObject(path))
+                if asset then loaded[#loaded+1]={name=text(asset:GetFName()),object=asset:GetAddress()} end
+            end
         end
-        return loaded
+        return loaded,#KNOWN_EFFECTS
     end
     -- Research for EVE's hit reactions and real defensive state: functions and properties named like combat on EVE's
     -- class chain and her components' classes, as 'function Class.Name' or 'property Class.Name'.

@@ -92,14 +92,23 @@ final class AvatarStream implements AutoCloseable {
     // keepAlive refreshes every KEEP_ALIVE_MS, well inside Lua's 3 s lease, while the render thread called heartbeat within
     // the limit it was given (KEEP_ALIVE_LIMIT_NANOS for a live stream): a hung client still lets the lease lapse.
     static final long KEEP_ALIVE_MS = 500, KEEP_ALIVE_LIMIT_NANOS = 15_000_000_000L;
+    /**
+     * How long Windows may keep refusing the request's replacement (Lua's pose_stream reads it on its 200 ms timer) before
+     * the heartbeat fails: the request is due 1 s after the last one, and Lua drops a request older than 3 s.
+     */
+    static final long REQUEST_BUSY_MS = 1500;
+    private final BridgeFiles.Refusals requestRefusals = new BridgeFiles.Refusals(REQUEST_BUSY_MS);
     private boolean stopped, pendingDelete;
     private float[] clothFloats; // The newest sample's cloth, reused (about 208 KB).
 
-    AvatarStream(Path directory, String run, long nowMs) throws IOException {
+    AvatarStream(Path directory, String run, long nowMs) throws IOException { this(directory, run, nowMs, null); }
+
+    /** With mover, a test's replacement of the request (see BridgeFiles.Mover); null for the real one. */
+    AvatarStream(Path directory, String run, long nowMs, BridgeFiles.Mover mover) throws IOException {
         if (!SharedMapping.supported()) throw new IOException("The pose stream requires 64-bit Linux or Windows");
         require(run.matches("[0-9a-f]{32}"), "Invalid pose stream identity");
         this.run = run;
-        files = new BridgeFiles(directory);
+        files = mover == null ? new BridgeFiles(directory) : new BridgeFiles(directory, mover);
         path = files.checked("eve-pose-" + run + ".bin");
         try {
             shared = new SharedMapping(path, TOTAL, "pose mapping");
@@ -134,7 +143,8 @@ final class AvatarStream implements AutoCloseable {
         // Native stops the stream when this lease moves backwards.
         leaseMillis = Math.max(leaseMillis, nowMs);
         RawFrameBus.LONG.setRelease(map, 264, leaseMillis);
-        if (nowMs - requestMillis >= 1000 || nowMs < requestMillis) request(true, nowMs);
+        // A refused request keeps requestMillis, so the next refresh writes it again.
+        if (nowMs - requestMillis >= 1000 || nowMs < requestMillis) requestRefusals.write(() -> request(true, nowMs), nowMs);
     }
 
     /**
@@ -178,7 +188,7 @@ final class AvatarStream implements AutoCloseable {
         if (state == 0) {
             require(producerPid == 0, "Pose producer reset its claimed run");
             if (nowNanos - createdNanos > 5_000_000_000L)
-                throw new IOException("No native pose producer: the adapter, Lua revision 58 and a loaded EVE are required");
+                throw new IOException("No native pose producer: the adapter, Lua revision 61 and a loaded EVE are required");
             return null;
         }
         require(pid != 0 && (producerPid == 0 || producerPid == pid), "Pose producer changed; start a new stream");

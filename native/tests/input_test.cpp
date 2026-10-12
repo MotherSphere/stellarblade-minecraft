@@ -218,6 +218,20 @@ int main() {
          "displacement past the word");
   assert(!redirect_call(call, at + 1, site + 1, callee + 1, 0x13fff0000) &&
          "unaligned word");
+  // The game's imports routed past an overlay's hooks: Stellar Blade imports
+  // XINPUT1_3.dll's ordinals 2 and 3; a host may import them by name.
+  assert(same_module("XINPUT1_3.dll", L"xinput1_3.dll") &&
+         same_module("stellar_input_fixture.dll", L"STELLAR_INPUT_FIXTURE.DLL"));
+  assert(!same_module("xinput1_4.dll", L"xinput1_3.dll") &&
+         !same_module("xinput1_3.dll ", L"xinput1_3.dll") &&
+         !same_module("xinput1_3.dll", L"xïnput1_3.dll") && "another module");
+  assert(routed_import(true, 2, {}) == Routed::get_state &&
+         routed_import(true, 3, {}) == Routed::set_state &&
+         routed_import(true, 4, {}) == Routed::none && "xinput1_3 ordinals");
+  assert(routed_import(false, 0, "XInputGetState") == Routed::get_state &&
+         routed_import(false, 0, "XInputSetState") == Routed::set_state &&
+         routed_import(false, 0, "XInputGetCapabilities") == Routed::none &&
+         "names");
   std::string oversized_edges;
   for (int id = 1; id <= 33; ++id)
     oversized_edges += "EDGE " + std::to_string(id) + " " +

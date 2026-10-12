@@ -98,12 +98,93 @@ public final class BridgeLinkTest {
 
             link.stop();
             assert !Files.exists(directory.resolve("terrain.txt")) && !Files.exists(directory.resolve("eve-mobs.txt"));
+
+            // Windows refuses a replacement while Stellar Blade's Lua holds the target open (an alt-tab can deschedule its
+            // game thread mid-read): a refused heartbeat is written again at the next tick, and only refusals lasting
+            // BridgeLink.BUSY_MS end the link.
+            Path flakyDirectory = temporary.resolve("flaky");
+            var refused = new java.util.HashSet<String>();
+            BridgeFiles flaky = new BridgeFiles(flakyDirectory, (from, to) -> {
+                if (refused.contains(to.getFileName().toString())) throw new java.nio.file.AccessDeniedException(from + " -> " + to);
+                Files.move(from, to, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            });
+            BridgeLink busy = new BridgeLink(flaky, A, origin, "minecraft:overworld");
+            long t = client + 10_000;
+            refused.add("terrain.txt");
+            busy.terrain(new BridgeProtocol.Terrain(A, 1, server / 1000, "minecraft:overworld", origin.x, origin.y, origin.z,
+                    window, List.of(box)), t);
+            assert busy.revision() == 1 && !Files.exists(flakyDirectory.resolve("terrain.txt")) : "A refused revision does not end the link";
+            refused.clear();
+            busy.tick(t + 50);
+            assert time(flakyDirectory, "terrain.txt") == (t + 50) / 1000 : "Written at the next tick, without waiting for the heartbeat";
+            Files.writeString(flakyDirectory.resolve("eve.0"), eve.replace("TIME " + now / 1000, "TIME " + (t + 100) / 1000));
+            busy.tick(t + 100);
+            busy.mobs(List.of(box), t + 150);
+            assert time(flakyDirectory, "eve-mobs.txt") == t + 150;
+            refused.add("eve-mobs.txt");
+            for (long at = t + 200; at < t + 200 + BridgeLink.BUSY_MS; at += 50) busy.tick(at);
+            assert time(flakyDirectory, "eve-mobs.txt") == t + 150 : "Refused walls keep the last ones, and the link lives";
+            refused.clear();
+            long back = t + 200 + BridgeLink.BUSY_MS;
+            busy.tick(back);
+            assert time(flakyDirectory, "eve-mobs.txt") == back : "The walls are renewed once Lua lets go";
+            refused.add("eve-mobs.txt");
+            long endedAt = -1;
+            for (long at = back + 50; endedAt < 0 && at <= back + 50 + 2 * BridgeLink.BUSY_MS; at += 50) {
+                try { busy.tick(at); }
+                catch (java.nio.file.AccessDeniedException persistent) { endedAt = at; }
+            }
+            assert endedAt == back + 50 + BridgeLink.BUSY_MS : "Refusals lasting BUSY_MS end the link: " + endedAt;
+            refused.clear();
+
+            // A run of refusals that ends because nothing is due any more (the walls emptied before a retry got through)
+            // is over: a refusal much later starts a new run with the whole BUSY_MS again.
+            java.util.function.BiFunction<Integer, Long, String> packet = (seq, ms) -> "SBMC 2 EVE\nSESSION " + A + "\nSEQ " + seq
+                    + "\nTIME " + ms / 1000 + "\nSTATE entered 1\nPOS 1.5 0 -2.25\nEND " + seq + "\n";
+            BridgeLink later = new BridgeLink(flaky, A, origin, "minecraft:overworld");
+            long t2 = t + 20_000;
+            later.terrain(new BridgeProtocol.Terrain(A, 1, server / 1000, "minecraft:overworld", origin.x, origin.y, origin.z,
+                    window, List.of(box)), t2);
+            Files.writeString(flakyDirectory.resolve("eve.0"), packet.apply(7, t2));
+            later.tick(t2 + 50);
+            refused.add("eve-mobs.txt");
+            later.mobs(List.of(box), t2 + 100);
+            later.mobs(List.of(), t2 + 150);
+            refused.clear();
+            Files.writeString(flakyDirectory.resolve("eve.0"), packet.apply(8, t2 + 3100));
+            later.tick(t2 + 3100);
+            assert later.position() != null;
+            refused.add("eve-mobs.txt");
+            later.mobs(List.of(box), t2 + 3150);
+            later.tick(t2 + 3200);
+            refused.clear();
+            later.tick(t2 + 3250);
+            assert time(flakyDirectory, "eve-mobs.txt") == t2 + 3250 : "A later refusal got its own grace, then the walls went through";
+
+            // Lua reads eve-combat.txt every frame too: a refused verdict is written again, as it was, at the next ticks;
+            // one Windows keeps refusing past VERDICT_MS is dropped with a warning, never the link.
+            BridgeLink fights = new BridgeLink(flaky, A, origin, "minecraft:overworld");
+            long t3 = t + 30_000;
+            refused.add("eve-combat.txt");
+            fights.verdict(BridgeProtocol.COMBAT_EVENTS.indexOf("parry"), 90, t3);
+            fights.tick(t3 + 50);
+            assert !Files.exists(flakyDirectory.resolve("eve-combat.txt")) : "Still refused";
+            refused.clear();
+            fights.tick(t3 + 100);
+            assert time(flakyDirectory, "eve-combat.txt") == t3
+                    && Files.readString(flakyDirectory.resolve("eve-combat.txt")).contains("EVENT parry 90.0\n") : "Written once Lua lets go";
+            refused.add("eve-combat.txt");
+            fights.verdict(BridgeProtocol.COMBAT_EVENTS.indexOf("parry"), 45, t3 + 2000);
+            for (long at = t3 + 2050; at <= t3 + 2000 + 2 * BridgeLink.VERDICT_MS; at += 50) fights.tick(at);
+            refused.clear();
+            fights.tick(t3 + 2000 + 2 * BridgeLink.VERDICT_MS + 50);
+            assert time(flakyDirectory, "eve-combat.txt") == t3 : "Dropped past VERDICT_MS, and the link ticked through it";
         } finally {
             try (var paths = Files.walk(temporary)) {
                 for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
             }
         }
-        System.out.println("Bridge link tests passed: client clock on every file, relay once, skewed server judged by its sender's clock, per-player relays isolated, teleports out of the window");
+        System.out.println("Bridge link tests passed: client clock on every file, relay once, skewed server judged by its sender's clock, per-player relays isolated, teleports out of the window, refused heartbeats written again until BUSY_MS, refused verdicts until VERDICT_MS");
     }
 
     private static long time(Path directory, String name) throws Exception {

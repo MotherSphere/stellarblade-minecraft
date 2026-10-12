@@ -150,13 +150,17 @@ final class ControlState {
      * The adapter's slot-0 XInputGetState callers (eve-input-calls.txt): totals since it loaded and calls per second over
      * its last interval, from the recognized gameplay poll and from any other caller. Another caller at the game's poll
      * rate with no gameplay calls is an overlay hook (Steam Input) calling on the game's behalf: input is never forwarded.
+     * Otherwise, no gameplay call at all since the adapter loaded most likely means an overlay answered Unreal's poll
+     * itself, as disconnected, so Unreal stopped polling: neither the pose stream nor input runs.
      */
     record Calls(long time, long gameplay, long gameplayRate, long other, long otherRate) {
         /** One status sentence while the report is fresh (an adapter running now), else empty. */
         String status(long nowMs) {
             if (nowMs - time > 3000 || time - nowMs > 1000) return "";
             return String.format(" XInput slot 0: %d calls/s from the gameplay poll, %d/s from other callers%s.", gameplayRate, otherRate,
-                    gameplayRate == 0 && otherRate >= 10 ? " (the gameplay poll is not recognized: disable Steam Input for Stellar Blade)" : "");
+                    gameplayRate == 0 && otherRate >= 10 ? " (the gameplay poll is not recognized: disable Steam Input for Stellar Blade)"
+                            : gameplay == 0 ? " (Stellar Blade's gameplay poll never reached it: an overlay most likely answers for the"
+                            + " adapter; disable Steam Input or the Steam overlay for Stellar Blade)" : "");
         }
     }
     static Calls parseCalls(byte[] bytes) {

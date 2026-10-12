@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Predicate;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
@@ -259,8 +260,19 @@ public final class ControlBridge {
         return !build || blocked.contains(KeyBindingHelper.getBoundKeyOf(use ? options.useKey : options.attackKey));
     }
 
+    /**
+     * With the window focused, releases the keys a suspension blocked that are no longer physically held. GLFW reports the
+     * releases of keys held at a focus loss only after telling Minecraft it lost focus, so keyboard() leaves those keys
+     * blocked: an Alt+Tab holds two EVE keys by default (burst on Left Alt, scan on Tab), and forwarding never resumed after
+     * one. A key still held when the window comes back stays blocked until it is released.
+     */
+    static void unblockReleased(Set<InputUtil.Key> blocked, Predicate<InputUtil.Key> physical, boolean focused) {
+        if (focused) blocked.removeIf(physical.negate());
+    }
+
     private static void tick() {
         if (state == null) return;
+        unblockReleased(blocked, ControlBridge::physical, MinecraftClient.getInstance().isWindowFocused());
         var keys = bindings();
         boolean allReleased = true;
         for (int i = 0; i < keys.length; i++) {

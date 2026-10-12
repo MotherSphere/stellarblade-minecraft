@@ -3,6 +3,7 @@ package org.stellarbridge;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -23,8 +24,48 @@ final class BridgeFiles {
     // A refused replace is tried again this many times, 1 ms apart (see replace).
     private static final int REPLACE_RETRIES = 5;
     private final Path directory;
+    private final Mover mover;
 
-    BridgeFiles(Path directory) throws IOException {
+    /** Moves a written snapshot over its target; a test's refuses as Windows does while a reader holds the target open. */
+    interface Mover { void move(Path temporary, Path target) throws IOException; }
+
+    interface Write { void run() throws IOException; }
+
+    /**
+     * One heartbeat file's run of refused replacements. Stellar Blade's Lua reads with io.open, which shares no deletion,
+     * and its game thread can hold a file past replace's retries while Windows runs another process (an alt-tab is
+     * enough): a heartbeat written again at its next due time survives such refusals until they have lasted limit
+     * milliseconds. Refusals more than GAP_MS apart are separate runs, as when the file stopped being due in between.
+     */
+    static final class Refusals {
+        private static final long GAP_MS = 500;
+        private final long limit;
+        private long since = -1, last;
+
+        Refusals(long limit) { this.limit = limit; }
+
+        /** Writes; false while Windows has refused the replacement for less than limit, else throws. */
+        boolean write(Write write, long now) throws IOException {
+            try {
+                write.run();
+                since = -1;
+                return true;
+            } catch (FileSystemException refused) {
+                // A reader holding the target (access denied) or the source shared badly (sharing violation); anything
+                // more specific (missing, a link, a file in the way) is no transient refusal.
+                if (!(refused instanceof AccessDeniedException) && refused.getClass() != FileSystemException.class) throw refused;
+                if (since < 0 || now - last > GAP_MS || now < last) since = now;
+                last = now;
+                if (now - since >= limit) throw refused;
+                return false;
+            }
+        }
+    }
+
+    BridgeFiles(Path directory) throws IOException { this(directory, BridgeFiles::move); }
+
+    BridgeFiles(Path directory, Mover mover) throws IOException {
+        this.mover = mover;
         this.directory = directory.toAbsolutePath().normalize();
         Path current = this.directory.getRoot();
         for (Path part : this.directory) {
@@ -53,20 +94,27 @@ final class BridgeFiles {
         Path temporary = Files.createTempFile(directory, "snapshot-", ".tmp", owner("rw-------"));
         try {
             Files.write(temporary, data);
-            replace(temporary, target);
+            replace(temporary, target, mover);
         } finally {
             Files.deleteIfExists(temporary);
         }
     }
 
     /** Atomically moves {@code temporary} over {@code target}, as every snapshot a reader polls is replaced. */
-    static void replace(Path temporary, Path target) throws IOException {
+    static void replace(Path temporary, Path target) throws IOException { replace(temporary, target, BridgeFiles::move); }
+
+    private static void move(Path temporary, Path target) throws IOException {
+        Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private static void replace(Path temporary, Path target, Mover mover) throws IOException {
         // Windows refuses to replace a file while a reader holds it open (MoveFileEx has no POSIX rename semantics), as
         // Lua's io.open and the adapter's readers do for microseconds. Linux rename never refuses it here.
-        // ponytail: bounded retry; a reader holding a file >5 ms still fails and is reported as today.
+        // A reader holding it past these retries (Stellar Blade's game thread descheduled mid-read) still fails here;
+        // BridgeLink writes such a heartbeat again at the next tick.
         for (int retry = 0; ; retry++) {
             try {
-                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                mover.move(temporary, target);
                 return;
             } catch (AccessDeniedException busy) {
                 if (retry == REPLACE_RETRIES) throw busy;
