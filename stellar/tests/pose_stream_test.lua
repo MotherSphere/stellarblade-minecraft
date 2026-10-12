@@ -327,6 +327,21 @@ now=now+4
 local _,gone=steady.tick()
 assert(gone=='Pose stream idle.','A request older than the lease still idles the run')
 now=now-4
+-- While the known effect paths are looked up one a check from a new run, the effects they find join the table only
+-- once the lookups end: each would otherwise publish a table and restart Minecraft's build before EVE is first drawn.
+glow_late=false
+engine.effect_layout=function() return {children=0x130,asset=0x6a8,template=0x4b0,active_byte=0x88,active_mask=0x10,
+    niagara=0x7f000000b000,particle=0x7f000000c000} end
+engine.known_effects=function(index) return {{name='NS_Known_'..index,object=0x7f0000060000+index*0x1000}},4 end
+local seeded=Stream.new(engine,directory,function() return now end,function() end,function() return place end)
+RUN=string.rep('3',32); request(); seeded.tick()
+local seeded_first=seeded.generation()
+for _=2,3 do seeded.tick(); assert(seeded.generation()==seeded_first,'Held while the known effect paths are looked up') end
+seeded.tick()
+assert(seeded.generation()==seeded_first+1 and published_tables():find('NS_Known_4',1,true),'One table once each was looked up')
+engine.effect_layout,engine.known_effects=nil,nil
+RUN=string.rep('4',32); request()
+assert(seeded.tick(),'Without known effect paths, a new run still publishes')
 for name in io.popen('ls '..directory):lines() do os.remove(directory..'/'..name) end
 assert(os.execute('rmdir '..directory))
 print('PASS pose stream: request lease, exact component table, unchanged compositions, placement changes, skipped names, reload and run numbering, controller rotation, pawn and look scales, control binding, material parameters, effect log, effect layout, the drone and the ponytail\'s cloth')
