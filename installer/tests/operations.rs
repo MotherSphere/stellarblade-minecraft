@@ -1296,6 +1296,37 @@ fn an_adapter_left_beside_a_moved_executable_is_removed() {
     assert_eq!(kept.dll, payload(1).dll);
 }
 
+/// The game moved with its UE4SS folder, the old one left in place: Uninstall at the new place also removes the Lua mod
+/// and the adapter recorded at the old one, where no later run would look.
+#[test]
+fn uninstall_after_a_moved_game_removes_the_pieces_at_the_old_place() {
+    let w = world();
+    let old_win64 = w.home.join("Old/Win64");
+    write(&old_win64.join(adapter::EXE), "test executable");
+    write(&old_win64.join("ue4ss/Mods/mods.txt"), "OtherMod : 1\n");
+    let old = Target {
+        game: Some(Game {
+            exe: old_win64.join(adapter::EXE),
+            ue4ss: old_win64.join("ue4ss"),
+            mods: old_win64.join("ue4ss/Mods"),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    ops::install(&w.env(), &old, &payload(1)).unwrap();
+    assert!(
+        ops::uninstall(&w.env(), &w.target, false)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        deploy::ownership(&old_win64.join("ue4ss/Mods")).unwrap(),
+        Ownership::Absent
+    );
+    assert_eq!(adapter::ownership(&old_win64).unwrap(), Ownership::Absent);
+    assert_eq!(state(&w).status, Status::Removed);
+}
+
 /// An update over a file changed by hand keeps that changed set aside, but Roll back still goes to the complete set
 /// kept before it: the update must not drop that one.
 #[test]
