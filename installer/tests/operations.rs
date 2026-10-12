@@ -551,13 +551,8 @@ fn python_installs_are_updated_and_kept() {
     assert!(python("install"));
     adapter::install(&w.game().exe, &v1.dll, &w.target.bridge, &w.pin, &|| Ok(())).unwrap();
 
-    // A failed update puts the Python tools' set back as it was; the Rust manifest differs only in formatting.
-    let without_manifest = |w: &World| {
-        let mut files = w.files();
-        files.retain(|path, _| !path.ends_with(deploy::MANIFEST));
-        (files, deploy::manifest(&w.game().mods).unwrap())
-    };
-    let before = without_manifest(&w);
+    // A failed update puts the Python tools' set back as it was, their manifest included.
+    let before = w.files();
     let broken = Payload {
         dll: b"not a DLL".to_vec(),
         ..payload(2)
@@ -567,7 +562,7 @@ fn python_installs_are_updated_and_kept() {
         format!("{error:#}").contains("previous state was restored"),
         "{error:#}"
     );
-    assert_eq!(without_manifest(&w), before);
+    assert_eq!(w.files(), before);
 
     // Their set has no bridge JAR, so Roll back, which would fail, is not offered.
     let state = ops::install(&w.env(), &w.target, &payload(2)).unwrap();
@@ -1878,10 +1873,11 @@ fn changed_files_kept_by_an_unrestored_update_survive_an_uninstall() {
         .join(deploy::MOD_NAME)
         .join("Scripts/main.lua");
     fs::write(&main, "my edit").unwrap();
+    // Minecraft starts midway and stays running: the restore cannot run either.
     let calls = Cell::new(0);
     let starts = || {
         calls.set(calls.get() + 1);
-        if calls.get() == 6 {
+        if calls.get() >= 6 {
             anyhow::bail!("Minecraft started")
         }
         Ok(())
@@ -1890,7 +1886,11 @@ fn changed_files_kept_by_an_unrestored_update_survive_an_uninstall() {
         closed: &starts,
         ..w.env()
     };
-    ops::install(&env, &w.target, &v3).unwrap_err();
+    let error = ops::install(&env, &w.target, &v3).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("could not be restored"),
+        "{error:#}"
+    );
     assert!(
         ops::uninstall(&w.env(), &w.target, false)
             .unwrap()
@@ -2420,13 +2420,14 @@ impl Explorer<'_> {
                     let resumed = state_before
                         .as_ref()
                         .is_some_and(|s| s.status == Status::InProgress);
-                    // Finishing an interrupted run, the previous state is the release before that run.
+                    // Finishing an interrupted run, the previous state is the release before that run, its adapter for
+                    // the executable it was installed for.
                     if restored
                         && resumed
                         && m.pending
-                            .is_some_and(|pre| pre.is_some() && disk_release(w) != pre)
+                            .is_some_and(|pre| pre.is_some() && clean_release(w, &state) != pre)
                     {
-                        self.fail("I1", format!("{when}: says restored but the release before the interrupted run is not back"), scenario, format!("disk {:?}, expected {:?}", disk_release(w), m.pending));
+                        self.fail("I1", format!("{when}: says restored but the release before the interrupted run is not back"), scenario, format!("disk {:?}, expected {:?}", clean_release(w, &state), m.pending));
                     }
                     if restored && !resumed && !same_but_pin(&w.files(), &files_before) {
                         let changed: Vec<_> = w

@@ -592,31 +592,50 @@ fn contents(paths: &[PathBuf]) -> Result<Vec<Option<BTreeMap<String, String>>>> 
         .collect()
 }
 
-/// Puts the state before a failed install back: the kept set in `previous`, or nothing for a first install. Judged by
-/// what is on disk, not by whether each step ran: pieces already as kept need no write, and a protected file or the
-/// saves changing meanwhile is the install's own failure, not the restore's.
-fn restore(env: &Env, target: &Target, previous: Option<&Path>, disabled: bool) -> Result<()> {
-    let kept = previous.map(Payload::from_previous).transpose()?;
-    let back = || -> Result<bool> {
-        let pieces = verify(env, target, kept.as_ref().unwrap_or(&Payload::default()))?;
-        Ok(match &kept {
-            Some(_) => pieces.iter().all(|p| p.current),
-            None => pieces.iter().all(|p| p.ownership == Ownership::Absent),
-        })
-    };
-    if back()? {
-        return Ok(());
-    }
+/// Puts the state before a failed install back: removes what is at `target`, then copies the set `kept` (nothing for a
+/// first install) back where it came from, file for file, so files changed by hand and a disabled JAR come back as they
+/// were. Manifests first and the DLL last: a run killed meanwhile leaves pieces the next one owns or replaces.
+fn restore(env: &Env, target: &Target, kept: Option<&Path>) -> Result<()> {
     if let Some((_, refusal)) = remove_owned(env, target, false, true)?.into_iter().next() {
         bail!(refusal);
     }
-    if let Some(kept) = &kept {
-        put(env, target, kept, disabled)?;
+    let mut back = Vec::new();
+    for entry in kept.map(fs::read_dir).transpose()?.into_iter().flatten() {
+        let from = entry?.path();
+        let name = from.file_name().unwrap_or_default();
+        let dir = match (name.to_str(), &target.game) {
+            (Some(deploy::MOD_NAME), Some(game)) => game.mods.clone(),
+            (Some(adapter::MANIFEST | adapter::CONFIG | adapter::DLL), Some(game)) => game.win64(),
+            _ => target.minecraft_mods.clone(),
+        };
+        back.push((dir.join(name), from));
     }
-    if !back()? {
+    let manifest =
+        |path: &Path| path.ends_with(mods::MANIFEST) || path.ends_with(adapter::MANIFEST);
+    back.sort_by_key(|(to, _)| (!manifest(to), to.ends_with(adapter::DLL)));
+    for (to, from) in &back {
+        (env.closed)()?;
+        let (dir, name) = (
+            to.parent().unwrap_or(Path::new("")),
+            to.file_name().unwrap_or_default(),
+        );
+        if from.is_dir() {
+            // Whole or not at all, like a Lua mod install.
+            let staging = dir.join(deploy::STAGING);
+            if fs::symlink_metadata(&staging).is_ok() {
+                fs::remove_dir_all(&staging)?;
+            }
+            safety::copy_tree(from, &staging)?;
+            fs::rename(&staging, to)?;
+        } else {
+            mods::write_atomic(dir, &name.to_string_lossy(), &fs::read(from)?)?;
+        }
+    }
+    let (to, from): (Vec<_>, Vec<_>) = back.into_iter().unzip();
+    if contents(&to)? != contents(&from)? {
         bail!(Refusal::new(
             Kind::MismatchAfterWrite,
-            previous.unwrap_or(Path::new("")).display()
+            kept.unwrap_or(Path::new("")).display()
         ));
     }
     Ok(())
@@ -657,7 +676,10 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         }
     }
     let path = state_path(env);
-    let mut state = ledger::load(&path).unwrap_or_default();
+    let recorded = ledger::load(&path);
+    // What a restore that puts the disk back as it was records again; pieces without a record count as installed.
+    let status_before = recorded.as_ref().map_or(Status::Installed, |s| s.status);
+    let mut state = recorded.unwrap_or_default();
     let guarded = Guarded::take(target, own_jars(target, Some(payload))?)?;
     fs::create_dir_all(&env.data)?;
     let resumed = resumed(env, &state);
@@ -703,7 +725,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         let untouched = (resumed.is_none() && !owned.is_empty())
             .then(|| contents(&owned))
             .transpose()?;
-        let kept = match resumed {
+        let kept = match resumed.clone() {
             Some(kept) => kept,
             None => {
                 let kept = if owned.is_empty() {
@@ -743,20 +765,21 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         if let Err(error) = done {
             (env.step)(Step::Restore);
             // Stopped before its first change (a game found running at the first removal, a locked file): already back,
-            // also when the kept set cannot be installed again (files changed by hand) or the old place is elsewhere.
+            // also when the old place is elsewhere.
             let restored = if untouched
                 .is_some_and(|before| contents(&owned).is_ok_and(|now| now == before))
             {
                 Ok(())
             } else {
-                restore(env, target, previous.as_deref(), disabled)
+                restore(env, target, previous.as_deref())
             };
             return Err(match restored {
                 Ok(()) => {
-                    state.status = if previous.is_some() {
-                        Status::Installed
-                    } else {
-                        Status::Removed
+                    // The disk is as recorded before this run, or before the interrupted run it finished.
+                    state.status = match (&previous, &resumed) {
+                        (None, _) => Status::Removed,
+                        (Some(_), Some(_)) => Status::Installed,
+                        (Some(_), None) => status_before,
                     };
                     if let Some(previous) = &previous {
                         state.previous =
