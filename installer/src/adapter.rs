@@ -237,6 +237,21 @@ pub fn remove(exe: &Path, closed: Guard) -> Result<PathBuf> {
     }
 }
 
+/// Removes the adapter also when files its manifest lists changed or went missing: an update replacing it, after
+/// keeping it in `previous/`. A listed path that is not a regular file still refuses it.
+pub fn remove_drifted(exe: &Path, closed: Guard) -> Result<PathBuf> {
+    let destination = game_directory(exe)?;
+    closed()?;
+    drifted(&destination)?;
+    for name in [DLL, CONFIG, MANIFEST] {
+        match fs::remove_file(destination.join(name)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            removed => removed?,
+        }
+    }
+    Ok(destination)
+}
+
 /// A minimal x64 DLL header, as the Python tests build it.
 #[doc(hidden)]
 pub fn test_dll() -> Vec<u8> {

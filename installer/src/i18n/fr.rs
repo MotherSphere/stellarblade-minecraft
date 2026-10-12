@@ -142,6 +142,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Installé, une autre version : Mettre à jour la remplace",
     ),
     (
+        "piece_replaceable",
+        "Modifié ou manquant depuis l'installation ({path}) : Mettre à jour le remplace et garde les fichiers modifiés dans previous/",
+    ),
+    (
         "pack_missing",
         "Absent : la vue avatar en a besoin, les vues capture fonctionnent sans",
     ),
@@ -187,7 +191,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "blocker_game_files",
-        "Un fichier à l'emplacement du pont dans le dossier du jeu n'est pas celui du pont, ou a été modifié (voir les lignes ci-dessus). UE4SS 2.x, par exemple, utilise aussi xinput1_3.dll. Supprimez ou déplacez ce fichier ; s'il s'agit de celui du pont, utilisez Réparer.",
+        "Un fichier à l'emplacement du pont dans le dossier du jeu n'est pas celui du pont, ou le dossier du pont contient des fichiers qu'il n'a pas installés (voir les lignes ci-dessus). UE4SS 2.x, par exemple, utilise aussi xinput1_3.dll. Supprimez ou déplacez ce fichier.",
     ),
     (
         "viewer_still_possible",
@@ -259,6 +263,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     (
         "consent_replaced",
         "Remplacé (conservé d'abord, pour revenir en arrière)",
+    ),
+    (
+        "consent_changed",
+        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés d'abord (Revenir en arrière ne peut pas les réinstaller)",
     ),
     ("consent_backups", "Copies faites d'abord"),
     (
@@ -563,7 +571,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_previous_changed",
-        "La version précédente conservée a changé depuis : {path}",
+        "La version précédente conservée ne correspond pas à ses manifestes (modifiée depuis, ou conservée avec des fichiers modifiés à la main) : elle ne peut pas être réinstallée : {path}",
     ),
     (
         "err_still_modified",

@@ -108,7 +108,8 @@ enum Listed {
     /// Unchanged, under its name or disabled.
     Present(PathBuf),
     Missing,
-    Changed,
+    /// There, under its name or disabled, with other content.
+    Changed(PathBuf),
 }
 
 fn find(mods: &Path, name: &str, expected: &str) -> Result<Listed> {
@@ -120,7 +121,7 @@ fn find(mods: &Path, name: &str, expected: &str) -> Result<Listed> {
             Ok(_) if sha256_file(&path, &mut |_| {})? == expected => {
                 return Ok(Listed::Present(path));
             }
-            Ok(_) => return Ok(Listed::Changed),
+            Ok(_) => return Ok(Listed::Changed(path)),
         }
     }
     Ok(Listed::Missing)
@@ -196,7 +197,7 @@ pub fn ownership(mods: &Path) -> Result<Ownership> {
         Ok(found) => {
             let changed: Vec<String> = found
                 .iter()
-                .filter(|(_, _, state)| matches!(state, Listed::Changed))
+                .filter(|(_, _, state)| matches!(state, Listed::Changed(_)))
                 .map(|(name, _, _)| mods.join(name).display().to_string())
                 .collect();
             if changed.is_empty() {
@@ -207,6 +208,32 @@ pub fn ownership(mods: &Path) -> Result<Ownership> {
         }
         Err(error) => Ownership::Modified(crate::refusal(error, Kind::ModifiedJar, &path)),
     })
+}
+
+/// Removes the listed files also when some changed or went missing (the bridge JAR first, Fabric API too, then the
+/// manifest): an update replacing them, after keeping them in `previous/`. A bridge JAR the manifest does not list, or a
+/// listed path that is not a regular file, still refuses it.
+pub fn remove_drifted(mods: &Path, closed: Guard) -> Result<()> {
+    let mods = folder(mods)?;
+    closed()?;
+    for path in on_disk(&mods)? {
+        fs::remove_file(path)?;
+    }
+    fs::remove_file(mods.join(MANIFEST))?;
+    Ok(())
+}
+
+/// The listed files that are there, changed or not, the bridge JAR first.
+pub fn on_disk(mods: &Path) -> Result<Vec<PathBuf>> {
+    let mut found: Vec<(String, PathBuf)> = listed(mods)?
+        .into_iter()
+        .filter_map(|(name, _, state)| match state {
+            Listed::Present(path) | Listed::Changed(path) => Some((name, path)),
+            Listed::Missing => None,
+        })
+        .collect();
+    found.sort_by_key(|(name, _)| !is_bridge_jar(name));
+    Ok(found.into_iter().map(|(_, path)| path).collect())
 }
 
 /// Writes `name` in `dir` through a hidden temporary name and a rename, so Minecraft never sees a partial JAR. A

@@ -271,14 +271,23 @@ pub fn detect(ctx: &Ctx) -> Found {
         None => match (&game, ue4ss.as_ref().and_then(|u| u.mods.as_ref())) {
             (Some(game), Some(mods)) => {
                 let (mut pieces, mut error) = (Vec::new(), None);
-                for (name, ownership) in [
-                    (ops::LUA, deploy::ownership(mods)),
-                    (ops::ADAPTER, adapter::ownership(&game.win64)),
+                for (name, ownership, drifted) in [
+                    (
+                        ops::LUA,
+                        deploy::ownership(mods),
+                        deploy::drifted(mods).is_ok(),
+                    ),
+                    (
+                        ops::ADAPTER,
+                        adapter::ownership(&game.win64),
+                        adapter::drifted(&game.win64).is_ok(),
+                    ),
                 ] {
                     match ownership {
                         Ok(Ownership::Absent) => {}
                         Ok(ownership) => pieces.push(Piece {
                             name,
+                            replaceable: drifted && matches!(ownership, Ownership::Modified(_)),
                             ownership,
                             current: false,
                         }),
@@ -1259,13 +1268,15 @@ impl App {
             Some(ue4ss) if ue4ss.mods.is_none() => return Some("blocker_ue4ss_mods"),
             Some(_) => {}
         }
-        // An install would refuse these anyway: say so before the hash and the target choice.
+        // An install would refuse these anyway: say so before the hash and the target choice. A piece of ours changed
+        // only in files its manifest lists is replaced by the update instead.
         found
             .pieces
             .iter()
             .any(|p| {
                 matches!(p.name, ops::LUA | ops::ADAPTER)
                     && matches!(p.ownership, Ownership::Foreign(_) | Ownership::Modified(_))
+                    && !p.replaceable
             })
             .then_some("blocker_game_files")
     }
@@ -1404,6 +1415,7 @@ impl App {
     fn refusals(&self, target: &Target) -> Vec<String> {
         let mut found = Vec::new();
         let mut add = |name: &str, ownership: anyhow::Result<Ownership>| match ownership {
+            Ok(Ownership::Modified(_)) if ops::replaceable(target, name) => {}
             Ok(Ownership::Foreign(r) | Ownership::Modified(r)) => {
                 log::line(&format!("Refused: {name}: {r}"));
                 found.push(i18n::piece_refusal(name, &r))
@@ -1475,12 +1487,14 @@ impl App {
                     .ok_or(t("no_previous"))?;
                 let release = previous.file_name().unwrap_or_default().to_string_lossy();
                 let mut lines = vec![t_fmt("rollback_to", &[("release", &release)])];
-                lines.extend(show(ops::owned_paths(&target).map_err(|e| localized(&e))?));
+                lines.extend(show(
+                    ops::owned_paths(&target, true).map_err(|e| localized(&e))?,
+                ));
                 Ok(lines)
             }
             Action::Uninstall => {
                 // Fabric API stays unless the box is ticked.
-                let removed = ops::owned_paths(&target)
+                let removed = ops::owned_paths(&target, false)
                     .map_err(|e| localized(&e))?
                     .into_iter()
                     .filter(|path| {

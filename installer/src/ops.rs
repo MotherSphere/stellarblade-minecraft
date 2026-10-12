@@ -88,6 +88,38 @@ pub struct Piece {
     pub ownership: Ownership,
     /// Owned, unchanged, and the same content as the payload.
     pub current: bool,
+    /// Modified, but only in files its manifest lists: an update replaces it (see [`replaceable`]).
+    pub replaceable: bool,
+}
+
+/// Whether an update may replace the piece `name` on `target`: owned, or modified only in files its manifest lists
+/// (an edit by hand, a file an antivirus quarantined). The update keeps it in `previous/` first and the consent page
+/// lists those files. Foreign content, unlisted files, changed folders and links never are.
+pub fn replaceable(target: &Target, name: &str) -> bool {
+    match (name, &target.game) {
+        (JAR, _) => mods::drifted(&target.minecraft_mods).is_ok(),
+        (LUA, Some(game)) => deploy::drifted(&game.mods).is_ok(),
+        (ADAPTER, Some(game)) => adapter::drifted(&game.win64()).is_ok(),
+        _ => false,
+    }
+}
+
+/// The files of ours that changed or went missing since they were installed, in the pieces an update replaces.
+fn changed_files(target: &Target) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut add = |dir: &Path, drift: Result<Vec<(String, String)>>| {
+        files.extend(drift.into_iter().flatten().map(|(name, _)| dir.join(name)));
+    };
+    let mods_dir = &target.minecraft_mods;
+    add(mods_dir, mods::drifted(mods_dir));
+    if let Some(game) = &target.game {
+        add(
+            &game.mods.join(deploy::MOD_NAME),
+            deploy::drifted(&game.mods),
+        );
+        add(&game.win64(), adapter::drifted(&game.win64()));
+    }
+    files
 }
 
 /// Where a piece is on `target`: what a failure about it names.
@@ -135,8 +167,12 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
     } else {
         jar_current(&target.minecraft_mods, &ownership, payload)?
     };
+    let modified = |name: &str, ownership: &Ownership| {
+        matches!(ownership, Ownership::Modified(_)) && replaceable(target, name)
+    };
     pieces.push(Piece {
         name: JAR,
+        replaceable: modified(JAR, &ownership),
         ownership,
         current,
     });
@@ -161,6 +197,7 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
         };
         pieces.push(Piece {
             name: LUA,
+            replaceable: modified(LUA, &ownership),
             ownership,
             current,
         });
@@ -184,6 +221,7 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
         };
         pieces.push(Piece {
             name: ADAPTER,
+            replaceable: modified(ADAPTER, &ownership),
             ownership,
             current,
         });
@@ -266,22 +304,31 @@ impl Guarded {
     }
 }
 
-/// Paths of every owned piece: what an update keeps in `previous/` before replacing it, and what an uninstall removes.
-pub fn owned_paths(target: &Target) -> Result<Vec<PathBuf>> {
+/// Paths of every owned piece: what an uninstall removes, and, `replacing` also the modified pieces an update may
+/// replace, what an update keeps in `previous/` before replacing them.
+pub fn owned_paths(target: &Target, replacing: bool) -> Result<Vec<PathBuf>> {
+    let taken = |name: &str, ownership: Ownership| match ownership {
+        Ownership::Owned => true,
+        Ownership::Modified(_) => replacing && replaceable(target, name),
+        _ => false,
+    };
     let mut paths = Vec::new();
     let mods_dir = &target.minecraft_mods;
     // A dedicated instance about to be created, or a deleted one, has no mods folder: nothing is owned there.
-    if mods::ownership(mods_dir)? == Ownership::Owned {
+    if taken(JAR, mods::ownership(mods_dir)?) {
         paths.push(mods_dir.join(mods::MANIFEST));
-        paths.extend(mods::present(mods_dir)?.into_iter().map(|(_, path)| path));
+        paths.extend(mods::on_disk(mods_dir)?);
     }
     if let Some(game) = &target.game {
-        if deploy::ownership(&game.mods)? == Ownership::Owned {
+        if taken(LUA, deploy::ownership(&game.mods)?) {
             paths.push(game.mods.join(deploy::MOD_NAME));
         }
-        if adapter::ownership(&game.win64())? == Ownership::Owned {
+        if taken(ADAPTER, adapter::ownership(&game.win64())?) {
             paths.extend(
-                [adapter::MANIFEST, adapter::CONFIG, adapter::DLL].map(|n| game.win64().join(n)),
+                [adapter::MANIFEST, adapter::CONFIG, adapter::DLL]
+                    .map(|n| game.win64().join(n))
+                    .into_iter()
+                    .filter(|path| fs::symlink_metadata(path).is_ok()),
             );
         }
     }
@@ -291,31 +338,51 @@ pub fn owned_paths(target: &Target) -> Result<Vec<PathBuf>> {
 /// The pieces left alone, by name, and why.
 pub type Refusals = Vec<(&'static str, Refusal)>;
 
-/// Removes every owned piece; foreign or modified pieces are left alone and returned as refusals.
-fn remove_owned(env: &Env, target: &Target, keep_fabric: bool) -> Result<Refusals> {
+/// Removes every owned piece, and with `replacing` the modified pieces an update may replace; foreign or other
+/// modified pieces are left alone and returned as refusals.
+fn remove_owned(
+    env: &Env,
+    target: &Target,
+    keep_fabric: bool,
+    replacing: bool,
+) -> Result<Refusals> {
     let mut refusals = Vec::new();
-    let mut take =
-        |name: &'static str, ownership: Ownership, remove: &dyn Fn() -> Result<()>| -> Result<()> {
-            match ownership {
-                Ownership::Absent => Ok(()),
-                Ownership::Owned => remove(),
-                Ownership::Foreign(refusal) | Ownership::Modified(refusal) => {
-                    refusals.push((name, refusal));
-                    Ok(())
-                }
+    let mut take = |name: &'static str,
+                    ownership: Ownership,
+                    remove: &dyn Fn() -> Result<()>,
+                    replace: &dyn Fn() -> Result<()>|
+     -> Result<()> {
+        match ownership {
+            Ownership::Absent => Ok(()),
+            Ownership::Owned => remove(),
+            Ownership::Modified(_) if replacing && replaceable(target, name) => replace(),
+            Ownership::Foreign(refusal) | Ownership::Modified(refusal) => {
+                refusals.push((name, refusal));
+                Ok(())
             }
-        };
+        }
+    };
     if let Some(game) = &target.game {
-        take(ADAPTER, adapter::ownership(&game.win64())?, &|| {
-            adapter::remove(&game.exe, env.closed).map(drop)
-        })?;
-        take(LUA, deploy::ownership(&game.mods)?, &|| {
-            deploy::remove(&game.mods, env.closed).map(drop)
-        })?;
+        take(
+            ADAPTER,
+            adapter::ownership(&game.win64())?,
+            &|| adapter::remove(&game.exe, env.closed).map(drop),
+            &|| adapter::remove_drifted(&game.exe, env.closed).map(drop),
+        )?;
+        take(
+            LUA,
+            deploy::ownership(&game.mods)?,
+            &|| deploy::remove(&game.mods, env.closed).map(drop),
+            &|| deploy::remove_drifted(&game.mods, env.closed).map(drop),
+        )?;
     }
-    take(JAR, mods::ownership(&target.minecraft_mods)?, &|| {
-        mods::remove(&target.minecraft_mods, keep_fabric, env.closed)
-    })?;
+    let mods_dir = &target.minecraft_mods;
+    take(
+        JAR,
+        mods::ownership(mods_dir)?,
+        &|| mods::remove(mods_dir, keep_fabric, env.closed),
+        &|| mods::remove_drifted(mods_dir, env.closed),
+    )?;
     Ok(refusals)
 }
 
@@ -465,7 +532,7 @@ fn restore(env: &Env, target: &Target, previous: Option<&Path>, disabled: bool) 
     if back()? {
         return Ok(());
     }
-    if let Some((_, refusal)) = remove_owned(env, target, false)?.into_iter().next() {
+    if let Some((_, refusal)) = remove_owned(env, target, false, true)?.into_iter().next() {
         bail!(refusal);
     }
     if let Some(kept) = &kept {
@@ -494,8 +561,11 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     }
     let pieces = verify(env, target, payload)?;
     for piece in &pieces {
-        if let Ownership::Foreign(refusal) | Ownership::Modified(refusal) = &piece.ownership {
-            bail!(refusal.clone());
+        match &piece.ownership {
+            // Kept in previous/ and replaced; the consent page listed its changed files.
+            Ownership::Modified(_) if piece.replaceable => {}
+            Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal.clone()),
+            _ => {}
         }
     }
     let path = state_path(env);
@@ -520,7 +590,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             state.save_backup = Some(safety::backup_saves(saves, &env.data.join("save-backups"))?);
             ledger::save(&path, &state)?;
         }
-        let owned = owned_paths(target)?;
+        let owned = owned_paths(target, true)?;
         let mut previous = resumed;
         if previous.is_none() && !owned.is_empty() {
             (env.step)(Step::KeepPrevious);
@@ -532,7 +602,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         // A bridge JAR the user disabled in the launcher stays disabled.
         let disabled = mods::bridge_disabled(&target.minecraft_mods)?;
         (env.step)(Step::Remove);
-        let done = remove_owned(env, target, false)
+        let done = remove_owned(env, target, false, true)
             .and_then(|_| put(env, target, payload, disabled))
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
@@ -586,6 +656,9 @@ pub struct Plan {
     pub writes: Vec<PathBuf>,
     /// Owned files the install replaces, kept in `previous/` first.
     pub replaced: Vec<PathBuf>,
+    /// Files of ours that changed or went missing since they were installed (by hand, an antivirus): the install
+    /// replaces them, keeping the changed ones in `previous/` first.
+    pub changed: Vec<PathBuf>,
     /// Copies made before the first write.
     pub backups: Vec<PathBuf>,
 }
@@ -633,7 +706,8 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
         }
     }
     plan.writes.push(state_path(env));
-    plan.replaced = owned_paths(target)?;
+    plan.replaced = owned_paths(target, true)?;
+    plan.changed = changed_files(target);
     let state = ledger::load(&state_path(env)).unwrap_or_default();
     if !plan.replaced.is_empty() && resumed(env, &state).is_none() {
         plan.backups
@@ -769,7 +843,7 @@ pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Refu
     (env.closed)()?;
     let guarded = Guarded::take(target, own_jars(target, None)?)?;
     (env.step)(Step::Remove);
-    let refusals = remove_owned(env, target, !remove_fabric)?;
+    let refusals = remove_owned(env, target, !remove_fabric, false)?;
     (env.step)(Step::Verify);
     guarded.unchanged(target)?;
     let path = state_path(env);

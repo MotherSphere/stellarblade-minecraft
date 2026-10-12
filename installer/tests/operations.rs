@@ -331,13 +331,14 @@ fn refusals_happen_before_any_write() {
     untouched(&w, &files);
     fs::remove_file(&foreign_dll).unwrap();
 
-    // A changed owned file stops an update, and an uninstall removes everything else.
+    // A file added to an owned folder stops an update (an update replaces only changed or missing listed files),
+    // and an uninstall removes everything else.
     ops::install(&w.env(), &w.target, &v1).unwrap();
     let script = w
         .game()
         .mods
         .join(deploy::MOD_NAME)
-        .join("Scripts/main.lua");
+        .join("Scripts/notes.lua");
     fs::write(&script, "edited by hand").unwrap();
     let files = w.files();
     let error = ops::install(&w.env(), &w.target, &payload(2)).unwrap_err();
@@ -1154,4 +1155,86 @@ fn an_adapter_installed_for_an_older_pin_is_updated() {
     assert!(all_current(&w, &v2));
     let manifest = adapter::manifest(&w.win64()).unwrap();
     assert_eq!(manifest.executable, w.pin);
+}
+
+/// A file of ours changed by hand (here: the newer release's own bytes copied in) must not leave a newer installer
+/// with no way forward: today Update refuses the Modified piece and Repair answers "run the update instead".
+#[test]
+fn a_hand_changed_piece_does_not_dead_end_a_newer_installer() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let lua = w.game().mods.join(deploy::MOD_NAME);
+    fs::write(lua.join("Scripts/main.lua"), &v2.lua["Scripts/main.lua"]).unwrap();
+    fs::write(w.win64().join(adapter::DLL), &v2.dll).unwrap();
+
+    let update = ops::install(&w.env(), &w.target, &v2);
+    let repair = ops::repair(&w.env(), &w.target, &v2);
+    assert!(
+        update.is_ok() || repair.is_ok(),
+        "dead end:\nupdate: {:#}\nrepair: {:#}",
+        update.unwrap_err(),
+        repair.unwrap_err()
+    );
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+}
+
+/// The same dead end without any hand copy: a file of ours went missing (an antivirus quarantining the adapter DLL)
+/// and the player downloads the next release before repairing.
+#[test]
+fn a_missing_piece_does_not_dead_end_a_newer_installer() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    fs::remove_file(w.win64().join(adapter::DLL)).unwrap();
+
+    let update = ops::install(&w.env(), &w.target, &v2);
+    let repair = ops::repair(&w.env(), &w.target, &v2);
+    assert!(
+        update.is_ok() || repair.is_ok(),
+        "dead end:\nupdate: {:#}\nrepair: {:#}",
+        update.unwrap_err(),
+        repair.unwrap_err()
+    );
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+}
+
+/// Replacing a piece changed by hand is shown before consent, keeps the changed files, and a rollback to that kept set
+/// is refused clearly instead of reinstalling half a piece.
+#[test]
+fn replacing_a_changed_piece_is_listed_kept_and_not_rolled_back_to() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let dll = w.win64().join(adapter::DLL);
+    fs::remove_file(&dll).unwrap();
+    let plan = ops::plan(&w.env(), &w.target, &v2).unwrap();
+    assert_eq!(plan.changed, vec![dll.clone()]);
+    assert!(plan.replaced.contains(&w.win64().join(adapter::MANIFEST)));
+    assert!(!plan.replaced.contains(&dll), "nothing to keep");
+    // Unlisted content is still refused, before any write.
+    let notes = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/notes.lua");
+    fs::write(&notes, "mine").unwrap();
+    let files = w.files();
+    assert!(ops::install(&w.env(), &w.target, &v2).is_err());
+    assert_eq!(w.files(), files);
+    fs::remove_file(&notes).unwrap();
+
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+    let kept = state(&w).previous.unwrap();
+    assert!(kept.join(adapter::MANIFEST).exists());
+    let error = ops::rollback(&w.env(), &w.target).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<Refusal>().map(|r| r.kind),
+        Some(Kind::PreviousChanged),
+        "{error:#}"
+    );
+    assert!(all_current(&w, &v2), "the refused rollback changed nothing");
 }

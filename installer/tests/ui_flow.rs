@@ -328,9 +328,12 @@ fn the_wizard_installs_maintains_and_removes_on_a_fake_tree() {
     drive(&mut app, Message::Rescan);
     assert_eq!(
         app.primary_action(),
-        ("action_update", false),
-        "a drifted game piece: repair it first"
+        ("action_update", true),
+        "a drifted game piece: Update replaces it, Repair puts the file back"
     );
+    let lua = app.found.as_ref().unwrap().pieces[1].clone();
+    assert!(lua.replaceable);
+    assert_eq!(ui::piece_status(&lua).0, ui::Level::Warn);
     drive(&mut app, Message::Begin(Action::Repair));
     match &app.modal {
         Some(Modal::Confirm(Action::Repair, lines)) => {
@@ -1079,4 +1082,30 @@ fn a_new_executable_pin_does_not_block_the_update() {
     drive(&mut app, Message::Rescan);
     assert_eq!(app.game_blocker(), None);
     assert_eq!(app.primary_action(), ("action_update", true));
+}
+
+/// A hand-changed Lua file and a newer installer: the status page must offer a way forward. Today Update is disabled
+/// ("use Repair") and Repair is refused ("run the update instead").
+#[test]
+fn a_newer_installer_offers_a_way_past_a_hand_changed_lua_file() {
+    let _language = language();
+    let fake = fake();
+    let mut app = install_eve(&fake);
+    let main = fake
+        .win64
+        .join("ue4ss/Mods")
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, &payload(2).lua["Scripts/main.lua"]).unwrap();
+    app.ctx.payload = Some(payload(2));
+    drive(&mut app, Message::Rescan);
+    let update = app.primary_action();
+    drive(&mut app, Message::Begin(Action::Repair));
+    let repair = matches!(app.modal, Some(Modal::Confirm(Action::Repair, _)));
+    assert!(
+        update.1 || repair,
+        "dead end: update {update:?}, blocker {:?}, repair errors {:?}",
+        app.game_blocker(),
+        errors(&app)
+    );
 }

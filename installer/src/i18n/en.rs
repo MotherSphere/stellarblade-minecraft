@@ -136,6 +136,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "Installed, another release: Update replaces it",
     ),
     (
+        "piece_replaceable",
+        "Changed or missing since it was installed ({path}): Update replaces it and keeps the changed files in previous/",
+    ),
+    (
         "pack_missing",
         "Missing: the avatar view needs it, the capture views work without it",
     ),
@@ -181,7 +185,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "blocker_game_files",
-        "A file where the bridge goes in the game folder is not the bridge's, or was changed (see the rows above). UE4SS 2.x, for example, also uses xinput1_3.dll. Remove or move that file; if it is the bridge's own, use Repair.",
+        "A file where the bridge goes in the game folder is not the bridge's, or the bridge's folder holds files it did not install (see the rows above). UE4SS 2.x, for example, also uses xinput1_3.dll. Remove or move that file.",
     ),
     ("viewer_still_possible", "The viewer role still works."),
     ("maintenance_title", "Installed pieces"),
@@ -248,6 +252,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     ("consent_writes", "Will be written"),
     ("consent_replaced", "Replaced (kept first, for Roll back)"),
+    (
+        "consent_changed",
+        "Changed or missing since they were installed: replaced, the changed ones kept first (Roll back cannot reinstall them)",
+    ),
     ("consent_backups", "Backups made first"),
     (
         "consent_eula",
@@ -527,7 +535,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_previous_changed",
-        "The kept previous set changed since it was kept: {path}",
+        "The kept previous set does not match its manifests (changed since it was kept, or kept with files changed by hand), so it cannot be installed again: {path}",
     ),
     ("err_still_modified", "{path} is still not as installed"),
     (
