@@ -769,22 +769,23 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         // A bridge JAR the user disabled in the launcher stays disabled.
         let disabled = mods::bridge_disabled(&target.minecraft_mods);
         (env.step)(Step::Remove);
-        let done = moved
+        let removed = moved
             .remove(env.closed)
             .and_then(|()| {
                 state.target = Some(target.clone());
                 ledger::save(&path, &state)
             })
-            .and_then(|()| remove_owned(env, target, false, true))
+            .and_then(|()| remove_owned(env, target, false, true));
+        // Stopped while removing, before any of them (a game found running at the first removal, a locked file): already
+        // back, also when the old place is elsewhere.
+        let untouched = removed.is_err()
+            && untouched.is_some_and(|before| contents(&owned).is_ok_and(|now| now == before));
+        let done = removed
             .and_then(|_| put(env, target, payload, disabled))
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
             (env.step)(Step::Restore);
-            // Stopped before its first change (a game found running at the first removal, a locked file): already back,
-            // also when the old place is elsewhere.
-            let restored = if untouched
-                .is_some_and(|before| contents(&owned).is_ok_and(|now| now == before))
-            {
+            let restored = if untouched {
                 Ok(())
             } else {
                 restore(env, target, previous.as_deref())
