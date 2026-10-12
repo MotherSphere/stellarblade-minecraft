@@ -944,7 +944,9 @@ pub fn repair_plan(
         mods_dir,
         mods::ownership(mods_dir)?,
         &|| mods::drifted(mods_dir),
+        // A disabled copy is put back disabled.
         &|name| {
+            let name = name.strip_suffix(mods::DISABLED).unwrap_or(name);
             if name == payload.jar.0 {
                 Some(payload.jar.1.clone())
             } else {

@@ -187,14 +187,24 @@ fn listed(mods: &Path) -> Result<Vec<(String, String, Listed)>> {
     Ok(found)
 }
 
-/// The listed files whose content is missing or differs, with the sha256 the manifest expects. A disabled copy counts
-/// as present, a Fabric API replaced by a newer one is no longer wanted, and a listed path that is not a regular file,
-/// or a bridge JAR the manifest does not list, cannot be repaired.
+/// The listed files whose content is missing or differs, by the name they are found under (the disabled one for a
+/// disabled copy), with the sha256 the manifest expects. A disabled copy counts as present, a Fabric API replaced by a
+/// newer one is no longer wanted, and a listed path that is not a regular file, or a bridge JAR the manifest does not
+/// list, cannot be repaired.
 pub fn drifted(mods: &Path) -> Result<Vec<(String, String)>> {
     Ok(listed(mods)?
         .into_iter()
-        .filter(|(_, _, state)| !matches!(state, Listed::Present(_)))
-        .map(|(name, expected, _)| (name, expected))
+        .filter_map(|(name, expected, state)| match state {
+            Listed::Present(_) => None,
+            Listed::Missing => Some((name, expected)),
+            Listed::Changed(path) => Some((
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                expected,
+            )),
+        })
         .collect())
 }
 
@@ -231,8 +241,10 @@ pub fn ownership(mods: &Path) -> Result<Ownership> {
         Ok(found) => {
             let changed: Vec<String> = found
                 .iter()
-                .filter(|(_, _, state)| matches!(state, Listed::Changed(_)))
-                .map(|(name, _, _)| mods.join(name).display().to_string())
+                .filter_map(|(_, _, state)| match state {
+                    Listed::Changed(path) => Some(path.display().to_string()),
+                    _ => None,
+                })
                 .collect();
             if changed.is_empty() {
                 Ownership::Owned

@@ -1724,3 +1724,30 @@ fn planning_beside_a_large_modpack_stays_fast() {
         start.elapsed()
     );
 }
+
+/// A changed bridge JAR the user disabled in Prism is listed where it is, under its disabled name, and repaired there.
+#[test]
+fn a_changed_disabled_jar_is_listed_at_its_real_path() {
+    let w = world();
+    let v1 = payload(1);
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let mods_dir = &w.target.minecraft_mods;
+    let disabled = mods_dir.join(format!("{}{}", v1.jar.0, mods::DISABLED));
+    fs::rename(mods_dir.join(&v1.jar.0), &disabled).unwrap();
+    fs::write(&disabled, "edited").unwrap();
+    let plan = ops::plan(&w.env(), &w.target, &payload(2)).unwrap();
+    assert_eq!(plan.changed, vec![disabled.clone()]);
+    let pieces = ops::verify(&w.env(), &w.target, &payload(2)).unwrap();
+    assert!(
+        matches!(&pieces[0].ownership, Ownership::Modified(r) if r.subject == disabled.display().to_string()),
+        "{:?}",
+        pieces[0].ownership
+    );
+    // Repair puts it back where it is, still disabled.
+    assert_eq!(
+        ops::repair(&w.env(), &w.target, &v1).unwrap(),
+        vec![disabled.clone()]
+    );
+    assert_eq!(fs::read(&disabled).unwrap(), v1.jar.1);
+    assert!(!mods_dir.join(&v1.jar.0).exists());
+}
