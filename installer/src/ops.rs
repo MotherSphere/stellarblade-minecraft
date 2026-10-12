@@ -46,7 +46,7 @@ pub struct Target {
 
 /// What every operation needs from its caller.
 pub struct Env<'a> {
-    /// The installer data folder: `state.json`, `previous/`, `save-backups/`.
+    /// The installer data folder: `state.json`, `previous/`, `changed/`, `save-backups/`.
     pub data: PathBuf,
     /// Refuses while a game runs. Called before every write.
     pub closed: Guard<'a>,
@@ -93,7 +93,7 @@ pub struct Piece {
 }
 
 /// Whether an update may replace the piece `name` on `target`: owned, or modified only in files its manifest lists
-/// (an edit by hand, a file an antivirus quarantined). The update keeps it in `previous/` first and the consent page
+/// (an edit by hand, a file an antivirus quarantined). The update keeps it first (in `changed/` once done) and the consent page
 /// lists those files. Foreign content, unlisted files, changed folders and links never are.
 pub fn replaceable(target: &Target, name: &str) -> bool {
     match (name, &target.game) {
@@ -773,11 +773,14 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     ledger::drop_previous(&env.data, kept, before.as_deref().filter(|b| b != kept))?
                 }
                 // A replaced piece had files changed by hand: that set cannot be installed again, so Roll back keeps
-                // going to the set kept before, unless that is what is installed now. The changed set stays beside
-                // it until the next successful run drops it.
-                Err(_) => before.filter(|b| {
-                    Payload::from_previous(b).is_ok_and(|p| p.release != payload.release)
-                }),
+                // going to the set kept before, unless that is what is installed now. The changed set goes where no
+                // later run deletes it.
+                Err(_) => {
+                    ledger::set_aside(&env.data, kept)?;
+                    before.filter(|b| {
+                        Payload::from_previous(b).is_ok_and(|p| p.release != payload.release)
+                    })
+                }
             };
         }
     }
@@ -800,7 +803,7 @@ pub struct Plan {
     /// Owned files the install replaces, kept in `previous/` first.
     pub replaced: Vec<PathBuf>,
     /// Files of ours that changed or went missing since they were installed (by hand, an antivirus): the install
-    /// replaces them, keeping the changed ones in `previous/` first.
+    /// replaces them, keeping the changed ones first, in `changed/` once done.
     pub changed: Vec<PathBuf>,
     /// Copies made before the first write.
     pub backups: Vec<PathBuf>,

@@ -1,5 +1,5 @@
 //! The installer's own record, in its data folder (`~/.local/share/Colony/Stellar Bridge/`): `state.json`, the
-//! previous owned set for rollback, and the save backups. It is data, not cache: losing it hurts.
+//! previous owned set for rollback, the sets kept with files changed by hand, and the save backups. It is data, not cache: losing it hurts.
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,23 @@ pub fn commit_previous(data: &Path, kept: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Moves a kept set with files changed by hand, which cannot be installed again, to `changed/<release>` (`-2`, `-3`…
+/// when taken). No run deletes it: they are the user's files.
+pub fn set_aside(data: &Path, kept: &Path) -> Result<PathBuf> {
+    let changed = data.join("changed");
+    fs::create_dir_all(&changed)?;
+    let name = kept.file_name().unwrap_or_default().to_string_lossy();
+    let mut aside = changed.join(&*name);
+    for n in 2.. {
+        if fs::symlink_metadata(&aside).is_err() {
+            break;
+        }
+        aside = changed.join(format!("{name}-{n}"));
+    }
+    fs::rename(kept, &aside)?;
+    Ok(aside)
+}
+
 /// After a failed run that was restored: drops `kept`, the set it kept (now identical to what is installed again),
 /// and returns the set kept before it, if any: `before` when it is still there, else the one other complete set.
 pub fn drop_previous(data: &Path, kept: &Path, before: Option<&Path>) -> Result<Option<PathBuf>> {
@@ -212,5 +229,26 @@ mod tests {
         assert!(keep_previous(&data, "0.3.0", &[&root.path().join("missing")]).is_err());
         assert!(second.exists(), "a failed copy keeps the last good set");
         assert!(keep_previous(&data, "../x", &[]).is_err());
+    }
+
+    #[test]
+    fn changed_sets_are_set_aside_without_replacing_one_another() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let edited = root.path().join("main.lua");
+        for edit in ["first edit", "second edit"] {
+            fs::write(&edited, edit).unwrap();
+            let kept = keep_previous(&data, "0.2.0", &[&edited]).unwrap();
+            set_aside(&data, &kept).unwrap();
+            assert!(!kept.exists());
+        }
+        assert_eq!(
+            fs::read_to_string(data.join("changed/0.2.0/main.lua")).unwrap(),
+            "first edit"
+        );
+        assert_eq!(
+            fs::read_to_string(data.join("changed/0.2.0-2/main.lua")).unwrap(),
+            "second edit"
+        );
     }
 }

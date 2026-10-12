@@ -1231,7 +1231,7 @@ fn replacing_a_changed_piece_is_listed_kept_and_not_rolled_back_to() {
     // The changed set stays on disk, but Roll back never offers it: there was no set kept before.
     assert!(
         w.data
-            .join("previous/0.1.0+test")
+            .join("changed/0.1.0+test")
             .join(adapter::MANIFEST)
             .exists()
     );
@@ -1627,4 +1627,42 @@ fn an_update_to_a_moved_mods_folder_stopped_before_any_change_is_restored() {
         "{message}\n{:?}",
         state(&w).status
     );
+}
+
+/// The files changed by hand that an update kept aside survive a later failed run and a Roll back.
+#[test]
+fn changed_files_kept_aside_survive_a_failed_run_and_a_rollback() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "my edit").unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let kept_aside = || {
+        safety::tree(&w.data)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, sha)| *sha == safety::sha256_hex(b"my edit"))
+            .count()
+    };
+    assert_eq!(kept_aside(), 1);
+    let broken = Payload {
+        dll: b"not a DLL".to_vec(),
+        ..payload(3)
+    };
+    let error = ops::install(&w.env(), &w.target, &broken).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("previous state was restored"),
+        "{error:#}"
+    );
+    assert!(all_current(&w, &v2));
+    assert_eq!(kept_aside(), 1, "deleted by a failed run");
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+    assert_eq!(kept_aside(), 1, "deleted by Roll back");
 }

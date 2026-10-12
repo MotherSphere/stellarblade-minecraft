@@ -143,7 +143,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "piece_replaceable",
-        "Modifié ou manquant depuis l'installation ({path}) : Mettre à jour le remplace et garde les fichiers modifiés dans previous/",
+        "Modifié ou manquant depuis l'installation ({path}) : Mettre à jour le remplace et garde les fichiers modifiés dans changed/, dans le dossier de données de l'installateur",
     ),
     (
         "pack_missing",
@@ -266,11 +266,11 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "consent_changed",
-        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés à part (Revenir en arrière ramène toujours la version conservée avant, s'il y en a une)",
+        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés dans changed/, dans le dossier de données de l'installateur (Revenir en arrière ramène toujours la version conservée avant, s'il y en a une)",
     ),
     (
         "confirm_changed",
-        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés à part",
+        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés dans changed/, dans le dossier de données de l'installateur",
     ),
     ("consent_backups", "Copies faites d'abord"),
     (

@@ -137,7 +137,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "piece_replaceable",
-        "Changed or missing since it was installed ({path}): Update replaces it and keeps the changed files in previous/",
+        "Changed or missing since it was installed ({path}): Update replaces it and keeps the changed files in changed/, in the installer's data folder",
     ),
     (
         "pack_missing",
@@ -254,11 +254,11 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("consent_replaced", "Replaced (kept first, for Roll back)"),
     (
         "consent_changed",
-        "Changed or missing since they were installed: replaced, the changed ones kept aside (Roll back still returns to the release kept before, if any)",
+        "Changed or missing since they were installed: replaced, the changed ones kept in changed/, in the installer's data folder (Roll back still returns to the release kept before, if any)",
     ),
     (
         "confirm_changed",
-        "Changed or missing since they were installed: replaced, the changed ones kept aside",
+        "Changed or missing since they were installed: replaced, the changed ones kept in changed/, in the installer's data folder",
     ),
     ("consent_backups", "Backups made first"),
     (
