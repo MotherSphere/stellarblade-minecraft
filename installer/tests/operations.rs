@@ -1327,6 +1327,21 @@ fn uninstall_after_a_moved_game_removes_the_pieces_at_the_old_place() {
     assert_eq!(state(&w).status, Status::Removed);
 }
 
+/// A main.lua edited by hand beside the temporary a killed repair left (`Scripts/.bridge.lua.part`): the Lua mod is
+/// still only changed in listed files, so the update replaces it.
+#[test]
+fn a_hand_edited_lua_mod_with_a_stray_part_file_is_still_replaced() {
+    let w = world();
+    ops::install(&w.env(), &w.target, &payload(1)).unwrap();
+    let scripts = w.game().mods.join(deploy::MOD_NAME).join("Scripts");
+    fs::write(scripts.join("main.lua"), "my edit").unwrap();
+    fs::write(scripts.join(".bridge.lua.part"), "partial").unwrap();
+    assert!(ops::replaceable(&w.target, ops::LUA));
+    let updated = ops::install(&w.env(), &w.target, &payload(2));
+    assert!(updated.is_ok(), "{:#}", updated.unwrap_err());
+    assert!(all_current(&w, &payload(2)));
+}
+
 /// An update over a file changed by hand keeps that changed set aside, but Roll back still goes to the complete set
 /// kept before it: the update must not drop that one.
 #[test]
