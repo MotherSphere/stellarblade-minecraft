@@ -2074,14 +2074,15 @@ fn an_update_stopped_while_clearing_a_moved_game_is_restored_where_recorded() {
     );
 }
 
-// The ledger model: every start state, then one operation with a failure injected at every guard call and every step,
-// then every recovery the window offers, twice; the invariants are checked after each action.
+// The ledger model: every start state, then one operation stopped at every guard call and every step (a game started,
+// a kill, a kill during the restore a refusal starts), then every recovery the window offers, stopped the same ways, then
+// every recovery again; the invariants are checked after each action.
 
 /// The panic standing for a kill: the process dies there, with nothing after it running.
 struct Killed;
 
-/// Everything under the fake home (relative path, bytes or `None` for a folder, mode), put back in place so a scenario
-/// restarts without rebuilding the world: the absolute paths in `state.json` and the manifests stay valid.
+/// Everything under the folders runs write (relative path, bytes or `None` for a folder, mode), put back in place so a
+/// scenario restarts without rebuilding the world: the absolute paths in `state.json` and the manifests stay valid.
 type Disk = Vec<(PathBuf, Option<Vec<u8>>, u32)>;
 
 fn mode(metadata: &fs::Metadata) -> u32 {
@@ -2091,50 +2092,109 @@ fn mode(metadata: &fs::Metadata) -> u32 {
     return u32::from(metadata.permissions().readonly());
 }
 
-fn take_disk(home: &Path) -> Disk {
-    fn walk(home: &Path, dir: &Path, disk: &mut Disk) {
-        let mut paths: Vec<_> = fs::read_dir(dir)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .collect();
-        paths.sort();
-        for path in paths {
-            let metadata = fs::symlink_metadata(&path).unwrap();
-            assert!(!metadata.file_type().is_symlink(), "{}", path.display());
-            let relative = path.strip_prefix(home).unwrap().to_path_buf();
-            if metadata.is_dir() {
-                disk.push((relative, None, mode(&metadata)));
-                walk(home, &path, disk);
-            } else {
-                disk.push((relative, Some(fs::read(&path).unwrap()), mode(&metadata)));
-            }
-        }
-    }
-    let mut disk = Vec::new();
-    walk(home, home, &mut disk);
+fn take_disk(w: &World) -> Disk {
+    let mut disk = walk(w, &w.data);
+    disk.extend(pieces(w));
     disk
 }
 
-fn put_disk(home: &Path, disk: &Disk) {
-    for entry in fs::read_dir(home).unwrap() {
+/// What `walk` finds of the pieces: the mods folders and the adapter's files.
+fn pieces(w: &World) -> Disk {
+    let mut disk = walk(w, &w.target.minecraft_mods);
+    disk.extend(walk(w, &w.game().mods));
+    disk.extend(walk(w, &w.win64()));
+    disk
+}
+
+/// The folder `dir` with what it holds, the adapter's folder without its subfolders.
+fn walk(w: &World, dir: &Path) -> Disk {
+    fn walk(home: &Path, path: &Path, deep: bool, disk: &mut Disk) {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        assert!(!metadata.file_type().is_symlink(), "{}", path.display());
+        let relative = path.strip_prefix(home).unwrap().to_path_buf();
+        if !metadata.is_dir() {
+            disk.push((relative, Some(fs::read(path).unwrap()), mode(&metadata)));
+            return;
+        }
+        disk.push((relative, None, mode(&metadata)));
+        let mut paths: Vec<_> = fs::read_dir(path)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| deep || !p.is_dir())
+            .collect();
+        paths.sort();
+        for path in paths {
+            walk(home, &path, deep, disk);
+        }
+    }
+    let mut disk = Vec::new();
+    if dir.exists() {
+        walk(&w.home, dir, *dir != w.win64(), &mut disk);
+    }
+    disk
+}
+
+/// Puts `disk` back where runs write: the installer's data and the two mods folders, whole, and the adapter's folder's
+/// files (UE4SS beside them is protected, which every run checks).
+fn put_disk(w: &World, disk: &Disk) {
+    for dir in [&w.data, &w.target.minecraft_mods, &w.game().mods]
+        .into_iter()
+        .filter(|d| d.exists())
+    {
+        fs::remove_dir_all(dir).unwrap();
+    }
+    for entry in fs::read_dir(w.win64()).unwrap() {
         let path = entry.unwrap().path();
-        if fs::symlink_metadata(&path).unwrap().is_dir() {
-            fs::remove_dir_all(&path).unwrap();
-        } else {
-            fs::remove_file(&path).unwrap();
+        if !path.is_dir() {
+            fs::remove_file(path).unwrap();
         }
     }
     for (relative, bytes, _) in disk {
         match bytes {
-            None => fs::create_dir(home.join(relative)).unwrap(),
-            Some(bytes) => fs::write(home.join(relative), bytes).unwrap(),
+            None => fs::create_dir_all(w.home.join(relative)).unwrap(),
+            Some(bytes) => fs::write(w.home.join(relative), bytes).unwrap(),
         }
     }
     #[cfg(unix)]
     for (relative, _, mode) in disk.iter().rev() {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(home.join(relative), fs::Permissions::from_mode(*mode)).unwrap();
+        fs::set_permissions(w.home.join(relative), fs::Permissions::from_mode(*mode)).unwrap();
     }
+}
+
+/// The disk's content, the same in every world: files by content, `state.json` by its fields without its time, the save
+/// backups (named by time) aside.
+fn disk_hash(w: &World, disk: &Disk) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    let home = w.home.display().to_string();
+    for (path, bytes, _) in disk {
+        if path.components().any(|c| c.as_os_str() == "save-backups") {
+            continue;
+        }
+        path.hash(&mut hasher);
+        if path.file_name().is_some_and(|n| n == ledger::STATE) {
+            let mut state: ledger::State =
+                serde_json::from_slice(bytes.as_deref().unwrap_or_default()).unwrap_or_default();
+            (state.updated, state.save_backup) = (0, None);
+            format!("{state:?}").replace(&home, "~").hash(&mut hasher);
+        } else {
+            bytes.hash(&mut hasher);
+        }
+    }
+    std::hash::Hasher::finish(&hasher)
+}
+
+/// The files of the pieces, by path: what the user sees of an install.
+fn written(w: &World) -> BTreeMap<String, String> {
+    pieces(w)
+        .into_iter()
+        .filter_map(|(path, bytes, _)| {
+            Some((
+                path.to_string_lossy().replace('\\', "/"),
+                safety::sha256_hex(&bytes?),
+            ))
+        })
+        .collect()
 }
 
 /// What the user expects, which the disk and `state.json` must keep matching.
@@ -2168,18 +2228,26 @@ enum Act {
     Uninstall,
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Where a run calls back: the guard's `n`th call, or the `n`th step reported.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Point {
+    Guard(usize),
+    Step(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Fault {
     None,
-    /// The guard refuses at its `at`th call (a game started), and after it unless `once` (it stays running).
+    /// The guard refuses at its `at`th call: a game started. One still running when the restore starts stops it before
+    /// its first write, which leaves the disk as a kill at that call does.
     Refuse {
         at: usize,
-        once: bool,
     },
-    /// The process is killed at the guard's `at`th call.
-    KillAtGuard(usize),
-    /// The process is killed at the `at`th step reported.
-    KillAtStep(usize),
+    /// The process is killed at `at`; with `refused`, after the guard refused at that call (during the restore).
+    Kill {
+        refused: Option<usize>,
+        at: Point,
+    },
 }
 
 enum Outcome {
@@ -2203,11 +2271,14 @@ fn set_release(set: &Payload) -> Option<u32> {
     })
 }
 
+/// Whether the disk holds `release`, every piece current.
+fn holds(w: &World, release: u32) -> bool {
+    ops::verify(&w.env(), &w.target, &payload(release)).is_ok_and(|p| p.iter().all(|p| p.current))
+}
+
 /// The release the disk holds, every piece current.
 fn disk_release(w: &World) -> Option<u32> {
-    (1..=3).find(|n| {
-        ops::verify(&w.env(), &w.target, &payload(*n)).is_ok_and(|p| p.iter().all(|p| p.current))
-    })
+    (1..=3).find(|n| holds(w, *n))
 }
 
 fn kind(ownership: &Ownership) -> &'static str {
@@ -2219,20 +2290,35 @@ fn kind(ownership: &Ownership) -> &'static str {
     }
 }
 
-/// The release complete on disk, by the record: installed, every piece owned and unchanged (an adapter for an older
-/// executable included).
+/// Whether a run kept a complete set of `release` in `previous/`.
+fn kept(w: &World, release: u32) -> bool {
+    fs::read_dir(w.data.join("previous"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| {
+            !e.file_name().to_string_lossy().starts_with('.')
+                && Payload::from_previous(&e.path()).is_ok_and(|p| set_release(&p) == Some(release))
+        })
+}
+
+/// Whether every piece of `release` is on disk, owned and unchanged (an adapter for an older executable included).
+fn complete(w: &World, release: u32) -> bool {
+    ops::verify(&w.env(), &w.target, &payload(release)).is_ok_and(|p| {
+        p.iter()
+            .all(|p| p.current || (p.name == ops::ADAPTER && p.ownership == Ownership::Owned))
+    })
+}
+
+/// The release complete on disk, by the record.
 fn clean_release(w: &World, state: &Option<ledger::State>) -> Option<u32> {
     let state = state.as_ref().filter(|s| s.status == Status::Installed)?;
     let release = release_number(&state.release)?;
-    ops::verify(&w.env(), &w.target, &payload(release))
-        .ok()?
-        .iter()
-        .all(|p| p.current || (p.name == ops::ADAPTER && p.ownership == Ownership::Owned))
-        .then_some(release)
+    complete(w, release).then_some(release)
 }
 
-fn data_hashes(w: &World) -> Vec<String> {
-    let mut hashes: Vec<String> = w.files().into_values().collect();
+fn data_hashes(w: &World, files: &BTreeMap<String, String>) -> Vec<String> {
+    let mut hashes: Vec<String> = files.values().cloned().collect();
     if w.data.is_dir() {
         hashes.extend(safety::tree(&w.data).unwrap().into_values());
     }
@@ -2257,11 +2343,24 @@ struct Violation {
     detail: String,
 }
 
+struct Before {
+    state: Option<ledger::State>,
+    /// The release complete on disk, by the record.
+    clean: Option<u32>,
+    pieces: Vec<ops::Piece>,
+    files: BTreeMap<String, String>,
+    /// What the confirm modal or consent page lists.
+    listed: Vec<PathBuf>,
+    /// Each file changed by hand, with where it is.
+    precious_at: Vec<(String, Vec<String>)>,
+}
+
 struct Explorer<'a> {
     w: &'a World,
     /// The payload the installer running the recoveries carries.
     installer: Payload,
-    seen: std::collections::HashSet<u64>,
+    /// The states explored, with how many actions deep, by every explorer.
+    seen: &'a std::sync::Mutex<std::collections::HashMap<u64, u32>>,
     found: Vec<Violation>,
 }
 
@@ -2275,26 +2374,48 @@ impl Explorer<'_> {
         });
     }
 
-    fn run(&self, act: Act, payload: &Payload, fault: Fault) -> (Outcome, usize, usize) {
+    /// Runs `act` with `fault`. Returns the outcome, the guard call count and, for a run that may lead to a kill, each
+    /// point it called back at with the disk there.
+    fn run(
+        &self,
+        act: Act,
+        payload: &Payload,
+        fault: Fault,
+    ) -> (Outcome, usize, Vec<(Point, u64)>) {
         let w = self.w;
         let (guards, steps) = (Cell::new(0), Cell::new(0));
+        let points = std::cell::RefCell::new(Vec::new());
+        // Where a kill may go next: every point of a run without a fault, every point after the refusal of one with.
+        let record = Cell::new(matches!(fault, Fault::None));
+        let call = |point: Point| {
+            if record.get() {
+                points
+                    .borrow_mut()
+                    .push((point, disk_hash(w, &take_disk(w))));
+            }
+            if matches!((fault, point), (Fault::Kill { at: Point::Guard(k), .. }, Point::Guard(n)) | (Fault::Kill { at: Point::Step(k), .. }, Point::Step(n)) if k == n)
+            {
+                std::panic::panic_any(Killed)
+            }
+        };
         let closed = || {
             guards.set(guards.get() + 1);
+            let n = guards.get();
+            call(Point::Guard(n));
             match fault {
-                Fault::Refuse { at, once }
-                    if guards.get() == at || (!once && guards.get() > at) =>
-                {
+                Fault::Refuse { at }
+                | Fault::Kill {
+                    refused: Some(at), ..
+                } if n == at => {
+                    record.set(matches!(fault, Fault::Refuse { .. }));
                     anyhow::bail!("Stellar Blade started")
                 }
-                Fault::KillAtGuard(at) if guards.get() == at => std::panic::panic_any(Killed),
                 _ => Ok(()),
             }
         };
         let step = |_: ops::Step| {
             steps.set(steps.get() + 1);
-            if matches!(fault, Fault::KillAtStep(at) if at == steps.get()) {
-                std::panic::panic_any(Killed)
-            }
+            call(Point::Step(steps.get()));
         };
         let env = Env {
             data: w.data.clone(),
@@ -2326,48 +2447,69 @@ impl Explorer<'_> {
             Err(payload) if payload.is::<Killed>() => Outcome::Killed,
             Err(payload) => std::panic::resume_unwind(payload),
         };
-        (outcome, guards.get(), steps.get())
+        (outcome, guards.get(), points.into_inner())
     }
 
-    /// Runs `act` with `fault`, checks every invariant and moves the model on. Returns the guard and step counts.
+    /// What [`Self::act`] compares with, read before `act` runs from the disk there.
+    fn before(&self, m: &Model, act: Act, payload: &Payload) -> Before {
+        let w = self.w;
+        let state = ledger::load(&w.data.join(ledger::STATE));
+        let files = written(w);
+        Before {
+            clean: clean_release(w, &state),
+            pieces: ops::verify(&w.env(), &w.target, payload).unwrap_or_default(),
+            // What the confirm modal or consent page lists.
+            listed: match act {
+                Act::Install => ops::plan(&w.env(), &w.target, payload)
+                    .map(|p| p.changed)
+                    .unwrap_or_default(),
+                Act::Rollback => ops::changed_files(&w.target),
+                Act::Repair => ops::repair_plan(&w.env(), &w.target, payload)
+                    .map(|p| p.into_iter().map(|(path, _)| path).collect())
+                    .unwrap_or_default(),
+                Act::Uninstall => Vec::new(),
+            },
+            precious_at: m
+                .precious
+                .iter()
+                .map(|h| {
+                    let at = files
+                        .iter()
+                        .filter(|(_, sha)| *sha == h)
+                        .map(|(path, _)| path.clone())
+                        .collect();
+                    (h.clone(), at)
+                })
+                .collect(),
+            state,
+            files,
+        }
+    }
+
+    /// Runs `act` with `fault` from the disk `before` was read from, checks every invariant and moves the model on.
+    /// Returns what [`Self::run`] does.
     fn act(
         &mut self,
         m: &mut Model,
         act: Act,
         payload: &Payload,
         fault: Fault,
+        before: &Before,
         scenario: &str,
-    ) -> (usize, usize) {
+    ) -> (usize, Vec<(Point, u64)>) {
         let w = self.w;
         let state_path = w.data.join(ledger::STATE);
-        let state_before = ledger::load(&state_path);
-        let clean_before = clean_release(w, &state_before);
-        let pieces_before = ops::verify(&w.env(), &w.target, payload).unwrap_or_default();
-        let files_before = w.files();
-        // What the confirm modal or consent page lists.
-        let listed: Vec<PathBuf> = match act {
-            Act::Install => ops::plan(&w.env(), &w.target, payload)
-                .map(|p| p.changed)
-                .unwrap_or_default(),
-            Act::Rollback => ops::changed_files(&w.target),
-            Act::Repair => ops::repair_plan(&w.env(), &w.target, payload)
-                .map(|p| p.into_iter().map(|(path, _)| path).collect())
-                .unwrap_or_default(),
-            Act::Uninstall => Vec::new(),
-        };
-        let precious_at: Vec<(String, Vec<String>)> = m
-            .precious
-            .iter()
-            .map(|h| {
-                let at = files_before
-                    .iter()
-                    .filter(|(_, sha)| *sha == h)
-                    .map(|(path, _)| path.clone())
-                    .collect();
-                (h.clone(), at)
-            })
-            .collect();
-        let (outcome, guards, steps) = self.run(act, payload, fault);
+        let Before {
+            state: state_before,
+            clean: clean_before,
+            pieces: pieces_before,
+            files: files_before,
+            listed,
+            precious_at,
+        } = before;
+        let clean_before = *clean_before;
+        let (outcome, guards, points) = self.run(act, payload, fault);
+        let files = written(w);
         let state = ledger::load(&state_path);
         let status = state.as_ref().map(|s| s.status);
         let class = match &outcome {
@@ -2380,7 +2522,7 @@ impl Explorer<'_> {
         match (&outcome, act) {
             (Outcome::Done { release, .. }, Act::Install | Act::Rollback) => {
                 let release = release.unwrap_or(0);
-                if disk_release(w) != Some(release) {
+                if !holds(w, release) {
                     self.fail(
                         "I1",
                         format!("{when}: the disk is not the release it reports"),
@@ -2413,7 +2555,7 @@ impl Explorer<'_> {
                     }
                 }
                 m.pending = None;
-                m.tree = Some((release, w.files()));
+                m.tree = Some((release, files.clone()));
             }
             (Outcome::Done { repaired, .. }, Act::Repair) => {
                 let recorded = state_before
@@ -2435,9 +2577,6 @@ impl Explorer<'_> {
                         scenario,
                         format!("record {:?}", state_before.as_ref().map(|s| s.status)),
                     );
-                }
-                if let Some(s) = state.as_ref().filter(|s| s.status == Status::Installed) {
-                    m.tree = release_number(&s.release).map(|r| (r, w.files()));
                 }
             }
             // Also with pieces left in place: changed by hand, they are the user's now.
@@ -2480,28 +2619,26 @@ impl Explorer<'_> {
                     }
                     let restored =
                         error.starts_with("Installation failed; the previous state was restored");
-                    let resumed = state_before
-                        .as_ref()
-                        .is_some_and(|s| s.status == Status::InProgress);
-                    // Finishing an interrupted run, the previous state is the release before that run, its adapter for
-                    // the executable it was installed for.
+                    // A restore that records another status finished an interrupted run: the previous state is the
+                    // release before that run, its adapter for the executable it was installed for. Any other puts every
+                    // file back as it was.
+                    let finished = state_before.as_ref().map(|s| s.status) != status;
                     if restored
-                        && resumed
+                        && finished
                         && m.pending
                             .is_some_and(|pre| pre.is_some() && clean_release(w, &state) != pre)
                     {
                         self.fail("I1", format!("{when}: says restored but the release before the interrupted run is not back"), scenario, format!("disk {:?}, expected {:?}", clean_release(w, &state), m.pending));
                     }
-                    if restored && !resumed && !same_but_pin(&w.files(), &files_before) {
-                        let changed: Vec<_> = w
-                            .files()
-                            .into_iter()
-                            .filter(|(p, h)| files_before.get(p) != Some(h))
-                            .map(|(p, _)| p)
+                    if restored && !finished && !same_but_pin(&files, files_before) {
+                        let changed: Vec<_> = files
+                            .iter()
+                            .filter(|(p, h)| files_before.get(*p) != Some(h))
+                            .map(|(p, _)| p.clone())
                             .chain(
                                 files_before
                                     .keys()
-                                    .filter(|p| !w.files().contains_key(*p))
+                                    .filter(|p| !files.contains_key(*p))
                                     .cloned(),
                             )
                             .collect();
@@ -2514,41 +2651,48 @@ impl Explorer<'_> {
                     }
                 }
                 if status == Some(Status::InProgress) {
-                    // An Uninstall keeps nothing: Roll back can only go to what it left complete.
-                    if m.pending.is_none() {
-                        m.pending = Some(match act {
-                            Act::Uninstall => disk_release(w),
-                            _ => clean_before,
-                        });
-                    }
+                    let pre = m.pending.unwrap_or(clean_before);
+                    m.pending = Some(match act {
+                        // An Uninstall keeps nothing: Roll back can only go to what it left complete, or a run kept.
+                        Act::Uninstall => pre.filter(|p| complete(w, *p) || kept(w, *p)),
+                        _ => pre,
+                    });
                 } else if m.pending.take().is_some() {
                     // An interrupted run put back as it was before it.
                     m.tree = state
                         .as_ref()
                         .filter(|s| s.status == Status::Installed)
                         .and_then(|s| release_number(&s.release))
-                        .map(|r| (r, w.files()));
+                        .map(|r| (r, files.clone()));
                 }
             }
         }
 
-        // I5: the record describes the disk.
-        let pieces = ops::verify(&w.env(), &w.target, &self.installer);
-        match (&state, pieces) {
+        // A Repair writes only what the record lists: also stopped midway, the record describes the disk.
+        if act == Act::Repair
+            && let Some(s) = state.as_ref().filter(|s| s.status == Status::Installed)
+        {
+            m.tree = release_number(&s.release).map(|r| (r, files.clone()));
+        }
+
+        // I5: the record describes the disk, compared with the release it names when installed.
+        let recorded = state
+            .as_ref()
+            .filter(|s| s.status == Status::Installed)
+            .map(|s| release_number(&s.release).unwrap_or(0));
+        let compared = recorded.map_or(self.installer.clone(), |r| crate::payload(r.max(1)));
+        match (&state, ops::verify(&w.env(), &w.target, &compared)) {
             (_, Err(error)) => self.fail(
                 "I5",
                 format!("{when}: the pieces cannot be read"),
                 scenario,
                 format!("{error:#}"),
             ),
-            (Some(s), Ok(_)) if s.status == Status::Installed => {
-                let release = release_number(&s.release).unwrap_or(0);
+            (_, Ok(pieces)) if let Some(release) = recorded => {
                 let as_recorded = m
                     .tree
                     .as_ref()
-                    .is_some_and(|(r, t)| *r == release && *t == w.files());
-                let pieces = ops::verify(&w.env(), &w.target, &crate::payload(release.max(1)))
-                    .unwrap_or_default();
+                    .is_some_and(|(r, t)| *r == release && *t == files);
                 if let Some(piece) = pieces
                     .iter()
                     .find(|p| !p.current && !matches!(p.ownership, Ownership::Modified(_)))
@@ -2626,14 +2770,12 @@ impl Explorer<'_> {
                         scenario,
                         previous.display().to_string(),
                     ),
-                    Some(n) if status == Some(Status::Installed) && disk_release(w) == Some(n) => {
-                        self.fail(
-                            "I2",
-                            format!("{when}: Roll back would go to the installed release"),
-                            scenario,
-                            format!("v{n}, expected one of {targets:?}"),
-                        )
-                    }
+                    Some(n) if status == Some(Status::Installed) && holds(w, n) => self.fail(
+                        "I2",
+                        format!("{when}: Roll back would go to the installed release"),
+                        scenario,
+                        format!("v{n}, expected one of {targets:?}"),
+                    ),
                     Some(n) if !targets.contains(&Some(n)) => self.fail(
                         "I2",
                         format!("{when}: Roll back would go to another release"),
@@ -2646,9 +2788,13 @@ impl Explorer<'_> {
         }
 
         // I4: files changed by hand survive, unless a confirm modal that does not promise to keep them listed them.
-        let hashes = data_hashes(w);
+        let hashes = if precious_at.is_empty() {
+            Vec::new()
+        } else {
+            data_hashes(w, &files)
+        };
         let mut kept = Vec::new();
-        for (hash, at) in precious_at {
+        for (hash, at) in precious_at.iter().cloned() {
             let consented =
                 act == Act::Repair && at.iter().any(|p| listed.iter().any(|l| l.ends_with(p)));
             if hashes.contains(&hash) || consented {
@@ -2665,7 +2811,7 @@ impl Explorer<'_> {
             }
         }
         m.precious = kept;
-        (guards, steps)
+        (guards, points)
     }
 
     /// Every recovery the window offers from here, `depth` actions deep.
@@ -2673,28 +2819,19 @@ impl Explorer<'_> {
         if depth == 0 {
             return;
         }
-        let disk = take_disk(&self.w.home);
-        let mut hasher = std::hash::DefaultHasher::new();
-        for (path, bytes, _) in &disk {
-            if path.components().any(|c| c.as_os_str() == "save-backups") {
-                continue;
+        let disk = take_disk(self.w);
+        // A state explored as deep before, by any world, is not explored again.
+        let key = self.key(&disk, m);
+        {
+            let mut seen = self.seen.lock().unwrap();
+            if seen.get(&key).is_some_and(|d| *d >= depth) {
+                return;
             }
-            path.hash(&mut hasher);
-            if path.file_name().is_some_and(|n| n == ledger::STATE) {
-                let mut state = ledger::load(&self.w.home.join(path)).unwrap_or_default();
-                (state.updated, state.save_backup) = (0, None);
-                format!("{state:?}").hash(&mut hasher);
-            } else {
-                bytes.hash(&mut hasher);
-            }
+            seen.insert(key, depth);
         }
-        (m, depth).hash(&mut hasher);
-        if !self.seen.insert(std::hash::Hasher::finish(&hasher)) {
-            return;
-        }
+        let state = ledger::load(&self.w.data.join(ledger::STATE));
         // While a run is interrupted, the user may change a file of ours by hand before choosing a recovery; once.
-        let interrupted = ledger::load(&self.w.data.join(ledger::STATE))
-            .is_some_and(|s| s.status == Status::InProgress);
+        let interrupted = state.is_some_and(|s| s.status == Status::InProgress);
         let main = self
             .w
             .game()
@@ -2703,44 +2840,115 @@ impl Explorer<'_> {
             .join("Scripts/main.lua");
         let edit = b"my edit after the stop";
         if interrupted && main.is_file() && !m.precious.contains(&safety::sha256_hex(edit)) {
-            put_disk(&self.w.home, &disk);
+            put_disk(self.w, &disk);
             fs::write(&main, edit).unwrap();
             let mut m = m.clone();
             // An earlier edit it overwrote is gone by the user's hand, unless a run kept it.
-            let hashes = data_hashes(self.w);
+            let hashes = data_hashes(self.w, &written(self.w));
             m.precious.retain(|h| hashes.contains(h));
             m.precious.push(safety::sha256_hex(edit));
             // The release complete before the interrupted run is now only where that run kept it, if it got that far.
-            if let Some(Some(pre)) = m.pending {
-                let kept = fs::read_dir(self.w.data.join("previous"))
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .any(|e| {
-                        !e.file_name().to_string_lossy().starts_with('.')
-                            && Payload::from_previous(&e.path())
-                                .is_ok_and(|p| set_release(&p) == Some(pre))
-                    });
-                if !kept {
-                    m.pending = Some(None);
-                }
+            if let Some(Some(pre)) = m.pending
+                && !kept(self.w, pre)
+            {
+                m.pending = Some(None);
             }
-            self.recover(&m, depth, &format!("{scenario} > edit main.lua"));
+            // Then every recovery, without a fault: faults inside recoveries are explored without the edit.
+            self.recover(&m, 1, &format!("{scenario} > edit main.lua"));
         }
         let installer = self.installer.clone();
-        for act in [Act::Install, Act::Rollback, Act::Repair] {
-            put_disk(&self.w.home, &disk);
-            let offered = ledger::load(&self.w.data.join(ledger::STATE))
-                .and_then(|s| s.previous)
-                .is_some_and(|p| p.is_dir());
-            if act == Act::Rollback && !offered {
+        for act in [Act::Install, Act::Rollback, Act::Repair, Act::Uninstall] {
+            put_disk(self.w, &disk);
+            let state = ledger::load(&self.w.data.join(ledger::STATE));
+            // The status page's maintenance actions, while something of ours is installed or a run is recorded.
+            let installed = state.as_ref().is_some_and(|s| s.status != Status::Removed)
+                || ops::verify(&self.w.env(), &self.w.target, &installer).is_ok_and(|p| {
+                    p.iter()
+                        .any(|p| matches!(p.ownership, Ownership::Owned | Ownership::Modified(_)))
+                });
+            let offered = match act {
+                Act::Install => true,
+                Act::Rollback => {
+                    installed && state.and_then(|s| s.previous).is_some_and(|p| p.is_dir())
+                }
+                Act::Repair | Act::Uninstall => installed,
+            };
+            if offered {
+                let faulted =
+                    depth > 1 && (interrupted || matches!(act, Act::Repair | Act::Uninstall));
+                self.explore(m, act, &disk, faulted, depth - 1, (0, 1), scenario);
+            }
+        }
+    }
+
+    /// Runs `act` from `disk`, then, `faulted`, again stopped at every guard call and step it made (and killed during
+    /// the restore a refusal starts); each run is followed by every recovery, `depth` actions deep.
+    /// `share` (`part`, `parts`): the runs this explorer recovers from, with others exploring the rest.
+    #[allow(clippy::too_many_arguments)]
+    fn explore(
+        &mut self,
+        m: &Model,
+        act: Act,
+        disk: &Disk,
+        faulted: bool,
+        depth: u32,
+        share: (usize, usize),
+        scenario: &str,
+    ) {
+        let installer = self.installer.clone();
+        // Each fault with the part it belongs to: the run without one is every part's (each finds the faults from it),
+        // recovered from by the first; a kill during a restore, the part of the refusal that started it.
+        let (part, parts) = share;
+        let mut faults = vec![(Fault::None, part)];
+        // A kill leaves only the disk: one kill per disk the run went through.
+        let mut killed = std::collections::HashSet::new();
+        put_disk(self.w, disk);
+        let before = self.before(m, act, &installer);
+        let mut n = 0;
+        while n < faults.len() {
+            let (fault, owner) = faults[n];
+            n += 1;
+            if owner != part {
                 continue;
             }
+            put_disk(self.w, disk);
             let mut m = m.clone();
-            let scenario = format!("{scenario} > {act:?}");
-            self.act(&mut m, act, &installer, Fault::None, &scenario);
-            self.recover(&m, depth - 1, &scenario);
+            let scenario = match fault {
+                Fault::None => format!("{scenario} > {act:?}"),
+                _ => format!("{scenario} > {act:?} [{fault:?}]"),
+            };
+            let (guards, points) = self.act(&mut m, act, &installer, fault, &before, &scenario);
+            let mut next = Vec::new();
+            if faulted {
+                let refused = match fault {
+                    Fault::None => {
+                        next.extend((1..=guards).map(|at| Fault::Refuse { at }));
+                        None
+                    }
+                    Fault::Refuse { at } => Some(at),
+                    Fault::Kill { .. } => None,
+                };
+                for (at, disk) in &points {
+                    if killed.insert(*disk) {
+                        next.push(Fault::Kill { refused, at: *at });
+                    }
+                }
+            }
+            match fault {
+                Fault::None => faults.extend(next.into_iter().zip((0..parts).cycle())),
+                _ => faults.extend(next.into_iter().map(|f| (f, owner))),
+            }
+            if fault != Fault::None || part == 0 {
+                self.recover(&m, depth, &scenario);
+            }
         }
+    }
+
+    /// The state the disk and `m` make, the same in every world, for the installer recovering from it.
+    fn key(&self, disk: &Disk, m: &Model) -> u64 {
+        let mut hasher = std::hash::DefaultHasher::new();
+        (&self.installer.release, m, disk_hash(self.w, disk)).hash(&mut hasher);
+        std::hash::Hasher::finish(&hasher)
     }
 }
 
@@ -2752,23 +2960,30 @@ enum Start {
     V1V2LuaChanged,
     V1V2DllChanged,
     V1V2JarMissing,
+    /// The Lua mod folder deleted as a whole (a UE4SS reinstall).
+    V1V2LuaGone,
     Uninstalled,
     /// A 0.3.1 installer killed midway through the update to v3: no `kept`, and 0.3.1 kept only the newest set.
     V031Interrupted,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Op {
+/// The installer the user runs on a start state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Run {
+    /// The installed release's: Repair, Roll back, Uninstall.
+    Same,
+    /// A newer one: Update.
     Update,
-    /// The installed release again, for a new game build.
+    /// The installed release's again, after a game update: Install for the new executable.
     Reinstall,
-    Repair,
-    Rollback,
-    Uninstall,
 }
 
 fn start(start: Start) -> (World, Model, u32) {
-    let w = world();
+    let mut w = world();
+    // One bridge folder for every world, so that the same state has the same files in each (their configuration names
+    // it). Created once and private, it is never written to.
+    w.target.bridge = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ledger-bridge");
+    platform::create_private_dir_all(&w.target.bridge).unwrap();
     let mut m = Model {
         back: vec![None],
         pending: None,
@@ -2778,12 +2993,12 @@ fn start(start: Start) -> (World, Model, u32) {
     let mut latest = 1;
     if !matches!(start, Start::Fresh) {
         ops::install(&w.env(), &w.target, &payload(1)).unwrap();
-        m.tree = Some((1, w.files()));
+        m.tree = Some((1, written(&w)));
     }
     if !matches!(start, Start::Fresh | Start::V1) {
         ops::install(&w.env(), &w.target, &payload(2)).unwrap();
         (m.back, latest) = (vec![Some(1)], 2);
-        m.tree = Some((2, w.files()));
+        m.tree = Some((2, written(&w)));
     }
     let lua = w
         .game()
@@ -2803,6 +3018,7 @@ fn start(start: Start) -> (World, Model, u32) {
         Start::V1V2JarMissing => {
             fs::remove_file(w.target.minecraft_mods.join(payload(2).jar.0)).unwrap()
         }
+        Start::V1V2LuaGone => fs::remove_dir_all(w.game().mods.join(deploy::MOD_NAME)).unwrap(),
         Start::Uninstalled => {
             assert!(
                 ops::uninstall(&w.env(), &w.target, false)
@@ -2838,64 +3054,53 @@ fn start(start: Start) -> (World, Model, u32) {
     }
     if matches!(
         start,
-        Start::V1V2LuaChanged | Start::V1V2DllChanged | Start::V1V2JarMissing
+        Start::V1V2LuaChanged | Start::V1V2DllChanged | Start::V1V2JarMissing | Start::V1V2LuaGone
     ) {
-        m.tree = Some((2, w.files()));
+        m.tree = Some((2, written(&w)));
     }
     (w, m, latest)
 }
 
-/// Explores one start state and operation; returns the violations.
-fn model_scenario(start_state: Start, op: Op) -> Vec<Violation> {
+/// Explores one start state and installer run, recovering from its `share` of the first action's runs; returns the
+/// violations.
+fn model_scenario(
+    start_state: Start,
+    run: Run,
+    share: (usize, usize),
+    seen: &std::sync::Mutex<std::collections::HashMap<u64, u32>>,
+) -> Vec<Violation> {
     let (mut w, mut m, latest) = start(start_state);
-    if matches!(op, Op::Reinstall) {
+    if run == Run::Reinstall {
         fs::write(&w.game().exe, "test executable, next build").unwrap();
         w.pin = safety::sha256_hex(b"test executable, next build");
         if let Some((_, tree)) = &mut m.tree {
-            *tree = w.files();
+            *tree = written(&w);
         }
     }
-    let installer = payload(if matches!(op, Op::Update) { 3 } else { latest });
-    let act = match op {
-        Op::Update | Op::Reinstall => Act::Install,
-        Op::Repair => Act::Repair,
-        Op::Rollback => Act::Rollback,
-        Op::Uninstall => Act::Uninstall,
+    let (installer, acts) = match run {
+        Run::Same => (latest, &[Act::Repair, Act::Rollback, Act::Uninstall][..]),
+        Run::Update => (3, &[Act::Install][..]),
+        Run::Reinstall => (latest, &[Act::Install][..]),
     };
-    let base = take_disk(&w.home);
+    let base = take_disk(&w);
     let mut explorer = Explorer {
         w: &w,
-        installer: installer.clone(),
-        seen: Default::default(),
+        installer: payload(installer),
+        seen,
         found: Vec::new(),
     };
-    let mut faults = vec![Fault::None];
-    let mut n = 0;
-    while n < faults.len() {
-        let fault = faults[n];
-        n += 1;
-        put_disk(&w.home, &base);
-        let mut model = m.clone();
-        let scenario = format!("{start_state:?} / {op:?} [{fault:?}]");
-        let (guards, steps) = explorer.act(&mut model, act, &installer, fault, &scenario);
-        if matches!(fault, Fault::None) {
-            for at in 1..=guards {
-                faults.extend([
-                    Fault::Refuse { at, once: true },
-                    Fault::Refuse { at, once: false },
-                    Fault::KillAtGuard(at),
-                ]);
-            }
-            faults.extend((1..=steps).map(Fault::KillAtStep));
-        }
-        explorer.recover(&model, 2, &scenario);
+    // The window offers them only once something is installed; run anyway, they must refuse cleanly.
+    for act in acts {
+        let scenario = format!("{start_state:?} / {run:?}");
+        explorer.explore(&m, *act, &base, true, 2, share, &scenario);
     }
     explorer.found
 }
 
 /// The invariants every Update, Reinstall, Repair, Roll back and Uninstall keeps, whatever stops it, and through every
-/// recovery the window offers after it:
-/// I1 the disk is a release the record names, or Install again gets there; a restore that says so put every file back;
+/// recovery the window offers after it, whatever stops that too:
+/// I1 the disk is a release the record names, or Install again gets there; a restore that says so put every file back,
+///    or the release before the interrupted run it finished;
 /// I2 Roll back goes to the release installed before the last successful update (or undoes an interrupted run), never
 ///    to a partial set, and does not fail when offered;
 /// I3 the set Roll back goes to is never deleted while it is the way back;
@@ -2913,31 +3118,54 @@ fn every_failure_and_recovery_keeps_the_ledger_invariants() {
             }
         }));
     });
-    let starts = [
-        Start::Fresh,
-        Start::V1,
-        Start::V1V2,
-        Start::V1V2LuaChanged,
-        Start::V1V2DllChanged,
-        Start::V1V2JarMissing,
-        Start::Uninstalled,
-        Start::V031Interrupted,
+    // The longest first. A game update matters where the installed release is complete, changed or not; nothing is
+    // there to maintain on a fresh PC.
+    use {Run::*, Start::*};
+    let worlds = [
+        (V1V2LuaChanged, Same),
+        (V1V2LuaChanged, Update),
+        (V1V2LuaChanged, Reinstall),
+        (V1V2DllChanged, Same),
+        (V1V2DllChanged, Update),
+        (V1V2JarMissing, Same),
+        (V1V2JarMissing, Update),
+        (V1V2, Same),
+        (V1V2, Update),
+        (V1V2, Reinstall),
+        (V1V2LuaGone, Same),
+        (V1V2LuaGone, Update),
+        (V031Interrupted, Same),
+        (V031Interrupted, Update),
+        (V1, Same),
+        (V1, Update),
+        (V1, Reinstall),
+        (Uninstalled, Same),
+        (Uninstalled, Update),
+        (Fresh, Update),
     ];
-    let ops = [
-        Op::Update,
-        Op::Reinstall,
-        Op::Repair,
-        Op::Rollback,
-        Op::Uninstall,
-    ];
-    let found: Vec<Violation> = std::thread::scope(|scope| {
-        let runs: Vec<_> = starts
-            .iter()
-            .flat_map(|s| ops.iter().map(move |o| (*s, *o)))
-            .map(|(s, o)| scope.spawn(move || model_scenario(s, o)))
-            .collect();
-        runs.into_iter().flat_map(|r| r.join().unwrap()).collect()
+    // Each world in parts, on every core: the states one part explored, the others skip.
+    const PARTS: usize = 12;
+    let seen = std::sync::Mutex::new(std::collections::HashMap::new());
+    let (next, found) = (
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::Mutex::new(Vec::new()),
+    );
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+    std::thread::scope(|scope| {
+        for _ in 0..cores {
+            scope.spawn(|| {
+                loop {
+                    let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((start, run)) = worlds.get(n / PARTS) else {
+                        break;
+                    };
+                    let violations = model_scenario(*start, *run, (n % PARTS, PARTS), &seen);
+                    found.lock().unwrap().extend(violations);
+                }
+            });
+        }
     });
+    let found = found.into_inner().unwrap();
     // One line per cause, with its shortest scenario.
     let mut causes: BTreeMap<(&str, String), (usize, String, String)> = BTreeMap::new();
     for v in found {
