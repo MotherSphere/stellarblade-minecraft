@@ -1959,3 +1959,45 @@ fn an_update_over_a_missing_bridge_jar_keeps_the_older_rollback_set() {
     assert!(rolled.is_ok(), "{:#}", rolled.unwrap_err());
     assert!(all_current(&w, &v1));
 }
+
+/// A reinstall of the installed release for a new game build, killed at `step`, is finished by Install; Roll back
+/// still goes to the release before.
+fn reinstall_killed_at_keeps_the_older_rollback_set(step: ops::Step) {
+    let mut w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    fs::write(&w.game().exe, "test executable, next build").unwrap();
+    w.pin = safety::sha256_hex(b"test executable, next build");
+    let crash = |at: ops::Step| {
+        if at == step {
+            panic!("killed");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = ops::install(&env, &w.target, &v2);
+    }));
+    assert!(run.is_err());
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let previous = state(&w).previous;
+    let rolled = ops::rollback(&w.env(), &w.target).map(|_| all_current(&w, &v1));
+    assert!(
+        matches!(rolled, Ok(true)),
+        "Roll back to v1 lost: previous = {previous:?}, rollback = {:?}",
+        rolled.map_err(|e| format!("{e:#}"))
+    );
+}
+
+#[test]
+fn a_reinstall_killed_before_its_verify_keeps_the_older_rollback_set() {
+    reinstall_killed_at_keeps_the_older_rollback_set(ops::Step::Verify);
+}
+
+#[test]
+fn a_reinstall_killed_before_its_record_keeps_the_older_rollback_set() {
+    reinstall_killed_at_keeps_the_older_rollback_set(ops::Step::Record);
+}

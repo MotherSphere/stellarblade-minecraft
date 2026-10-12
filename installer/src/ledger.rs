@@ -114,11 +114,11 @@ pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<Path
     Ok(kept)
 }
 
-/// After a successful run: `kept` becomes the only set in `previous/`.
-pub fn commit_previous(data: &Path, kept: &Path) -> Result<()> {
+/// After a successful run, once `state.json` records it: `kept`, the Roll back set, becomes the only set in `previous/`.
+pub fn commit_previous(data: &Path, kept: Option<&Path>) -> Result<()> {
     for entry in fs::read_dir(data.join("previous"))? {
         let path = entry?.path();
-        if path != kept {
+        if Some(path.as_path()) != kept {
             discard(data, &path)?;
         }
     }
@@ -157,18 +157,22 @@ pub fn set_aside(data: &Path, kept: &Path) -> Result<PathBuf> {
     Ok(aside)
 }
 
-/// After a failed run that was restored: drops `kept`, the set it kept (now identical to what is installed again),
-/// and returns the set kept before it, if any: `before` when it is still there, else the one other set that can be
-/// installed again.
-pub fn drop_previous(data: &Path, kept: &Path, before: Option<&Path>) -> Result<Option<PathBuf>> {
-    fs::remove_dir_all(kept)?;
-    if let Some(before) = before.filter(|b| b.is_dir()) {
+/// Where Roll back goes once `kept`, the set a run kept, is dropped (a failed run that was restored, the release
+/// installed again): the set kept before it, if any, `before` when it is still there, else the one other set that can
+/// be installed again. Reads only: the caller deletes `kept` once `state.json` records the result.
+pub fn previous_without(
+    data: &Path,
+    kept: &Path,
+    before: Option<&Path>,
+) -> Result<Option<PathBuf>> {
+    if let Some(before) = before.filter(|b| *b != kept && b.is_dir()) {
         return Ok(Some(before.to_path_buf()));
     }
     let mut rest = Vec::new();
     for entry in fs::read_dir(data.join("previous"))? {
         let entry = entry?;
-        if entry.path().is_dir()
+        if entry.path() != kept
+            && entry.path().is_dir()
             && !entry.file_name().to_string_lossy().starts_with('.')
             && Payload::from_previous(&entry.path()).is_ok()
         {
@@ -239,12 +243,12 @@ mod tests {
         );
         // A failed run that was restored drops its set and goes back to the one kept before.
         assert_eq!(
-            drop_previous(&data, &second, None).unwrap(),
+            previous_without(&data, &second, Some(&second)).unwrap(),
             Some(first.clone())
         );
-        assert!(!second.exists());
+        fs::remove_dir_all(&second).unwrap();
         let second = keep_previous(&data, "0.2.0", &[&file]).unwrap();
-        commit_previous(&data, &second).unwrap();
+        commit_previous(&data, Some(&second)).unwrap();
         assert!(!first.exists());
         assert!(!data.join("changed").exists(), "nothing changed by hand");
         assert!(keep_previous(&data, "0.3.0", &[&root.path().join("missing")]).is_err());
@@ -264,10 +268,10 @@ mod tests {
         let changed = keep_previous(&data, "0.1.0", &[&lua]).unwrap();
         assert!(Payload::from_previous(&changed).is_err());
         let dropped = keep_previous(&data, "0.2.0", &[]).unwrap();
-        assert_eq!(drop_previous(&data, &dropped, None).unwrap(), None);
+        assert_eq!(previous_without(&data, &dropped, None).unwrap(), None);
         keep_previous(&data, "0.1.0", &[&lua]).unwrap();
         let other = keep_previous(&data, "0.2.0", &[]).unwrap();
-        commit_previous(&data, &other).unwrap();
+        commit_previous(&data, Some(&other)).unwrap();
         for aside in ["0.1.0", "0.1.0-2"] {
             assert_eq!(
                 fs::read_to_string(

@@ -654,18 +654,24 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     let mut state = ledger::load(&path).unwrap_or_default();
     let guarded = Guarded::take(target, own_jars(target, Some(payload))?)?;
     fs::create_dir_all(&env.data)?;
-    if pieces.iter().all(|p| p.current) {
+    let resumed = resumed(env, &state);
+    let before = state.previous.clone();
+    // A complete set kept before, of another release: Roll back keeps going there rather than to a set it could not
+    // install.
+    let complete_before = before.clone().filter(|b| {
+        Payload::from_previous(b)
+            .is_ok_and(|p| installable(&p, target) && p.release != payload.release)
+    });
+    // The set this run kept, or the interrupted run it finishes: it decides where Roll back goes.
+    let finished = if pieces.iter().all(|p| p.current) {
         guarded.unchanged(target)?;
+        // An interrupted run killed after its last write: finishing it is recording what it kept.
+        match resumed {
+            Some(Kept::Set(kept)) => Some(kept),
+            _ => None,
+        }
     } else {
         let old_release = old_release(&state);
-        let resumed = resumed(env, &state);
-        let before = state.previous.clone();
-        // A complete set kept before, of another release: Roll back keeps going there rather than to a set it could
-        // not install.
-        let complete_before = before.clone().filter(|b| {
-            Payload::from_previous(b)
-                .is_ok_and(|p| installable(&p, target) && p.release != payload.release)
-        });
         state.status = Status::InProgress;
         if resumed.is_none() {
             state.kept = None;
@@ -756,10 +762,14 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     };
                     if let Some(previous) = &previous {
                         state.previous =
-                            ledger::drop_previous(&env.data, previous, before.as_deref())?;
+                            ledger::previous_without(&env.data, previous, before.as_deref())?;
                     }
                     state.kept = None;
                     ledger::save(&path, &state)?;
+                    // Only once recorded: stopped before, the set is only an extra one, which the next run clears.
+                    if let Some(previous) = &previous {
+                        fs::remove_dir_all(previous)?;
+                    }
                     error.context(Refusal::new(Kind::InstallRestored, ""))
                 }
                 Err(undo) => error
@@ -775,30 +785,20 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     }),
             });
         }
-        if let Some(kept) = &previous {
-            state.previous = match Payload::from_previous(kept) {
-                Ok(set) if complete_before.is_some() && !installable(&set, target) => {
-                    fs::remove_dir_all(kept)?;
-                    complete_before
-                }
-                Ok(set) if set.release != payload.release => {
-                    ledger::commit_previous(&env.data, kept)?;
-                    Some(kept.clone())
-                }
-                // The release installed again (Roll back of an interrupted update, a reinstall for a new game
-                // build): its set adds nothing, and Roll back keeps going to the set kept before.
-                Ok(_) => {
-                    ledger::drop_previous(&env.data, kept, before.as_deref().filter(|b| b != kept))?
-                }
-                // A replaced piece had files changed by hand: that set cannot be installed again, so Roll back keeps
-                // going to the set kept before, unless that is what is installed now. The changed set goes where no
-                // later run deletes it.
-                Err(_) => {
-                    ledger::set_aside(&env.data, kept)?;
-                    complete_before
-                }
-            };
-        }
+        previous
+    };
+    if let Some(kept) = &finished {
+        state.previous = match Payload::from_previous(kept) {
+            Ok(set) if complete_before.is_some() && !installable(&set, target) => complete_before,
+            Ok(set) if set.release != payload.release => Some(kept.clone()),
+            // The release installed again (Roll back of an interrupted update, a reinstall for a new game build): its
+            // set adds nothing, and Roll back keeps going to the set kept before.
+            Ok(_) => ledger::previous_without(&env.data, kept, before.as_deref())?,
+            // A replaced piece had files changed by hand: that set cannot be installed again, so Roll back keeps going
+            // to the set kept before, unless that is what is installed now. The commit below sets the changed set
+            // aside, where no later run deletes it.
+            Err(_) => complete_before,
+        };
     }
     (env.step)(Step::Record);
     state.status = Status::Installed;
@@ -807,6 +807,10 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     state.release = payload.release.clone();
     state.lua_revision = payload.lua_revision;
     ledger::save(&path, &state)?;
+    // Only once recorded: stopped before, `previous/` holds only extra sets, which the next run clears.
+    if finished.is_some() {
+        ledger::commit_previous(&env.data, state.previous.as_deref())?;
+    }
     Ok(state)
 }
 
