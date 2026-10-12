@@ -19,6 +19,10 @@ final class BridgeLink {
      * in whole seconds, so never later than 3.5 s: past ANSWER it can no longer run, and the next one may go.
      */
     private record Request(long seq, String action, long sentNanos) { }
+    /** Stellar Blade's answer to a session request: ok, failed, refused or null (no answer within ANSWER), and its chat line. */
+    record Answer(String action, String result, String chat) {
+        boolean ok() { return "ok".equals(result); }
+    }
     private static final long ANSWER = 5_000_000_000L;
     /**
      * How long Windows may keep refusing the terrain or mob-wall heartbeat (Lua reads eve-mobs.txt every frame and
@@ -64,6 +68,15 @@ final class BridgeLink {
 
     /** EVE's feet in the world while the link is live, else null. */
     Vec3d position() { return position; }
+
+    /**
+     * EVE's state in Stellar Blade for this link, from her newest eve.N while fresh: ready (imported) or entered, else
+     * idle.
+     */
+    String state(long now) {
+        BridgeProtocol.Eve eve = relayed;
+        return eve != null && eve.session().equals(session) && BridgeProtocol.fresh(eve.time(), now / 1000) ? eve.state() : "idle";
+    }
 
     /** A newer terrain snapshot of this session: its window joins the gate, and terrain.txt is written now. */
     void terrain(BridgeProtocol.Terrain snapshot, long now) throws IOException {
@@ -154,8 +167,8 @@ final class BridgeLink {
         return null;
     }
 
-    /** Each tick: Stellar Blade's answer to the pending session request for chat; a request unanswered after ANSWER, once. */
-    String answer(long nanos) {
+    /** Each tick: Stellar Blade's answer to the pending session request; a request unanswered after ANSWER, once. */
+    Answer answer(long nanos) {
         if (request == null) return null;
         BridgeProtocol.RequestAck ack = null;
         try {
@@ -167,13 +180,13 @@ final class BridgeLink {
         if (ack != null && ack.session().equals(session) && ack.seq() == request.seq() && ack.action().equals(request.action())) {
             LOG.info("Session request {} {}: {}: {}", ack.seq(), ack.action(), ack.result(), ack.message());
             request = null;
-            return "Stellar Blade " + ack.action() + " " + ack.result() + ": " + ack.message();
+            return new Answer(ack.action(), ack.result(), "Stellar Blade " + ack.action() + " " + ack.result() + ": " + ack.message());
         }
         if (nanos - request.sentNanos() <= ANSWER) return null;
         LOG.info("Session request {} {}: no answer", request.seq(), request.action());
         String action = request.action();
         request = null;
-        return "Stellar Blade did not answer /stellar " + action + ". Check that it runs Lua revision 61, or use its key.";
+        return new Answer(action, null, "Stellar Blade did not answer /stellar " + action + ". Check that it runs Lua revision 61, or use its key.");
     }
 
     /** The link ended: Stellar Blade's inputs from it go; it drops the link when the heartbeats stop. */

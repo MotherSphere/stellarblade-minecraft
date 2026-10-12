@@ -42,6 +42,7 @@ public final class BridgeLinkTest {
             assert eve.equals(link.tick(now)) : "A new packet is relayed as Lua wrote it";
             assert link.position().equals(origin.add(1.5, 0, -2.25)) : link.position();
             assert link.tick(now + 50) == null && link.position() != null : "Relayed once, still predicted";
+            assert link.state(now).equals("entered") && link.state(now + 6000).equals("idle") : "EVE's state while her packet is fresh";
 
             // The server's clock is an hour behind: it judges TIME by the sender's clock from the payload's sending time.
             long arrival = now - 3_600_250 + 40; // 40 ms in transit.
@@ -85,9 +86,10 @@ public final class BridgeLinkTest {
             assert link.request("enter", now, 1) != null && link.answer(1_000_000_000L) == null;
             Files.writeString(directory.resolve("eve-request-ack.txt"), "SBMC_REQUEST_ACK 1\nSESSION " + A
                     + "\nSEQ 1\nACTION import\nRESULT ok\nMESSAGE imported\nEND 1\n");
-            assert "Stellar Blade import ok: imported".equals(link.answer(2_000_000_000L));
+            BridgeLink.Answer answer = link.answer(2_000_000_000L);
+            assert answer.ok() && answer.action().equals("import") && "Stellar Blade import ok: imported".equals(answer.chat()) : answer;
             assert link.request("enter", now, 0) == null && link.answer(4_000_000_000L) == null
-                    && link.answer(6_000_000_000L).contains("did not answer /stellar enter");
+                    && !(answer = link.answer(6_000_000_000L)).ok() && answer.chat().contains("did not answer /stellar enter");
 
             // A teleport out of the window ends the server's session; walking out of it, or a jump inside it, does not.
             var patch = new net.minecraft.util.math.Box(80.5, 56, -40.5, 120.5, 80, -0.5);

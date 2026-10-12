@@ -10,14 +10,17 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationNetworking;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.client.option.KeyBinding;
 import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.Vec3d;
+import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,6 +38,28 @@ public final class StellarBridge implements ClientModInitializer {
     private static long tintUntil = System.nanoTime();
     private static long dodgeSent = Long.MIN_VALUE, guardSent = Long.MIN_VALUE;
     private static boolean guardHeld;
+    private static KeyBinding playKey;
+    private static final PlaySequence play = new PlaySequence(new PlaySequence.Client() {
+        public boolean server() { return ClientPlayNetworking.canSend(BridgeNet.LinkRequest.ID); }
+        public void start() { ClientPlayNetworking.send(new BridgeNet.LinkRequest(BridgeNet.LinkRequest.START)); }
+        public int revision() { return link == null ? -1 : link.revision(); }
+        public String state() { return link == null ? "idle" : link.state(System.currentTimeMillis()); }
+        public String request(String action) {
+            if (link == null) return "The link ended.";
+            try { return link.request(action, System.currentTimeMillis(), System.nanoTime()); }
+            catch (IOException | IllegalArgumentException failure) { return "Request not delivered to Stellar Blade: " + failure.getMessage(); }
+        }
+        public boolean placed() { return renderingContext() != null; }
+        public boolean playing() { return AvatarView.playing(); }
+        public void play() {
+            var handler = MinecraftClient.getInstance().getNetworkHandler();
+            if (handler != null) AvatarView.play((FabricClientCommandSource) handler.getCommandSource()); // Fabric's mixin implements it.
+        }
+        public void say(String line) {
+            var player = MinecraftClient.getInstance().player;
+            if (player != null) player.sendMessage(Text.literal(line), false);
+        }
+    });
 
     @Override
     public void onInitializeClient() {
@@ -59,7 +84,13 @@ public final class StellarBridge implements ClientModInitializer {
         ClientConfigurationNetworking.registerGlobalReceiver(BridgeNet.Hello.ID, (hello, context) ->
                 context.responseSender().sendPacket(new BridgeNet.Hello(BridgeNet.PROTOCOL, BridgeNet.version())));
         // The server checks start, stop and status for this player; import, enter and return only talk to this PC's Stellar Blade.
+        playKey = KeyBindingHelper.registerKeyBinding(new KeyBinding("key.stellar_bridge.play", GLFW.GLFW_KEY_G, "key.categories.stellar_bridge"));
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> dispatcher.register(ClientCommandManager.literal("stellar")
+                .then(ClientCommandManager.literal("play").executes(context -> {
+                    if (play.begin(System.nanoTime())) return 1;
+                    context.getSource().sendError(Text.literal("Play as EVE is already starting."));
+                    return 0;
+                }))
                 .then(ClientCommandManager.literal("start").executes(context -> link(context, BridgeNet.LinkRequest.START)))
                 .then(ClientCommandManager.literal("stop").executes(context -> link(context, BridgeNet.LinkRequest.STOP)))
                 .then(ClientCommandManager.literal("status").executes(context -> link(context, BridgeNet.LinkRequest.STATUS)))
@@ -92,6 +123,7 @@ public final class StellarBridge implements ClientModInitializer {
             BridgeServer.pauseBinding = null;
             sentStatus = null; // The next server gets the status anew, and counts gauge points from zero.
             feedback = NO_FEEDBACK;
+            play.cancel();
             end();
         });
         ClientTickEvents.START_CLIENT_TICK.register(StellarBridge::tick);
@@ -99,8 +131,8 @@ public final class StellarBridge implements ClientModInitializer {
     }
 
     /**
-     * Each client tick: EVE's status when it changed, Stellar Blade's answer to a request, the relay of a new eve.N packet,
-     * then the predicted position.
+     * Each client tick: EVE's status when it changed, the Play as EVE key, Stellar Blade's answer to a request (to /stellar
+     * play while it runs), the relay of a new eve.N packet, then the predicted position.
      */
     private static void tick(MinecraftClient client) {
         var status = new BridgeNet.Status(stats, heals, halted);
@@ -108,10 +140,12 @@ public final class StellarBridge implements ClientModInitializer {
             ClientPlayNetworking.send(status);
             sentStatus = status;
         }
+        while (playKey.wasPressed()) play.begin(System.nanoTime()); // Ignored while it runs.
         BridgeLink current = link;
+        BridgeLink.Answer answer = current == null ? null : current.answer(System.nanoTime());
+        if (play.running()) play.tick(answer, System.nanoTime());
+        else if (answer != null && client.player != null) client.player.sendMessage(Text.literal(answer.chat()), false);
         if (current == null) return;
-        String answer = current.answer(System.nanoTime());
-        if (answer != null && client.player != null) client.player.sendMessage(Text.literal(answer), false);
         try {
             String relay = current.tick(System.currentTimeMillis());
             if (relay != null && ClientPlayNetworking.canSend(BridgeNet.Eve.ID))

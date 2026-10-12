@@ -430,8 +430,14 @@ public final class AvatarView {
         }
     }
 
+    /** Whether /stellaravatar play drives EVE. */
+    static boolean playing() {
+        Live current = live;
+        return current != null && current.controlled;
+    }
+
     /** EVE driven from Minecraft without capture: Minecraft's camera, the pose stream gates and steers the controls. */
-    private static int play(FabricClientCommandSource source) {
+    static int play(FabricClientCommandSource source) {
         var link = StellarBridge.renderingContext();
         if (link == null) return error(source, "Run /stellar start, then F5 and F8 in Stellar Blade, before /stellaravatar play.");
         if (CaptureView.viewing()) return error(source, "Close the captured view first with /stellarview off.");
