@@ -1238,3 +1238,56 @@ fn replacing_a_changed_piece_is_listed_kept_and_not_rolled_back_to() {
     );
     assert!(all_current(&w, &v2), "the refused rollback changed nothing");
 }
+
+/// UE4SS moved its Mods folder (Win64/Mods to Win64/ue4ss/Mods): an install into the new one must not leave the
+/// recorded Lua mod in the old one, where no later run looks; it removes it there too.
+#[test]
+fn a_moved_ue4ss_mods_folder_is_not_left_behind() {
+    let w = world();
+    let win64 = w.win64();
+    write(&win64.join("UE4SS.dll"), "UE4SS 2.x");
+    write(&win64.join("Mods/mods.txt"), "OtherMod : 1\n");
+    let old = Target {
+        game: Some(Game {
+            ue4ss: win64.clone(),
+            mods: win64.join("Mods"),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    let v1 = payload(1);
+    ops::install(&w.env(), &old, &v1).unwrap();
+    assert_eq!(
+        deploy::ownership(&win64.join("Mods")).unwrap(),
+        Ownership::Owned
+    );
+    // Either fix holds: the install refuses, or it also removes the Lua mod from the old Mods folder.
+    let installed = ops::install(&w.env(), &w.target, &payload(2));
+    assert!(
+        installed.is_err() || deploy::ownership(&win64.join("Mods")).unwrap() == Ownership::Absent,
+        "installed into ue4ss/Mods and left the owned Lua mod in Win64/Mods"
+    );
+}
+
+/// The game moved to another folder while the old one stayed (a copied install): the adapter recorded beside the old
+/// executable is removed by the install at the new place, and kept for Roll back.
+#[test]
+fn an_adapter_left_beside_a_moved_executable_is_removed() {
+    let w = world();
+    let old_win64 = w.home.join("Old/Win64");
+    write(&old_win64.join(adapter::EXE), "test executable");
+    let old = Target {
+        game: Some(Game {
+            exe: old_win64.join(adapter::EXE),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    ops::install(&w.env(), &old, &payload(1)).unwrap();
+    assert_eq!(adapter::ownership(&old_win64).unwrap(), Ownership::Owned);
+    ops::install(&w.env(), &w.target, &payload(2)).unwrap();
+    assert_eq!(adapter::ownership(&old_win64).unwrap(), Ownership::Absent);
+    assert!(all_current(&w, &payload(2)));
+    let kept = Payload::from_previous(&state(&w).previous.unwrap()).unwrap();
+    assert_eq!(kept.dll, payload(1).dll);
+}

@@ -468,17 +468,61 @@ fn state_path(env: &Env) -> PathBuf {
     env.data.join(ledger::STATE)
 }
 
+fn same(a: &Path, b: &Path) -> bool {
+    a == b
+        || platform::canonicalize(a).is_ok_and(|a| platform::canonicalize(b).is_ok_and(|b| a == b))
+}
+
+/// The recorded install's owned game-side pieces that are not where `target` puts them (UE4SS moved its `Mods`
+/// folder, or the game moved while its old folder stayed): the old `Mods` folder holding the Lua mod, and the old
+/// executable beside the adapter. Read before the run records its new target.
+#[derive(Default)]
+struct Moved {
+    mods: Option<PathBuf>,
+    exe: Option<PathBuf>,
+}
+
+impl Moved {
+    fn find(env: &Env, target: &Target) -> Moved {
+        let old = ledger::load(&state_path(env)).and_then(|s| s.target?.game);
+        let (Some(old), Some(new)) = (old, &target.game) else {
+            return Moved::default();
+        };
+        let owned = |ownership: Result<Ownership>| matches!(ownership, Ok(Ownership::Owned));
+        Moved {
+            mods: (!same(&old.mods, &new.mods) && owned(deploy::ownership(&old.mods)))
+                .then(|| old.mods.clone()),
+            exe: (!same(&old.win64(), &new.win64()) && owned(adapter::ownership(&old.win64())))
+                .then(|| old.exe.clone()),
+        }
+    }
+
+    /// What an update keeps in `previous/` beside the pieces at `target`.
+    fn paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.mods.iter().map(|m| m.join(deploy::MOD_NAME)).collect();
+        if let Some(win64) = self.exe.as_ref().and_then(|e| e.parent()) {
+            paths.extend([adapter::MANIFEST, adapter::CONFIG, adapter::DLL].map(|n| win64.join(n)));
+        }
+        paths
+    }
+
+    fn remove(&self, closed: Guard) -> Result<()> {
+        if let Some(mods) = &self.mods {
+            deploy::remove(mods, closed)?;
+        }
+        if let Some(exe) = &self.exe {
+            adapter::remove(exe, closed)?;
+        }
+        Ok(())
+    }
+}
+
 /// Refuses a target that would leave the recorded install's owned pieces behind, where no later run would look.
 fn left_behind(env: &Env, target: &Target) -> Result<()> {
     let Some(old) = ledger::load(&state_path(env)).and_then(|s| s.target) else {
         return Ok(());
     };
     let owned = |ownership: Result<Ownership>| matches!(ownership, Ok(Ownership::Owned));
-    let same = |a: &Path, b: &Path| {
-        a == b
-            || platform::canonicalize(a)
-                .is_ok_and(|a| platform::canonicalize(b).is_ok_and(|b| a == b))
-    };
     let mut left = Vec::new();
     if !same(&old.minecraft_mods, &target.minecraft_mods)
         && owned(mods::ownership(&old.minecraft_mods))
@@ -553,6 +597,7 @@ fn restore(env: &Env, target: &Target, previous: Option<&Path>, disabled: bool) 
 pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     gates(target, env)?;
     left_behind(env, target)?;
+    let moved = Moved::find(env, target);
     if payload.jar.1.is_empty() {
         bail!(Refusal::new(Kind::NoJar, &payload.release));
     }
@@ -590,7 +635,8 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             state.save_backup = Some(safety::backup_saves(saves, &env.data.join("save-backups"))?);
             ledger::save(&path, &state)?;
         }
-        let owned = owned_paths(target, true)?;
+        let mut owned = owned_paths(target, true)?;
+        owned.extend(moved.paths());
         let mut previous = resumed;
         if previous.is_none() && !owned.is_empty() {
             (env.step)(Step::KeepPrevious);
@@ -602,7 +648,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         // A bridge JAR the user disabled in the launcher stays disabled.
         let disabled = mods::bridge_disabled(&target.minecraft_mods)?;
         (env.step)(Step::Remove);
-        let done = remove_owned(env, target, false, true)
+        let done = moved
+            .remove(env.closed)
+            .and_then(|()| remove_owned(env, target, false, true))
             .and_then(|_| put(env, target, payload, disabled))
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
@@ -707,6 +755,7 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
     }
     plan.writes.push(state_path(env));
     plan.replaced = owned_paths(target, true)?;
+    plan.replaced.extend(Moved::find(env, target).paths());
     plan.changed = changed_files(target);
     let state = ledger::load(&state_path(env)).unwrap_or_default();
     if !plan.replaced.is_empty() && resumed(env, &state).is_none() {
@@ -843,6 +892,7 @@ pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Refu
     (env.closed)()?;
     let guarded = Guarded::take(target, own_jars(target, None)?)?;
     (env.step)(Step::Remove);
+    Moved::find(env, target).remove(env.closed)?;
     let refusals = remove_owned(env, target, !remove_fabric, false)?;
     (env.step)(Step::Verify);
     guarded.unchanged(target)?;
