@@ -2980,6 +2980,8 @@ impl Explorer<'_> {
             let mut next = Vec::new();
             if faulted {
                 let refused = match fault {
+                    // Windows: kills only (see every_failure_and_recovery_keeps_the_ledger_invariants).
+                    Fault::None if cfg!(windows) => None,
                     Fault::None => {
                         next.extend((1..=guards).map(|at| Fault::Refuse { at }));
                         None
@@ -3037,12 +3039,11 @@ enum Run {
     Reinstall,
 }
 
-fn start(start: Start) -> (World, Model, u32) {
+/// `bridge`: one bridge folder for every world, so that the same state has the same files in each (their configuration
+/// names it). Created once and private, it is never written to.
+fn start(start: Start, bridge: &Path) -> (World, Model, u32) {
     let mut w = world();
-    // One bridge folder for every world, so that the same state has the same files in each (their configuration names
-    // it). Created once and private, it is never written to.
-    w.target.bridge = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ledger-bridge");
-    platform::create_private_dir_all(&w.target.bridge).unwrap();
+    w.target.bridge = bridge.to_path_buf();
     let mut m = Model {
         back: vec![None],
         pending: None,
@@ -3120,15 +3121,17 @@ fn start(start: Start) -> (World, Model, u32) {
     (w, m, latest)
 }
 
-/// Explores one start state and installer run, recovering from its `share` of the first action's runs; returns the
-/// violations.
+/// Explores one start state and installer run, recovering from its `share` of the first action's runs, `depth` actions
+/// deep; returns the violations.
 fn model_scenario(
     start_state: Start,
     run: Run,
     share: (usize, usize),
+    depth: u32,
+    bridge: &Path,
     seen: &std::sync::Mutex<std::collections::HashMap<u64, u32>>,
 ) -> Vec<Violation> {
-    let (mut w, mut m, latest) = start(start_state);
+    let (mut w, mut m, latest) = start(start_state, bridge);
     if run == Run::Reinstall {
         fs::write(&w.game().exe, "test executable, next build").unwrap();
         w.pin = safety::sha256_hex(b"test executable, next build");
@@ -3151,7 +3154,7 @@ fn model_scenario(
     // The window offers them only once something is installed; run anyway, they must refuse cleanly.
     for act in acts {
         let scenario = format!("{start_state:?} / {run:?}");
-        explorer.explore(&m, *act, &base, true, 2, share, &scenario);
+        explorer.explore(&m, *act, &base, true, depth, share, &scenario);
     }
     explorer.found
 }
@@ -3202,8 +3205,22 @@ fn every_failure_and_recovery_keeps_the_ledger_invariants() {
         (Uninstalled, Update),
         (Fresh, Update),
     ];
+    // Windows file calls are far slower: the whole exploration ran over an hour under Wine. There, an update over a
+    // hand-changed Lua mod and a first install, each killed at every point, then every recovery once, unstopped (about
+    // 50 s under Wine). Linux explores every world, also stopped by a game started at each guard call, two actions deep.
+    let (worlds, depth): (&[_], u32) = if cfg!(windows) {
+        (&[(V1V2LuaChanged, Update), (Fresh, Update)], 1)
+    } else {
+        (&worlds, 2)
+    };
     // Each world in parts, on every core: the states one part explored, the others skip.
     const PARTS: usize = 12;
+    // A runtime folder: the build host's CARGO_TARGET_TMPDIR is not one Windows can make private under Wine.
+    let root = tempfile::tempdir().unwrap();
+    let bridge = platform::canonicalize(root.path())
+        .unwrap()
+        .join("ledger-bridge");
+    platform::create_private_dir_all(&bridge).unwrap();
     let seen = std::sync::Mutex::new(std::collections::HashMap::new());
     let (next, found) = (
         std::sync::atomic::AtomicUsize::new(0),
@@ -3218,7 +3235,8 @@ fn every_failure_and_recovery_keeps_the_ledger_invariants() {
                     let Some((start, run)) = worlds.get(n / PARTS) else {
                         break;
                     };
-                    let violations = model_scenario(*start, *run, (n % PARTS, PARTS), &seen);
+                    let violations =
+                        model_scenario(*start, *run, (n % PARTS, PARTS), depth, &bridge, &seen);
                     found.lock().unwrap().extend(violations);
                 }
             });
