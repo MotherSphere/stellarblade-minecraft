@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::payload::Payload;
 use crate::{Kind, Refusal, safety};
 
 /// The program name: `Colony/Stellar Bridge/` folders.
@@ -107,7 +108,7 @@ pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<Path
     }
     let kept = previous.join(release);
     if kept.exists() {
-        fs::remove_dir_all(&kept)?;
+        discard(data, &kept)?;
     }
     fs::rename(&staging, &kept)?;
     Ok(kept)
@@ -118,8 +119,23 @@ pub fn commit_previous(data: &Path, kept: &Path) -> Result<()> {
     for entry in fs::read_dir(data.join("previous"))? {
         let path = entry?.path();
         if path != kept {
-            fs::remove_dir_all(&path)?;
+            discard(data, &path)?;
         }
+    }
+    Ok(())
+}
+
+/// Deletes a set in `previous/` that is no longer needed, unless it holds files changed by hand (an interrupted or
+/// unrestored run left it there, with nothing on record pointing at it): that one is [`set_aside`]. Only sets that
+/// can be installed again, and the staging folders of a killed keep, are deleted.
+fn discard(data: &Path, set: &Path) -> Result<()> {
+    let hidden = set
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+    if hidden || Payload::from_previous(set).is_ok() {
+        fs::remove_dir_all(set)?;
+    } else {
+        set_aside(data, set)?;
     }
     Ok(())
 }
@@ -142,7 +158,8 @@ pub fn set_aside(data: &Path, kept: &Path) -> Result<PathBuf> {
 }
 
 /// After a failed run that was restored: drops `kept`, the set it kept (now identical to what is installed again),
-/// and returns the set kept before it, if any: `before` when it is still there, else the one other complete set.
+/// and returns the set kept before it, if any: `before` when it is still there, else the one other set that can be
+/// installed again.
 pub fn drop_previous(data: &Path, kept: &Path, before: Option<&Path>) -> Result<Option<PathBuf>> {
     fs::remove_dir_all(kept)?;
     if let Some(before) = before.filter(|b| b.is_dir()) {
@@ -151,7 +168,10 @@ pub fn drop_previous(data: &Path, kept: &Path, before: Option<&Path>) -> Result<
     let mut rest = Vec::new();
     for entry in fs::read_dir(data.join("previous"))? {
         let entry = entry?;
-        if entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
+        if entry.path().is_dir()
+            && !entry.file_name().to_string_lossy().starts_with('.')
+            && Payload::from_previous(&entry.path()).is_ok()
+        {
             rest.push(entry.path());
         }
     }
@@ -200,22 +220,22 @@ mod tests {
     #[test]
     fn previous_keeps_one_set_of_files_and_folders() {
         let root = tempfile::tempdir().unwrap();
-        let lua = root.path().join("StellarCollisionProbe");
-        fs::create_dir_all(lua.join("Scripts")).unwrap();
-        fs::write(lua.join("Scripts/main.lua"), "old").unwrap();
-        let dll = root.path().join("xinput1_3.dll");
-        fs::write(&dll, "old dll").unwrap();
+        let folder = root.path().join("Scripts");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("main.lua"), "old").unwrap();
+        let file = root.path().join("notes.txt");
+        fs::write(&file, "old file").unwrap();
         let data = root.path().join("data");
-        let first = keep_previous(&data, "0.1.0", &[&lua, &dll]).unwrap();
+        let first = keep_previous(&data, "0.1.0", &[&folder, &file]).unwrap();
         assert_eq!(
-            fs::read_to_string(first.join("StellarCollisionProbe/Scripts/main.lua")).unwrap(),
+            fs::read_to_string(first.join("Scripts/main.lua")).unwrap(),
             "old"
         );
-        let second = keep_previous(&data, "0.2.0", &[&dll]).unwrap();
+        let second = keep_previous(&data, "0.2.0", &[&file]).unwrap();
         assert!(first.exists(), "kept until the run succeeds");
         assert_eq!(
-            fs::read_to_string(second.join("xinput1_3.dll")).unwrap(),
-            "old dll"
+            fs::read_to_string(second.join("notes.txt")).unwrap(),
+            "old file"
         );
         // A failed run that was restored drops its set and goes back to the one kept before.
         assert_eq!(
@@ -223,12 +243,43 @@ mod tests {
             Some(first.clone())
         );
         assert!(!second.exists());
-        let second = keep_previous(&data, "0.2.0", &[&dll]).unwrap();
+        let second = keep_previous(&data, "0.2.0", &[&file]).unwrap();
         commit_previous(&data, &second).unwrap();
         assert!(!first.exists());
+        assert!(!data.join("changed").exists(), "nothing changed by hand");
         assert!(keep_previous(&data, "0.3.0", &[&root.path().join("missing")]).is_err());
         assert!(second.exists(), "a failed copy keeps the last good set");
         assert!(keep_previous(&data, "../x", &[]).is_err());
+    }
+
+    /// A set that cannot be installed again (a Lua mod with a file changed by hand) left in `previous/` with nothing
+    /// pointing at it is never deleted: replacing or committing past it sets it aside.
+    #[test]
+    fn sets_with_changed_files_are_set_aside_not_deleted() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let lua = root.path().join(crate::deploy::MOD_NAME);
+        fs::create_dir_all(&lua).unwrap();
+        fs::write(lua.join("main.lua"), "my edit").unwrap();
+        let changed = keep_previous(&data, "0.1.0", &[&lua]).unwrap();
+        assert!(Payload::from_previous(&changed).is_err());
+        let dropped = keep_previous(&data, "0.2.0", &[]).unwrap();
+        assert_eq!(drop_previous(&data, &dropped, None).unwrap(), None);
+        keep_previous(&data, "0.1.0", &[&lua]).unwrap();
+        let other = keep_previous(&data, "0.2.0", &[]).unwrap();
+        commit_previous(&data, &other).unwrap();
+        for aside in ["0.1.0", "0.1.0-2"] {
+            assert_eq!(
+                fs::read_to_string(
+                    data.join("changed")
+                        .join(aside)
+                        .join(crate::deploy::MOD_NAME)
+                        .join("main.lua")
+                )
+                .unwrap(),
+                "my edit"
+            );
+        }
     }
 
     #[test]

@@ -1778,3 +1778,127 @@ fn repair_after_an_interrupted_first_install_names_no_internal_folder() {
     let text = sbmc_installer::i18n::error(&error);
     assert!(!text.contains("untracked"), "{text}");
 }
+
+/// The files changed by hand that an interrupted update kept stay in the data folder after an Uninstall and two
+/// updates: no later run deletes them.
+#[test]
+fn changed_files_kept_by_an_interrupted_update_survive_an_uninstall() {
+    let w = world();
+    let (v1, v2, v3, v4) = (payload(1), payload(2), payload(3), payload(4));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "my edit").unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::Minecraft {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = ops::install(&env, &w.target, &v3);
+    }));
+    assert!(run.is_err());
+    let kept_aside = || {
+        safety::tree(&w.data)
+            .unwrap()
+            .into_iter()
+            .filter(|(_, sha)| *sha == safety::sha256_hex(b"my edit"))
+            .count()
+    };
+    assert_eq!(kept_aside(), 1, "kept by the interrupted run");
+    assert!(
+        ops::uninstall(&w.env(), &w.target, false)
+            .unwrap()
+            .is_empty()
+    );
+    ops::install(&w.env(), &w.target, &v3).unwrap();
+    ops::install(&w.env(), &w.target, &v4).unwrap();
+    assert_eq!(kept_aside(), 1, "the hand-changed main.lua was deleted");
+}
+
+/// An update over a file changed by hand, killed after its last write, is finished by Install: the changed set then
+/// goes to `changed/`, where the next update does not delete it.
+#[test]
+fn changed_files_kept_by_an_update_killed_before_its_verify_survive() {
+    let w = world();
+    let (v1, v2, v3) = (payload(1), payload(2), payload(3));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "my edit").unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::Verify {
+            panic!("killed");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = ops::install(&env, &w.target, &v2);
+    }));
+    assert!(run.is_err());
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    ops::install(&w.env(), &w.target, &v3).unwrap();
+    let kept_aside = safety::tree(&w.data)
+        .unwrap()
+        .into_iter()
+        .filter(|(_, sha)| *sha == safety::sha256_hex(b"my edit"))
+        .count();
+    assert_eq!(kept_aside, 1, "the hand-changed main.lua was deleted");
+}
+
+/// An update over a file changed by hand that fails and cannot be restored leaves the changed set in `previous/`:
+/// after an Uninstall, the next updates still do not delete it.
+#[test]
+fn changed_files_kept_by_an_unrestored_update_survive_an_uninstall() {
+    let w = world();
+    let (v1, v2, v3, v4) = (payload(1), payload(2), payload(3), payload(4));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "my edit").unwrap();
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() == 6 {
+            anyhow::bail!("Minecraft started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    ops::install(&env, &w.target, &v3).unwrap_err();
+    assert!(
+        ops::uninstall(&w.env(), &w.target, false)
+            .unwrap()
+            .is_empty()
+    );
+    ops::install(&w.env(), &w.target, &v3).unwrap();
+    ops::install(&w.env(), &w.target, &v4).unwrap();
+    let edit = safety::sha256_hex(b"my edit");
+    let kept = safety::tree(&w.data).unwrap();
+    assert!(
+        kept.values().any(|h| *h == edit),
+        "the hand-edited main.lua is gone: {:?}",
+        kept.keys().collect::<Vec<_>>()
+    );
+}
