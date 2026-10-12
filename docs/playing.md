@@ -10,6 +10,8 @@ The prototype supports a bounded terrain/collision link, keyboard/mouse forwardi
 
 First follow [setup and build instructions](setup.md), or install with the [Stellar Bridge installer](setup.md#installer). Use a private creative or survival test world and a backed-up Stellar Blade save in a clear outdoor location. Avatar mode runs with Fast, Fancy or Fabulous graphics; Iris shader packs are experimental and not yet validated in game; capture mode needs Fast/Fancy without Iris.
 
+With EVE loaded in Stellar Blade, stand on a full block in Minecraft and press **G** (*Play as EVE*, configurable in Minecraft's Controls menu) or run **`/stellar play`**: it runs steps 1 to 3 below for you, skipping those already done, and shows Stellar Blade's answers in chat. The first refusal, or a step that takes more than 10 seconds, stops it with one chat line saying why; pressing G again while it runs does nothing. Step by step:
+
 1. In Minecraft, stand on a full block and run `/stellar start`.
 2. With EVE loaded in Stellar Blade, import collision, then enter the elevated lab: either run **`/stellar import`**, then **`/stellar enter`** in Minecraft (Stellar Blade's answer appears in chat; its window is never touched), or press **F5**, then **F8** in Stellar Blade. In the Great Desert (`E05_GreatDesert_P`) the lab is built far away, at an empty corner of the map about 10.6 km from its origin (-7.5 km on both Unreal X and Y), where Stellar Blade unloads its whole world except the sky, as after a fast travel: no enemies, no ground or walls of its own, nothing to stream while she walks. On other maps the lab is built above EVE and must be clear of existing level geometry: about 40.5 m square, from 4 m to about 30 m above her starting position. Either way it moves with the terrain window (see below).
 3. Return to Minecraft and run **`/stellaravatar play`** (or `/stellarview play` for capture mode). Close chat and release held controls. Forwarding begins once EVE's streamed pose (in capture mode: a displayed image) is fresh and the native adapter acknowledges neutral input.
@@ -29,6 +31,7 @@ In avatar mode Stellar Blade stops drawing its own 3D world while EVE's pose str
 | Minecraft command or binding | Action |
 |---|---|
 | `/stellar start`, `/stellar status`, `/stellar stop` | Terrain and position link; the status adds your combat counts |
+| **G**, `/stellar play` | Play as EVE: `/stellar start`, `/stellar import`, `/stellar enter`, then `/stellaravatar play`, skipping steps already done |
 | `/stellar import`, `/stellar enter`, `/stellar return` | Stellar Blade's F5, F8 and F11 from Minecraft, answered in chat |
 | `/stellarview play` | Continuous EVE view with controls forwarded from Minecraft |
 | `/stellarview livehd` | Same continuous view without input forwarding |
