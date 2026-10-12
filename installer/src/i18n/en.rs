@@ -254,7 +254,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("consent_replaced", "Replaced (kept first, for Roll back)"),
     (
         "consent_changed",
-        "Changed or missing since they were installed: replaced, the changed ones kept first (Roll back cannot reinstall them)",
+        "Changed or missing since they were installed: replaced, the changed ones kept aside (Roll back still returns to the release kept before, if any)",
     ),
     ("consent_backups", "Backups made first"),
     (

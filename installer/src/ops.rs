@@ -683,8 +683,18 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     }),
             });
         }
-        if let Some(previous) = &previous {
-            ledger::commit_previous(&env.data, previous)?;
+        if let Some(kept) = &previous {
+            state.previous = if Payload::from_previous(kept).is_ok() {
+                ledger::commit_previous(&env.data, kept)?;
+                Some(kept.clone())
+            } else {
+                // A replaced piece had files changed by hand: that set cannot be installed again, so Roll back keeps
+                // going to the set kept before, unless that is what is installed now. The changed set stays beside
+                // it until the next successful run drops it.
+                before.filter(|b| {
+                    Payload::from_previous(b).is_ok_and(|p| p.release != payload.release)
+                })
+            };
         }
     }
     (env.step)(Step::Record);

@@ -1201,8 +1201,8 @@ fn a_missing_piece_does_not_dead_end_a_newer_installer() {
     assert!(all_current(&w, &v2));
 }
 
-/// Replacing a piece changed by hand is shown before consent, keeps the changed files, and a rollback to that kept set
-/// is refused clearly instead of reinstalling half a piece.
+/// Replacing a piece changed by hand is shown before consent and keeps the changed files, but Roll back never goes to
+/// that kept set: it would reinstall half a piece.
 #[test]
 fn replacing_a_changed_piece_is_listed_kept_and_not_rolled_back_to() {
     let w = world();
@@ -1228,12 +1228,18 @@ fn replacing_a_changed_piece_is_listed_kept_and_not_rolled_back_to() {
 
     ops::install(&w.env(), &w.target, &v2).unwrap();
     assert!(all_current(&w, &v2));
-    let kept = state(&w).previous.unwrap();
-    assert!(kept.join(adapter::MANIFEST).exists());
+    // The changed set stays on disk, but Roll back never offers it: there was no set kept before.
+    assert!(
+        w.data
+            .join("previous/0.1.0+test")
+            .join(adapter::MANIFEST)
+            .exists()
+    );
+    assert_eq!(state(&w).previous, None);
     let error = ops::rollback(&w.env(), &w.target).unwrap_err();
     assert_eq!(
         error.downcast_ref::<Refusal>().map(|r| r.kind),
-        Some(Kind::PreviousChanged),
+        Some(Kind::NoPrevious),
         "{error:#}"
     );
     assert!(all_current(&w, &v2), "the refused rollback changed nothing");
@@ -1290,4 +1296,24 @@ fn an_adapter_left_beside_a_moved_executable_is_removed() {
     assert!(all_current(&w, &payload(2)));
     let kept = Payload::from_previous(&state(&w).previous.unwrap()).unwrap();
     assert_eq!(kept.dll, payload(1).dll);
+}
+
+/// An update over a file changed by hand keeps that changed set aside, but Roll back still goes to the complete set
+/// kept before it: the update must not drop that one.
+#[test]
+fn an_update_over_a_changed_piece_keeps_the_older_rollback_set() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "edited").unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
 }
