@@ -1389,3 +1389,37 @@ fn an_update_stopped_before_clearing_the_old_mods_folder_finds_it_again() {
         Ownership::Absent
     );
 }
+
+/// A same-release run (an Update over a hand-changed file) records `previous/<release on record>`; a later update that
+/// dies before keeping must not take that stale set for the one it kept.
+#[test]
+fn finishing_an_update_after_a_same_release_run_keeps_the_installed_set() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "edited").unwrap();
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::KeepPrevious {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &v2);
+        }))
+        .is_err()
+    );
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
