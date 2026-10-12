@@ -552,7 +552,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_piece_missing",
-        "{path} is missing: Install again to put it back",
+        "{path} is missing: Update puts it back",
     ),
     ("err_invalid_release", "Invalid release name: {path}"),
     ("err_cannot_keep", "Cannot keep {path}"),

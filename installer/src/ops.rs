@@ -971,7 +971,7 @@ pub fn repair_plan(
         Some(Status::InProgress) => bail!(Refusal::new(Kind::Interrupted, "")),
         // What an Uninstall left in place (files changed by hand) is the user's.
         Some(Status::Removed) => return Ok(Vec::new()),
-        // A recorded piece gone as a whole has no manifest left to repair from: Install puts it back.
+        // A recorded piece gone as a whole has no manifest left to repair from: Update puts it back.
         Some(Status::Installed) => {
             if let Some(piece) = verify(env, target, payload)?
                 .into_iter()

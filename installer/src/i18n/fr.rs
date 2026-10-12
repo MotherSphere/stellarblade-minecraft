@@ -591,7 +591,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_piece_missing",
-        "{path} est absent : installez à nouveau pour le remettre",
+        "{path} est absent : Mettre à jour le remet en place",
     ),
     ("err_invalid_release", "Nom de version invalide : {path}"),
     ("err_cannot_keep", "Impossible de conserver {path}"),
