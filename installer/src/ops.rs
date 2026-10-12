@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ledger::{self, State, Status};
+use crate::ledger::{self, Kept, State, Status};
 use crate::payload::Payload;
 use crate::safety::{self, Protected, Snapshot, sha256_file, sha256_hex};
 use crate::{Guard, Kind, Ownership, Refusal, adapter, deploy, mods, pins, platform};
@@ -557,14 +557,23 @@ fn old_release(state: &State) -> String {
     }
 }
 
-/// The set an interrupted run already kept, when the next run finishes it: the owned set on disk is then partial, so
-/// it must not replace the complete one. Only `previous/<release on record>` counts: an older kept set means the
-/// interrupted run stopped before it kept anything, and the set on disk is still complete. A finished run never records
-/// the set of the release it installed, so that name is the interrupted run's own (as the 0.3 installers record it).
-fn resumed(env: &Env, state: &State) -> Option<PathBuf> {
-    let kept = env.data.join("previous").join(old_release(state));
-    (state.status == Status::InProgress && state.previous.as_ref() == Some(&kept) && kept.is_dir())
-        .then_some(kept)
+/// What an interrupted run already kept, when the next run finishes it: the owned set on disk is then partly that run's
+/// own, so it must not be kept over the complete one, nor kept at all when that run had nothing to keep. A record
+/// without `kept` (the 0.3 installers) counts only `previous/<release on record>`: an older kept set means the
+/// interrupted run stopped before it kept anything, and a finished run never records the set of the release it
+/// installed.
+fn resumed(env: &Env, state: &State) -> Option<Kept> {
+    if state.status != Status::InProgress {
+        return None;
+    }
+    match &state.kept {
+        Some(Kept::Set(set)) if !set.is_dir() => None,
+        Some(kept) => Some(kept.clone()),
+        None => {
+            let kept = env.data.join("previous").join(old_release(state));
+            (state.previous.as_ref() == Some(&kept) && kept.is_dir()).then_some(Kept::Set(kept))
+        }
+    }
 }
 
 /// Puts the state before a failed install back: the kept set in `previous`, or nothing for a first install. Judged by
@@ -631,6 +640,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
         let resumed = resumed(env, &state);
         let before = state.previous.clone();
         state.status = Status::InProgress;
+        if resumed.is_none() {
+            state.kept = None;
+        }
         // A place being left keeps its record until its pieces are gone: a run that stops before finds it again.
         if moved.paths().is_empty() {
             state.target = Some(target.clone());
@@ -653,14 +665,31 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                 owned.push(path);
             }
         }
-        let mut previous = resumed;
-        if previous.is_none() && !owned.is_empty() {
-            (env.step)(Step::KeepPrevious);
-            let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
-            previous = Some(ledger::keep_previous(&env.data, &old_release, &items)?);
-            state.previous = previous.clone();
-            ledger::save(&path, &state)?;
-        }
+        let kept = match resumed {
+            Some(kept) => kept,
+            None => {
+                let kept = if owned.is_empty() {
+                    Kept::Nothing
+                } else {
+                    (env.step)(Step::KeepPrevious);
+                    let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
+                    let set = ledger::keep_previous(&env.data, &old_release, &items)?;
+                    // A set with files changed by hand cannot be installed again: Roll back keeps going to the one
+                    // kept before.
+                    if Payload::from_previous(&set).is_ok() {
+                        state.previous = Some(set.clone());
+                    }
+                    Kept::Set(set)
+                };
+                state.kept = Some(kept.clone());
+                ledger::save(&path, &state)?;
+                kept
+            }
+        };
+        let previous = match kept {
+            Kept::Set(set) => Some(set),
+            Kept::Nothing => None,
+        };
         // A bridge JAR the user disabled in the launcher stays disabled.
         let disabled = mods::bridge_disabled(&target.minecraft_mods)?;
         (env.step)(Step::Remove);
@@ -687,6 +716,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                         state.previous =
                             ledger::drop_previous(&env.data, previous, before.as_deref())?;
                     }
+                    state.kept = None;
                     ledger::save(&path, &state)?;
                     error.context(Refusal::new(Kind::InstallRestored, ""))
                 }
@@ -725,6 +755,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     }
     (env.step)(Step::Record);
     state.status = Status::Installed;
+    state.kept = None;
     state.target = Some(target.clone());
     state.release = payload.release.clone();
     state.lua_revision = payload.lua_revision;

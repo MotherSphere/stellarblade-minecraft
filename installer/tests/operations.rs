@@ -1470,3 +1470,82 @@ fn reinstalling_the_same_release_keeps_the_older_rollback_set() {
     ops::rollback(&w.env(), &w.target).unwrap();
     assert!(all_current(&w, &v1));
 }
+
+/// before it: the changed set it kept can never be installed again.
+#[test]
+fn finishing_an_interrupted_update_over_a_changed_piece_keeps_the_older_rollback_set() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let main = w
+        .game()
+        .mods
+        .join(deploy::MOD_NAME)
+        .join("Scripts/main.lua");
+    fs::write(&main, "edited").unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::Remove {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &v2);
+        }))
+        .is_err()
+    );
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+    assert!(
+        w.data.join("previous/0.1.0+test").is_dir(),
+        "v1 set still on disk"
+    );
+    ops::rollback(&w.env(), &w.target).unwrap_or_else(|e| panic!("Roll back to v1 lost: {e:#}"));
+    assert!(all_current(&w, &v1));
+}
+
+/// keep that partial set over the complete one Roll back goes to.
+#[test]
+fn finishing_an_interrupted_reinstall_keeps_the_rollback_set() {
+    let w = world();
+    let (v1, v2, v3) = (payload(1), payload(2), payload(3));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(
+        ops::uninstall(&w.env(), &w.target, false)
+            .unwrap()
+            .is_empty()
+    );
+    let crash = |step: ops::Step| {
+        if step == ops::Step::LuaMod {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &v3);
+        }))
+        .is_err()
+    );
+    ops::install(&w.env(), &w.target, &v3).unwrap();
+    assert!(all_current(&w, &v3));
+    ops::rollback(&w.env(), &w.target).unwrap_or_else(|e| {
+        panic!(
+            "Roll back lost: {e:#}; previous/ = {:?}",
+            fs::read_dir(w.data.join("previous"))
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        )
+    });
+    assert!(all_current(&w, &v1));
+}

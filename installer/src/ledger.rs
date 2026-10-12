@@ -27,6 +27,15 @@ pub enum Status {
     Removed,
 }
 
+/// What a run kept in `previous/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kept {
+    /// Nothing was installed (a first install, a reinstall after Uninstall).
+    Nothing,
+    Set(PathBuf),
+}
+
 /// `state.json`: what this installer last did, and where. Every field is optional on load, so an older or partial file
 /// still loads.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +51,11 @@ pub struct State {
     pub created_instance: Option<PathBuf>,
     /// The verified copy of the Stellar Blade saves made at the first install.
     pub save_backup: Option<PathBuf>,
-    /// The kept previous set (`previous/<release>`), for rollback.
+    /// The kept previous set (`previous/<release>`), for rollback: only a set that can be installed again.
     pub previous: Option<PathBuf>,
+    /// While a run is in progress, once it got past keeping: what it kept. A run finishing it keeps nothing again,
+    /// since the set on disk is then partly its own.
+    pub kept: Option<Kept>,
     /// Unix seconds.
     pub updated: u64,
 }
