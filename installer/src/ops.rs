@@ -640,13 +640,6 @@ fn restore(env: &Env, target: &Target, kept: Option<&Path>) -> Result<()> {
             mods::write_atomic(dir, &name.to_string_lossy(), &fs::read(from)?)?;
         }
     }
-    let (to, from): (Vec<_>, Vec<_>) = back.into_iter().unzip();
-    if contents(&to)? != contents(&from)? {
-        bail!(Refusal::new(
-            Kind::MismatchAfterWrite,
-            kept.unwrap_or(Path::new("")).display()
-        ));
-    }
     Ok(())
 }
 
@@ -692,7 +685,6 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     let guarded = Guarded::take(target, own_jars(target, Some(payload))?)?;
     fs::create_dir_all(&env.data)?;
     let resumed = resumed(env, &state);
-    let before = state.previous.clone();
     // Nothing to write: an interrupted run killed after its last write is finished by recording it.
     if pieces.iter().all(|p| p.current) {
         guarded.unchanged(target)?;
@@ -798,12 +790,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                         (Some(_), None) => status_before,
                     };
                     if let Some(previous) = &previous {
-                        state.previous = ledger::previous_without(
-                            &env.data,
-                            previous,
-                            before.as_deref(),
-                            |p| goes_back(p, target, &state.release),
-                        )?;
+                        state.previous = ledger::previous_without(&env.data, previous, |p| {
+                            goes_back(p, target, &state.release)
+                        })?;
                     }
                     state.kept = None;
                     ledger::save(&path, &state)?;
@@ -829,15 +818,14 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     }
     // Roll back goes to the set this run kept (or the interrupted run it finishes), recorded as it was kept, unless it
     // cannot: a piece missing, or the release installed now (Roll back of an interrupted update, a reinstall for a new
-    // game build, an install after Uninstall). It then keeps going to the set kept before, under the same condition.
+    // game build, an install after Uninstall). It then goes to the set kept before, under the same condition.
     if let Some(set) = state
         .previous
         .clone()
         .filter(|p| !goes_back(p, target, &payload.release))
     {
-        state.previous = ledger::previous_without(&env.data, &set, before.as_deref(), |p| {
-            goes_back(p, target, &payload.release)
-        })?;
+        state.previous =
+            ledger::previous_without(&env.data, &set, |p| goes_back(p, target, &payload.release))?;
     }
     (env.step)(Step::Record);
     state.status = Status::Installed;

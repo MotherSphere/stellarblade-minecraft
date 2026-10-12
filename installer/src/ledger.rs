@@ -180,23 +180,22 @@ fn set_aside_as(data: &Path, kept: &Path, name: &str) -> Result<PathBuf> {
 }
 
 /// Where Roll back goes once `kept`, the set a run kept, is dropped (a failed run that was restored, the release
-/// installed again): among the sets Roll back can go to (`goes_back`), `before`, the set kept before it, when it is
-/// still there, else the one other. Reads only: the caller deletes `kept` once `state.json` records the result.
+/// installed again): the one other set in `previous/` Roll back can go to (`goes_back`), the set kept before it. The
+/// other sets there are named after the release on record, which Roll back never goes to. Reads only: the caller
+/// deletes `kept` once `state.json` records the result.
 pub fn previous_without(
     data: &Path,
     kept: &Path,
-    before: Option<&Path>,
     goes_back: impl Fn(&Path) -> bool,
 ) -> Result<Option<PathBuf>> {
-    let usable = |set: &Path| set != kept && set.is_dir() && goes_back(set);
-    if let Some(before) = before.filter(|b| usable(b)) {
-        return Ok(Some(before.to_path_buf()));
-    }
     let mut rest = Vec::new();
     for entry in fs::read_dir(data.join("previous"))? {
-        let entry = entry?;
-        if !entry.file_name().to_string_lossy().starts_with('.') && usable(&entry.path()) {
-            rest.push(entry.path());
+        let path = entry?.path();
+        let hidden = path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+        if path != kept && !hidden && path.is_dir() && goes_back(&path) {
+            rest.push(path);
         }
     }
     Ok(if rest.len() == 1 { rest.pop() } else { None })
@@ -263,9 +262,7 @@ mod tests {
         );
         // A failed run that was restored drops its set and goes back to the one kept before.
         assert_eq!(
-            previous_without(&data, &second, Some(&second), |p| Payload::from_previous(p)
-                .is_ok())
-            .unwrap(),
+            previous_without(&data, &second, |p| Payload::from_previous(p).is_ok()).unwrap(),
             Some(first.clone())
         );
         fs::remove_dir_all(&second).unwrap();
@@ -291,10 +288,7 @@ mod tests {
         assert!(Payload::from_previous(&changed).is_err());
         let dropped = keep_previous(&data, "0.2.0", &[]).unwrap();
         let loads = |p: &Path| Payload::from_previous(p).is_ok();
-        assert_eq!(
-            previous_without(&data, &dropped, None, loads).unwrap(),
-            None
-        );
+        assert_eq!(previous_without(&data, &dropped, loads).unwrap(), None);
         keep_previous(&data, "0.1.0", &[&lua]).unwrap();
         let other = keep_previous(&data, "0.2.0", &[]).unwrap();
         commit_previous(&data, Some(&other)).unwrap();
