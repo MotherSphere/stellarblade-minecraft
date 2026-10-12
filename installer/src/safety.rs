@@ -235,6 +235,14 @@ pub struct Protected {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot(pub BTreeMap<String, String>);
 
+/// `name`, or the name a temporary of a write through `mods::write_atomic` stands for: a run killed before its rename
+/// leaves one, and the next write replaces it.
+fn own_name(name: &str) -> &str {
+    name.strip_prefix('.')
+        .and_then(|n| n.strip_suffix(".part"))
+        .unwrap_or(name)
+}
+
 const ADAPTER_FILES: &[&str] = &[
     "xinput1_3.dll",
     "stellar-input-directory.txt",
@@ -280,7 +288,10 @@ impl Protected {
         };
         let mut listings = Vec::new();
         if let Some(win64) = &self.win64 {
-            let own = |name: &str| ADAPTER_FILES.contains(&name.to_lowercase().as_str());
+            let own = |name: &str| {
+                let name = name.to_lowercase();
+                ADAPTER_FILES.contains(&own_name(&name))
+            };
             let (dir, names) = listing(win64, &own)?;
             for name in &names {
                 if dir.join(name).is_file() {
@@ -314,7 +325,7 @@ impl Protected {
         if let Some(minecraft) = &self.minecraft {
             file(minecraft.join("options.txt"))?;
             let (dir, names) = listing(&minecraft.join("mods"), &|name| {
-                self.own_jars.iter().any(|own| own == name)
+                self.own_jars.iter().any(|own| own == own_name(name))
             })?;
             for name in &names {
                 if name.ends_with(".jar") {

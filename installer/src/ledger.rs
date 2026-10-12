@@ -1,11 +1,12 @@
 //! The installer's own record, in its data folder (`~/.local/share/Colony/Stellar Bridge/`): `state.json`, the
-//! previous owned set for rollback, and the save backups. It is data, not cache: losing it hurts.
+//! previous owned set for rollback, the sets kept with files changed by hand, and the save backups. It is data, not cache: losing it hurts.
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::payload::Payload;
 use crate::{Kind, Refusal, safety};
 
 /// The program name: `Colony/Stellar Bridge/` folders.
@@ -27,6 +28,15 @@ pub enum Status {
     Removed,
 }
 
+/// What a run kept in `previous/`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kept {
+    /// Nothing was installed (a first install, a reinstall after Uninstall).
+    Nothing,
+    Set(PathBuf),
+}
+
 /// `state.json`: what this installer last did, and where. Every field is optional on load, so an older or partial file
 /// still loads.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +52,11 @@ pub struct State {
     pub created_instance: Option<PathBuf>,
     /// The verified copy of the Stellar Blade saves made at the first install.
     pub save_backup: Option<PathBuf>,
-    /// The kept previous set (`previous/<release>`), for rollback.
+    /// The kept previous set (`previous/<release>`), for rollback: only a set that can be installed again.
     pub previous: Option<PathBuf>,
+    /// While a run is in progress, once it got past keeping: what it kept. A run finishing it keeps nothing again,
+    /// since the set on disk is then partly its own.
+    pub kept: Option<Kept>,
     /// Unix seconds.
     pub updated: u64,
 }
@@ -70,8 +83,25 @@ pub fn save(path: &Path, state: &State) -> Result<()> {
 }
 
 /// Copies the owned set about to be replaced (the Lua mod folder, the adapter files, the JARs) into
-/// `previous/<release>/`, replacing the set kept before. About 1 MB: the avatar pack is never copied.
+/// `previous/<release>/`. About 1 MB: the avatar pack is never copied. The set kept before stays beside it until the
+/// run succeeds and [`commit_previous`] drops it, so a failed run that was restored still rolls back to it. A set with
+/// files changed by hand cannot be installed again: it goes to `changed/<release>` (see [`set_aside`]), never over a set
+/// in `previous/` that Roll back may go to.
 pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
+    let staging = stage(data, release, items)?;
+    if Payload::from_previous(&staging).is_err() {
+        return set_aside_as(data, &staging, release);
+    }
+    let kept = data.join("previous").join(release);
+    if kept.exists() {
+        discard(data, &kept)?;
+    }
+    fs::rename(&staging, &kept)?;
+    Ok(kept)
+}
+
+/// Copies `items` into `previous/.<release>.partial`, which the next run clears when this one is killed.
+fn stage(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
     if release.is_empty() || release.contains(['/', '\\']) || release.starts_with('.') {
         bail!(Refusal::new(Kind::InvalidRelease, release));
     }
@@ -92,15 +122,83 @@ pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<Path
         fs::remove_dir_all(&staging)?;
         return Err(error);
     }
-    for entry in fs::read_dir(&previous)? {
+    Ok(staging)
+}
+
+/// After a successful run, once `state.json` records it: `kept`, the Roll back set, becomes the only set in `previous/`.
+pub fn commit_previous(data: &Path, kept: Option<&Path>) -> Result<()> {
+    let entries = match fs::read_dir(data.join("previous")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?,
+    };
+    for entry in entries {
         let path = entry?.path();
-        if path != staging {
-            fs::remove_dir_all(&path)?;
+        if Some(path.as_path()) != kept {
+            discard(data, &path)?;
         }
     }
-    let kept = previous.join(release);
-    fs::rename(&staging, &kept)?;
-    Ok(kept)
+    Ok(())
+}
+
+/// Deletes a set in `previous/` that is no longer needed, unless it holds files changed by hand (an interrupted or
+/// unrestored run left it there, with nothing on record pointing at it): that one is [`set_aside`]. Only sets that
+/// can be installed again, and the staging folders of a killed keep, are deleted.
+fn discard(data: &Path, set: &Path) -> Result<()> {
+    let hidden = set
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+    if hidden || Payload::from_previous(set).is_ok() {
+        fs::remove_dir_all(set)?;
+    } else {
+        set_aside(data, set)?;
+    }
+    Ok(())
+}
+
+/// Moves a kept set with files changed by hand, which cannot be installed again, to `changed/<release>` (`-2`, `-3`…
+/// when taken). No run deletes it: they are the user's files.
+pub fn set_aside(data: &Path, kept: &Path) -> Result<PathBuf> {
+    set_aside_as(
+        data,
+        kept,
+        &kept.file_name().unwrap_or_default().to_string_lossy(),
+    )
+}
+
+fn set_aside_as(data: &Path, kept: &Path, name: &str) -> Result<PathBuf> {
+    let changed = data.join("changed");
+    fs::create_dir_all(&changed)?;
+    let mut aside = changed.join(name);
+    for n in 2.. {
+        if fs::symlink_metadata(&aside).is_err() {
+            break;
+        }
+        aside = changed.join(format!("{name}-{n}"));
+    }
+    fs::rename(kept, &aside)?;
+    Ok(aside)
+}
+
+/// Where Roll back goes once `kept`, the set a run kept, is dropped (a failed run that was restored, the release
+/// installed again): the one other set in `previous/` Roll back can go to (`goes_back`), the set kept before it. The
+/// other sets there are named after the release on record, which Roll back never goes to. Reads only: the caller
+/// deletes `kept` once `state.json` records the result.
+pub fn previous_without(
+    data: &Path,
+    kept: &Path,
+    goes_back: impl Fn(&Path) -> bool,
+) -> Result<Option<PathBuf>> {
+    let mut rest = Vec::new();
+    for entry in fs::read_dir(data.join("previous"))? {
+        let path = entry?.path();
+        let hidden = path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+        if path != kept && !hidden && path.is_dir() && goes_back(&path) {
+            rest.push(path);
+        }
+    }
+    Ok(if rest.len() == 1 { rest.pop() } else { None })
 }
 
 #[cfg(test)]
@@ -145,25 +243,87 @@ mod tests {
     #[test]
     fn previous_keeps_one_set_of_files_and_folders() {
         let root = tempfile::tempdir().unwrap();
-        let lua = root.path().join("StellarCollisionProbe");
-        fs::create_dir_all(lua.join("Scripts")).unwrap();
-        fs::write(lua.join("Scripts/main.lua"), "old").unwrap();
-        let dll = root.path().join("xinput1_3.dll");
-        fs::write(&dll, "old dll").unwrap();
+        let folder = root.path().join("Scripts");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("main.lua"), "old").unwrap();
+        let file = root.path().join("notes.txt");
+        fs::write(&file, "old file").unwrap();
         let data = root.path().join("data");
-        let first = keep_previous(&data, "0.1.0", &[&lua, &dll]).unwrap();
+        let first = keep_previous(&data, "0.1.0", &[&folder, &file]).unwrap();
         assert_eq!(
-            fs::read_to_string(first.join("StellarCollisionProbe/Scripts/main.lua")).unwrap(),
+            fs::read_to_string(first.join("Scripts/main.lua")).unwrap(),
             "old"
         );
-        let second = keep_previous(&data, "0.2.0", &[&dll]).unwrap();
-        assert!(!first.exists());
+        let second = keep_previous(&data, "0.2.0", &[&file]).unwrap();
+        assert!(first.exists(), "kept until the run succeeds");
         assert_eq!(
-            fs::read_to_string(second.join("xinput1_3.dll")).unwrap(),
-            "old dll"
+            fs::read_to_string(second.join("notes.txt")).unwrap(),
+            "old file"
         );
+        // A failed run that was restored drops its set and goes back to the one kept before.
+        assert_eq!(
+            previous_without(&data, &second, |p| Payload::from_previous(p).is_ok()).unwrap(),
+            Some(first.clone())
+        );
+        fs::remove_dir_all(&second).unwrap();
+        let second = keep_previous(&data, "0.2.0", &[&file]).unwrap();
+        commit_previous(&data, Some(&second)).unwrap();
+        assert!(!first.exists());
+        assert!(!data.join("changed").exists(), "nothing changed by hand");
         assert!(keep_previous(&data, "0.3.0", &[&root.path().join("missing")]).is_err());
         assert!(second.exists(), "a failed copy keeps the last good set");
         assert!(keep_previous(&data, "../x", &[]).is_err());
+    }
+
+    /// A set that cannot be installed again (a Lua mod with a file changed by hand) left in `previous/` with nothing
+    /// pointing at it is never deleted: replacing or committing past it sets it aside.
+    #[test]
+    fn sets_with_changed_files_are_set_aside_not_deleted() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let lua = root.path().join(crate::deploy::MOD_NAME);
+        fs::create_dir_all(&lua).unwrap();
+        fs::write(lua.join("main.lua"), "my edit").unwrap();
+        let changed = keep_previous(&data, "0.1.0", &[&lua]).unwrap();
+        assert!(Payload::from_previous(&changed).is_err());
+        let dropped = keep_previous(&data, "0.2.0", &[]).unwrap();
+        let loads = |p: &Path| Payload::from_previous(p).is_ok();
+        assert_eq!(previous_without(&data, &dropped, loads).unwrap(), None);
+        keep_previous(&data, "0.1.0", &[&lua]).unwrap();
+        let other = keep_previous(&data, "0.2.0", &[]).unwrap();
+        commit_previous(&data, Some(&other)).unwrap();
+        for aside in ["0.1.0", "0.1.0-2"] {
+            assert_eq!(
+                fs::read_to_string(
+                    data.join("changed")
+                        .join(aside)
+                        .join(crate::deploy::MOD_NAME)
+                        .join("main.lua")
+                )
+                .unwrap(),
+                "my edit"
+            );
+        }
+    }
+
+    #[test]
+    fn changed_sets_are_set_aside_without_replacing_one_another() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let edited = root.path().join("main.lua");
+        for edit in ["first edit", "second edit"] {
+            fs::write(&edited, edit).unwrap();
+            let kept = keep_previous(&data, "0.2.0", &[&edited]).unwrap();
+            set_aside(&data, &kept).unwrap();
+            assert!(!kept.exists());
+        }
+        assert_eq!(
+            fs::read_to_string(data.join("changed/0.2.0/main.lua")).unwrap(),
+            "first edit"
+        );
+        assert_eq!(
+            fs::read_to_string(data.join("changed/0.2.0-2/main.lua")).unwrap(),
+            "second edit"
+        );
     }
 }

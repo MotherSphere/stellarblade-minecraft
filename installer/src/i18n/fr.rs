@@ -139,7 +139,11 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("piece_current", "Installé, cette version"),
     (
         "piece_other_release",
-        "Installé, une autre version : Mettre à jour la remplace",
+        "Installé, mais pas tel que cette version le pose (autre version ou build du jeu, ou fichier manquant) : Mettre à jour le remplace",
+    ),
+    (
+        "piece_replaceable",
+        "Modifié ou manquant depuis l'installation ({path}) : Mettre à jour le remplace et garde les fichiers modifiés dans changed/, dans le dossier de données de l'installateur",
     ),
     (
         "pack_missing",
@@ -161,7 +165,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("pack_fresh", "Présent et à jour"),
     (
         "state_interrupted",
-        "Une opération sur {release} a été interrompue : installez à nouveau pour la terminer, ou revenez en arrière",
+        "Une opération sur {release} a été interrompue : mettez à jour ou désinstallez à nouveau pour la terminer, ou revenez en arrière",
     ),
     ("state_installed", "{release} installé"),
     ("state_removed", "Désinstallé (dernière version {release})"),
@@ -187,7 +191,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "blocker_game_files",
-        "Un fichier à l'emplacement du pont dans le dossier du jeu n'est pas celui du pont, ou a été modifié (voir les lignes ci-dessus). UE4SS 2.x, par exemple, utilise aussi xinput1_3.dll. Supprimez ou déplacez ce fichier ; s'il s'agit de celui du pont, utilisez Réparer.",
+        "Un fichier à l'emplacement du pont dans le dossier du jeu n'est pas celui du pont, ou le dossier du pont contient des fichiers qu'il n'a pas installés (voir les lignes ci-dessus). UE4SS 2.x, par exemple, utilise aussi xinput1_3.dll. Supprimez ou déplacez ce fichier.",
     ),
     (
         "viewer_still_possible",
@@ -259,6 +263,14 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     (
         "consent_replaced",
         "Remplacé (conservé d'abord, pour revenir en arrière)",
+    ),
+    (
+        "consent_changed",
+        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés dans changed/, dans le dossier de données de l'installateur (Revenir en arrière ramène toujours la version conservée avant, s'il y en a une)",
+    ),
+    (
+        "confirm_changed",
+        "Modifiés ou manquants depuis l'installation : remplacés, les fichiers modifiés conservés dans changed/, dans le dossier de données de l'installateur",
     ),
     ("consent_backups", "Copies faites d'abord"),
     (
@@ -563,15 +575,23 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_previous_changed",
-        "La version précédente conservée a changé depuis : {path}",
+        "La version précédente conservée ne correspond pas à ses manifestes (modifiée depuis, ou conservée avec des fichiers modifiés à la main) : elle ne peut pas être réinstallée : {path}",
     ),
     (
         "err_still_modified",
         "{path} n'est toujours pas tel qu'installé",
     ),
     (
+        "err_interrupted",
+        "Une opération a été interrompue : mettez à jour ou désinstallez à nouveau pour la terminer ; la réparation ne peut pas la terminer",
+    ),
+    (
         "err_run_update",
         "{path} diffère de ce que contient cet installateur : lancez plutôt la mise à jour",
+    ),
+    (
+        "err_piece_missing",
+        "{path} est absent : Mettre à jour le remet en place",
     ),
     ("err_invalid_release", "Nom de version invalide : {path}"),
     ("err_cannot_keep", "Impossible de conserver {path}"),

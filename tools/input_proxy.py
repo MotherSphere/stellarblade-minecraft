@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import struct
 import sys
@@ -100,7 +101,9 @@ def remove(exe):
     manifest = json.loads(data)
     if (not isinstance(manifest, dict) or set(manifest) != {'owner', 'version', 'executable', 'files'}
             or manifest['owner'] != 'stellar-input' or manifest['version'] != 1
-            or manifest['executable'] != SUPPORTED_HASH or not isinstance(manifest['files'], dict)
+            # The executable it was installed for: after a Steam update the adapter is still ours to remove.
+            or not isinstance(manifest['executable'], str) or not re.fullmatch('[0-9a-f]{64}', manifest['executable'])
+            or not isinstance(manifest['files'], dict)
             or set(manifest['files']) != FILES):
         raise ValueError('Input adapter ownership is not recognized')
     for name, expected in manifest['files'].items():

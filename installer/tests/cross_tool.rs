@@ -198,8 +198,8 @@ fn adapter_installs_are_removed_by_the_other_tool() {
     let remove = Path::new("remove");
 
     assert!(input_proxy(&pin, &[install, &exe, &dll, &lab.bridge]));
-    assert_eq!(adapter::ownership(&game, &pin).unwrap(), Ownership::Owned);
-    adapter::remove(&exe, &pin, &open).unwrap();
+    assert_eq!(adapter::ownership(&game).unwrap(), Ownership::Owned);
+    adapter::remove(&exe, &open).unwrap();
     assert_eq!(fs::read_dir(&game).unwrap().count(), 2);
 
     adapter::install(&exe, &adapter::test_dll(), &lab.bridge, &pin, &open).unwrap();
@@ -208,14 +208,13 @@ fn adapter_installs_are_removed_by_the_other_tool() {
         !input_proxy(&pin, &[install, &exe, &dll, &lab.bridge]),
         "never over an existing install"
     );
-    assert!(
-        !input_proxy(&"0".repeat(64), &[remove, &exe]),
-        "installed for another pin"
-    );
     fs::write(game.join(adapter::DLL), "changed").unwrap();
     assert!(!input_proxy(&pin, &[remove, &exe]));
     fs::write(game.join(adapter::DLL), adapter::test_dll()).unwrap();
-    assert!(input_proxy(&pin, &[remove, &exe]));
+    assert!(
+        input_proxy(&"0".repeat(64), &[remove, &exe]),
+        "installed for another pin: still ours after a Steam update"
+    );
     assert_eq!(fs::read_dir(&game).unwrap().count(), 2);
 
     assert!(input_proxy(&pin, &[install, &exe, &dll, &lab.bridge]));
@@ -225,7 +224,7 @@ fn adapter_installs_are_removed_by_the_other_tool() {
         "same directory file"
     );
     fs::write(game.join(adapter::CONFIG), "Z:/elsewhere\n").unwrap();
-    assert!(adapter::remove(&exe, &pin, &open).is_err());
+    assert!(adapter::remove(&exe, &open).is_err());
     assert_eq!(
         fs::read_to_string(game.join(adapter::CONFIG)).unwrap(),
         "Z:/elsewhere\n"

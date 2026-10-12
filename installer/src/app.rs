@@ -271,14 +271,23 @@ pub fn detect(ctx: &Ctx) -> Found {
         None => match (&game, ue4ss.as_ref().and_then(|u| u.mods.as_ref())) {
             (Some(game), Some(mods)) => {
                 let (mut pieces, mut error) = (Vec::new(), None);
-                for (name, ownership) in [
-                    (ops::LUA, deploy::ownership(mods)),
-                    (ops::ADAPTER, adapter::ownership(&game.win64, &ctx.pin)),
+                for (name, ownership, drifted) in [
+                    (
+                        ops::LUA,
+                        deploy::ownership(mods),
+                        deploy::drifted(mods).is_ok(),
+                    ),
+                    (
+                        ops::ADAPTER,
+                        adapter::ownership(&game.win64),
+                        adapter::drifted(&game.win64).is_ok(),
+                    ),
                 ] {
                     match ownership {
                         Ok(Ownership::Absent) => {}
                         Ok(ownership) => pieces.push(Piece {
                             name,
+                            replaceable: drifted && matches!(ownership, Ownership::Modified(_)),
                             ownership,
                             current: false,
                         }),
@@ -1259,13 +1268,15 @@ impl App {
             Some(ue4ss) if ue4ss.mods.is_none() => return Some("blocker_ue4ss_mods"),
             Some(_) => {}
         }
-        // An install would refuse these anyway: say so before the hash and the target choice.
+        // An install would refuse these anyway: say so before the hash and the target choice. A piece of ours changed
+        // only in files its manifest lists is replaced by the update instead.
         found
             .pieces
             .iter()
             .any(|p| {
                 matches!(p.name, ops::LUA | ops::ADAPTER)
                     && matches!(p.ownership, Ownership::Foreign(_) | Ownership::Modified(_))
+                    && !p.replaceable
             })
             .then_some("blocker_game_files")
     }
@@ -1404,6 +1415,7 @@ impl App {
     fn refusals(&self, target: &Target) -> Vec<String> {
         let mut found = Vec::new();
         let mut add = |name: &str, ownership: anyhow::Result<Ownership>| match ownership {
+            Ok(Ownership::Modified(_)) if ops::replaceable(target, name) => {}
             Ok(Ownership::Foreign(r) | Ownership::Modified(r)) => {
                 log::line(&format!("Refused: {name}: {r}"));
                 found.push(i18n::piece_refusal(name, &r))
@@ -1423,7 +1435,7 @@ impl App {
         if let Some(game) = &target.game {
             add(ops::LUA, deploy::ownership(&game.mods));
             let win64 = game.exe.parent().unwrap_or(Path::new(""));
-            add(ops::ADAPTER, adapter::ownership(win64, &self.ctx.pin));
+            add(ops::ADAPTER, adapter::ownership(win64));
         }
         found
     }
@@ -1476,13 +1488,19 @@ impl App {
                 let release = previous.file_name().unwrap_or_default().to_string_lossy();
                 let mut lines = vec![t_fmt("rollback_to", &[("release", &release)])];
                 lines.extend(show(
-                    ops::owned_paths(&env, &target).map_err(|e| localized(&e))?,
+                    ops::owned_paths(&target, true).map_err(|e| localized(&e))?,
                 ));
+                lines.extend(show(ops::moved_paths(&env, &target)));
+                let changed = ops::changed_files(&target);
+                if !changed.is_empty() {
+                    lines.push(t("confirm_changed").into());
+                    lines.extend(show(changed));
+                }
                 Ok(lines)
             }
             Action::Uninstall => {
                 // Fabric API stays unless the box is ticked.
-                let removed = ops::owned_paths(&env, &target)
+                let removed = ops::owned_paths(&target, false)
                     .map_err(|e| localized(&e))?
                     .into_iter()
                     .filter(|path| {
@@ -1492,6 +1510,7 @@ impl App {
                     })
                     .collect();
                 let mut lines = show(removed);
+                lines.extend(show(ops::moved_paths(&env, &target)));
                 for piece in &found.pieces {
                     if let Ownership::Foreign(r) | Ownership::Modified(r) = &piece.ownership {
                         lines.push(t_fmt(

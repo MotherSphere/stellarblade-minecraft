@@ -133,7 +133,11 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("piece_current", "Installed, this release"),
     (
         "piece_other_release",
-        "Installed, another release: Update replaces it",
+        "Installed, not as this release puts it (another release or game build, or a file missing): Update replaces it",
+    ),
+    (
+        "piece_replaceable",
+        "Changed or missing since it was installed ({path}): Update replaces it and keeps the changed files in changed/, in the installer's data folder",
     ),
     (
         "pack_missing",
@@ -155,7 +159,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("pack_fresh", "Present and up to date"),
     (
         "state_interrupted",
-        "A run of {release} was interrupted: Install again to finish it, or Roll back",
+        "A run over {release} was interrupted: Update or Uninstall again to finish it, or Roll back",
     ),
     ("state_installed", "Installed {release}"),
     ("state_removed", "Uninstalled (last release {release})"),
@@ -181,7 +185,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "blocker_game_files",
-        "A file where the bridge goes in the game folder is not the bridge's, or was changed (see the rows above). UE4SS 2.x, for example, also uses xinput1_3.dll. Remove or move that file; if it is the bridge's own, use Repair.",
+        "A file where the bridge goes in the game folder is not the bridge's, or the bridge's folder holds files it did not install (see the rows above). UE4SS 2.x, for example, also uses xinput1_3.dll. Remove or move that file.",
     ),
     ("viewer_still_possible", "The viewer role still works."),
     ("maintenance_title", "Installed pieces"),
@@ -248,6 +252,14 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     ("consent_writes", "Will be written"),
     ("consent_replaced", "Replaced (kept first, for Roll back)"),
+    (
+        "consent_changed",
+        "Changed or missing since they were installed: replaced, the changed ones kept in changed/, in the installer's data folder (Roll back still returns to the release kept before, if any)",
+    ),
+    (
+        "confirm_changed",
+        "Changed or missing since they were installed: replaced, the changed ones kept in changed/, in the installer's data folder",
+    ),
     ("consent_backups", "Backups made first"),
     (
         "consent_eula",
@@ -527,12 +539,20 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ),
     (
         "err_previous_changed",
-        "The kept previous set changed since it was kept: {path}",
+        "The kept previous set does not match its manifests (changed since it was kept, or kept with files changed by hand), so it cannot be installed again: {path}",
     ),
     ("err_still_modified", "{path} is still not as installed"),
     (
+        "err_interrupted",
+        "A run was interrupted: Update or Uninstall again to finish it; Repair cannot finish it",
+    ),
+    (
         "err_run_update",
         "{path} differs from what this installer carries: run the update instead",
+    ),
+    (
+        "err_piece_missing",
+        "{path} is missing: Update puts it back",
     ),
     ("err_invalid_release", "Invalid release name: {path}"),
     ("err_cannot_keep", "Cannot keep {path}"),

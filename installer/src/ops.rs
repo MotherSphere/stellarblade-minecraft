@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ledger::{self, State, Status};
+use crate::ledger::{self, Kept, State, Status};
 use crate::payload::Payload;
 use crate::safety::{self, Protected, Snapshot, sha256_file, sha256_hex};
 use crate::{Guard, Kind, Ownership, Refusal, adapter, deploy, mods, pins, platform};
@@ -46,7 +46,7 @@ pub struct Target {
 
 /// What every operation needs from its caller.
 pub struct Env<'a> {
-    /// The installer data folder: `state.json`, `previous/`, `save-backups/`.
+    /// The installer data folder: `state.json`, `previous/`, `changed/`, `save-backups/`.
     pub data: PathBuf,
     /// Refuses while a game runs. Called before every write.
     pub closed: Guard<'a>,
@@ -88,6 +88,45 @@ pub struct Piece {
     pub ownership: Ownership,
     /// Owned, unchanged, and the same content as the payload.
     pub current: bool,
+    /// Modified, but only in files its manifest lists: an update replaces it (see [`replaceable`]).
+    pub replaceable: bool,
+}
+
+/// Whether an update may replace the piece `name` on `target`: owned, or modified only in files its manifest lists
+/// (an edit by hand, a file an antivirus quarantined). The update keeps it first (in `changed/` once done) and the consent page
+/// lists those files. Foreign content, unlisted files, changed folders and links never are.
+pub fn replaceable(target: &Target, name: &str) -> bool {
+    match (name, &target.game) {
+        (JAR, _) => mods::drifted(&target.minecraft_mods).is_ok(),
+        (LUA, Some(game)) => deploy::drifted(&game.mods).is_ok(),
+        (ADAPTER, Some(game)) => adapter::drifted(&game.win64()).is_ok(),
+        _ => false,
+    }
+}
+
+/// The files of ours that changed or went missing since they were installed, in the pieces an update replaces.
+pub fn changed_files(target: &Target) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut add = |dir: &Path, drift: Result<Vec<(String, String)>>| {
+        files.extend(drift.into_iter().flatten().map(|(name, _)| dir.join(name)));
+    };
+    let mods_dir = &target.minecraft_mods;
+    add(mods_dir, mods::drifted(mods_dir));
+    if let Some(game) = &target.game {
+        add(
+            &game.mods.join(deploy::MOD_NAME),
+            deploy::drifted(&game.mods),
+        );
+        add(&game.win64(), adapter::drifted(&game.win64()));
+    }
+    files
+}
+
+/// Whether a file of ours on `target` holds content changed by hand: changed, not only missing.
+fn changed_by_hand(target: &Target) -> bool {
+    changed_files(target)
+        .iter()
+        .any(|path| fs::symlink_metadata(path).is_ok())
 }
 
 /// Where a piece is on `target`: what a failure about it names.
@@ -135,8 +174,12 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
     } else {
         jar_current(&target.minecraft_mods, &ownership, payload)?
     };
+    let modified = |name: &str, ownership: &Ownership| {
+        matches!(ownership, Ownership::Modified(_)) && replaceable(target, name)
+    };
     pieces.push(Piece {
         name: JAR,
+        replaceable: modified(JAR, &ownership),
         ownership,
         current,
     });
@@ -161,10 +204,11 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
         };
         pieces.push(Piece {
             name: LUA,
+            replaceable: modified(LUA, &ownership),
             ownership,
             current,
         });
-        let ownership = adapter::ownership(&game.win64(), env.pin)?;
+        let ownership = adapter::ownership(&game.win64())?;
         let current = if payload.dll.is_empty() {
             absent(&ownership)
         } else {
@@ -175,16 +219,16 @@ pub fn verify(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<Piece
                         (adapter::DLL, payload.dll.as_slice()),
                     ])
                 });
+                // Installed for another executable (before a Steam update): the update records the pinned one.
                 expected.is_ok_and(|e| {
-                    Some(e)
-                        == adapter::manifest(&game.win64(), env.pin)
-                            .ok()
-                            .map(|m| m.files)
+                    adapter::manifest(&game.win64())
+                        .is_ok_and(|m| m.files == e && m.executable == env.pin)
                 })
             }
         };
         pieces.push(Piece {
             name: ADAPTER,
+            replaceable: modified(ADAPTER, &ownership),
             ownership,
             current,
         });
@@ -215,6 +259,7 @@ fn own_jars(target: &Target, payload: Option<&Payload>) -> Result<Vec<String>> {
         }
     }
     if let Some(payload) = payload {
+        own.push(format!("{}{}", payload.jar.0, mods::DISABLED));
         own.push(payload.jar.0.clone());
         let mut names = fs::read_dir(&target.minecraft_mods)?;
         if !names.any(|e| e.is_ok_and(|e| mods::is_fabric_api(&e.file_name().to_string_lossy()))) {
@@ -266,22 +311,31 @@ impl Guarded {
     }
 }
 
-/// Paths of every owned piece: what an update keeps in `previous/` before replacing it, and what an uninstall removes.
-pub fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
+/// Paths of every owned piece: what an uninstall removes, and, `replacing` also the modified pieces an update may
+/// replace, what an update keeps in `previous/` before replacing them.
+pub fn owned_paths(target: &Target, replacing: bool) -> Result<Vec<PathBuf>> {
+    let taken = |name: &str, ownership: Ownership| match ownership {
+        Ownership::Owned => true,
+        Ownership::Modified(_) => replacing && replaceable(target, name),
+        _ => false,
+    };
     let mut paths = Vec::new();
     let mods_dir = &target.minecraft_mods;
     // A dedicated instance about to be created, or a deleted one, has no mods folder: nothing is owned there.
-    if mods::ownership(mods_dir)? == Ownership::Owned {
+    if taken(JAR, mods::ownership(mods_dir)?) {
         paths.push(mods_dir.join(mods::MANIFEST));
-        paths.extend(mods::present(mods_dir)?.into_iter().map(|(_, path)| path));
+        paths.extend(mods::on_disk(mods_dir)?);
     }
     if let Some(game) = &target.game {
-        if deploy::ownership(&game.mods)? == Ownership::Owned {
+        if taken(LUA, deploy::ownership(&game.mods)?) {
             paths.push(game.mods.join(deploy::MOD_NAME));
         }
-        if adapter::ownership(&game.win64(), env.pin)? == Ownership::Owned {
+        if taken(ADAPTER, adapter::ownership(&game.win64())?) {
             paths.extend(
-                [adapter::MANIFEST, adapter::CONFIG, adapter::DLL].map(|n| game.win64().join(n)),
+                [adapter::MANIFEST, adapter::CONFIG, adapter::DLL]
+                    .map(|n| game.win64().join(n))
+                    .into_iter()
+                    .filter(|path| fs::symlink_metadata(path).is_ok()),
             );
         }
     }
@@ -291,33 +345,51 @@ pub fn owned_paths(env: &Env, target: &Target) -> Result<Vec<PathBuf>> {
 /// The pieces left alone, by name, and why.
 pub type Refusals = Vec<(&'static str, Refusal)>;
 
-/// Removes every owned piece; foreign or modified pieces are left alone and returned as refusals.
-fn remove_owned(env: &Env, target: &Target, keep_fabric: bool) -> Result<Refusals> {
+/// Removes every owned piece, and with `replacing` the modified pieces an update may replace; foreign or other
+/// modified pieces are left alone and returned as refusals.
+fn remove_owned(
+    env: &Env,
+    target: &Target,
+    keep_fabric: bool,
+    replacing: bool,
+) -> Result<Refusals> {
     let mut refusals = Vec::new();
-    let mut take =
-        |name: &'static str, ownership: Ownership, remove: &dyn Fn() -> Result<()>| -> Result<()> {
-            match ownership {
-                Ownership::Absent => Ok(()),
-                Ownership::Owned => remove(),
-                Ownership::Foreign(refusal) | Ownership::Modified(refusal) => {
-                    refusals.push((name, refusal));
-                    Ok(())
-                }
+    let mut take = |name: &'static str,
+                    ownership: Ownership,
+                    remove: &dyn Fn() -> Result<()>,
+                    replace: &dyn Fn() -> Result<()>|
+     -> Result<()> {
+        match ownership {
+            Ownership::Absent => Ok(()),
+            Ownership::Owned => remove(),
+            Ownership::Modified(_) if replacing && replaceable(target, name) => replace(),
+            Ownership::Foreign(refusal) | Ownership::Modified(refusal) => {
+                refusals.push((name, refusal));
+                Ok(())
             }
-        };
+        }
+    };
     if let Some(game) = &target.game {
         take(
             ADAPTER,
-            adapter::ownership(&game.win64(), env.pin)?,
-            &|| adapter::remove(&game.exe, env.pin, env.closed).map(drop),
+            adapter::ownership(&game.win64())?,
+            &|| adapter::remove(&game.exe, env.closed).map(drop),
+            &|| adapter::remove_drifted(&game.exe, env.closed).map(drop),
         )?;
-        take(LUA, deploy::ownership(&game.mods)?, &|| {
-            deploy::remove(&game.mods, env.closed).map(drop)
-        })?;
+        take(
+            LUA,
+            deploy::ownership(&game.mods)?,
+            &|| deploy::remove(&game.mods, env.closed).map(drop),
+            &|| deploy::remove_drifted(&game.mods, env.closed).map(drop),
+        )?;
     }
-    take(JAR, mods::ownership(&target.minecraft_mods)?, &|| {
-        mods::remove(&target.minecraft_mods, keep_fabric, env.closed)
-    })?;
+    let mods_dir = &target.minecraft_mods;
+    take(
+        JAR,
+        mods::ownership(mods_dir)?,
+        &|| mods::remove(mods_dir, keep_fabric, env.closed),
+        &|| mods::remove_drifted(mods_dir, env.closed),
+    )?;
     Ok(refusals)
 }
 
@@ -336,14 +408,16 @@ fn ensure_bridge(bridge: &Path, closed: Guard) -> Result<()> {
     Ok(())
 }
 
-/// Writes every piece `payload` carries: Fabric API and the JAR, then the Lua mod, then the adapter.
-fn put(env: &Env, target: &Target, payload: &Payload) -> Result<()> {
+/// Writes every piece `payload` carries: Fabric API and the JAR (`disabled` as the replaced one was), then the Lua
+/// mod, then the adapter.
+fn put(env: &Env, target: &Target, payload: &Payload, disabled: bool) -> Result<()> {
     if !payload.jar.1.is_empty() {
         (env.step)(Step::Minecraft);
         mods::install(
             &target.minecraft_mods,
             (&payload.jar.0, &payload.jar.1),
             &payload.fabric_api,
+            disabled,
             env.closed,
         )?;
     }
@@ -401,17 +475,67 @@ fn state_path(env: &Env) -> PathBuf {
     env.data.join(ledger::STATE)
 }
 
+fn same(a: &Path, b: &Path) -> bool {
+    a == b
+        || platform::canonicalize(a).is_ok_and(|a| platform::canonicalize(b).is_ok_and(|b| a == b))
+}
+
+/// The recorded install's owned game-side pieces that are not where `target` puts them (UE4SS moved its `Mods`
+/// folder, or the game moved while its old folder stayed): the old `Mods` folder holding the Lua mod, and the old
+/// executable's folder holding the adapter (the executable may be gone). Read before the run records its new target.
+#[derive(Default)]
+struct Moved {
+    mods: Option<PathBuf>,
+    win64: Option<PathBuf>,
+}
+
+impl Moved {
+    fn find(env: &Env, target: &Target) -> Moved {
+        let old = ledger::load(&state_path(env)).and_then(|s| s.target?.game);
+        let (Some(old), Some(new)) = (old, &target.game) else {
+            return Moved::default();
+        };
+        let owned = |ownership: Result<Ownership>| matches!(ownership, Ok(Ownership::Owned));
+        Moved {
+            mods: (!same(&old.mods, &new.mods) && owned(deploy::ownership(&old.mods)))
+                .then(|| old.mods.clone()),
+            win64: (!same(&old.win64(), &new.win64()) && owned(adapter::ownership(&old.win64())))
+                .then(|| old.win64()),
+        }
+    }
+
+    /// What an update keeps in `previous/` beside the pieces at `target`.
+    fn paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self.mods.iter().map(|m| m.join(deploy::MOD_NAME)).collect();
+        if let Some(win64) = &self.win64 {
+            paths.extend([adapter::MANIFEST, adapter::CONFIG, adapter::DLL].map(|n| win64.join(n)));
+        }
+        paths
+    }
+
+    fn remove(&self, closed: Guard) -> Result<()> {
+        if let Some(mods) = &self.mods {
+            deploy::remove(mods, closed)?;
+        }
+        if let Some(win64) = &self.win64 {
+            adapter::remove_at(win64, closed)?;
+        }
+        Ok(())
+    }
+}
+
+/// The recorded install's owned game-side pieces left at a moved place, which an install, a roll back or an uninstall
+/// at `target` removes there.
+pub fn moved_paths(env: &Env, target: &Target) -> Vec<PathBuf> {
+    Moved::find(env, target).paths()
+}
+
 /// Refuses a target that would leave the recorded install's owned pieces behind, where no later run would look.
 fn left_behind(env: &Env, target: &Target) -> Result<()> {
     let Some(old) = ledger::load(&state_path(env)).and_then(|s| s.target) else {
         return Ok(());
     };
     let owned = |ownership: Result<Ownership>| matches!(ownership, Ok(Ownership::Owned));
-    let same = |a: &Path, b: &Path| {
-        a == b
-            || platform::canonicalize(a)
-                .is_ok_and(|a| platform::canonicalize(b).is_ok_and(|b| a == b))
-    };
     let mut left = Vec::new();
     if !same(&old.minecraft_mods, &target.minecraft_mods)
         && owned(mods::ownership(&old.minecraft_mods))
@@ -422,7 +546,7 @@ fn left_behind(env: &Env, target: &Target) -> Result<()> {
         if owned(deploy::ownership(&game.mods)) {
             left.push(game.mods.join(deploy::MOD_NAME).display().to_string());
         }
-        if owned(adapter::ownership(&game.win64(), env.pin)) {
+        if owned(adapter::ownership(&game.win64())) {
             left.push(game.win64().join(adapter::DLL).display().to_string());
         }
     }
@@ -432,12 +556,112 @@ fn left_behind(env: &Env, target: &Target) -> Result<()> {
     Ok(())
 }
 
+/// The release the owned set on disk belongs to, as `previous/` names it.
+fn old_release(state: &State) -> String {
+    match state.release.as_str() {
+        "" => "untracked".to_string(),
+        release => release.to_string(),
+    }
+}
+
+/// What an interrupted run already kept, when the next run finishes it: the owned set on disk is then partly that run's
+/// own, so it must not be kept over the complete one, nor kept at all when that run had nothing to keep. A record
+/// without `kept` (the 0.3 installers) counts only `previous/<release on record>`: an older kept set means the
+/// interrupted run stopped before it kept anything, and a finished run never records the set of the release it
+/// installed.
+fn resumed(env: &Env, state: &State) -> Option<Kept> {
+    if state.status != Status::InProgress {
+        return None;
+    }
+    match &state.kept {
+        Some(Kept::Set(set)) if !set.is_dir() => None,
+        Some(kept) => Some(kept.clone()),
+        None => {
+            let kept = env.data.join("previous").join(old_release(state));
+            (state.previous.as_ref() == Some(&kept) && kept.is_dir()).then_some(Kept::Set(kept))
+        }
+    }
+}
+
+/// Each path's content (`None` when missing; a folder by its files), to tell whether a run changed them.
+fn contents(paths: &[PathBuf]) -> Result<Vec<Option<BTreeMap<String, String>>>> {
+    paths
+        .iter()
+        .map(|path| match fs::symlink_metadata(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+            Ok(m) if m.is_dir() => safety::tree(path).map(Some),
+            Ok(_) => Ok(Some(BTreeMap::from([(
+                String::new(),
+                sha256_file(path, &mut |_| {})?,
+            )]))),
+        })
+        .collect()
+}
+
+/// Puts the state before a failed install back at `target`: removes what is left of the recorded install at a place
+/// being left and what is at `target`, then copies the set `kept` (nothing for a first install) back, file for file,
+/// so files changed by hand and a disabled JAR come back as they were. Manifests first and the DLL last: a run killed
+/// meanwhile leaves pieces the next one owns or replaces.
+fn restore(env: &Env, target: &Target, kept: Option<&Path>) -> Result<()> {
+    Moved::find(env, target).remove(env.closed)?;
+    if let Some((_, refusal)) = remove_owned(env, target, false, true)?.into_iter().next() {
+        bail!(refusal);
+    }
+    let mut back = Vec::new();
+    for entry in kept.map(fs::read_dir).transpose()?.into_iter().flatten() {
+        let from = entry?.path();
+        let name = from.file_name().unwrap_or_default();
+        let dir = match (name.to_str(), &target.game) {
+            (Some(deploy::MOD_NAME), Some(game)) => game.mods.clone(),
+            (Some(adapter::MANIFEST | adapter::CONFIG | adapter::DLL), Some(game)) => game.win64(),
+            _ => target.minecraft_mods.clone(),
+        };
+        back.push((dir.join(name), from));
+    }
+    let manifest =
+        |path: &Path| path.ends_with(mods::MANIFEST) || path.ends_with(adapter::MANIFEST);
+    back.sort_by_key(|(to, _)| (!manifest(to), to.ends_with(adapter::DLL)));
+    for (to, from) in &back {
+        (env.closed)()?;
+        let (dir, name) = (
+            to.parent().unwrap_or(Path::new("")),
+            to.file_name().unwrap_or_default(),
+        );
+        if from.is_dir() {
+            // Whole or not at all, like a Lua mod install.
+            let staging = dir.join(deploy::STAGING);
+            if fs::symlink_metadata(&staging).is_ok() {
+                fs::remove_dir_all(&staging)?;
+            }
+            safety::copy_tree(from, &staging)?;
+            fs::rename(&staging, to)?;
+        } else {
+            mods::write_atomic(dir, &name.to_string_lossy(), &fs::read(from)?)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether [`install`] takes a kept set on `target`, so Roll back can go to it: a set kept while a whole piece was
+/// missing (a bridge JAR deleted by hand, a Lua mod gone with a UE4SS reinstall) loads, but without that piece.
+fn installable(set: &Payload, target: &Target) -> bool {
+    !set.jar.1.is_empty() && (target.game.is_none() || !(set.lua.is_empty() || set.dll.is_empty()))
+}
+
+/// Whether Roll back from the release `installed` can go to the kept `set`: [`install`] takes it on `target`, and it
+/// holds another release. Every set `state.json` names for Roll back passes this.
+fn goes_back(set: &Path, target: &Target, installed: &str) -> bool {
+    Payload::from_previous(set).is_ok_and(|p| installable(&p, target) && p.release != installed)
+}
+
 /// Installs `payload` on `target`, replacing an owned older install (an update). Foreign or modified pieces stop it
 /// before anything changes. Records "in progress" first, makes the first-install save backup, keeps the replaced set in
 /// `previous/`, then writes and verifies; on any failure it removes what it wrote and puts the kept set back.
 pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     gates(target, env)?;
     left_behind(env, target)?;
+    let moved = Moved::find(env, target);
     if payload.jar.1.is_empty() {
         bail!(Refusal::new(Kind::NoJar, &payload.release));
     }
@@ -446,23 +670,34 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     }
     let pieces = verify(env, target, payload)?;
     for piece in &pieces {
-        if let Ownership::Foreign(refusal) | Ownership::Modified(refusal) = &piece.ownership {
-            bail!(refusal.clone());
+        match &piece.ownership {
+            // Kept in previous/ and replaced; the consent page listed its changed files.
+            Ownership::Modified(_) if piece.replaceable => {}
+            Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal.clone()),
+            _ => {}
         }
     }
     let path = state_path(env);
-    let mut state = ledger::load(&path).unwrap_or_default();
+    let recorded = ledger::load(&path);
+    // What a restore that puts the disk back as it was records again; pieces without a record count as installed.
+    let status_before = recorded.as_ref().map_or(Status::Installed, |s| s.status);
+    let mut state = recorded.unwrap_or_default();
     let guarded = Guarded::take(target, own_jars(target, Some(payload))?)?;
     fs::create_dir_all(&env.data)?;
+    let resumed = resumed(env, &state);
+    // Nothing to write: an interrupted run killed after its last write is finished by recording it.
     if pieces.iter().all(|p| p.current) {
         guarded.unchanged(target)?;
     } else {
-        let old_release = match state.release.as_str() {
-            "" => "untracked".to_string(),
-            release => release.to_string(),
-        };
+        let old_release = old_release(&state);
         state.status = Status::InProgress;
-        state.target = Some(target.clone());
+        if resumed.is_none() {
+            state.kept = None;
+        }
+        // A place being left keeps its record until its pieces are gone: a run that stops before finds it again.
+        if moved.paths().is_empty() {
+            state.target = Some(target.clone());
+        }
         ledger::save(&path, &state)?;
         let saves = target.game.as_ref().and_then(|g| g.saves.as_deref());
         if let (Some(saves), false) = (
@@ -473,40 +708,98 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             state.save_backup = Some(safety::backup_saves(saves, &env.data.join("save-backups"))?);
             ledger::save(&path, &state)?;
         }
-        let owned = owned_paths(env, target)?;
-        let mut previous = None;
-        if !owned.is_empty() {
-            (env.step)(Step::KeepPrevious);
-            let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
-            previous = Some(ledger::keep_previous(&env.data, &old_release, &items)?);
-            state.previous = previous.clone();
-            ledger::save(&path, &state)?;
+        let mut owned = owned_paths(target, true)?;
+        // A piece at both places (mods copied over by hand) is kept once: the one at `target`, which Roll back
+        // reinstalls there. The old copy is still removed.
+        for path in moved.paths() {
+            if !owned.iter().any(|o| o.file_name() == path.file_name()) {
+                owned.push(path);
+            }
         }
+        // What the first removal changes, as it was: a run that fails and finds it so changed nothing. Only when this
+        // run replaces an installed set: a resumed run starts from a partial one.
+        let untouched = (resumed.is_none() && !owned.is_empty())
+            .then(|| contents(&owned))
+            .transpose()?;
+        let kept = match resumed.clone() {
+            Some(kept) => {
+                // Nothing is kept for Roll back, but a file changed by hand since the run stopped is the user's: the set
+                // holding it goes to changed/, as the consent page says.
+                if changed_by_hand(target) {
+                    (env.step)(Step::KeepPrevious);
+                    let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
+                    ledger::keep_previous(&env.data, &old_release, &items)?;
+                }
+                kept
+            }
+            None => {
+                let kept = if owned.is_empty() {
+                    Kept::Nothing
+                } else {
+                    (env.step)(Step::KeepPrevious);
+                    let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
+                    let set = ledger::keep_previous(&env.data, &old_release, &items)?;
+                    // While this run is interrupted, Roll back undoes it, when it can: a set with files changed by hand
+                    // or without a piece cannot be installed again, so Roll back keeps going to the one kept before.
+                    if goes_back(&set, target, &payload.release) {
+                        state.previous = Some(set.clone());
+                    }
+                    Kept::Set(set)
+                };
+                state.kept = Some(kept.clone());
+                ledger::save(&path, &state)?;
+                kept
+            }
+        };
+        let previous = match kept {
+            Kept::Set(set) => Some(set),
+            Kept::Nothing => None,
+        };
+        // A bridge JAR the user disabled in the launcher stays disabled.
+        let disabled = mods::bridge_disabled(&target.minecraft_mods);
         (env.step)(Step::Remove);
-        let done = remove_owned(env, target, false)
-            .and_then(|_| put(env, target, payload))
+        let removed = moved
+            .remove(env.closed)
+            .and_then(|()| {
+                state.target = Some(target.clone());
+                ledger::save(&path, &state)
+            })
+            .and_then(|()| remove_owned(env, target, false, true));
+        // Stopped while removing, before any of them (a game found running at the first removal, a locked file): already
+        // back, also when the old place is elsewhere.
+        let untouched = removed.is_err()
+            && untouched.is_some_and(|before| contents(&owned).is_ok_and(|now| now == before));
+        let done = removed
+            .and_then(|_| put(env, target, payload, disabled))
             .and_then(|()| check(env, target, payload, &guarded));
         if let Err(error) = done {
             (env.step)(Step::Restore);
-            let restored = remove_owned(env, target, false).and_then(|refusals| {
-                if let Some((_, refusal)) = refusals.into_iter().next() {
-                    bail!(refusal);
-                }
-                if let Some(previous) = &previous {
-                    let kept = Payload::from_previous(previous, env.pin)?;
-                    put(env, target, &kept)?;
-                    check(env, target, &kept, &guarded)?;
-                }
+            let restored = if untouched {
                 Ok(())
-            });
+            } else {
+                // Put back at `target`, also what came from a place being left.
+                restore(env, target, previous.as_deref())
+                    .map(|()| state.target = Some(target.clone()))
+            };
             return Err(match restored {
                 Ok(()) => {
-                    state.status = if previous.is_some() {
-                        Status::Installed
-                    } else {
-                        Status::Removed
+                    // The disk is as recorded before this run, or before the interrupted run it finished.
+                    state.status = match (&previous, &resumed) {
+                        (None, _) => Status::Removed,
+                        (Some(_), Some(_)) => Status::Installed,
+                        (Some(_), None) => status_before,
                     };
+                    if let Some(previous) = &previous {
+                        state.previous = ledger::previous_without(&env.data, previous, |p| {
+                            goes_back(p, target, &state.release)
+                        })?;
+                    }
+                    state.kept = None;
                     ledger::save(&path, &state)?;
+                    // Only once recorded: stopped before, the set is only an extra one, which the next run clears.
+                    if let Some(previous) = &previous {
+                        fs::remove_dir_all(previous)?;
+                    }
                     error.context(Refusal::new(Kind::InstallRestored, ""))
                 }
                 Err(undo) => error
@@ -523,12 +816,26 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             });
         }
     }
+    // Roll back goes to the set this run kept (or the interrupted run it finishes), recorded as it was kept, unless it
+    // cannot: a piece missing, or the release installed now (Roll back of an interrupted update, a reinstall for a new
+    // game build, an install after Uninstall). It then goes to the set kept before, under the same condition.
+    if let Some(set) = state
+        .previous
+        .clone()
+        .filter(|p| !goes_back(p, target, &payload.release))
+    {
+        state.previous =
+            ledger::previous_without(&env.data, &set, |p| goes_back(p, target, &payload.release))?;
+    }
     (env.step)(Step::Record);
     state.status = Status::Installed;
+    state.kept = None;
     state.target = Some(target.clone());
     state.release = payload.release.clone();
     state.lua_revision = payload.lua_revision;
     ledger::save(&path, &state)?;
+    // Only once recorded: stopped before, `previous/` holds only extra sets, which the next run clears.
+    ledger::commit_previous(&env.data, state.previous.as_deref())?;
     Ok(state)
 }
 
@@ -538,8 +845,11 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
 pub struct Plan {
     /// Files and folders created or replaced, in the order they are written; empty when the release is in place.
     pub writes: Vec<PathBuf>,
-    /// Owned files the install replaces, kept in `previous/` first.
+    /// Owned files the install replaces, kept in `previous/` first; none when it finishes an interrupted run.
     pub replaced: Vec<PathBuf>,
+    /// Files of ours that changed or went missing since they were installed (by hand, an antivirus): the install
+    /// replaces them, keeping the changed ones first, in `changed/` once done.
+    pub changed: Vec<PathBuf>,
     /// Copies made before the first write.
     pub backups: Vec<PathBuf>,
 }
@@ -568,7 +878,10 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
         if !foreign_fabric {
             plan.writes.push(mods_dir.join(pins::FABRIC_API_FILE));
         }
-        plan.writes.push(mods_dir.join(&payload.jar.0));
+        let disabled = exists && mods::bridge_disabled(mods_dir);
+        let suffix = if disabled { mods::DISABLED } else { "" };
+        plan.writes
+            .push(mods_dir.join(format!("{}{suffix}", payload.jar.0)));
     }
     if let Some(game) = &target.game {
         if !target.bridge.exists() {
@@ -584,15 +897,19 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
         }
     }
     plan.writes.push(state_path(env));
-    plan.replaced = owned_paths(env, target)?;
     let state = ledger::load(&state_path(env)).unwrap_or_default();
-    if !plan.replaced.is_empty() {
-        let release = if state.release.is_empty() {
-            "untracked"
-        } else {
-            &state.release
-        };
-        plan.backups.push(env.data.join("previous").join(release));
+    plan.changed = changed_files(target);
+    // Finishing an interrupted run keeps nothing for Roll back: that run kept the set it replaced. Only a set with
+    // files changed by hand since is kept, in changed/.
+    if resumed(env, &state).is_none() {
+        plan.replaced = owned_paths(target, true)?;
+        plan.replaced.extend(Moved::find(env, target).paths());
+        if !plan.replaced.is_empty() {
+            plan.backups
+                .push(env.data.join("previous").join(old_release(&state)));
+        }
+    } else if changed_by_hand(target) {
+        plan.backups.push(env.data.join("changed"));
     }
     let saves = target.game.as_ref().and_then(|g| g.saves.as_ref());
     if saves.is_some() && !state.save_backup.is_some_and(|b| b.is_dir()) {
@@ -609,7 +926,7 @@ pub fn rollback(env: &Env, target: &Target) -> Result<State> {
         .previous
         .filter(|p| p.is_dir())
         .context(Refusal::new(Kind::NoPrevious, ""))?;
-    let payload = Payload::from_previous(&previous, env.pin)?;
+    let payload = Payload::from_previous(&previous)?;
     install(env, target, &payload)
 }
 
@@ -620,6 +937,9 @@ pub fn repair(env: &Env, target: &Target, payload: &Payload) -> Result<Vec<PathB
     gates(target, env)?;
     let guarded = Guarded::take(target, own_jars(target, Some(payload))?)?;
     let plan = repair_plan(env, target, payload)?;
+    if plan.is_empty() {
+        return Ok(Vec::new());
+    }
     (env.step)(Step::Repair);
     for (path, bytes) in &plan {
         (env.closed)()?;
@@ -646,6 +966,25 @@ pub fn repair_plan(
     target: &Target,
     payload: &Payload,
 ) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+    match ledger::load(&state_path(env)).map(|s| s.status) {
+        // An interrupted run left pieces removed or half replaced, with no manifest saying what they should be.
+        Some(Status::InProgress) => bail!(Refusal::new(Kind::Interrupted, "")),
+        // What an Uninstall left in place (files changed by hand) is the user's.
+        Some(Status::Removed) => return Ok(Vec::new()),
+        // A recorded piece gone as a whole has no manifest left to repair from: Update puts it back.
+        Some(Status::Installed) => {
+            if let Some(piece) = verify(env, target, payload)?
+                .into_iter()
+                .find(|p| p.ownership == Ownership::Absent)
+            {
+                bail!(Refusal::new(
+                    Kind::PieceMissing,
+                    piece_path(target, piece.name).display()
+                ));
+            }
+        }
+        None => {}
+    }
     let mut plan: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     let mut add = |dir: &Path,
                    ownership: Ownership,
@@ -672,7 +1011,9 @@ pub fn repair_plan(
         mods_dir,
         mods::ownership(mods_dir)?,
         &|| mods::drifted(mods_dir),
+        // A disabled copy is put back disabled.
         &|name| {
+            let name = name.strip_suffix(mods::DISABLED).unwrap_or(name);
             if name == payload.jar.0 {
                 Some(payload.jar.1.clone())
             } else {
@@ -692,8 +1033,8 @@ pub fn repair_plan(
         )?;
         add(
             &game.win64(),
-            adapter::ownership(&game.win64(), env.pin)?,
-            &|| adapter::drifted(&game.win64(), env.pin),
+            adapter::ownership(&game.win64())?,
+            &|| adapter::drifted(&game.win64()),
             &|name| match name {
                 adapter::DLL => Some(payload.dll.clone()),
                 adapter::CONFIG => adapter::directory_file(&target.bridge).ok(),
@@ -717,16 +1058,83 @@ pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Refu
     (env.step)(Step::Checks);
     (env.closed)()?;
     let guarded = Guarded::take(target, own_jars(target, None)?)?;
+    let path = state_path(env);
+    let mut state = ledger::load(&path);
+    // Recorded first: a run stopped midway leaves pieces removed, which Uninstall or Update again finishes and Repair
+    // refuses.
+    if let Some(state) = &mut state {
+        state.status = Status::InProgress;
+        ledger::save(&path, state)?;
+    }
     (env.step)(Step::Remove);
-    let refusals = remove_owned(env, target, !remove_fabric)?;
+    Moved::find(env, target).remove(env.closed)?;
+    let refusals = remove_owned(env, target, !remove_fabric, false)?;
     (env.step)(Step::Verify);
     guarded.unchanged(target)?;
-    let path = state_path(env);
-    if let Some(mut state) = ledger::load(&path)
-        && refusals.is_empty()
-    {
+    // Removed also with pieces left in place: they changed by hand, and are the user's now.
+    if let Some(state) = &mut state {
         state.status = Status::Removed;
-        ledger::save(&path, &state)?;
+        state.kept = None;
+        ledger::save(&path, state)?;
     }
     Ok(refusals)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A large modpack: the review page's plan asks about every JAR a dozen times, and must open and parse each one only
+    /// once. Counted, not timed: a timing limit failed on a loaded machine.
+    #[test]
+    fn planning_beside_a_large_modpack_reads_each_jar_once() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let home = platform::canonicalize(root.path()).unwrap();
+        let target = Target {
+            game: None,
+            minecraft_mods: home.join("mods"),
+            bridge: home.join("bridge"),
+        };
+        fs::create_dir(&target.minecraft_mods).unwrap();
+        let env = Env {
+            data: home.join("data"),
+            closed: &|| Ok(()),
+            pin: "",
+            step: &|_| {},
+        };
+        let v1 = Payload {
+            release: "0.1.0+test".into(),
+            lua_revision: None,
+            lua: Default::default(),
+            dll: Vec::new(),
+            jar: ("stellar-bridge-0.1.0.jar".into(), b"jar v1".to_vec()),
+            fabric_api: b"fabric api".to_vec(),
+            licenses: BTreeMap::new(),
+        };
+        install(&env, &target, &v1).unwrap();
+        let mut jar = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        jar.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        jar.write_all(br#"{"schemaVersion": 1, "id": "somemod"}"#)
+            .unwrap();
+        let bytes = jar.finish().unwrap().into_inner();
+        let modpack: Vec<PathBuf> = (0..20)
+            .map(|n| target.minecraft_mods.join(format!("mod-{n}.jar")))
+            .collect();
+        for path in &modpack {
+            fs::write(path, &bytes).unwrap();
+        }
+        let v2 = Payload {
+            release: "0.2.0+test".into(),
+            jar: (v1.jar.0.clone(), b"jar v2".to_vec()),
+            ..v1
+        };
+        assert!(!plan(&env, &target, &v2).unwrap().writes.is_empty());
+        let read = mods::READ.lock().unwrap();
+        for path in &modpack {
+            let times = read.iter().filter(|p| *p == path).count();
+            assert_eq!(times, 1, "{} read {times} times", path.display());
+        }
+    }
 }

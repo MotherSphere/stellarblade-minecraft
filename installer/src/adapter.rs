@@ -144,8 +144,10 @@ pub fn directory_file(bridge: &Path) -> Result<Vec<u8>> {
     Ok((platform::game_path(&platform::private_dir(bridge)?)? + "\n").into_bytes())
 }
 
-/// The adapter's manifest in `win64`, when it is ours and was made for the executable `pin`.
-pub fn manifest(win64: &Path, pin: &str) -> Result<Manifest> {
+/// The adapter's manifest in `win64`, when it is ours. The executable it records is the one it was installed for; an
+/// adapter installed for an older build (before a Steam update) is still ours, so the next release can replace or
+/// remove it. Installing checks the executable against the pin, not owning.
+pub fn manifest(win64: &Path) -> Result<Manifest> {
     let unknown = || Refusal::new(Kind::UnknownManifest, win64.join(MANIFEST).display());
     let Ok(path) = platform::real_file(&win64.join(MANIFEST)) else {
         bail!(unknown());
@@ -158,7 +160,11 @@ pub fn manifest(win64: &Path, pin: &str) -> Result<Manifest> {
         Ok(manifest)
             if manifest.owner == OWNER
                 && manifest.version == 1
-                && manifest.executable == pin
+                && manifest.executable.len() == 64
+                && manifest
+                    .executable
+                    .bytes()
+                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
                 && manifest.files.keys().map(String::as_str).eq([CONFIG, DLL]) =>
         {
             Ok(manifest)
@@ -169,9 +175,9 @@ pub fn manifest(win64: &Path, pin: &str) -> Result<Manifest> {
 
 /// The listed files whose content is missing or differs, with the sha256 the manifest expects. A listed path that is
 /// not a regular file cannot be repaired.
-pub fn drifted(win64: &Path, pin: &str) -> Result<Vec<(String, String)>> {
+pub fn drifted(win64: &Path) -> Result<Vec<(String, String)>> {
     let mut drift = Vec::new();
-    for (name, expected) in manifest(win64, pin)?.files {
+    for (name, expected) in manifest(win64)?.files {
         let path = win64.join(&name);
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => drift.push((name, expected)),
@@ -184,8 +190,8 @@ pub fn drifted(win64: &Path, pin: &str) -> Result<Vec<(String, String)>> {
     Ok(drift)
 }
 
-/// Who owns the adapter files in the executable's folder `win64`, for an install made against `pin`.
-pub fn ownership(win64: &Path, pin: &str) -> Result<Ownership> {
+/// Who owns the adapter files in the executable's folder `win64`.
+pub fn ownership(win64: &Path) -> Result<Ownership> {
     let manifest_path = win64.join(MANIFEST);
     if !manifest_path.exists() && !manifest_path.is_symlink() {
         for entry in fs::read_dir(win64)? {
@@ -200,7 +206,7 @@ pub fn ownership(win64: &Path, pin: &str) -> Result<Ownership> {
         }
         return Ok(Ownership::Absent);
     }
-    Ok(match drifted(win64, pin) {
+    Ok(match drifted(win64) {
         Ok(drift) => match drift.first() {
             None => Ownership::Owned,
             Some((name, _)) => Ownership::Modified(Refusal::new(
@@ -216,10 +222,16 @@ pub fn ownership(win64: &Path, pin: &str) -> Result<Ownership> {
 
 /// Removes the adapter only when every file matches its manifest: the DLL first, then its directory file, then the
 /// manifest.
-pub fn remove(exe: &Path, pin: &str, closed: Guard) -> Result<PathBuf> {
-    let destination = game_directory(exe)?;
+pub fn remove(exe: &Path, closed: Guard) -> Result<PathBuf> {
+    remove_at(&game_directory(exe)?, closed)
+}
+
+/// [`remove`] by the executable's folder `win64`, also once the executable is gone (Steam uninstalled the game there
+/// and left the files it did not install). Ownership rests on the folder's files only.
+pub fn remove_at(win64: &Path, closed: Guard) -> Result<PathBuf> {
+    let destination = platform::real_dir(win64)?;
     closed()?;
-    match ownership(&destination, pin)? {
+    match ownership(&destination)? {
         Ownership::Owned => {
             for name in [DLL, CONFIG, MANIFEST] {
                 fs::remove_file(destination.join(name))?;
@@ -229,6 +241,21 @@ pub fn remove(exe: &Path, pin: &str, closed: Guard) -> Result<PathBuf> {
         Ownership::Absent => bail!(Refusal::new(Kind::NothingToRemove, destination.display())),
         Ownership::Foreign(refusal) | Ownership::Modified(refusal) => bail!(refusal),
     }
+}
+
+/// Removes the adapter also when files its manifest lists changed or went missing: an update replacing it, after
+/// keeping it in `previous/`. Only once [`crate::ops::replaceable`] said so: a listed path that is not a regular file
+/// refuses it there.
+pub fn remove_drifted(exe: &Path, closed: Guard) -> Result<PathBuf> {
+    let destination = game_directory(exe)?;
+    closed()?;
+    for name in [DLL, CONFIG, MANIFEST] {
+        match fs::remove_file(destination.join(name)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            removed => removed?,
+        }
+    }
+    Ok(destination)
 }
 
 /// A minimal x64 DLL header, as the Python tests build it.
@@ -297,8 +324,8 @@ mod tests {
             fs::read_to_string(g.dir.join(CONFIG)).unwrap(),
             platform::game_path(&g.bridge).unwrap() + "\n"
         );
-        assert_eq!(ownership(&g.dir, &g.pin).unwrap(), Ownership::Owned);
-        remove(&g.exe, &g.pin, &open).unwrap();
+        assert_eq!(ownership(&g.dir).unwrap(), Ownership::Owned);
+        remove(&g.exe, &open).unwrap();
         assert_eq!(names(&g.dir), vec![EXE, "dinput8.dll", "dwmapi.dll"]);
         assert_eq!(
             fs::read(g.dir.join("dwmapi.dll")).unwrap(),
@@ -311,23 +338,17 @@ mod tests {
         let g = game();
         fs::write(g.dir.join("XInput1_3.dll"), b"foreign").unwrap();
         assert!(install(&g.exe, &test_dll(), &g.bridge, &g.pin, &open).is_err());
-        assert!(matches!(
-            ownership(&g.dir, &g.pin).unwrap(),
-            Ownership::Foreign(_)
-        ));
+        assert!(matches!(ownership(&g.dir).unwrap(), Ownership::Foreign(_)));
         fs::remove_file(g.dir.join("XInput1_3.dll")).unwrap();
         install(&g.exe, &test_dll(), &g.bridge, &g.pin, &open).unwrap();
         fs::write(g.dir.join(DLL), b"changed").unwrap();
-        assert!(matches!(
-            ownership(&g.dir, &g.pin).unwrap(),
-            Ownership::Modified(_)
-        ));
-        assert!(remove(&g.exe, &g.pin, &open).is_err());
+        assert!(matches!(ownership(&g.dir).unwrap(), Ownership::Modified(_)));
+        assert!(remove(&g.exe, &open).is_err());
         assert_eq!(fs::read(g.dir.join(DLL)).unwrap(), b"changed");
-        assert!(matches!(
-            ownership(&g.dir, &"0".repeat(64)).unwrap(),
-            Ownership::Modified(_)
-        ));
+        // Ownership rests on the files, not on the executable it was installed for (a Steam update changes that).
+        fs::write(g.dir.join(DLL), test_dll()).unwrap();
+        fs::write(&g.exe, b"next build").unwrap();
+        assert_eq!(ownership(&g.dir).unwrap(), Ownership::Owned);
     }
 
     #[test]

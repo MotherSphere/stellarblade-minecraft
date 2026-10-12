@@ -211,6 +211,16 @@ mod tests {
         assert!(used > 50, "the scan found only {used} lookups");
     }
 
+    /// A recorded piece missing as a whole stops Repair; the message names the button that puts it back.
+    #[test]
+    fn a_missing_piece_names_the_update_button() {
+        for lang in Lang::ALL {
+            let message = find(lang, "err_piece_missing").unwrap();
+            let update = find(lang, "action_update").unwrap();
+            assert!(message.contains(update), "{lang:?}: {message}");
+        }
+    }
+
     /// Every refusal kind of the core has its string in both locales, with the path where English shows one.
     #[test]
     fn every_refusal_kind_has_both_strings() {

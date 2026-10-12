@@ -123,7 +123,7 @@ impl Payload {
     }
 
     /// A previous set kept by `ledger::keep_previous`, checked against the manifests saved with it.
-    pub fn from_previous(dir: &Path, pin: &str) -> Result<Payload> {
+    pub fn from_previous(dir: &Path) -> Result<Payload> {
         let release = dir
             .file_name()
             .and_then(|n| n.to_str())
@@ -135,15 +135,17 @@ impl Payload {
         let mut lua = Tree::new();
         match deploy::ownership(dir)? {
             Ownership::Owned => {
+                // The listed files only: a temporary a killed repair left is not part of the set.
+                let listed = deploy::manifest(dir)?.files;
                 lua = deploy::read_tree(&dir.join(deploy::MOD_NAME))?;
-                lua.remove(deploy::MANIFEST);
+                lua.retain(|relative, _| listed.contains_key(relative));
                 lua.remove(deploy::CONFIG);
             }
             Ownership::Absent => {}
             Ownership::Foreign(r) | Ownership::Modified(r) => changed(r)?,
         }
         let mut dll = Vec::new();
-        match adapter::ownership(dir, pin)? {
+        match adapter::ownership(dir)? {
             Ownership::Owned => dll = fs::read(dir.join(adapter::DLL))?,
             Ownership::Absent => {}
             Ownership::Foreign(r) | Ownership::Modified(r) => changed(r)?,

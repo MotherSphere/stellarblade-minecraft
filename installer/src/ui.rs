@@ -542,6 +542,10 @@ pub fn piece_status(piece: &ops::Piece) -> (Level, String) {
         Ownership::Absent => (Level::Info, t("piece_absent").to_string()),
         Ownership::Owned if piece.current => (Level::Ok, t("piece_current").to_string()),
         Ownership::Owned => (Level::Warn, t("piece_other_release").to_string()),
+        Ownership::Modified(refusal) if piece.replaceable => (
+            Level::Warn,
+            t_fmt("piece_replaceable", &[("path", &refusal.subject)]),
+        ),
         Ownership::Foreign(refusal) | Ownership::Modified(refusal) => {
             (Level::Bad, i18n::refusal(refusal))
         }
@@ -1045,6 +1049,11 @@ fn consent<'a>(app: &'a App, typo: &Typography) -> El<'a> {
         page = page
             .push(subheading(typo, t("consent_replaced")))
             .push(card(lines(typo, show(&plan.replaced))));
+    }
+    if !plan.changed.is_empty() {
+        page = page
+            .push(subheading(typo, t("consent_changed")))
+            .push(card(lines(typo, show(&plan.changed))));
     }
     if !plan.backups.is_empty() {
         page = page
