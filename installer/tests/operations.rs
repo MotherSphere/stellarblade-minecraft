@@ -986,3 +986,46 @@ fn finishing_an_update_that_died_before_keeping_keeps_the_installed_set() {
     ops::rollback(&w.env(), &w.target).unwrap();
     assert!(all_current(&w, &v2));
 }
+
+/// A run killed after the old pieces were removed and before the new ones were written leaves the recorded pieces
+/// absent: repair must not call that "nothing to repair".
+#[test]
+fn repair_after_an_interrupted_update_is_not_nothing_to_repair() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    // Guard calls: the checks, the adapter, the Lua mod and the JAR removals; the process dies at the first write.
+    let calls = Cell::new(0);
+    let killed = || {
+        calls.set(calls.get() + 1);
+        if calls.get() == 5 {
+            panic!("killed");
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &killed,
+        ..w.env()
+    };
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        ops::install(&env, &w.target, &v2)
+    }));
+    assert!(run.is_err(), "the run was killed");
+    assert_eq!(state(&w).status, Status::InProgress);
+    let pieces = ops::verify(&w.env(), &w.target, &v2).unwrap();
+    assert!(
+        pieces.iter().all(|p| p.ownership == Ownership::Absent),
+        "{pieces:?}"
+    );
+
+    let plan = ops::repair_plan(&w.env(), &w.target, &v2);
+    assert!(
+        !matches!(&plan, Ok(plan) if plan.is_empty()),
+        "the confirm modal would say nothing to repair"
+    );
+    let repaired = ops::repair(&w.env(), &w.target, &v2);
+    assert!(
+        !matches!(&repaired, Ok(paths) if paths.is_empty()),
+        "an interrupted update reported as nothing to repair: {repaired:?}"
+    );
+}

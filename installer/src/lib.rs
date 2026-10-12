@@ -97,6 +97,7 @@ kinds! {
     PreviousChanged => "err_previous_changed",
     StillModified => "err_still_modified",
     RunUpdate => "err_run_update",
+    Interrupted => "err_interrupted",
     InvalidRelease => "err_invalid_release",
     CannotKeep => "err_cannot_keep",
     JavaArgument => "err_java_argument",

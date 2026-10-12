@@ -570,6 +570,10 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
         "{path} n'est toujours pas tel qu'installé",
     ),
     (
+        "err_interrupted",
+        "Une opération sur {path} a été interrompue : installez à nouveau pour la terminer, ou revenez en arrière ; la réparation ne peut pas la terminer",
+    ),
+    (
         "err_run_update",
         "{path} diffère de ce que contient cet installateur : lancez plutôt la mise à jour",
     ),
