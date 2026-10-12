@@ -2022,6 +2022,58 @@ fn a_reinstall_killed_before_its_record_keeps_the_older_rollback_set() {
     reinstall_killed_at_keeps_the_older_rollback_set(ops::Step::Record);
 }
 
+/// A game moved with its UE4SS folder, the old one left in place: an update stopped between removing the old Lua mod
+/// and the old adapter is restored where the record then says, with nothing of ours left at the other place.
+#[test]
+fn an_update_stopped_while_clearing_a_moved_game_is_restored_where_recorded() {
+    let w = world();
+    let old_win64 = w.home.join("Old/Win64");
+    write(&old_win64.join(adapter::EXE), "test executable");
+    write(&old_win64.join("ue4ss/Mods/mods.txt"), "OtherMod : 1\n");
+    let old = Target {
+        game: Some(Game {
+            exe: old_win64.join(adapter::EXE),
+            ue4ss: old_win64.join("ue4ss"),
+            mods: old_win64.join("ue4ss/Mods"),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    ops::install(&w.env(), &old, &payload(1)).unwrap();
+    // The guard's calls: the checks, the old Lua mod's removal, then the old adapter's: a game started there.
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() == 3 {
+            anyhow::bail!("Stellar Blade started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    let error = format!(
+        "{:#}",
+        ops::install(&env, &w.target, &payload(2)).unwrap_err()
+    );
+    assert!(!error.contains("could not be restored"), "{error}");
+    let recorded = state(&w).target.unwrap();
+    let other = if recorded == w.target {
+        &old
+    } else {
+        &w.target
+    };
+    let pieces = ops::verify(&w.env(), &recorded, &payload(1)).unwrap();
+    assert!(pieces.iter().all(|p| p.current), "{pieces:?}");
+    let left = ops::verify(&w.env(), other, &payload(1)).unwrap();
+    assert!(
+        left.iter()
+            .all(|p| p.name == ops::JAR || p.ownership == Ownership::Absent),
+        "{left:?}"
+    );
+}
+
 // The ledger model: every start state, then one operation with a failure injected at every guard call and every step,
 // then every recovery the window offers, twice; the invariants are checked after each action.
 

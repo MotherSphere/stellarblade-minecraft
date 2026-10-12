@@ -599,10 +599,12 @@ fn contents(paths: &[PathBuf]) -> Result<Vec<Option<BTreeMap<String, String>>>> 
         .collect()
 }
 
-/// Puts the state before a failed install back: removes what is at `target`, then copies the set `kept` (nothing for a
-/// first install) back where it came from, file for file, so files changed by hand and a disabled JAR come back as they
-/// were. Manifests first and the DLL last: a run killed meanwhile leaves pieces the next one owns or replaces.
+/// Puts the state before a failed install back at `target`: removes what is left of the recorded install at a place
+/// being left and what is at `target`, then copies the set `kept` (nothing for a first install) back, file for file,
+/// so files changed by hand and a disabled JAR come back as they were. Manifests first and the DLL last: a run killed
+/// meanwhile leaves pieces the next one owns or replaces.
 fn restore(env: &Env, target: &Target, kept: Option<&Path>) -> Result<()> {
+    Moved::find(env, target).remove(env.closed)?;
     if let Some((_, refusal)) = remove_owned(env, target, false, true)?.into_iter().next() {
         bail!(refusal);
     }
@@ -788,7 +790,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             let restored = if untouched {
                 Ok(())
             } else {
+                // Put back at `target`, also what came from a place being left.
                 restore(env, target, previous.as_deref())
+                    .map(|()| state.target = Some(target.clone()))
             };
             return Err(match restored {
                 Ok(()) => {
