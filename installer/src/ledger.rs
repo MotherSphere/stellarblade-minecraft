@@ -70,7 +70,8 @@ pub fn save(path: &Path, state: &State) -> Result<()> {
 }
 
 /// Copies the owned set about to be replaced (the Lua mod folder, the adapter files, the JARs) into
-/// `previous/<release>/`, replacing the set kept before. About 1 MB: the avatar pack is never copied.
+/// `previous/<release>/`. About 1 MB: the avatar pack is never copied. The set kept before stays beside it until the
+/// run succeeds and [`commit_previous`] drops it, so a failed run that was restored still rolls back to it.
 pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<PathBuf> {
     if release.is_empty() || release.contains(['/', '\\']) || release.starts_with('.') {
         bail!(Refusal::new(Kind::InvalidRelease, release));
@@ -92,15 +93,40 @@ pub fn keep_previous(data: &Path, release: &str, items: &[&Path]) -> Result<Path
         fs::remove_dir_all(&staging)?;
         return Err(error);
     }
-    for entry in fs::read_dir(&previous)? {
+    let kept = previous.join(release);
+    if kept.exists() {
+        fs::remove_dir_all(&kept)?;
+    }
+    fs::rename(&staging, &kept)?;
+    Ok(kept)
+}
+
+/// After a successful run: `kept` becomes the only set in `previous/`.
+pub fn commit_previous(data: &Path, kept: &Path) -> Result<()> {
+    for entry in fs::read_dir(data.join("previous"))? {
         let path = entry?.path();
-        if path != staging {
+        if path != kept {
             fs::remove_dir_all(&path)?;
         }
     }
-    let kept = previous.join(release);
-    fs::rename(&staging, &kept)?;
-    Ok(kept)
+    Ok(())
+}
+
+/// After a failed run that was restored: drops `kept`, the set it kept (now identical to what is installed again),
+/// and returns the set kept before it, if any: `before` when it is still there, else the one other complete set.
+pub fn drop_previous(data: &Path, kept: &Path, before: Option<&Path>) -> Result<Option<PathBuf>> {
+    fs::remove_dir_all(kept)?;
+    if let Some(before) = before.filter(|b| b.is_dir()) {
+        return Ok(Some(before.to_path_buf()));
+    }
+    let mut rest = Vec::new();
+    for entry in fs::read_dir(data.join("previous"))? {
+        let entry = entry?;
+        if entry.path().is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
+            rest.push(entry.path());
+        }
+    }
+    Ok(if rest.len() == 1 { rest.pop() } else { None })
 }
 
 #[cfg(test)]
@@ -157,11 +183,20 @@ mod tests {
             "old"
         );
         let second = keep_previous(&data, "0.2.0", &[&dll]).unwrap();
-        assert!(!first.exists());
+        assert!(first.exists(), "kept until the run succeeds");
         assert_eq!(
             fs::read_to_string(second.join("xinput1_3.dll")).unwrap(),
             "old dll"
         );
+        // A failed run that was restored drops its set and goes back to the one kept before.
+        assert_eq!(
+            drop_previous(&data, &second, None).unwrap(),
+            Some(first.clone())
+        );
+        assert!(!second.exists());
+        let second = keep_previous(&data, "0.2.0", &[&dll]).unwrap();
+        commit_previous(&data, &second).unwrap();
+        assert!(!first.exists());
         assert!(keep_previous(&data, "0.3.0", &[&root.path().join("missing")]).is_err());
         assert!(second.exists(), "a failed copy keeps the last good set");
         assert!(keep_previous(&data, "../x", &[]).is_err());

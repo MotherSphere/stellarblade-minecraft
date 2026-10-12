@@ -432,6 +432,23 @@ fn left_behind(env: &Env, target: &Target) -> Result<()> {
     Ok(())
 }
 
+/// The release the owned set on disk belongs to, as `previous/` names it.
+fn old_release(state: &State) -> String {
+    match state.release.as_str() {
+        "" => "untracked".to_string(),
+        release => release.to_string(),
+    }
+}
+
+/// The set an interrupted run already kept, when the next run finishes it: the owned set on disk is then partial, so
+/// it must not replace the complete one. Only `previous/<release on record>` counts: an older kept set means the
+/// interrupted run stopped before it kept anything, and the set on disk is still complete.
+fn resumed(env: &Env, state: &State) -> Option<PathBuf> {
+    let kept = env.data.join("previous").join(old_release(state));
+    (state.status == Status::InProgress && state.previous.as_ref() == Some(&kept) && kept.is_dir())
+        .then_some(kept)
+}
+
 /// Puts the state before a failed install back: the kept set in `previous`, or nothing for a first install. Judged by
 /// what is on disk, not by whether each step ran: a run stopped before its first change (a game found running at the
 /// first removal, a locked file) is already back and needs no write, and a protected file or the saves changing
@@ -490,10 +507,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
     if pieces.iter().all(|p| p.current) {
         guarded.unchanged(target)?;
     } else {
-        let old_release = match state.release.as_str() {
-            "" => "untracked".to_string(),
-            release => release.to_string(),
-        };
+        let old_release = old_release(&state);
+        let resumed = resumed(env, &state);
+        let before = state.previous.clone();
         state.status = Status::InProgress;
         state.target = Some(target.clone());
         ledger::save(&path, &state)?;
@@ -507,8 +523,8 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             ledger::save(&path, &state)?;
         }
         let owned = owned_paths(env, target)?;
-        let mut previous = None;
-        if !owned.is_empty() {
+        let mut previous = resumed;
+        if previous.is_none() && !owned.is_empty() {
             (env.step)(Step::KeepPrevious);
             let items: Vec<&Path> = owned.iter().map(PathBuf::as_path).collect();
             previous = Some(ledger::keep_previous(&env.data, &old_release, &items)?);
@@ -529,6 +545,10 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                     } else {
                         Status::Removed
                     };
+                    if let Some(previous) = &previous {
+                        state.previous =
+                            ledger::drop_previous(&env.data, previous, before.as_deref())?;
+                    }
                     ledger::save(&path, &state)?;
                     error.context(Refusal::new(Kind::InstallRestored, ""))
                 }
@@ -544,6 +564,9 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
                         None => Refusal::new(Kind::InstallNotRemoved, ""),
                     }),
             });
+        }
+        if let Some(previous) = &previous {
+            ledger::commit_previous(&env.data, previous)?;
         }
     }
     (env.step)(Step::Record);
@@ -609,13 +632,9 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
     plan.writes.push(state_path(env));
     plan.replaced = owned_paths(env, target)?;
     let state = ledger::load(&state_path(env)).unwrap_or_default();
-    if !plan.replaced.is_empty() {
-        let release = if state.release.is_empty() {
-            "untracked"
-        } else {
-            &state.release
-        };
-        plan.backups.push(env.data.join("previous").join(release));
+    if !plan.replaced.is_empty() && resumed(env, &state).is_none() {
+        plan.backups
+            .push(env.data.join("previous").join(old_release(&state)));
     }
     let saves = target.game.as_ref().and_then(|g| g.saves.as_ref());
     if saves.is_some() && !state.save_backup.is_some_and(|b| b.is_dir()) {

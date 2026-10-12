@@ -861,3 +861,128 @@ fn a_protected_change_during_an_update_still_reports_the_restore() {
         (Status::Installed, "0.1.0+test".into())
     );
 }
+
+/// An update that stopped midway (InProgress, previous/<old> complete) and is then finished with Install again must
+/// still roll back to the old release: the second run must not overwrite previous/<old> with the partial set.
+#[test]
+fn finishing_an_interrupted_update_keeps_the_rollback_set() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    // The game starts midway: the update fails after the JAR is written, and its restore is blocked too.
+    let calls = Cell::new(0);
+    let starts = || {
+        calls.set(calls.get() + 1);
+        if calls.get() > 7 {
+            anyhow::bail!("Stellar Blade started")
+        }
+        Ok(())
+    };
+    let env = Env {
+        closed: &starts,
+        ..w.env()
+    };
+    ops::install(&env, &w.target, &v2).unwrap_err();
+    assert_eq!(state(&w).status, Status::InProgress);
+    assert_eq!(
+        Payload::from_previous(&state(&w).previous.unwrap(), &w.pin)
+            .unwrap()
+            .jar,
+        v1.jar
+    );
+    // "Install again to finish it".
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(all_current(&w, &v2));
+    let kept = Payload::from_previous(&state(&w).previous.unwrap(), &w.pin).unwrap();
+    assert_eq!(
+        (&kept.jar, &kept.lua, &kept.dll),
+        (&v1.jar, &v1.lua, &v1.dll),
+        "previous/ must still hold v1"
+    );
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
+
+/// Same, when the first run crashed (the process died) after the JAR was written.
+#[test]
+fn finishing_a_crashed_update_keeps_the_rollback_set() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::LuaMod {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &v2);
+        }))
+        .is_err()
+    );
+    assert_eq!(state(&w).status, Status::InProgress);
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
+
+/// A failed update that was fully restored leaves the older rollback set alone.
+#[test]
+fn a_restored_failed_update_keeps_the_older_rollback_set() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(state(&w).previous.unwrap().ends_with("previous/0.1.0+test"));
+    let broken = Payload {
+        dll: b"not a DLL".to_vec(),
+        ..payload(3)
+    };
+    let error = ops::install(&w.env(), &w.target, &broken).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("previous state was restored"),
+        "{error:#}"
+    );
+    assert!(all_current(&w, &v2));
+    let previous = state(&w).previous.unwrap();
+    assert!(
+        previous.ends_with("previous/0.1.0+test"),
+        "rollback set replaced: {}",
+        previous.display()
+    );
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v1));
+}
+
+/// A run that died before it kept anything left the installed set complete: finishing it keeps that set, not the
+/// older one kept by the update before.
+#[test]
+fn finishing_an_update_that_died_before_keeping_keeps_the_installed_set() {
+    let w = world();
+    let (v1, v2, v3) = (payload(1), payload(2), payload(3));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    let crash = |step: ops::Step| {
+        if step == ops::Step::KeepPrevious {
+            panic!("power cut");
+        }
+    };
+    let env = Env {
+        step: &crash,
+        ..w.env()
+    };
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = ops::install(&env, &w.target, &v3);
+        }))
+        .is_err()
+    );
+    assert_eq!(state(&w).status, Status::InProgress);
+    ops::install(&w.env(), &w.target, &v3).unwrap();
+    ops::rollback(&w.env(), &w.target).unwrap();
+    assert!(all_current(&w, &v2));
+}
