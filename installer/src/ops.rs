@@ -711,7 +711,7 @@ pub fn install(env: &Env, target: &Target, payload: &Payload) -> Result<State> {
             Kept::Nothing => None,
         };
         // A bridge JAR the user disabled in the launcher stays disabled.
-        let disabled = mods::bridge_disabled(&target.minecraft_mods)?;
+        let disabled = mods::bridge_disabled(&target.minecraft_mods);
         (env.step)(Step::Remove);
         let done = moved
             .remove(env.closed)
@@ -833,7 +833,7 @@ pub fn plan(env: &Env, target: &Target, payload: &Payload) -> Result<Plan> {
         if !foreign_fabric {
             plan.writes.push(mods_dir.join(pins::FABRIC_API_FILE));
         }
-        let disabled = exists && mods::bridge_disabled(mods_dir)?;
+        let disabled = exists && mods::bridge_disabled(mods_dir);
         let suffix = if disabled { mods::DISABLED } else { "" };
         plan.writes
             .push(mods_dir.join(format!("{}{suffix}", payload.jar.0)));

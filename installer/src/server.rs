@@ -291,7 +291,7 @@ pub fn install(
         if ops::jar_current(&mods_dir, &before.bridge, payload)? {
             outcome.unchanged = true;
         } else {
-            let disabled = mods::bridge_disabled(&mods_dir)?;
+            let disabled = mods::bridge_disabled(&mods_dir);
             // ponytail: a failure between the two leaves no bridge JAR; running the install again puts it back.
             mods::remove(&mods_dir, false, closed)?;
             mods::install(&mods_dir, jar, &payload.fabric_api, disabled, closed)?;

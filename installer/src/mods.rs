@@ -308,12 +308,16 @@ pub(crate) fn write_atomic(dir: &Path, name: &str, data: &[u8]) -> Result<()> {
     written
 }
 
-/// Whether the listed bridge JAR in `mods` is there under its disabled name (Prism's Disable): an update keeps it so.
-pub fn bridge_disabled(mods: &Path) -> Result<bool> {
-    Ok(ownership(mods)? == Ownership::Owned
-        && present(mods)?
-            .iter()
-            .any(|(name, path)| is_bridge_jar(name) && path.to_string_lossy().ends_with(DISABLED)))
+/// Whether the listed bridge JAR in `mods` is there under its disabled name (Prism's Disable), changed or not: an
+/// update keeps it so. Without a manifest, or with content no update replaces, it is not.
+pub fn bridge_disabled(mods: &Path) -> bool {
+    listed(mods).is_ok_and(|listed| {
+        listed.iter().any(|(name, _, state)| {
+            is_bridge_jar(name)
+                && matches!(state, Listed::Present(path) | Listed::Changed(path)
+                    if path.to_string_lossy().ends_with(DISABLED))
+        })
+    })
 }
 
 /// Adds the bridge JAR to `mods` (under its disabled name with `disabled`; the manifest lists the plain name either

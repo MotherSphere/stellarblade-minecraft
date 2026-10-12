@@ -1902,3 +1902,25 @@ fn changed_files_kept_by_an_unrestored_update_survive_an_uninstall() {
         kept.keys().collect::<Vec<_>>()
     );
 }
+
+/// A bridge JAR the user disabled in Prism and that also changed is replaced under its disabled name: it stays off.
+#[test]
+fn a_changed_disabled_bridge_jar_stays_disabled_through_an_update() {
+    let w = world();
+    let (v1, v2) = (payload(1), payload(2));
+    ops::install(&w.env(), &w.target, &v1).unwrap();
+    let mods_dir = &w.target.minecraft_mods;
+    let jar = mods_dir.join(&v1.jar.0);
+    let disabled = mods_dir.join(format!("{}{}", v1.jar.0, mods::DISABLED));
+    fs::rename(&jar, &disabled).unwrap();
+    fs::write(&disabled, "dev build").unwrap();
+    ops::install(&w.env(), &w.target, &v2).unwrap();
+    assert!(
+        disabled.exists(),
+        "the update must keep the bridge JAR disabled"
+    );
+    assert!(
+        !jar.exists(),
+        "Fabric loads the bridge JAR the user disabled"
+    );
+}
