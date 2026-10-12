@@ -1685,7 +1685,8 @@ fn an_adapter_left_where_the_game_was_uninstalled_does_not_block_the_update() {
 }
 
 /// A large modpack: the review page's plan must not open and parse every JAR again and again. Each JAR is read once,
-/// about 0.3 s here in a release build and 1.2 s in a test build; reading them at every call took 6.8 s and 11.5 s.
+/// about 0.3 s here in a release build and 1.2 s in a test build; reading them at every call took 6.8 s and 11.5 s,
+/// several passes. Timed against one pass measured just before, so a loaded machine slows both alike.
 #[test]
 fn planning_beside_a_large_modpack_stays_fast() {
     use std::io::Write;
@@ -1713,11 +1714,18 @@ fn planning_beside_a_large_modpack_stays_fast() {
         );
     }
     let start = std::time::Instant::now();
+    for n in 0..200 {
+        let file = fs::File::open(w.target.minecraft_mods.join(format!("mod-{n}.jar"))).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file)).unwrap();
+        archive.by_name("fabric.mod.json").unwrap();
+    }
+    let pass = start.elapsed();
+    let start = std::time::Instant::now();
     ops::plan(&w.env(), &w.target, &payload(2)).unwrap();
+    let plan = start.elapsed();
     assert!(
-        start.elapsed() < std::time::Duration::from_secs(3),
-        "Review page blocked {:?}",
-        start.elapsed()
+        plan < pass * 4 + std::time::Duration::from_secs(1),
+        "Review page blocked {plan:?}, one pass over the JARs {pass:?}"
     );
 }
 
