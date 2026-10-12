@@ -475,11 +475,11 @@ fn same(a: &Path, b: &Path) -> bool {
 
 /// The recorded install's owned game-side pieces that are not where `target` puts them (UE4SS moved its `Mods`
 /// folder, or the game moved while its old folder stayed): the old `Mods` folder holding the Lua mod, and the old
-/// executable beside the adapter. Read before the run records its new target.
+/// executable's folder holding the adapter (the executable may be gone). Read before the run records its new target.
 #[derive(Default)]
 struct Moved {
     mods: Option<PathBuf>,
-    exe: Option<PathBuf>,
+    win64: Option<PathBuf>,
 }
 
 impl Moved {
@@ -492,15 +492,15 @@ impl Moved {
         Moved {
             mods: (!same(&old.mods, &new.mods) && owned(deploy::ownership(&old.mods)))
                 .then(|| old.mods.clone()),
-            exe: (!same(&old.win64(), &new.win64()) && owned(adapter::ownership(&old.win64())))
-                .then(|| old.exe.clone()),
+            win64: (!same(&old.win64(), &new.win64()) && owned(adapter::ownership(&old.win64())))
+                .then(|| old.win64()),
         }
     }
 
     /// What an update keeps in `previous/` beside the pieces at `target`.
     fn paths(&self) -> Vec<PathBuf> {
         let mut paths: Vec<PathBuf> = self.mods.iter().map(|m| m.join(deploy::MOD_NAME)).collect();
-        if let Some(win64) = self.exe.as_ref().and_then(|e| e.parent()) {
+        if let Some(win64) = &self.win64 {
             paths.extend([adapter::MANIFEST, adapter::CONFIG, adapter::DLL].map(|n| win64.join(n)));
         }
         paths
@@ -510,8 +510,8 @@ impl Moved {
         if let Some(mods) = &self.mods {
             deploy::remove(mods, closed)?;
         }
-        if let Some(exe) = &self.exe {
-            adapter::remove(exe, closed)?;
+        if let Some(win64) = &self.win64 {
+            adapter::remove_at(win64, closed)?;
         }
         Ok(())
     }

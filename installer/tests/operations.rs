@@ -1666,3 +1666,24 @@ fn changed_files_kept_aside_survive_a_failed_run_and_a_rollback() {
     assert!(all_current(&w, &v1));
     assert_eq!(kept_aside(), 1, "deleted by Roll back");
 }
+
+/// removes that adapter by its folder, without the executable.
+#[test]
+fn an_adapter_left_where_the_game_was_uninstalled_does_not_block_the_update() {
+    let w = world();
+    let old_win64 = w.home.join("Old/Win64");
+    write(&old_win64.join(adapter::EXE), "test executable");
+    let old = Target {
+        game: Some(Game {
+            exe: old_win64.join(adapter::EXE),
+            ..w.game().clone()
+        }),
+        ..w.target.clone()
+    };
+    ops::install(&w.env(), &old, &payload(1)).unwrap();
+    fs::remove_file(old_win64.join(adapter::EXE)).unwrap();
+    let updated = ops::install(&w.env(), &w.target, &payload(2));
+    assert!(updated.is_ok(), "{:#}", updated.unwrap_err());
+    assert_eq!(adapter::ownership(&old_win64).unwrap(), Ownership::Absent);
+    assert!(all_current(&w, &payload(2)));
+}

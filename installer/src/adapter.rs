@@ -223,7 +223,13 @@ pub fn ownership(win64: &Path) -> Result<Ownership> {
 /// Removes the adapter only when every file matches its manifest: the DLL first, then its directory file, then the
 /// manifest.
 pub fn remove(exe: &Path, closed: Guard) -> Result<PathBuf> {
-    let destination = game_directory(exe)?;
+    remove_at(&game_directory(exe)?, closed)
+}
+
+/// [`remove`] by the executable's folder `win64`, also once the executable is gone (Steam uninstalled the game there
+/// and left the files it did not install). Ownership rests on the folder's files only.
+pub fn remove_at(win64: &Path, closed: Guard) -> Result<PathBuf> {
+    let destination = platform::real_dir(win64)?;
     closed()?;
     match ownership(&destination)? {
         Ownership::Owned => {
