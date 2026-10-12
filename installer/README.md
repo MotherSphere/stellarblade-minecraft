@@ -113,7 +113,7 @@ Each operation reports its steps to the window and runs the games-closed check b
 - **Roll back.** Installs the kept previous set through the same checks; the replaced set becomes the previous one.
 - **Uninstall.** Removes every owned piece and returns the refusals for the rest, each with its path. Fabric API goes only when asked; a created instance, the pack, the save backups and `state.json` stay.
 
-A Lua mod and adapter installed by the Python tools count as owned and are updated. A bridge JAR copied by hand has no manifest: the installer refuses it until it is removed.
+A Lua mod and adapter installed by the Python tools count as owned and are updated. A bridge JAR copied by hand has no manifest: the installer refuses it until it is removed. It finds one by its name (`stellar-bridge*.jar`) or, renamed, by the bridge's Fabric mod id in its `fabric.mod.json`.
 
 ## Payload
 

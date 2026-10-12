@@ -35,6 +35,28 @@ pub fn is_fabric_api(name: &str) -> bool {
     name.starts_with("fabric-api-") && name.ends_with(".jar")
 }
 
+/// A visible JAR in `mods` named otherwise that declares the bridge's Fabric mod id: a copy renamed by hand, which
+/// Fabric would load beside ours and refuse as a duplicate. Unreadable or non-zip JARs are skipped.
+fn renamed_bridge(mods: &Path, names: &[String]) -> Option<String> {
+    let declares_bridge = |path: &Path| -> Option<bool> {
+        let mut archive = zip::ZipArchive::new(fs::File::open(path).ok()?).ok()?;
+        let entry = archive.by_name("fabric.mod.json").ok()?;
+        let info: serde_json::Value =
+            serde_json::from_reader(std::io::Read::take(entry, 64 * 1024)).ok()?;
+        Some(info["id"] == "stellar_bridge")
+    };
+    names
+        .iter()
+        .find(|name| {
+            !name.starts_with('.')
+                && name.to_lowercase().ends_with(".jar")
+                && !is_bridge_jar(name)
+                && !is_fabric_api(name)
+                && declares_bridge(&mods.join(name)) == Some(true)
+        })
+        .cloned()
+}
+
 /// The `mods` folder with links resolved: instance folders often live on another disk.
 fn folder(mods: &Path) -> Result<PathBuf> {
     let mods = platform::canonicalize(mods)?;
@@ -111,6 +133,8 @@ fn listed(mods: &Path) -> Result<Vec<(String, String, Listed)>> {
     if let Some(name) = names
         .iter()
         .find(|n| is_bridge_jar(n) && !manifest.files.contains_key(*n))
+        .cloned()
+        .or_else(|| renamed_bridge(mods, &names))
     {
         bail!(Refusal::new(Kind::ForeignJar, mods.join(name).display()));
     }
@@ -159,7 +183,9 @@ pub fn ownership(mods: &Path) -> Result<Ownership> {
     }
     let path = mods.join(MANIFEST);
     if !path.exists() && !path.is_symlink() {
-        return Ok(match names(mods)?.into_iter().find(|n| is_bridge_jar(n)) {
+        let names = names(mods)?;
+        let foreign = names.iter().find(|n| is_bridge_jar(n)).cloned();
+        return Ok(match foreign.or_else(|| renamed_bridge(mods, &names)) {
             Some(name) => {
                 Ownership::Foreign(Refusal::new(Kind::ForeignJar, mods.join(name).display()))
             }

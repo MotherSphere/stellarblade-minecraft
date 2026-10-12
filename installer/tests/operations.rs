@@ -1110,3 +1110,30 @@ fn an_update_keeps_a_disabled_bridge_jar_disabled() {
     assert_eq!(fs::read(&disabled).unwrap(), v2.jar.1);
     assert!(all_current(&w, &v2));
 }
+
+/// A bridge JAR copied by hand under another name is still the bridge (same Fabric mod id): an install next to it
+/// would leave two copies of the mod, which Fabric refuses to load, so it is refused before any write.
+#[test]
+fn a_renamed_bridge_jar_is_found_by_its_mod_id() {
+    use std::io::Write;
+    let w = world();
+    let mods_dir = &w.target.minecraft_mods;
+    let mut jar = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    jar.start_file(
+        "fabric.mod.json",
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+    )
+    .unwrap();
+    jar.write_all(br#"{"schemaVersion": 1, "id": "stellar_bridge", "version": "0.2.0"}"#)
+        .unwrap();
+    write(
+        &mods_dir.join("sbmc-bridge.jar"),
+        jar.finish().unwrap().into_inner(),
+    );
+    let files = w.files();
+    assert!(
+        ops::install(&w.env(), &w.target, &payload(1)).is_err(),
+        "installed a second stellar_bridge next to sbmc-bridge.jar"
+    );
+    assert_eq!(w.files(), files);
+}
