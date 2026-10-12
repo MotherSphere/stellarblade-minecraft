@@ -1684,51 +1684,6 @@ fn an_adapter_left_where_the_game_was_uninstalled_does_not_block_the_update() {
     assert!(all_current(&w, &payload(2)));
 }
 
-/// A large modpack: the review page's plan must not open and parse every JAR again and again. Each JAR is read once,
-/// about 0.3 s here in a release build and 1.2 s in a test build; reading them at every call took 6.8 s and 11.5 s,
-/// several passes. Timed against one pass measured just before, so a loaded machine slows both alike.
-#[test]
-fn planning_beside_a_large_modpack_stays_fast() {
-    use std::io::Write;
-    let w = world();
-    ops::install(&w.env(), &w.target, &payload(1)).unwrap();
-    let mut jar = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    jar.start_file("fabric.mod.json", options).unwrap();
-    jar.write_all(br#"{"schemaVersion": 1, "id": "somemod"}"#)
-        .unwrap();
-    for i in 0..3000 {
-        jar.start_file(
-            format!("assets/somemod/textures/block/texture_{i}.png"),
-            options,
-        )
-        .unwrap();
-        jar.write_all(b"x").unwrap();
-    }
-    let bytes = jar.finish().unwrap().into_inner();
-    for n in 0..200 {
-        write(
-            &w.target.minecraft_mods.join(format!("mod-{n}.jar")),
-            &bytes,
-        );
-    }
-    let start = std::time::Instant::now();
-    for n in 0..200 {
-        let file = fs::File::open(w.target.minecraft_mods.join(format!("mod-{n}.jar"))).unwrap();
-        let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file)).unwrap();
-        archive.by_name("fabric.mod.json").unwrap();
-    }
-    let pass = start.elapsed();
-    let start = std::time::Instant::now();
-    ops::plan(&w.env(), &w.target, &payload(2)).unwrap();
-    let plan = start.elapsed();
-    assert!(
-        plan < pass * 4 + std::time::Duration::from_secs(1),
-        "Review page blocked {plan:?}, one pass over the JARs {pass:?}"
-    );
-}
-
 /// A changed bridge JAR the user disabled in Prism is listed where it is, under its disabled name, and repaired there.
 #[test]
 fn a_changed_disabled_jar_is_listed_at_its_real_path() {

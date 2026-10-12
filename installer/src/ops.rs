@@ -1093,3 +1093,62 @@ pub fn uninstall(env: &Env, target: &Target, remove_fabric: bool) -> Result<Refu
     }
     Ok(refusals)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A large modpack: the review page's plan asks about every JAR a dozen times, and must open and parse each one only
+    /// once. Counted, not timed: a timing limit failed on a loaded machine.
+    #[test]
+    fn planning_beside_a_large_modpack_reads_each_jar_once() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let home = platform::canonicalize(root.path()).unwrap();
+        let target = Target {
+            game: None,
+            minecraft_mods: home.join("mods"),
+            bridge: home.join("bridge"),
+        };
+        fs::create_dir(&target.minecraft_mods).unwrap();
+        let env = Env {
+            data: home.join("data"),
+            closed: &|| Ok(()),
+            pin: "",
+            step: &|_| {},
+        };
+        let v1 = Payload {
+            release: "0.1.0+test".into(),
+            lua_revision: None,
+            lua: Default::default(),
+            dll: Vec::new(),
+            jar: ("stellar-bridge-0.1.0.jar".into(), b"jar v1".to_vec()),
+            fabric_api: b"fabric api".to_vec(),
+            licenses: BTreeMap::new(),
+        };
+        install(&env, &target, &v1).unwrap();
+        let mut jar = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        jar.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        jar.write_all(br#"{"schemaVersion": 1, "id": "somemod"}"#)
+            .unwrap();
+        let bytes = jar.finish().unwrap().into_inner();
+        let modpack: Vec<PathBuf> = (0..20)
+            .map(|n| target.minecraft_mods.join(format!("mod-{n}.jar")))
+            .collect();
+        for path in &modpack {
+            fs::write(path, &bytes).unwrap();
+        }
+        let v2 = Payload {
+            release: "0.2.0+test".into(),
+            jar: (v1.jar.0.clone(), b"jar v2".to_vec()),
+            ..v1
+        };
+        assert!(!plan(&env, &target, &v2).unwrap().writes.is_empty());
+        let read = mods::READ.lock().unwrap();
+        for path in &modpack {
+            let times = read.iter().filter(|p| *p == path).count();
+            assert_eq!(times, 1, "{} read {times} times", path.display());
+        }
+    }
+}

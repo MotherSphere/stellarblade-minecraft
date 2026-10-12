@@ -72,9 +72,15 @@ fn declares_bridge(path: &Path) -> bool {
     found
 }
 
+/// Every JAR [`read_mod_id`] opened, for the test that keeps a large modpack's review page fast.
+#[cfg(test)]
+pub(crate) static READ: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 /// The Fabric mod id in the JAR at `path`, `len` bytes long.
 fn read_mod_id(path: &Path, len: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
+    #[cfg(test)]
+    READ.lock().unwrap().push(path.to_path_buf());
     let mut file = fs::File::open(path).ok()?;
     // A zip ends with its end record (22 bytes and a comment of at most 64 KiB). Without one it is no zip, and the zip
     // crate would read the whole file backwards looking for it.
